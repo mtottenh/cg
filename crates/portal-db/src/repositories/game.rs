@@ -185,13 +185,13 @@ mod tests {
     use crate::entities::UpdateGame;
     use portal_test::database::TestDb;
 
-    fn new_test_game(id: &str) -> NewGame {
+    fn new_test_game(slug: &str) -> NewGame {
         NewGame {
-            id: id.to_string(),
-            display_name: format!("{} Game", id),
-            short_name: Some(id.to_string()),
+            slug: slug.to_string(),
+            display_name: format!("{} Game", slug),
+            short_name: Some(slug.to_string()),
             description: Some("A test game".to_string()),
-            plugin_id: format!("{}_plugin", id),
+            plugin_id: format!("{}_plugin", slug),
             plugin_version: "1.0.0".to_string(),
             team_size_min: 1,
             team_size_max: 5,
@@ -206,24 +206,24 @@ mod tests {
 
         let game = repo.create(new_test_game("testgame")).await.unwrap();
 
-        assert_eq!(game.id, "testgame");
+        assert_eq!(game.slug, "testgame");
         assert_eq!(game.display_name, "testgame Game");
         assert_eq!(game.status, "active");
         assert_eq!(game.team_size_default, 5);
     }
 
     #[tokio::test]
-    async fn test_find_game_by_id() {
+    async fn test_find_game_by_slug() {
         let db = TestDb::new().await;
         let repo = GameRepository::new(db.pool.clone());
 
         repo.create(new_test_game("findgame")).await.unwrap();
 
-        let found = repo.find_by_id("findgame").await.unwrap();
+        let found = repo.find_by_slug("findgame").await.unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().display_name, "findgame Game");
 
-        let not_found = repo.find_by_id("nonexistent").await.unwrap();
+        let not_found = repo.find_by_slug("nonexistent").await.unwrap();
         assert!(not_found.is_none());
     }
 
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(active_games.len(), initial_active + 2);
 
         // Verify the disabled game is not in the list
-        assert!(active_games.iter().all(|g| g.id != "inactive"));
+        assert!(active_games.iter().all(|g| g.slug != "inactive"));
     }
 
     #[tokio::test]

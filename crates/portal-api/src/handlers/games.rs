@@ -50,7 +50,7 @@ pub async fn list_games(
     let game_responses: Vec<GameSummaryResponse> = games
         .into_iter()
         .map(|g| GameSummaryResponse {
-            id: g.id,
+            id: g.slug,
             display_name: g.display_name,
             short_name: g.short_name,
             description: g.description,
@@ -91,10 +91,10 @@ pub async fn get_game(
 ) -> ApiResult<Json<DataResponse<GameDetailResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // Fetch from database
+    // Fetch from database by slug
     let game = state
         .game_repo
-        .find_by_id(&game_id)
+        .find_by_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {}", game_id)))?;
 
@@ -155,7 +155,7 @@ pub async fn get_game(
     };
 
     let response = GameDetailResponse {
-        id: game.id,
+        id: game.slug.clone(),
         display_name: game.display_name,
         short_name: game.short_name,
         description: game.description,
@@ -202,7 +202,7 @@ pub async fn get_maps(
     // Fetch from database
     let game = state
         .game_repo
-        .find_by_id(&game_id)
+        .find_by_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {}", game_id)))?;
 
@@ -250,7 +250,7 @@ pub async fn get_rank_tiers(
     // Fetch from database
     let game = state
         .game_repo
-        .find_by_id(&game_id)
+        .find_by_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {}", game_id)))?;
 
@@ -387,7 +387,7 @@ pub async fn update_game(
     };
 
     let response = GameDetailResponse {
-        id: game.id,
+        id: game.slug.clone(),
         display_name: game.display_name,
         short_name: game.short_name,
         description: game.description,
@@ -454,7 +454,7 @@ pub async fn set_map_pool(
     // Fetch game to verify it exists and get plugin
     let game = state
         .game_repo
-        .find_by_id(&game_id)
+        .find_by_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {}", game_id)))?;
 
@@ -542,7 +542,7 @@ pub async fn enable_game(
     let game = state.game_repo.enable(&game_id).await?;
 
     let response = GameSummaryResponse {
-        id: game.id,
+        id: game.slug.clone(),
         display_name: game.display_name,
         short_name: game.short_name,
         description: game.description,
@@ -596,7 +596,7 @@ pub async fn disable_game(
     let game = state.game_repo.disable(&game_id).await?;
 
     let response = GameSummaryResponse {
-        id: game.id,
+        id: game.slug.clone(),
         display_name: game.display_name,
         short_name: game.short_name,
         description: game.description,

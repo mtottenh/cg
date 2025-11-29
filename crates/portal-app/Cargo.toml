@@ -1,0 +1,42 @@
+[package]
+name = "portal-app"
+description = "Main application binary for the Gaming Portal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "portal"
+path = "src/main.rs"
+
+[dependencies]
+portal-core = { path = "../portal-core" }
+portal-domain = { path = "../portal-domain" }
+portal-db = { path = "../portal-db" }
+portal-cache = { path = "../portal-cache" }
+portal-api = { path = "../portal-api" }
+portal-plugins = { path = "../portal-plugins" }
+
+# Async
+tokio = { workspace = true }
+
+# Web framework
+axum = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
+
+# Configuration
+config = { workspace = true }
+dotenvy = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

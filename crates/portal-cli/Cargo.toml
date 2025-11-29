@@ -1,0 +1,63 @@
+[package]
+name = "portal-cli"
+description = "CLI administration tool for the Gaming Portal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "portal"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace crates
+portal-core = { path = "../portal-core" }
+portal-db = { path = "../portal-db" }
+portal-domain = { path = "../portal-domain" }
+
+# CLI
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+
+# Types
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# Output formatting
+tabled = { version = "0.17", features = ["ansi"] }
+comfy-table = "7"
+colored = "2"
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Configuration
+config = { workspace = true }
+dotenvy = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Interactive prompts (optional)
+dialoguer = "0.11"
+indicatif = "0.17"
+
+# Password hashing (for user creation)
+argon2 = { workspace = true }
+
+[lints]
+workspace = true

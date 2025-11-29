@@ -1,0 +1,43 @@
+[package]
+name = "portal-storage"
+description = "Pluggable storage backends for the Gaming Portal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
+futures = { workspace = true }
+
+# Storage
+bytes = { workspace = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+
+# Image processing
+image = { workspace = true }
+infer = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+
+[features]
+default = ["local"]
+local = []
+s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = "3"
+
+[lints]
+workspace = true

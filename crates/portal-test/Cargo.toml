@@ -1,0 +1,44 @@
+[package]
+name = "portal-test"
+description = "Test utilities, builders, and fixtures for the Gaming Portal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+portal-core = { path = "../portal-core" }
+portal-db = { path = "../portal-db" }
+portal-domain = { path = "../portal-domain" }
+
+# Database
+sqlx = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Types
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# Fake data generation
+fake = { workspace = true }
+
+# Test containers
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+
+[lints]
+workspace = true

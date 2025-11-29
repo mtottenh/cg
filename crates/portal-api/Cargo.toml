@@ -1,0 +1,101 @@
+[package]
+name = "portal-api"
+description = "HTTP API layer for the Gaming Portal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Enable dev-mode authentication for testing
+test-utils = []
+
+[dependencies]
+portal-core = { path = "../portal-core" }
+portal-domain = { path = "../portal-domain" }
+portal-db = { path = "../portal-db" }
+portal-plugins = { path = "../portal-plugins" }
+portal-storage = { path = "../portal-storage" }
+
+# Web framework
+axum = { workspace = true }
+axum-extra = { workspace = true, features = ["multipart"] }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Bytes for multipart handling
+bytes = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Types
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# Validation
+validator = { workspace = true }
+
+# OpenAPI
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+
+# Authentication
+jsonwebtoken = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Regex validation
+once_cell = "1"
+regex = "1"
+
+# Tracing
+tracing = { workspace = true }
+
+[dev-dependencies]
+portal-test = { path = "../portal-test" }
+portal-domain = { path = "../portal-domain" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tower = { workspace = true, features = ["util"] }
+http-body-util = "0.1"
+mime = "0.3"
+sqlx = { workspace = true }
+
+# Enable test-utils feature for integration tests
+[[test]]
+name = "players_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "teams_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "users_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "auth_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "scoped_permission_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "team_rbac_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "games_test"
+required-features = ["test-utils"]
+
+[lints]
+workspace = true

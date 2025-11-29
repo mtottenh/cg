@@ -1,0 +1,232 @@
+//! Player handlers.
+
+use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
+use crate::dto::requests::UpdatePlayerProfileRequest;
+use crate::dto::responses::{PlayerResponse, PlayerSearchResponse, PlayerTeamMembershipResponse};
+use crate::error::{ApiError, ApiResult};
+use crate::extractors::AuthenticatedUser;
+use crate::state::AppState;
+use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
+use axum::Json;
+use portal_core::PlayerId;
+use portal_domain::repositories::UpdatePlayer;
+use serde::Deserialize;
+use validator::Validate;
+
+/// Extract request ID from headers.
+fn get_request_id(headers: &HeaderMap) -> &str {
+    headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+}
+
+/// Query parameters for player search.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct PlayerSearchParams {
+    /// Search query for display name.
+    #[serde(default)]
+    pub q: String,
+
+    /// Page number (1-indexed).
+    #[serde(default = "default_page")]
+    pub page: u32,
+
+    /// Number of items per page.
+    #[serde(default = "default_per_page")]
+    pub per_page: u32,
+}
+
+fn default_page() -> u32 {
+    1
+}
+
+fn default_per_page() -> u32 {
+    20
+}
+
+impl PlayerSearchParams {
+    fn offset(&self) -> i64 {
+        i64::from((self.page.saturating_sub(1)) * self.per_page)
+    }
+
+    fn limit(&self) -> i64 {
+        i64::from(self.per_page.min(100))
+    }
+
+    fn as_pagination(&self) -> PaginationParams {
+        PaginationParams {
+            page: self.page,
+            per_page: self.per_page,
+        }
+    }
+}
+
+/// Search for players.
+#[utoipa::path(
+    get,
+    path = "/v1/players",
+    params(
+        PlayerSearchParams,
+    ),
+    responses(
+        (status = 200, description = "List of players", body = PaginatedResponse<PlayerSearchResponse>),
+    ),
+    tag = "players"
+)]
+pub async fn search_players(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<PlayerSearchParams>,
+) -> ApiResult<Json<PaginatedResponse<PlayerSearchResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let result = state
+        .player_service
+        .search_players(&params.q, params.limit(), params.offset())
+        .await?;
+
+    let players: Vec<PlayerSearchResponse> = result
+        .players
+        .into_iter()
+        .map(PlayerSearchResponse::from)
+        .collect();
+
+    Ok(Json(PaginatedResponse::new(
+        players,
+        &params.as_pagination(),
+        result.total as u64,
+        request_id,
+    )))
+}
+
+/// Get a player by ID.
+#[utoipa::path(
+    get,
+    path = "/v1/players/{player_id}",
+    params(
+        ("player_id" = String, Path, description = "Player ID")
+    ),
+    responses(
+        (status = 200, description = "Player found", body = DataResponse<PlayerResponse>),
+        (status = 404, description = "Player not found", body = ApiError),
+    ),
+    tag = "players"
+)]
+pub async fn get_player(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(player_id): Path<String>,
+) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let player_id: PlayerId = player_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
+
+    let player = state.player_service.get_player(player_id).await?;
+
+    Ok(Json(DataResponse::new(
+        PlayerResponse::from(player),
+        request_id,
+    )))
+}
+
+/// Get a player's teams.
+#[utoipa::path(
+    get,
+    path = "/v1/players/{player_id}/teams",
+    params(
+        ("player_id" = String, Path, description = "Player ID")
+    ),
+    responses(
+        (status = 200, description = "Player's teams with membership info", body = Vec<PlayerTeamMembershipResponse>),
+        (status = 404, description = "Player not found", body = ApiError),
+    ),
+    tag = "players"
+)]
+pub async fn get_player_teams(
+    State(state): State<AppState>,
+    Path(player_id): Path<String>,
+) -> ApiResult<Json<Vec<PlayerTeamMembershipResponse>>> {
+    let player_id: PlayerId = player_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
+
+    let memberships = state
+        .player_service
+        .get_player_team_memberships(player_id)
+        .await?;
+
+    let response: Vec<PlayerTeamMembershipResponse> = memberships
+        .into_iter()
+        .map(PlayerTeamMembershipResponse::from)
+        .collect();
+
+    Ok(Json(response))
+}
+
+/// Get the current authenticated player's profile.
+#[utoipa::path(
+    get,
+    path = "/v1/players/me",
+    responses(
+        (status = 200, description = "Current player's profile", body = DataResponse<PlayerResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "players"
+)]
+pub async fn get_my_profile(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let player = state.player_service.get_player(auth.player_id).await?;
+
+    Ok(Json(DataResponse::new(
+        PlayerResponse::from(player),
+        request_id,
+    )))
+}
+
+/// Update the current authenticated player's profile.
+#[utoipa::path(
+    patch,
+    path = "/v1/players/me",
+    request_body = UpdatePlayerProfileRequest,
+    responses(
+        (status = 200, description = "Profile updated", body = DataResponse<PlayerResponse>),
+        (status = 400, description = "Invalid request", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 409, description = "Display name already taken", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "players"
+)]
+pub async fn update_my_profile(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Json(request): Json<UpdatePlayerProfileRequest>,
+) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    // Validate request
+    request.validate().map_err(ApiError::from)?;
+
+    let update = UpdatePlayer::from(request);
+
+    let player = state
+        .player_service
+        .update_profile(auth.player_id, update)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        PlayerResponse::from(player),
+        request_id,
+    )))
+}

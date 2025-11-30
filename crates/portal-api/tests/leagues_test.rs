@@ -357,11 +357,11 @@ async fn test_join_invite_only_league_fails() {
     let created: serde_json::Value = create_response.json();
     let league_id = created["data"]["id"].as_str().unwrap();
 
-    // User2 tries to join - should fail
+    // User2 tries to join - should fail (league is invite-only)
     let response = app
         .post_with_token(&format!("/v1/leagues/{}/join", league_id), &token2)
         .await;
-    response.assert_status(StatusCode::CONFLICT);
+    response.assert_status(StatusCode::BAD_REQUEST);
 }
 
 // ============================================================================
@@ -1101,33 +1101,11 @@ async fn grant_league_admin_permission(app: &TestApp) {
 }
 
 /// Create a JWT token for a user.
+/// The user_id and player_id are assumed to be the same (as per UserBuilder behavior).
 async fn create_token_for_user(_app: &TestApp, user_id: uuid::Uuid) -> String {
-    use jsonwebtoken::{encode, EncodingKey, Header};
-    use serde::{Deserialize, Serialize};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use portal_domain::generate_access_token;
 
-    #[derive(Serialize, Deserialize)]
-    struct Claims {
-        sub: String,
-        exp: u64,
-        iat: u64,
-    }
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let claims = Claims {
-        sub: user_id.to_string(),
-        exp: now + 3600, // 1 hour
-        iat: now,
-    };
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret("test-jwt-secret".as_bytes()),
-    )
-    .expect("Failed to create token")
+    // User and player have the same ID per UserBuilder
+    generate_access_token(user_id, user_id, "testuser", "test-jwt-secret")
+        .expect("Failed to create token")
 }

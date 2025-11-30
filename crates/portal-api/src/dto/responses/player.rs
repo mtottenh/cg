@@ -23,7 +23,7 @@ pub struct SocialLinksResponse {
     #[schema(example = "twitteruser")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub twitter: Option<String>,
-    /// YouTube channel URL.
+    /// `YouTube` channel URL.
     #[schema(example = "https://youtube.com/@channel")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub youtube: Option<String>,

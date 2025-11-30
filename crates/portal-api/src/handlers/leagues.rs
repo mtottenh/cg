@@ -40,11 +40,11 @@ pub struct ListLeaguesParams {
     pub per_page: i64,
 }
 
-fn default_page() -> i64 {
+const fn default_page() -> i64 {
     1
 }
 
-fn default_per_page() -> i64 {
+const fn default_per_page() -> i64 {
     20
 }
 
@@ -184,8 +184,8 @@ pub async fn list_leagues(
 
     let page = params.page.max(1) as u32;
     let per_page = (params.per_page.clamp(1, 100)) as u32;
-    let offset = ((page - 1) * per_page) as i64;
-    let limit = per_page as i64;
+    let offset = i64::from((page - 1) * per_page);
+    let limit = i64::from(per_page);
 
     let (leagues, total) = if let Some(game_id_str) = params.game_id {
         let game_id: GameId = game_id_str
@@ -290,8 +290,8 @@ pub async fn list_members(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
-    let offset = ((params.page.max(1) - 1) * params.per_page) as i64;
-    let limit = params.per_page.clamp(1, 100) as i64;
+    let offset = i64::from((params.page.max(1) - 1) * params.per_page);
+    let limit = i64::from(params.per_page.clamp(1, 100));
 
     let (members, _total) = state.league_service.get_members(league_id, limit, offset).await?;
 

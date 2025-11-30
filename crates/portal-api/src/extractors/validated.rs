@@ -35,9 +35,7 @@ where
                         field: field.to_string(),
                         message: e
                             .message
-                            .clone()
-                            .map(|m| m.to_string())
-                            .unwrap_or_else(|| format!("Validation failed for {field}")),
+                            .clone().map_or_else(|| format!("Validation failed for {field}"), |m| m.to_string()),
                         code: e.code.to_string(),
                     })
                 })
@@ -45,6 +43,6 @@ where
             ApiError::validation(field_errors)
         })?;
 
-        Ok(ValidatedJson(value))
+        Ok(Self(value))
     }
 }

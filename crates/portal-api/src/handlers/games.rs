@@ -3,7 +3,7 @@
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{SetMapPoolRequest, UpdateGameRequest};
 use crate::dto::responses::{
-    GameDetailResponse, GameSummaryResponse, MapInfoResponse, MapPickBanFormatResponse,
+    GameDetailResponse, GameSummaryResponse, MapInfoResponse,
     RankTierResponse, TeamSizeConfig,
 };
 use crate::error::{ApiError, ApiResult};
@@ -50,7 +50,8 @@ pub async fn list_games(
     let game_responses: Vec<GameSummaryResponse> = games
         .into_iter()
         .map(|g| GameSummaryResponse {
-            id: g.slug,
+            id: g.id.to_string(),
+            slug: g.slug,
             display_name: g.display_name,
             short_name: g.short_name,
             description: g.description,
@@ -96,7 +97,7 @@ pub async fn get_game(
         .game_repo
         .find_by_slug(&game_id)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("Game not found: {}", game_id)))?;
+        .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
     // Get plugin for additional metadata
     let plugin = state.plugin_manager.get(&game.plugin_id);
@@ -138,7 +139,7 @@ pub async fn get_game(
         (
             p.supported_match_formats()
                 .iter()
-                .map(|f| f.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             p.default_match_format().to_string(),
             p.map_pick_ban_formats()
@@ -155,7 +156,8 @@ pub async fn get_game(
     };
 
     let response = GameDetailResponse {
-        id: game.slug.clone(),
+        id: game.id.to_string(),
+        slug: game.slug.clone(),
         display_name: game.display_name,
         short_name: game.short_name,
         description: game.description,
@@ -204,7 +206,7 @@ pub async fn get_maps(
         .game_repo
         .find_by_slug(&game_id)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("Game not found: {}", game_id)))?;
+        .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
     // Get plugin for defaults
     let plugin = state.plugin_manager.get(&game.plugin_id);
@@ -252,7 +254,7 @@ pub async fn get_rank_tiers(
         .game_repo
         .find_by_slug(&game_id)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("Game not found: {}", game_id)))?;
+        .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
     // Get plugin for defaults
     let plugin = state.plugin_manager.get(&game.plugin_id);
@@ -370,7 +372,7 @@ pub async fn update_game(
         (
             p.supported_match_formats()
                 .iter()
-                .map(|f| f.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             p.default_match_format().to_string(),
             p.map_pick_ban_formats()
@@ -387,7 +389,8 @@ pub async fn update_game(
     };
 
     let response = GameDetailResponse {
-        id: game.slug.clone(),
+        id: game.id.to_string(),
+        slug: game.slug.clone(),
         display_name: game.display_name,
         short_name: game.short_name,
         description: game.description,
@@ -456,7 +459,7 @@ pub async fn set_map_pool(
         .game_repo
         .find_by_slug(&game_id)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("Game not found: {}", game_id)))?;
+        .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
     // Get plugin to validate map IDs
     let plugin = state.plugin_manager.get(&game.plugin_id);
@@ -542,7 +545,8 @@ pub async fn enable_game(
     let game = state.game_repo.enable(&game_id).await?;
 
     let response = GameSummaryResponse {
-        id: game.slug.clone(),
+        id: game.id.to_string(),
+        slug: game.slug.clone(),
         display_name: game.display_name,
         short_name: game.short_name,
         description: game.description,
@@ -596,7 +600,8 @@ pub async fn disable_game(
     let game = state.game_repo.disable(&game_id).await?;
 
     let response = GameSummaryResponse {
-        id: game.slug.clone(),
+        id: game.id.to_string(),
+        slug: game.slug.clone(),
         display_name: game.display_name,
         short_name: game.short_name,
         description: game.description,

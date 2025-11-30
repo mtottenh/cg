@@ -9,25 +9,25 @@ use portal_core::{PermissionScope, ScopeType};
 use portal_db::PermissionRepository;
 use uuid::Uuid;
 
-/// Wrapper for PermissionRepository that can be extracted from state.
+/// Wrapper for `PermissionRepository` that can be extracted from state.
 #[derive(Clone)]
 pub struct PermissionChecker(pub PermissionRepository);
 
 impl FromRef<AppState> for PermissionChecker {
     fn from_ref(state: &AppState) -> Self {
-        PermissionChecker(state.permission_repo.clone())
+        Self(state.permission_repo.clone())
     }
 }
 
 impl<S> FromRequestParts<S> for PermissionChecker
 where
     S: Send + Sync,
-    PermissionChecker: FromRef<S>,
+    Self: FromRef<S>,
 {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(_parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        Ok(PermissionChecker::from_ref(state))
+        Ok(Self::from_ref(state))
     }
 }
 
@@ -55,8 +55,7 @@ impl PermissionChecker {
             Ok(())
         } else {
             Err(ApiError::forbidden(format!(
-                "Missing required permission: {}",
-                permission
+                "Missing required permission: {permission}"
             )))
         }
     }
@@ -84,8 +83,7 @@ impl PermissionChecker {
         }
 
         Err(ApiError::forbidden(format!(
-            "Missing required permission: one of {:?}",
-            permissions
+            "Missing required permission: one of {permissions:?}"
         )))
     }
 
@@ -108,8 +106,7 @@ impl PermissionChecker {
                 .unwrap_or(false)
             {
                 return Err(ApiError::forbidden(format!(
-                    "Missing required permission: {}",
-                    permission
+                    "Missing required permission: {permission}"
                 )));
             }
         }
@@ -191,8 +188,7 @@ impl PermissionChecker {
         }
 
         Err(ApiError::forbidden(format!(
-            "Missing required permission: {} for {:?} {}",
-            permission, scope_type, scope_id
+            "Missing required permission: {permission} for {scope_type:?} {scope_id}"
         )))
     }
 

@@ -52,7 +52,7 @@ pub async fn get_stats(
         .stats_repo
         .get_platform_stats()
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to fetch stats: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("Failed to fetch stats: {e}")))?;
 
     let response = PlatformStatsResponse {
         total_users: stats.total_users as u64,

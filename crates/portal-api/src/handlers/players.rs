@@ -2,7 +2,7 @@
 
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::UpdatePlayerProfileRequest;
-use crate::dto::responses::{PlayerResponse, PlayerSearchResponse, PlayerTeamMembershipResponse};
+use crate::dto::responses::{PlayerResponse, PlayerSearchResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
 use crate::state::AppState;
@@ -38,11 +38,11 @@ pub struct PlayerSearchParams {
     pub per_page: u32,
 }
 
-fn default_page() -> u32 {
+const fn default_page() -> u32 {
     1
 }
 
-fn default_per_page() -> u32 {
+const fn default_per_page() -> u32 {
     20
 }
 
@@ -55,7 +55,7 @@ impl PlayerSearchParams {
         i64::from(self.per_page.min(100))
     }
 
-    fn as_pagination(&self) -> PaginationParams {
+    const fn as_pagination(&self) -> PaginationParams {
         PaginationParams {
             page: self.page,
             per_page: self.per_page,
@@ -133,39 +133,8 @@ pub async fn get_player(
     )))
 }
 
-/// Get a player's teams.
-#[utoipa::path(
-    get,
-    path = "/v1/players/{player_id}/teams",
-    params(
-        ("player_id" = String, Path, description = "Player ID")
-    ),
-    responses(
-        (status = 200, description = "Player's teams with membership info", body = Vec<PlayerTeamMembershipResponse>),
-        (status = 404, description = "Player not found", body = ApiError),
-    ),
-    tag = "players"
-)]
-pub async fn get_player_teams(
-    State(state): State<AppState>,
-    Path(player_id): Path<String>,
-) -> ApiResult<Json<Vec<PlayerTeamMembershipResponse>>> {
-    let player_id: PlayerId = player_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
-
-    let memberships = state
-        .player_service
-        .get_player_team_memberships(player_id)
-        .await?;
-
-    let response: Vec<PlayerTeamMembershipResponse> = memberships
-        .into_iter()
-        .map(PlayerTeamMembershipResponse::from)
-        .collect();
-
-    Ok(Json(response))
-}
+// TODO: Re-add get_player_teams handler with league team memberships
+// This will be implemented as part of the league team API
 
 /// Get the current authenticated player's profile.
 #[utoipa::path(

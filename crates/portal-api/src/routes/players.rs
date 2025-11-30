@@ -14,5 +14,5 @@ pub fn routes() -> Router<AppState> {
         .route("/me/avatar", post(uploads::upload_player_avatar))
         .route("/me/banner", post(uploads::upload_player_banner))
         .route("/{player_id}", get(players::get_player))
-        .route("/{player_id}/teams", get(players::get_player_teams))
+        // TODO: Add player league team memberships route
 }

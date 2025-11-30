@@ -142,7 +142,29 @@ impl From<DomainError> for ApiError {
                 Self::not_found(format!("Tournament not found: {id}"))
             }
             DomainError::LeagueNotFound(id) => Self::not_found(format!("League not found: {id}")),
+            DomainError::LeagueSeasonNotFound(id) => {
+                Self::not_found(format!("League season not found: {id}"))
+            }
+            DomainError::LeagueTeamNotFound(id) => {
+                Self::not_found(format!("League team not found: {id}"))
+            }
+            DomainError::LeagueTeamInvitationNotFound(id) => {
+                Self::not_found(format!("League team invitation not found: {id}"))
+            }
             DomainError::LobbyNotFound(id) => Self::not_found(format!("Lobby not found: {id}")),
+            DomainError::BanNotFound(id) => Self::not_found(format!("Ban not found: {id}")),
+            DomainError::TournamentStageNotFound(id) => {
+                Self::not_found(format!("Tournament stage not found: {id}"))
+            }
+            DomainError::TournamentBracketNotFound(id) => {
+                Self::not_found(format!("Tournament bracket not found: {id}"))
+            }
+            DomainError::TournamentMatchNotFound(id) => {
+                Self::not_found(format!("Tournament match not found: {id}"))
+            }
+            DomainError::TournamentRegistrationNotFound(id) => {
+                Self::not_found(format!("Tournament registration not found: {id}"))
+            }
 
             // Authorization errors
             DomainError::NotAuthorized(msg) => Self::unauthorized(msg),
@@ -161,6 +183,9 @@ impl From<DomainError> for ApiError {
             DomainError::AlreadyInLobby => Self::conflict("Player is already in a lobby"),
             DomainError::AlreadyRegistered => {
                 Self::conflict("Team is already registered for this tournament")
+            }
+            DomainError::AlreadyRegisteredForTournament => {
+                Self::conflict("Already registered for this tournament")
             }
             DomainError::Conflict(msg) => Self::conflict(msg),
             DomainError::InvitationAlreadyExists => {
@@ -192,6 +217,41 @@ impl From<DomainError> for ApiError {
             DomainError::NotLeagueMember => Self::bad_request("Not a league member"),
             DomainError::LeagueInviteOnly => Self::bad_request("League is invite-only"),
             DomainError::InvalidState(msg) => Self::bad_request(format!("Invalid state: {msg}")),
+
+            // Tournament-specific errors
+            DomainError::TournamentNotOpen => {
+                Self::bad_request("Tournament is not open for registration")
+            }
+            DomainError::TournamentRegistrationClosed => {
+                Self::bad_request("Tournament registration has closed")
+            }
+            DomainError::TournamentAlreadyStarted => {
+                Self::bad_request("Tournament has already started")
+            }
+            DomainError::TournamentFull => Self::bad_request("Tournament is at maximum capacity"),
+            DomainError::NotRegisteredForTournament => {
+                Self::bad_request("Not registered for this tournament")
+            }
+            DomainError::TournamentRegistrationPending => {
+                Self::bad_request("Tournament registration is pending approval")
+            }
+            DomainError::NotCheckedIn => Self::bad_request("Participant has not checked in"),
+            DomainError::MatchNotReady => Self::bad_request("Match is not ready to start"),
+            DomainError::MatchAlreadyCompleted => {
+                Self::bad_request("Match has already been completed")
+            }
+            DomainError::InvalidMatchResult(msg) => {
+                Self::bad_request(format!("Invalid match result: {msg}"))
+            }
+            DomainError::InsufficientParticipants => {
+                Self::bad_request("Insufficient participants for tournament")
+            }
+            DomainError::InvalidTournamentTransition { from, to } => {
+                Self::bad_request(format!("Invalid tournament state transition: {from} -> {to}"))
+            }
+            DomainError::BracketGenerationFailed(msg) => {
+                Self::internal(format!("Bracket generation failed: {msg}"))
+            }
 
             // Validation errors
             DomainError::Validation(validation_err) => {
@@ -240,12 +300,10 @@ impl From<validator::ValidationErrors> for ApiError {
             .iter()
             .flat_map(|(field, errors)| {
                 errors.iter().map(move |e| FieldErrorDto {
-                    field: field.to_string(),
+                    field: (*field).to_string(),
                     message: e
                         .message
-                        .as_ref()
-                        .map(|m| m.to_string())
-                        .unwrap_or_else(|| format!("Invalid value for {}", field)),
+                        .as_ref().map_or_else(|| format!("Invalid value for {field}"), std::string::ToString::to_string),
                     code: e.code.to_string(),
                 })
             })

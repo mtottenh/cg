@@ -1,0 +1,559 @@
+//! Tournament response DTOs.
+
+use chrono::{DateTime, Utc};
+use portal_domain::entities::tournament::{
+    Tournament, TournamentBracket, TournamentMatch, TournamentMatchGame, TournamentRegistration,
+    TournamentStage, TournamentStanding,
+};
+use serde::Serialize;
+use utoipa::ToSchema;
+
+// =============================================================================
+// TOURNAMENT RESPONSES
+// =============================================================================
+
+/// Response DTO for a tournament.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentResponse {
+    pub id: String,
+    pub game_id: String,
+
+    // League linkage
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub league_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season_id: Option<String>,
+
+    // Identity
+    pub name: String,
+    pub slug: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner_url: Option<String>,
+
+    // Format
+    pub format: String,
+    pub format_settings: serde_json::Value,
+    pub participant_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_size: Option<i32>,
+
+    // Capacity
+    pub min_participants: i32,
+    pub max_participants: i32,
+
+    // Registration
+    pub registration_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_start: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_end: Option<DateTime<Utc>>,
+    pub check_in_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_in_start: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_in_end: Option<DateTime<Utc>>,
+
+    // Scheduling
+    pub scheduling_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone_hint: Option<String>,
+
+    // Match settings
+    pub default_match_format: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_map_veto_format: Option<String>,
+
+    // Prize pool
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prize_pool: Option<serde_json::Value>,
+
+    // Rules
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rules_url: Option<String>,
+
+    // Policies
+    pub withdrawal_policy: String,
+
+    // Status
+    pub status: String,
+
+    // Ownership
+    pub created_by: String,
+
+    // Timestamps
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+
+    // Computed fields
+    pub is_registration_open: bool,
+    pub is_check_in_open: bool,
+}
+
+impl From<Tournament> for TournamentResponse {
+    fn from(t: Tournament) -> Self {
+        let is_registration_open = t.is_registration_open();
+        let is_check_in_open = t.is_check_in_open();
+
+        Self {
+            id: t.id.to_string(),
+            game_id: t.game_id.to_string(),
+            league_id: t.league_id.map(|id| id.to_string()),
+            season_id: t.season_id.map(|id| id.to_string()),
+            name: t.name,
+            slug: t.slug,
+            description: t.description,
+            logo_url: t.logo_url,
+            banner_url: t.banner_url,
+            format: t.format.to_string(),
+            format_settings: t.format_settings,
+            participant_type: t.participant_type.to_string(),
+            team_size: t.team_size,
+            min_participants: t.min_participants,
+            max_participants: t.max_participants,
+            registration_type: t.registration_type.to_string(),
+            registration_start: t.registration_start,
+            registration_end: t.registration_end,
+            check_in_required: t.check_in_required,
+            check_in_start: t.check_in_start,
+            check_in_end: t.check_in_end,
+            scheduling_mode: t.scheduling_mode.to_string(),
+            starts_at: t.starts_at,
+            ends_at: t.ends_at,
+            timezone_hint: t.timezone_hint,
+            default_match_format: t.default_match_format.to_string(),
+            default_map_veto_format: t.default_map_veto_format,
+            prize_pool: t.prize_pool,
+            rules_url: t.rules_url,
+            withdrawal_policy: t.withdrawal_policy.to_string(),
+            status: t.status.to_string(),
+            created_by: t.created_by.to_string(),
+            created_at: t.created_at,
+            updated_at: t.updated_at,
+            published_at: t.published_at,
+            started_at: t.started_at,
+            completed_at: t.completed_at,
+            is_registration_open,
+            is_check_in_open,
+        }
+    }
+}
+
+/// Summary response for listing tournaments.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentSummaryResponse {
+    pub id: String,
+    pub game_id: String,
+    pub name: String,
+    pub slug: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo_url: Option<String>,
+    pub format: String,
+    pub participant_type: String,
+    pub status: String,
+    pub max_participants: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<DateTime<Utc>>,
+    pub is_registration_open: bool,
+}
+
+impl From<Tournament> for TournamentSummaryResponse {
+    fn from(t: Tournament) -> Self {
+        let is_registration_open = t.is_registration_open();
+
+        Self {
+            id: t.id.to_string(),
+            game_id: t.game_id.to_string(),
+            name: t.name,
+            slug: t.slug,
+            logo_url: t.logo_url,
+            format: t.format.to_string(),
+            participant_type: t.participant_type.to_string(),
+            status: t.status.to_string(),
+            max_participants: t.max_participants,
+            starts_at: t.starts_at,
+            is_registration_open,
+        }
+    }
+}
+
+// =============================================================================
+// TOURNAMENT STAGE RESPONSES
+// =============================================================================
+
+/// Response DTO for a tournament stage.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentStageResponse {
+    pub id: String,
+    pub tournament_id: String,
+    pub name: String,
+    pub stage_order: i32,
+    pub format: String,
+    pub format_settings: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advancement_count: Option<i32>,
+    pub advancement_rule: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub map_veto_format: Option<String>,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<TournamentStage> for TournamentStageResponse {
+    fn from(s: TournamentStage) -> Self {
+        Self {
+            id: s.id.to_string(),
+            tournament_id: s.tournament_id.to_string(),
+            name: s.name,
+            stage_order: s.stage_order,
+            format: s.format.to_string(),
+            format_settings: s.format_settings,
+            advancement_count: s.advancement_count,
+            advancement_rule: s.advancement_rule.to_string(),
+            match_format: s.match_format.map(|f| f.to_string()),
+            map_veto_format: s.map_veto_format,
+            status: s.status.to_string(),
+            starts_at: s.starts_at,
+            ends_at: s.ends_at,
+            created_at: s.created_at,
+            updated_at: s.updated_at,
+        }
+    }
+}
+
+// =============================================================================
+// TOURNAMENT BRACKET RESPONSES
+// =============================================================================
+
+/// Response DTO for a tournament bracket.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentBracketResponse {
+    pub id: String,
+    pub stage_id: String,
+    pub tournament_id: String,
+    pub name: String,
+    pub bracket_type: String,
+    pub total_rounds: i32,
+    pub current_round: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_number: Option<i32>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<TournamentBracket> for TournamentBracketResponse {
+    fn from(b: TournamentBracket) -> Self {
+        Self {
+            id: b.id.to_string(),
+            stage_id: b.stage_id.to_string(),
+            tournament_id: b.tournament_id.to_string(),
+            name: b.name,
+            bracket_type: b.bracket_type.to_string(),
+            total_rounds: b.total_rounds,
+            current_round: b.current_round,
+            group_number: b.group_number,
+            status: b.status.to_string(),
+            created_at: b.created_at,
+            updated_at: b.updated_at,
+        }
+    }
+}
+
+// =============================================================================
+// TOURNAMENT REGISTRATION RESPONSES
+// =============================================================================
+
+/// Response DTO for a tournament registration.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentRegistrationResponse {
+    pub id: String,
+    pub tournament_id: String,
+
+    // Participant identity
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_season_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_id: Option<String>,
+
+    // Display info
+    pub participant_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant_logo_url: Option<String>,
+
+    // Registration
+    pub registered_by: String,
+    pub registered_at: DateTime<Utc>,
+
+    // Check-in
+    pub checked_in: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_in_at: Option<DateTime<Utc>>,
+
+    // Seeding
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed_rating: Option<i32>,
+
+    // Status
+    pub status: String,
+
+    // Timestamps
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub withdrawn_at: Option<DateTime<Utc>>,
+}
+
+impl From<TournamentRegistration> for TournamentRegistrationResponse {
+    fn from(r: TournamentRegistration) -> Self {
+        Self {
+            id: r.id.to_string(),
+            tournament_id: r.tournament_id.to_string(),
+            team_season_id: r.team_season_id.map(|id| id.to_string()),
+            player_id: r.player_id.map(|id| id.to_string()),
+            participant_name: r.participant_name,
+            participant_logo_url: r.participant_logo_url,
+            registered_by: r.registered_by.to_string(),
+            registered_at: r.registered_at,
+            checked_in: r.checked_in,
+            checked_in_at: r.checked_in_at,
+            seed: r.seed,
+            seed_rating: r.seed_rating,
+            status: r.status.to_string(),
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            withdrawn_at: r.withdrawn_at,
+        }
+    }
+}
+
+// =============================================================================
+// TOURNAMENT MATCH RESPONSES
+// =============================================================================
+
+/// Response DTO for a tournament match.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentMatchResponse {
+    pub id: String,
+    pub bracket_id: String,
+    pub stage_id: String,
+    pub tournament_id: String,
+
+    // Position
+    pub round: i32,
+    pub match_number: i32,
+    pub bracket_position: String,
+
+    // Participants
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant1_registration_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant2_registration_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant1_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant1_logo_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant1_seed: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant2_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant2_logo_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant2_seed: Option<i32>,
+
+    // Match format
+    pub match_format: String,
+    pub maps_required: i32,
+
+    // Scheduling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule_deadline: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+
+    // Results
+    pub participant1_score: i32,
+    pub participant2_score: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub winner_registration_id: Option<String>,
+
+    // Status
+    pub status: String,
+    pub disputed: bool,
+
+    // VOD/Stream
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vod_url: Option<String>,
+
+    // Timestamps
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<TournamentMatch> for TournamentMatchResponse {
+    fn from(m: TournamentMatch) -> Self {
+        Self {
+            id: m.id.to_string(),
+            bracket_id: m.bracket_id.to_string(),
+            stage_id: m.stage_id.to_string(),
+            tournament_id: m.tournament_id.to_string(),
+            round: m.round,
+            match_number: m.match_number,
+            bracket_position: m.bracket_position,
+            participant1_registration_id: m.participant1_registration_id.map(|id| id.to_string()),
+            participant2_registration_id: m.participant2_registration_id.map(|id| id.to_string()),
+            participant1_name: m.participant1_name,
+            participant1_logo_url: m.participant1_logo_url,
+            participant1_seed: m.participant1_seed,
+            participant2_name: m.participant2_name,
+            participant2_logo_url: m.participant2_logo_url,
+            participant2_seed: m.participant2_seed,
+            match_format: m.match_format.to_string(),
+            maps_required: m.maps_required,
+            scheduled_at: m.scheduled_at,
+            schedule_deadline: m.schedule_deadline,
+            started_at: m.started_at,
+            completed_at: m.completed_at,
+            participant1_score: m.participant1_score,
+            participant2_score: m.participant2_score,
+            winner_registration_id: m.winner_registration_id.map(|id| id.to_string()),
+            status: m.status.to_string(),
+            disputed: m.disputed,
+            stream_url: m.stream_url,
+            vod_url: m.vod_url,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+// =============================================================================
+// TOURNAMENT MATCH GAME RESPONSES
+// =============================================================================
+
+/// Response DTO for a tournament match game.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentMatchGameResponse {
+    pub id: String,
+    pub match_id: String,
+    pub game_number: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub map_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant1_score: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant2_score: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub winner_registration_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<i32>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<TournamentMatchGame> for TournamentMatchGameResponse {
+    fn from(g: TournamentMatchGame) -> Self {
+        Self {
+            id: g.id.to_string(),
+            match_id: g.match_id.to_string(),
+            game_number: g.game_number,
+            map_id: g.map_id,
+            participant1_score: g.participant1_score,
+            participant2_score: g.participant2_score,
+            winner_registration_id: g.winner_registration_id.map(|id| id.to_string()),
+            started_at: g.started_at,
+            completed_at: g.completed_at,
+            duration_seconds: g.duration_seconds,
+            status: g.status.to_string(),
+            created_at: g.created_at,
+            updated_at: g.updated_at,
+        }
+    }
+}
+
+// =============================================================================
+// TOURNAMENT STANDINGS RESPONSES
+// =============================================================================
+
+/// Response DTO for tournament standings.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentStandingResponse {
+    pub id: String,
+    pub bracket_id: String,
+    pub registration_id: String,
+    pub position: i32,
+    pub matches_played: i32,
+    pub matches_won: i32,
+    pub matches_lost: i32,
+    pub matches_drawn: i32,
+    pub game_wins: i32,
+    pub game_losses: i32,
+    pub game_differential: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buchholz_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opponent_match_wins: Option<f64>,
+    pub points: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub win_rate: Option<f64>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<TournamentStanding> for TournamentStandingResponse {
+    fn from(s: TournamentStanding) -> Self {
+        let win_rate = s.win_rate();
+
+        Self {
+            id: s.id.to_string(),
+            bracket_id: s.bracket_id.to_string(),
+            registration_id: s.registration_id.to_string(),
+            position: s.position,
+            matches_played: s.matches_played,
+            matches_won: s.matches_won,
+            matches_lost: s.matches_lost,
+            matches_drawn: s.matches_drawn,
+            game_wins: s.game_wins,
+            game_losses: s.game_losses,
+            game_differential: s.game_differential,
+            buchholz_score: s.buchholz_score,
+            opponent_match_wins: s.opponent_match_wins,
+            points: s.points,
+            win_rate,
+            updated_at: s.updated_at,
+        }
+    }
+}

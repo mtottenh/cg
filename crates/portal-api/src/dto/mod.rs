@@ -1,7 +1,7 @@
 //! Data Transfer Objects for API requests and responses.
 //!
 //! DTOs are separate from domain entities and database rows.
-//! They handle serialization, validation, and OpenAPI schema generation.
+//! They handle serialization, validation, and `OpenAPI` schema generation.
 
 pub mod common;
 pub mod requests;

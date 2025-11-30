@@ -19,13 +19,13 @@ const DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
 const DEV_PLAYER_ID: &str = "00000000-0000-0000-0000-000000000001";
 const DEV_USERNAME: &str = "devuser";
 
-/// JWT secret wrapper for FromRef extraction.
+/// JWT secret wrapper for `FromRef` extraction.
 #[derive(Clone)]
 pub struct JwtSecret(pub Arc<str>);
 
 impl axum::extract::FromRef<AppState> for JwtSecret {
     fn from_ref(state: &AppState) -> Self {
-        JwtSecret(state.jwt_secret.clone())
+        Self(state.jwt_secret.clone())
     }
 }
 
@@ -57,7 +57,7 @@ impl AuthenticatedUser {
     }
 
     /// Check if dev auth mode is enabled.
-    /// Without `test-utils` feature, requires DEV_AUTH_ENABLED environment variable.
+    /// Without `test-utils` feature, requires `DEV_AUTH_ENABLED` environment variable.
     #[cfg(not(feature = "test-utils"))]
     pub fn is_dev_auth_enabled() -> bool {
         std::env::var("DEV_AUTH_ENABLED")
@@ -140,6 +140,6 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         // Try to extract user, return None if not authenticated
         let user = AuthenticatedUser::from_request_parts(parts, state).await.ok();
-        Ok(OptionalAuthenticatedUser(user))
+        Ok(Self(user))
     }
 }

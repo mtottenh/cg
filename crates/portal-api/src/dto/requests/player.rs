@@ -21,7 +21,7 @@ pub struct SocialLinksRequest {
     /// Twitter/X handle.
     #[schema(example = "twitteruser")]
     pub twitter: Option<String>,
-    /// YouTube channel URL.
+    /// `YouTube` channel URL.
     #[schema(example = "https://youtube.com/@channel")]
     pub youtube: Option<String>,
 }

@@ -70,14 +70,6 @@ sqlx = { workspace = true }
 
 # Enable test-utils feature for integration tests
 [[test]]
-name = "players_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "teams_test"
-required-features = ["test-utils"]
-
-[[test]]
 name = "users_test"
 required-features = ["test-utils"]
 
@@ -86,15 +78,23 @@ name = "auth_test"
 required-features = ["test-utils"]
 
 [[test]]
-name = "scoped_permission_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "team_rbac_test"
-required-features = ["test-utils"]
-
-[[test]]
 name = "games_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "leagues_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "league_teams_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "bans_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "tournaments_test"
 required-features = ["test-utils"]
 
 [lints]

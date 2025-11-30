@@ -1,10 +1,11 @@
+#![allow(missing_docs)]
 //! HTTP API layer for the Gaming Portal.
 //!
 //! This crate provides:
 //! - Request/Response DTOs (separate from domain and DB types)
 //! - Axum route handlers
 //! - Middleware (auth, RBAC, etc.)
-//! - OpenAPI documentation with utoipa
+//! - `OpenAPI` documentation with utoipa
 //!
 //! ## Architecture
 //!

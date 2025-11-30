@@ -6,9 +6,13 @@ use utoipa::ToSchema;
 /// Summary response for a game (used in list endpoints).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct GameSummaryResponse {
-    /// Game identifier (e.g., "cs2", "aoe4").
-    #[schema(example = "cs2")]
+    /// Game UUID.
+    #[schema(example = "550e8400-e29b-41d4-a716-446655440000")]
     pub id: String,
+
+    /// Human-readable identifier (e.g., "cs2", "aoe4") - used in URLs.
+    #[schema(example = "cs2")]
+    pub slug: String,
 
     /// Display name.
     #[schema(example = "Counter-Strike 2")]
@@ -58,9 +62,13 @@ pub struct TeamSizeConfig {
 /// Detailed game information (single game endpoint).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct GameDetailResponse {
-    /// Game identifier.
-    #[schema(example = "cs2")]
+    /// Game UUID.
+    #[schema(example = "550e8400-e29b-41d4-a716-446655440000")]
     pub id: String,
+
+    /// Human-readable identifier (e.g., "cs2", "aoe4") - used in URLs.
+    #[schema(example = "cs2")]
+    pub slug: String,
 
     /// Display name.
     #[schema(example = "Counter-Strike 2")]
@@ -91,7 +99,7 @@ pub struct GameDetailResponse {
     /// Rank tier definitions.
     pub rank_tiers: Vec<RankTierResponse>,
 
-    /// Supported match formats (e.g., ["bo1", "bo3", "bo5"]).
+    /// Supported match formats (e.g., `["bo1", "bo3", "bo5"]`).
     #[schema(example = json!(["bo1", "bo3", "bo5"]))]
     pub supported_match_formats: Vec<String>,
 

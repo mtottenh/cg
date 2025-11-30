@@ -30,7 +30,7 @@ pub struct CreateLeagueRequest {
     #[serde(default)]
     pub logo_url: Option<String>,
 
-    /// Access type: open, invite_only, or application.
+    /// Access type: open, `invite_only`, or application.
     #[serde(default = "default_access_type")]
     pub access_type: String,
 }
@@ -81,7 +81,7 @@ impl TryFrom<CreateLeagueRequest> for CreateLeagueCommand {
             .parse()
             .map_err(|_| crate::error::ApiError::bad_request("Invalid game ID format"))?;
 
-        Ok(CreateLeagueCommand {
+        Ok(Self {
             game_id,
             name: req.name,
             slug: req.slug,
@@ -136,7 +136,7 @@ impl TryFrom<UpdateLeagueRequest> for UpdateLeagueCommand {
             })
             .transpose()?;
 
-        Ok(UpdateLeagueCommand {
+        Ok(Self {
             name: req.name,
             slug: req.slug,
             description: req.description,

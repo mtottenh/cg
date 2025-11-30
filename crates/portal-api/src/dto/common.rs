@@ -17,11 +17,11 @@ pub struct PaginationParams {
     pub per_page: u32,
 }
 
-fn default_page() -> u32 {
+const fn default_page() -> u32 {
     1
 }
 
-fn default_per_page() -> u32 {
+const fn default_per_page() -> u32 {
     20
 }
 
@@ -75,7 +75,7 @@ impl PaginationMeta {
         let total_pages = if total_items == 0 {
             1
         } else {
-            ((total_items as f64) / (params.per_page as f64)).ceil() as u32
+            ((total_items as f64) / f64::from(params.per_page)).ceil() as u32
         };
 
         Self {

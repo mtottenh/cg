@@ -59,24 +59,24 @@ impl RepositoryError {
 
     /// Check if this is a not found error.
     #[must_use]
-    pub fn is_not_found(&self) -> bool {
+    pub const fn is_not_found(&self) -> bool {
         matches!(self, Self::NotFound { .. })
     }
 
     /// Check if this is a duplicate error.
     #[must_use]
-    pub fn is_duplicate(&self) -> bool {
+    pub const fn is_duplicate(&self) -> bool {
         matches!(self, Self::Duplicate { .. })
     }
 
-    /// Try to extract constraint info from a SQLx error.
+    /// Try to extract constraint info from a `SQLx` error.
     pub fn from_sqlx_error(err: sqlx::Error, context: &str) -> Self {
         match &err {
             sqlx::Error::Database(db_err) => {
                 // Check for unique constraint violation
                 if let Some(constraint) = db_err.constraint() {
                     let constraint_owned = constraint.to_string();
-                    if constraint.contains("unique") || db_err.code().map_or(false, |c| c == "23505")
+                    if constraint.contains("unique") || db_err.code().is_some_and(|c| c == "23505")
                     {
                         return Self::Duplicate {
                             field: constraint_owned,
@@ -84,16 +84,16 @@ impl RepositoryError {
                         };
                     }
                     // Check for foreign key violation
-                    if db_err.code().map_or(false, |c| c == "23503") {
+                    if db_err.code().is_some_and(|c| c == "23503") {
                         return Self::ForeignKeyViolation {
                             entity_type: constraint_owned,
                             id: context.to_string(),
                         };
                     }
                     // Check for check constraint violation
-                    if db_err.code().map_or(false, |c| c == "23514") {
+                    if db_err.code().is_some_and(|c| c == "23514") {
                         return Self::ConstraintViolation {
-                            message: format!("{}: {}", constraint_owned, context),
+                            message: format!("{constraint_owned}: {context}"),
                         };
                     }
                 }
@@ -109,28 +109,28 @@ impl From<RepositoryError> for DomainError {
     fn from(err: RepositoryError) -> Self {
         match err {
             RepositoryError::NotFound { entity_type, id } => match entity_type {
-                "User" => DomainError::UserNotFound(id),
-                "Player" => DomainError::PlayerNotFound(id),
-                "Team" => DomainError::TeamNotFound(id),
-                "Game" => DomainError::GameNotFound(id),
-                "Match" => DomainError::MatchNotFound(id),
-                "Tournament" => DomainError::TournamentNotFound(id),
-                "League" => DomainError::LeagueNotFound(id),
-                "Lobby" => DomainError::LobbyNotFound(id),
-                _ => DomainError::Internal(format!("{entity_type} not found: {id}")),
+                "User" => Self::UserNotFound(id),
+                "Player" => Self::PlayerNotFound(id),
+                "Team" => Self::TeamNotFound(id),
+                "Game" => Self::GameNotFound(id),
+                "Match" => Self::MatchNotFound(id),
+                "Tournament" => Self::TournamentNotFound(id),
+                "League" => Self::LeagueNotFound(id),
+                "Lobby" => Self::LobbyNotFound(id),
+                _ => Self::Internal(format!("{entity_type} not found: {id}")),
             },
             RepositoryError::Duplicate { field, value } => {
-                DomainError::Conflict(format!("{field} already exists: {value}"))
+                Self::Conflict(format!("{field} already exists: {value}"))
             }
             RepositoryError::ForeignKeyViolation { entity_type, id } => {
-                DomainError::Internal(format!("referenced {entity_type} not found: {id}"))
+                Self::Internal(format!("referenced {entity_type} not found: {id}"))
             }
             RepositoryError::ConstraintViolation { message } => {
-                DomainError::InvalidState(message)
+                Self::InvalidState(message)
             }
-            RepositoryError::Connection(msg) => DomainError::Internal(msg),
-            RepositoryError::Database(err) => DomainError::Internal(err.to_string()),
-            RepositoryError::Serialization(err) => DomainError::Internal(err.to_string()),
+            RepositoryError::Connection(msg) => Self::Internal(msg),
+            RepositoryError::Database(err) => Self::Internal(err.to_string()),
+            RepositoryError::Serialization(err) => Self::Internal(err.to_string()),
         }
     }
 }

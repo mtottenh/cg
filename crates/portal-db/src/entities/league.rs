@@ -23,6 +23,15 @@ pub struct LeagueRow {
     pub access_type: String, // open, invite_only, application
     pub status: String,      // active, archived, suspended
 
+    // Format and team settings
+    pub format_type: String, // team, individual
+    pub default_team_size_min: Option<i32>,
+    pub default_team_size_max: Option<i32>,
+    pub default_max_substitutes: Option<i32>,
+
+    // Current season reference
+    pub current_season_id: Option<Uuid>,
+
     // Settings (JSONB)
     pub settings: serde_json::Value,
 

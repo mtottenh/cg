@@ -33,7 +33,7 @@ pub struct StatsRepository {
 impl StatsRepository {
     /// Create a new stats repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
@@ -45,12 +45,12 @@ impl StatsRepository {
             SELECT
                 (SELECT COUNT(*) FROM users) as "total_users!",
                 (SELECT COUNT(*) FROM players) as "total_players!",
-                (SELECT COUNT(*) FROM teams WHERE status = 'active') as "total_teams!",
+                (SELECT COUNT(*) FROM league_teams WHERE status = 'active') as "total_teams!",
                 (SELECT COUNT(*) FROM games WHERE status = 'active') as "active_games!",
                 (SELECT COUNT(*) FROM bans WHERE (ends_at IS NULL OR ends_at > NOW()) AND lifted_at IS NULL) as "active_bans!",
                 (SELECT COUNT(*) FROM users WHERE created_at > NOW() - INTERVAL '24 hours') as "users_last_24h!",
                 (SELECT COUNT(*) FROM users WHERE created_at > NOW() - INTERVAL '7 days') as "users_last_7d!",
-                (SELECT COUNT(*) FROM teams WHERE created_at > NOW() - INTERVAL '7 days') as "teams_last_7d!"
+                (SELECT COUNT(*) FROM league_teams WHERE created_at > NOW() - INTERVAL '7 days') as "teams_last_7d!"
             "#
         )
         .fetch_one(&self.pool)

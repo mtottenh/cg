@@ -8,7 +8,6 @@ use crate::error::RepositoryError;
 use crate::DbPool;
 use portal_core::{PlayerId, UserId};
 use sqlx::Row;
-use uuid::Uuid;
 
 /// Repository for user operations.
 #[derive(Clone)]
@@ -19,7 +18,7 @@ pub struct UserRepository {
 impl UserRepository {
     /// Create a new user repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
@@ -60,11 +59,11 @@ impl UserRepository {
     /// Create a new user.
     pub async fn create(&self, new_user: NewUser) -> Result<UserRow, RepositoryError> {
         let user = sqlx::query_as::<_, UserRow>(
-            r#"
+            r"
             INSERT INTO users (username, email, password_hash)
             VALUES ($1, $2, $3)
             RETURNING *
-            "#,
+            ",
         )
         .bind(&new_user.username)
         .bind(new_user.email.to_lowercase())
@@ -83,7 +82,7 @@ impl UserRepository {
         update: UpdateUser,
     ) -> Result<UserRow, RepositoryError> {
         let user = sqlx::query_as::<_, UserRow>(
-            r#"
+            r"
             UPDATE users SET
                 email = COALESCE($2, email),
                 email_verified = COALESCE($3, email_verified),
@@ -95,7 +94,7 @@ impl UserRepository {
                 two_factor_enabled = COALESCE($9, two_factor_enabled)
             WHERE id = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(id.as_uuid())
         .bind(update.email.map(|e| e.to_lowercase()))
@@ -152,13 +151,13 @@ impl UserRepository {
         offset: i64,
     ) -> Result<Vec<UserRow>, RepositoryError> {
         let users = sqlx::query_as::<_, UserRow>(
-            r#"
+            r"
             SELECT * FROM users
             WHERE ($1::text IS NULL OR status = $1)
               AND ($2::text IS NULL OR username ILIKE '%' || $2 || '%' OR email ILIKE '%' || $2 || '%')
             ORDER BY created_at DESC
             LIMIT $3 OFFSET $4
-            "#,
+            ",
         )
         .bind(status)
         .bind(search)
@@ -177,11 +176,11 @@ impl UserRepository {
         search: Option<&str>,
     ) -> Result<i64, RepositoryError> {
         let row = sqlx::query(
-            r#"
+            r"
             SELECT COUNT(*) as count FROM users
             WHERE ($1::text IS NULL OR status = $1)
               AND ($2::text IS NULL OR username ILIKE '%' || $2 || '%' OR email ILIKE '%' || $2 || '%')
-            "#,
+            ",
         )
         .bind(status)
         .bind(search)
@@ -194,7 +193,7 @@ impl UserRepository {
     /// Disable a user account.
     pub async fn disable(&self, id: UserId, reason: Option<&str>) -> Result<UserRow, RepositoryError> {
         let user = sqlx::query_as::<_, UserRow>(
-            r#"
+            r"
             UPDATE users SET
                 status = 'inactive',
                 status_reason = $2,
@@ -202,7 +201,7 @@ impl UserRepository {
                 updated_at = NOW()
             WHERE id = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(id.as_uuid())
         .bind(reason)
@@ -216,7 +215,7 @@ impl UserRepository {
     /// Enable a user account.
     pub async fn enable(&self, id: UserId) -> Result<UserRow, RepositoryError> {
         let user = sqlx::query_as::<_, UserRow>(
-            r#"
+            r"
             UPDATE users SET
                 status = 'active',
                 status_reason = NULL,
@@ -224,7 +223,7 @@ impl UserRepository {
                 updated_at = NOW()
             WHERE id = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(id.as_uuid())
         .fetch_optional(&self.pool)
@@ -237,13 +236,13 @@ impl UserRepository {
     /// Update user password.
     pub async fn update_password(&self, id: UserId, password_hash: &str) -> Result<(), RepositoryError> {
         let result = sqlx::query(
-            r#"
+            r"
             UPDATE users SET
                 password_hash = $2,
                 password_changed_at = NOW(),
                 updated_at = NOW()
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(id.as_uuid())
         .bind(password_hash)
@@ -267,7 +266,7 @@ pub struct PlayerRepository {
 impl PlayerRepository {
     /// Create a new player repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
@@ -309,11 +308,11 @@ impl PlayerRepository {
     /// Create a new player.
     pub async fn create(&self, new_player: NewPlayer) -> Result<PlayerRow, RepositoryError> {
         let player = sqlx::query_as::<_, PlayerRow>(
-            r#"
+            r"
             INSERT INTO players (user_id, display_name, avatar_url, country_code)
             VALUES ($1, $2, $3, $4)
             RETURNING *
-            "#,
+            ",
         )
         .bind(new_player.user_id)
         .bind(&new_player.display_name)
@@ -333,7 +332,7 @@ impl PlayerRepository {
         update: UpdatePlayer,
     ) -> Result<PlayerRow, RepositoryError> {
         let player = sqlx::query_as::<_, PlayerRow>(
-            r#"
+            r"
             UPDATE players SET
                 display_name = COALESCE($2, display_name),
                 avatar_url = COALESCE($3, avatar_url),
@@ -349,7 +348,7 @@ impl PlayerRepository {
                 steam_id_64 = COALESCE($13, steam_id_64)
             WHERE id = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(id.as_uuid())
         .bind(update.display_name)
@@ -379,12 +378,12 @@ impl PlayerRepository {
         offset: i64,
     ) -> Result<Vec<PlayerRow>, RepositoryError> {
         let players = sqlx::query_as::<_, PlayerRow>(
-            r#"
+            r"
             SELECT * FROM players
             WHERE display_name_normalized LIKE $1 || '%'
             ORDER BY display_name_normalized
             LIMIT $2 OFFSET $3
-            "#,
+            ",
         )
         .bind(query.to_lowercase())
         .bind(limit)
@@ -416,13 +415,13 @@ impl PlayerRepository {
         offset: i64,
     ) -> Result<Vec<PlayerRow>, RepositoryError> {
         let players = sqlx::query_as::<_, PlayerRow>(
-            r#"
+            r"
             SELECT * FROM players
             WHERE ($1::text IS NULL OR display_name_normalized LIKE '%' || lower($1) || '%')
               AND ($2::text IS NULL OR country_code = $2)
             ORDER BY display_name_normalized
             LIMIT $3 OFFSET $4
-            "#,
+            ",
         )
         .bind(search)
         .bind(country)
@@ -444,7 +443,7 @@ pub struct PlayerGameProfileRepository {
 impl PlayerGameProfileRepository {
     /// Create a new player game profile repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
@@ -486,11 +485,11 @@ impl PlayerGameProfileRepository {
         new_profile: NewPlayerGameProfile,
     ) -> Result<PlayerGameProfileRow, RepositoryError> {
         let profile = sqlx::query_as::<_, PlayerGameProfileRow>(
-            r#"
+            r"
             INSERT INTO player_game_profiles (player_id, game_id)
             VALUES ($1, $2)
             RETURNING *
-            "#,
+            ",
         )
         .bind(new_profile.player_id)
         .bind(&new_profile.game_id)
@@ -508,7 +507,7 @@ impl PlayerGameProfileRepository {
         game_id: &str,
     ) -> Result<PlayerGameProfileRow, RepositoryError> {
         let profile = sqlx::query_as::<_, PlayerGameProfileRow>(
-            r#"
+            r"
             UPDATE player_game_profiles SET
                 rating = 1500,
                 rating_deviation = 350,
@@ -516,7 +515,7 @@ impl PlayerGameProfileRepository {
                 updated_at = NOW()
             WHERE player_id = $1 AND game_id = $2
             RETURNING *
-            "#,
+            ",
         )
         .bind(player_id.as_uuid())
         .bind(game_id)

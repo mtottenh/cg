@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 //! Database access layer for the Gaming Portal.
 //!
 //! This crate provides:
@@ -26,9 +27,14 @@ pub mod pool;
 pub mod repositories;
 
 pub use adapters::{
-    PgLeagueInvitationRepository, PgLeagueMemberRepository, PgLeagueRepository,
-    PgPermissionRepository, PgPlayerRepository, PgTeamInvitationRepository,
-    PgTeamMemberRepository, PgTeamRepository, PgUserRepository,
+    PgBanRepository, PgEntityChangeRepository, PgLeagueInvitationRepository,
+    PgLeagueMemberRepository, PgLeagueRepository, PgLeagueSeasonParticipantRepository,
+    PgLeagueSeasonRepository, PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository,
+    PgLeagueTeamRepository, PgLeagueTeamSeasonRepository, PgPermissionRepository,
+    PgPlayerRepository, PgTournamentBracketRepository, PgTournamentMapPoolRepository,
+    PgTournamentMatchGameRepository, PgTournamentMatchRepository, PgTournamentRegistrationRepository,
+    PgTournamentRepository, PgTournamentStageRepository, PgTournamentStandingsRepository,
+    PgUserRepository,
 };
 pub use entities::NewUserRole;
 pub use error::RepositoryError;

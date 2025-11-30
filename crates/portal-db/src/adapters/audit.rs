@@ -38,16 +38,16 @@ impl From<EntityChangeRow> for EntityChange {
 // Entity Change Repository Adapter
 // =============================================================================
 
-/// PostgreSQL implementation of the EntityChangeRepository trait.
+/// `PostgreSQL` implementation of the `EntityChangeRepository` trait.
 #[derive(Clone)]
 pub struct PgEntityChangeRepository {
     pool: DbPool,
 }
 
 impl PgEntityChangeRepository {
-    /// Create a new PostgreSQL entity change repository.
+    /// Create a new `PostgreSQL` entity change repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
@@ -56,7 +56,7 @@ impl PgEntityChangeRepository {
 impl EntityChangeRepository for PgEntityChangeRepository {
     async fn create(&self, cmd: CreateEntityChange) -> Result<EntityChange, DomainError> {
         let row = sqlx::query_as::<_, EntityChangeRow>(
-            r#"
+            r"
             INSERT INTO entity_changes (
                 entity_type, entity_id, change_type, field_name,
                 old_value, new_value, changed_by,
@@ -64,7 +64,7 @@ impl EntityChangeRepository for PgEntityChangeRepository {
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *
-            "#,
+            ",
         )
         .bind(&cmd.entity_type)
         .bind(cmd.entity_id)
@@ -103,12 +103,12 @@ impl EntityChangeRepository for PgEntityChangeRepository {
         offset: i64,
     ) -> Result<Vec<EntityChange>, DomainError> {
         let rows = sqlx::query_as::<_, EntityChangeRow>(
-            r#"
+            r"
             SELECT * FROM entity_changes
             WHERE entity_type = $1 AND entity_id = $2
             ORDER BY created_at DESC
             LIMIT $3 OFFSET $4
-            "#,
+            ",
         )
         .bind(entity_type)
         .bind(entity_id)
@@ -147,12 +147,12 @@ impl EntityChangeRepository for PgEntityChangeRepository {
         offset: i64,
     ) -> Result<Vec<EntityChange>, DomainError> {
         let rows = sqlx::query_as::<_, EntityChangeRow>(
-            r#"
+            r"
             SELECT * FROM entity_changes
             WHERE entity_type = $1 AND entity_id = $2 AND field_name = $3
             ORDER BY created_at DESC
             LIMIT $4 OFFSET $5
-            "#,
+            ",
         )
         .bind(entity_type)
         .bind(entity_id)
@@ -173,12 +173,12 @@ impl EntityChangeRepository for PgEntityChangeRepository {
         offset: i64,
     ) -> Result<Vec<EntityChange>, DomainError> {
         let rows = sqlx::query_as::<_, EntityChangeRow>(
-            r#"
+            r"
             SELECT * FROM entity_changes
             WHERE changed_by = $1
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
-            "#,
+            ",
         )
         .bind(player_id.as_uuid())
         .bind(limit)
@@ -197,12 +197,12 @@ impl EntityChangeRepository for PgEntityChangeRepository {
         reason: Option<String>,
     ) -> Result<EntityChange, DomainError> {
         let row = sqlx::query_as::<_, EntityChangeRow>(
-            r#"
+            r"
             UPDATE entity_changes
             SET reverted_at = NOW(), reverted_by = $2, revert_reason = $3
             WHERE id = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(id)
         .bind(reverted_by.as_uuid())
@@ -221,12 +221,12 @@ impl EntityChangeRepository for PgEntityChangeRepository {
         field_name: &str,
     ) -> Result<Option<EntityChange>, DomainError> {
         let row = sqlx::query_as::<_, EntityChangeRow>(
-            r#"
+            r"
             SELECT * FROM entity_changes
             WHERE entity_type = $1 AND entity_id = $2 AND field_name = $3
             ORDER BY created_at DESC
             LIMIT 1
-            "#,
+            ",
         )
         .bind(entity_type)
         .bind(entity_id)

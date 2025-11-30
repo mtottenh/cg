@@ -38,7 +38,7 @@ impl Default for PoolConfig {
 impl PoolConfig {
     /// Configuration suitable for testing.
     #[must_use]
-    pub fn test() -> Self {
+    pub const fn test() -> Self {
         Self {
             max_connections: 5,
             min_connections: 1,
@@ -50,7 +50,7 @@ impl PoolConfig {
 
     /// Configuration for production workloads.
     #[must_use]
-    pub fn production() -> Self {
+    pub const fn production() -> Self {
         Self {
             max_connections: 20,
             min_connections: 5,
@@ -64,7 +64,7 @@ impl PoolConfig {
 /// Create a database connection pool.
 ///
 /// # Arguments
-/// * `database_url` - PostgreSQL connection string
+/// * `database_url` - `PostgreSQL` connection string
 /// * `config` - Pool configuration options
 ///
 /// # Errors
@@ -82,10 +82,10 @@ pub async fn create_pool(database_url: &str, config: PoolConfig) -> Result<DbPoo
         .await
 }
 
-/// Create a pool from the DATABASE_URL environment variable.
+/// Create a pool from the `DATABASE_URL` environment variable.
 ///
 /// # Errors
-/// Returns an error if DATABASE_URL is not set or connection fails.
+/// Returns an error if `DATABASE_URL` is not set or connection fails.
 pub async fn create_pool_from_env() -> Result<DbPool, sqlx::Error> {
     let url = std::env::var("DATABASE_URL").map_err(|_| {
         sqlx::Error::Configuration("DATABASE_URL environment variable not set".into())

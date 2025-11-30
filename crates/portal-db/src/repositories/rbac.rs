@@ -15,7 +15,7 @@ pub struct RoleRepository {
 impl RoleRepository {
     /// Create a new role repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
@@ -65,11 +65,11 @@ impl RoleRepository {
     /// Create a new role.
     pub async fn create(&self, new_role: NewRole) -> Result<RoleRow, RepositoryError> {
         let role = sqlx::query_as::<_, RoleRow>(
-            r#"
+            r"
             INSERT INTO roles (name, display_name, description, category, priority, color)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING *
-            "#,
+            ",
         )
         .bind(&new_role.name)
         .bind(&new_role.display_name)
@@ -99,12 +99,12 @@ impl RoleRepository {
     /// Get permissions for a role.
     pub async fn get_permissions(&self, role_id: Uuid) -> Result<Vec<PermissionRow>, RepositoryError> {
         let permissions = sqlx::query_as::<_, PermissionRow>(
-            r#"
+            r"
             SELECT p.* FROM permissions p
             JOIN role_permissions rp ON rp.permission_id = p.id
             WHERE rp.role_id = $1
             ORDER BY p.category, p.name
-            "#,
+            ",
         )
         .bind(role_id)
         .fetch_all(&self.pool)
@@ -120,11 +120,11 @@ impl RoleRepository {
         permission_id: Uuid,
     ) -> Result<(), RepositoryError> {
         sqlx::query(
-            r#"
+            r"
             INSERT INTO role_permissions (role_id, permission_id)
             VALUES ($1, $2)
             ON CONFLICT DO NOTHING
-            "#,
+            ",
         )
         .bind(role_id)
         .bind(permission_id)
@@ -154,11 +154,11 @@ impl RoleRepository {
     /// Assign a role to a user.
     pub async fn assign_to_user(&self, assignment: NewUserRole) -> Result<UserRoleRow, RepositoryError> {
         let user_role = sqlx::query_as::<_, UserRoleRow>(
-            r#"
+            r"
             INSERT INTO user_roles (user_id, role_id, scope_type, scope_id, granted_by, expires_at)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING *
-            "#,
+            ",
         )
         .bind(assignment.user_id)
         .bind(assignment.role_id)
@@ -183,7 +183,7 @@ impl RoleRepository {
         revoked_by: Option<Uuid>,
     ) -> Result<bool, RepositoryError> {
         let result = sqlx::query(
-            r#"
+            r"
             UPDATE user_roles SET
                 revoked_at = NOW(),
                 revoked_by = $5
@@ -192,7 +192,7 @@ impl RoleRepository {
               AND (($3::text IS NULL AND scope_type IS NULL) OR scope_type = $3)
               AND (($4::uuid IS NULL AND scope_id IS NULL) OR scope_id = $4)
               AND revoked_at IS NULL
-            "#,
+            ",
         )
         .bind(user_id)
         .bind(role_id)
@@ -208,14 +208,14 @@ impl RoleRepository {
     /// Get all roles for a user.
     pub async fn get_user_roles(&self, user_id: UserId) -> Result<Vec<RoleRow>, RepositoryError> {
         let roles = sqlx::query_as::<_, RoleRow>(
-            r#"
+            r"
             SELECT r.* FROM roles r
             JOIN user_roles ur ON ur.role_id = r.id
             WHERE ur.user_id = $1
               AND ur.revoked_at IS NULL
               AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
             ORDER BY r.priority DESC, r.name
-            "#,
+            ",
         )
         .bind(user_id.as_uuid())
         .fetch_all(&self.pool)
@@ -251,14 +251,14 @@ impl RoleRepository {
 
         // Check if the user already has this role in this scope (not revoked)
         let existing = sqlx::query_as::<_, UserRoleRow>(
-            r#"
+            r"
             SELECT * FROM user_roles
             WHERE user_id = $1
               AND role_id = $2
               AND scope_type = $3
               AND scope_id = $4
               AND revoked_at IS NULL
-            "#,
+            ",
         )
         .bind(user_id)
         .bind(role.id)
@@ -273,11 +273,11 @@ impl RoleRepository {
 
         // Create the new assignment
         let user_role = sqlx::query_as::<_, UserRoleRow>(
-            r#"
+            r"
             INSERT INTO user_roles (user_id, role_id, scope_type, scope_id, granted_by)
             VALUES ($1, $2, $3, $4, $5)
             RETURNING *
-            "#,
+            ",
         )
         .bind(user_id)
         .bind(role.id)
@@ -303,7 +303,7 @@ impl RoleRepository {
         revoked_by: Option<Uuid>,
     ) -> Result<u64, RepositoryError> {
         let result = sqlx::query(
-            r#"
+            r"
             UPDATE user_roles SET
                 revoked_at = NOW(),
                 revoked_by = $4
@@ -311,7 +311,7 @@ impl RoleRepository {
               AND scope_type = $2
               AND scope_id = $3
               AND revoked_at IS NULL
-            "#,
+            ",
         )
         .bind(user_id)
         .bind(scope_type.as_str())
@@ -333,7 +333,7 @@ impl RoleRepository {
         scope_id: Uuid,
     ) -> Result<i64, RepositoryError> {
         let row = sqlx::query_as::<_, (i64,)>(
-            r#"
+            r"
             SELECT COUNT(*) FROM user_roles ur
             JOIN roles r ON r.id = ur.role_id
             WHERE r.name = $1
@@ -341,7 +341,7 @@ impl RoleRepository {
               AND ur.scope_id = $3
               AND ur.revoked_at IS NULL
               AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
-            "#,
+            ",
         )
         .bind(role_name)
         .bind(scope_type.as_str())
@@ -362,7 +362,7 @@ pub struct PermissionRepository {
 impl PermissionRepository {
     /// Create a new permission repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
@@ -422,7 +422,7 @@ impl PermissionRepository {
         user_id: UserId,
     ) -> Result<Vec<PermissionRow>, RepositoryError> {
         let permissions = sqlx::query_as::<_, PermissionRow>(
-            r#"
+            r"
             SELECT DISTINCT p.* FROM permissions p
             JOIN role_permissions rp ON rp.permission_id = p.id
             JOIN user_roles ur ON ur.role_id = rp.role_id
@@ -430,7 +430,7 @@ impl PermissionRepository {
               AND ur.revoked_at IS NULL
               AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
             ORDER BY p.category, p.name
-            "#,
+            ",
         )
         .bind(user_id.as_uuid())
         .fetch_all(&self.pool)
@@ -446,7 +446,7 @@ impl PermissionRepository {
         permission_name: &str,
     ) -> Result<bool, RepositoryError> {
         let row = sqlx::query(
-            r#"
+            r"
             SELECT 1 FROM permissions p
             JOIN role_permissions rp ON rp.permission_id = p.id
             JOIN user_roles ur ON ur.role_id = rp.role_id
@@ -454,7 +454,7 @@ impl PermissionRepository {
               AND p.name = $2
               AND ur.revoked_at IS NULL
               AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
-            "#,
+            ",
         )
         .bind(user_id.as_uuid())
         .bind(permission_name)
@@ -471,7 +471,7 @@ impl PermissionRepository {
     /// Check if a user has a permission within a specific scope.
     ///
     /// Permission is granted if:
-    /// 1. User has a global role (scope_type IS NULL) that grants the permission, OR
+    /// 1. User has a global role (`scope_type` IS NULL) that grants the permission, OR
     /// 2. User has a scoped role matching the requested scope that grants the permission
     ///
     /// If no scope is provided, only global roles are checked.
@@ -487,7 +487,7 @@ impl PermissionRepository {
         };
 
         let row = sqlx::query(
-            r#"
+            r"
             SELECT 1 FROM permissions p
             JOIN role_permissions rp ON rp.permission_id = p.id
             JOIN user_roles ur ON ur.role_id = rp.role_id
@@ -502,7 +502,7 @@ impl PermissionRepository {
                   OR ($3::text IS NOT NULL AND ur.scope_type = $3 AND ur.scope_id = $4)
               )
             LIMIT 1
-            "#,
+            ",
         )
         .bind(user_id.as_uuid())
         .bind(permission_name)
@@ -517,7 +517,7 @@ impl PermissionRepository {
     /// Get all permissions for a user within a specific scope (or global).
     ///
     /// Returns permissions from:
-    /// 1. Global roles (scope_type IS NULL)
+    /// 1. Global roles (`scope_type` IS NULL)
     /// 2. Scoped roles matching the requested scope (if provided)
     pub async fn get_user_permissions_in_scope(
         &self,
@@ -530,7 +530,7 @@ impl PermissionRepository {
         };
 
         let permissions = sqlx::query_as::<_, PermissionRow>(
-            r#"
+            r"
             SELECT DISTINCT p.* FROM permissions p
             JOIN role_permissions rp ON rp.permission_id = p.id
             JOIN user_roles ur ON ur.role_id = rp.role_id
@@ -542,7 +542,7 @@ impl PermissionRepository {
                   OR ($2::text IS NOT NULL AND ur.scope_type = $2 AND ur.scope_id = $3)
               )
             ORDER BY p.category, p.name
-            "#,
+            ",
         )
         .bind(user_id.as_uuid())
         .bind(&scope_type_str)
@@ -563,18 +563,18 @@ pub struct BanRepository {
 impl BanRepository {
     /// Create a new ban repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
     /// Create a new ban.
     pub async fn create(&self, new_ban: NewBan) -> Result<BanRow, RepositoryError> {
         let ban = sqlx::query_as::<_, BanRow>(
-            r#"
+            r"
             INSERT INTO bans (user_id, ban_type, reason, scope_type, scope_id, issued_by, starts_at, ends_at)
             VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()), $8)
             RETURNING *
-            "#,
+            ",
         )
         .bind(new_ban.user_id)
         .bind(&new_ban.ban_type)
@@ -599,7 +599,7 @@ impl BanRepository {
         lift_reason: Option<&str>,
     ) -> Result<Vec<BanRow>, RepositoryError> {
         let bans = sqlx::query_as::<_, BanRow>(
-            r#"
+            r"
             UPDATE bans SET
                 lifted_at = NOW(),
                 lifted_by = $2,
@@ -609,7 +609,7 @@ impl BanRepository {
               AND lifted_at IS NULL
               AND (ends_at IS NULL OR ends_at > NOW())
             RETURNING *
-            "#,
+            ",
         )
         .bind(user_id)
         .bind(lifted_by)
@@ -623,13 +623,13 @@ impl BanRepository {
     /// Get active bans for a user.
     pub async fn get_active(&self, user_id: Uuid) -> Result<Vec<BanRow>, RepositoryError> {
         let bans = sqlx::query_as::<_, BanRow>(
-            r#"
+            r"
             SELECT * FROM bans
             WHERE user_id = $1
               AND lifted_at IS NULL
               AND (ends_at IS NULL OR ends_at > NOW())
             ORDER BY starts_at DESC
-            "#,
+            ",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -641,13 +641,13 @@ impl BanRepository {
     /// Check if a user has an active platform ban.
     pub async fn is_banned(&self, user_id: Uuid) -> Result<bool, RepositoryError> {
         let row = sqlx::query(
-            r#"
+            r"
             SELECT 1 FROM bans
             WHERE user_id = $1
               AND ban_type = 'platform'
               AND lifted_at IS NULL
               AND (ends_at IS NULL OR ends_at > NOW())
-            "#,
+            ",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)

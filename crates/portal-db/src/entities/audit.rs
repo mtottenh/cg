@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-/// Database row for entity_changes table.
+/// Database row for `entity_changes` table.
 #[derive(Debug, Clone, FromRow)]
 pub struct EntityChangeRow {
     pub id: Uuid,

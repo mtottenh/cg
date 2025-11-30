@@ -6,14 +6,14 @@ use portal_domain::repositories::PermissionRepository as PermissionRepositoryTra
 
 use crate::repositories::PermissionRepository;
 
-/// PostgreSQL implementation of the PermissionRepository trait.
+/// `PostgreSQL` implementation of the `PermissionRepository` trait.
 pub struct PgPermissionRepository {
     inner: PermissionRepository,
 }
 
 impl PgPermissionRepository {
-    /// Create a new PostgreSQL permission repository.
-    pub fn new(pool: crate::DbPool) -> Self {
+    /// Create a new `PostgreSQL` permission repository.
+    pub const fn new(pool: crate::DbPool) -> Self {
         Self {
             inner: PermissionRepository::new(pool),
         }

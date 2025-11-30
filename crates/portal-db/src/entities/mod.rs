@@ -9,10 +9,10 @@
 mod audit;
 mod game;
 mod league;
-mod league_team;
+pub mod league_team;
 mod player;
 mod rbac;
-mod team;
+pub mod tournament;
 mod user;
 
 pub use audit::{EntityChangeRow, NewEntityChange};
@@ -23,19 +23,23 @@ pub use league::{
     UserLeagueMembershipRow,
 };
 pub use league_team::{
-    LeagueSeasonRow, LeagueTeamInvitationRow, LeagueTeamInvitationWithTeamRow, LeagueTeamMemberRow,
-    LeagueTeamMemberWithUserRow, LeagueTeamRow, LeagueTeamSummaryRow, NewLeagueSeason,
-    NewLeagueTeam, NewLeagueTeamInvitation, NewLeagueTeamMember, UpdateLeagueSeason,
-    UpdateLeagueTeam, UpdateLeagueTeamInvitation, UpdateLeagueTeamMember,
-    UserLeagueTeamMembershipRow,
+    LeagueSeasonParticipantRow, LeagueSeasonRow, LeagueTeamInvitationRow,
+    LeagueTeamInvitationWithTeamRow, LeagueTeamMemberRow, LeagueTeamMemberWithPlayerRow,
+    LeagueTeamRow, LeagueTeamSeasonRow, LeagueTeamSummaryRow, NewLeagueSeason,
+    NewLeagueSeasonParticipant, NewLeagueTeam, NewLeagueTeamInvitation, NewLeagueTeamMember,
+    NewLeagueTeamSeason, PlayerLeagueTeamMembershipRow, UpdateLeagueSeason,
+    UpdateLeagueSeasonParticipant, UpdateLeagueTeam, UpdateLeagueTeamInvitation,
+    UpdateLeagueTeamMember, UpdateLeagueTeamSeason,
 };
 pub use player::{
     NewPlayer, NewPlayerGameProfile, PlayerGameProfileRow, PlayerRow, UpdatePlayer,
     UpdatePlayerRating,
 };
 pub use rbac::{BanRow, NewBan, NewRole, NewUserRole, PermissionRow, RoleRow, UserRoleRow};
-pub use team::{
-    NewTeam, NewTeamInvitation, NewTeamMember, PlayerTeamMembershipRow, TeamInvitationRow,
-    TeamMemberRow, TeamRow, UpdateTeam, UpdateTeamInvitation, UpdateTeamMember,
+pub use tournament::{
+    NewTournament, NewTournamentBracket, NewTournamentMatch, NewTournamentMatchGame,
+    NewTournamentRegistration, NewTournamentStage, TournamentBracketRow, TournamentMapPoolRow,
+    TournamentMatchGameRow, TournamentMatchRow, TournamentRegistrationRow, TournamentRow,
+    TournamentStageRow, TournamentStandingRow,
 };
 pub use user::{NewUser, UpdateUser, UserRow, UserStatus};

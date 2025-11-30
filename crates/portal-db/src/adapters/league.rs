@@ -15,7 +15,6 @@ use portal_domain::repositories::league::{
     AddLeagueMember, CreateLeague, CreateLeagueInvitation, LeagueInvitationRepository,
     LeagueMemberRepository, LeagueRepository, UpdateLeague,
 };
-use sqlx::Row;
 
 // =============================================================================
 // Type Conversions
@@ -107,16 +106,16 @@ impl From<UserLeagueMembershipRow> for UserLeagueMembership {
 // League Repository Adapter
 // =============================================================================
 
-/// PostgreSQL implementation of the domain LeagueRepository trait.
+/// `PostgreSQL` implementation of the domain `LeagueRepository` trait.
 #[derive(Clone)]
 pub struct PgLeagueRepository {
     pool: DbPool,
 }
 
 impl PgLeagueRepository {
-    /// Create a new PostgreSQL league repository.
+    /// Create a new `PostgreSQL` league repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
@@ -145,11 +144,11 @@ impl LeagueRepository for PgLeagueRepository {
 
     async fn create(&self, cmd: CreateLeague) -> Result<League, DomainError> {
         let league = sqlx::query_as::<_, LeagueRow>(
-            r#"
+            r"
             INSERT INTO leagues (game_id, name, slug, description, logo_url, access_type, created_by)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING *
-            "#,
+            ",
         )
         .bind(cmd.game_id.as_uuid())
         .bind(&cmd.name)
@@ -167,7 +166,7 @@ impl LeagueRepository for PgLeagueRepository {
 
     async fn update(&self, id: LeagueId, update: UpdateLeague) -> Result<League, DomainError> {
         let league = sqlx::query_as::<_, LeagueRow>(
-            r#"
+            r"
             UPDATE leagues SET
                 name = COALESCE($2, name),
                 slug = COALESCE($3, slug),
@@ -179,7 +178,7 @@ impl LeagueRepository for PgLeagueRepository {
                 updated_at = NOW()
             WHERE id = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(id.as_uuid())
         .bind(&update.name)
@@ -204,12 +203,12 @@ impl LeagueRepository for PgLeagueRepository {
         offset: i64,
     ) -> Result<Vec<League>, DomainError> {
         let leagues = sqlx::query_as::<_, LeagueRow>(
-            r#"
+            r"
             SELECT * FROM leagues
             WHERE game_id = $1 AND status = 'active'
             ORDER BY name
             LIMIT $2 OFFSET $3
-            "#,
+            ",
         )
         .bind(game_id.as_uuid())
         .bind(limit)
@@ -246,7 +245,7 @@ impl LeagueRepository for PgLeagueRepository {
     async fn search(
         &self,
         query: &str,
-        game_id: Option<&GameId>,
+        game_id: Option<GameId>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<League>, DomainError> {
@@ -255,13 +254,13 @@ impl LeagueRepository for PgLeagueRepository {
         let leagues = match game_id {
             Some(gid) => {
                 sqlx::query_as::<_, LeagueRow>(
-                    r#"
+                    r"
                     SELECT * FROM leagues
                     WHERE game_id = $1 AND status = 'active'
                       AND LOWER(name) LIKE $2
                     ORDER BY name
                     LIMIT $3 OFFSET $4
-                    "#,
+                    ",
                 )
                 .bind(gid.as_uuid())
                 .bind(&pattern)
@@ -272,12 +271,12 @@ impl LeagueRepository for PgLeagueRepository {
             }
             None => {
                 sqlx::query_as::<_, LeagueRow>(
-                    r#"
+                    r"
                     SELECT * FROM leagues
                     WHERE status = 'active' AND LOWER(name) LIKE $1
                     ORDER BY name
                     LIMIT $2 OFFSET $3
-                    "#,
+                    ",
                 )
                 .bind(&pattern)
                 .bind(limit)
@@ -291,16 +290,16 @@ impl LeagueRepository for PgLeagueRepository {
         Ok(leagues.into_iter().map(League::from).collect())
     }
 
-    async fn count_search(&self, query: &str, game_id: Option<&GameId>) -> Result<i64, DomainError> {
+    async fn count_search(&self, query: &str, game_id: Option<GameId>) -> Result<i64, DomainError> {
         let pattern = format!("%{}%", query.to_lowercase());
 
         let count: (i64,) = match game_id {
             Some(gid) => {
                 sqlx::query_as(
-                    r#"
+                    r"
                     SELECT COUNT(*) FROM leagues
                     WHERE game_id = $1 AND status = 'active' AND LOWER(name) LIKE $2
-                    "#,
+                    ",
                 )
                 .bind(gid.as_uuid())
                 .bind(&pattern)
@@ -326,16 +325,16 @@ impl LeagueRepository for PgLeagueRepository {
 // League Member Repository Adapter
 // =============================================================================
 
-/// PostgreSQL implementation of the domain LeagueMemberRepository trait.
+/// `PostgreSQL` implementation of the domain `LeagueMemberRepository` trait.
 #[derive(Clone)]
 pub struct PgLeagueMemberRepository {
     pool: DbPool,
 }
 
 impl PgLeagueMemberRepository {
-    /// Create a new PostgreSQL league member repository.
+    /// Create a new `PostgreSQL` league member repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
@@ -366,7 +365,7 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         offset: i64,
     ) -> Result<Vec<LeagueMemberWithUser>, DomainError> {
         let members = sqlx::query_as::<_, LeagueMemberWithUserRow>(
-            r#"
+            r"
             SELECT lm.id, lm.league_id, lm.user_id, lm.membership_type, lm.joined_at,
                    u.username, u.email
             FROM league_members lm
@@ -374,7 +373,7 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
             WHERE lm.league_id = $1
             ORDER BY lm.membership_type, lm.joined_at
             LIMIT $2 OFFSET $3
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .bind(limit)
@@ -399,11 +398,11 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
 
     async fn add_member(&self, member: AddLeagueMember) -> Result<LeagueMember, DomainError> {
         let row = sqlx::query_as::<_, LeagueMemberRow>(
-            r#"
+            r"
             INSERT INTO league_members (league_id, user_id, membership_type)
             VALUES ($1, $2, $3)
             RETURNING *
-            "#,
+            ",
         )
         .bind(member.league_id.as_uuid())
         .bind(member.user_id.as_uuid())
@@ -433,12 +432,12 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         membership_type: LeagueMembershipType,
     ) -> Result<LeagueMember, DomainError> {
         let row = sqlx::query_as::<_, LeagueMemberRow>(
-            r#"
+            r"
             UPDATE league_members
             SET membership_type = $3
             WHERE league_id = $1 AND user_id = $2
             RETURNING *
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .bind(user_id.as_uuid())
@@ -466,12 +465,12 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
 
     async fn is_admin(&self, league_id: LeagueId, user_id: UserId) -> Result<bool, DomainError> {
         let exists: (bool,) = sqlx::query_as(
-            r#"
+            r"
             SELECT EXISTS(
                 SELECT 1 FROM league_members
                 WHERE league_id = $1 AND user_id = $2 AND membership_type = 'admin'
             )
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .bind(user_id.as_uuid())
@@ -488,12 +487,12 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         user_id: UserId,
     ) -> Result<bool, DomainError> {
         let exists: (bool,) = sqlx::query_as(
-            r#"
+            r"
             SELECT EXISTS(
                 SELECT 1 FROM league_members
                 WHERE league_id = $1 AND user_id = $2 AND membership_type IN ('admin', 'moderator')
             )
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .bind(user_id.as_uuid())
@@ -509,7 +508,7 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         user_id: UserId,
     ) -> Result<Vec<UserLeagueMembership>, DomainError> {
         let memberships = sqlx::query_as::<_, UserLeagueMembershipRow>(
-            r#"
+            r"
             SELECT l.id as league_id, l.name as league_name, l.slug as league_slug,
                    l.logo_url as league_logo_url, l.game_id,
                    lm.membership_type, lm.joined_at
@@ -517,7 +516,7 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
             INNER JOIN leagues l ON l.id = lm.league_id
             WHERE lm.user_id = $1 AND l.status = 'active'
             ORDER BY lm.joined_at DESC
-            "#,
+            ",
         )
         .bind(user_id.as_uuid())
         .fetch_all(&self.pool)
@@ -544,16 +543,16 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
 // League Invitation Repository Adapter
 // =============================================================================
 
-/// PostgreSQL implementation of the domain LeagueInvitationRepository trait.
+/// `PostgreSQL` implementation of the domain `LeagueInvitationRepository` trait.
 #[derive(Clone)]
 pub struct PgLeagueInvitationRepository {
     pool: DbPool,
 }
 
 impl PgLeagueInvitationRepository {
-    /// Create a new PostgreSQL league invitation repository.
+    /// Create a new `PostgreSQL` league invitation repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
@@ -580,11 +579,11 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         invitation: CreateLeagueInvitation,
     ) -> Result<LeagueInvitation, DomainError> {
         let row = sqlx::query_as::<_, LeagueInvitationRow>(
-            r#"
+            r"
             INSERT INTO league_invitations (league_id, user_id, invitation_type, message, invited_by, expires_at)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING *
-            "#,
+            ",
         )
         .bind(invitation.league_id.as_uuid())
         .bind(invitation.user_id.as_uuid())
@@ -606,12 +605,12 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         responded_by: UserId,
     ) -> Result<LeagueInvitation, DomainError> {
         let row = sqlx::query_as::<_, LeagueInvitationRow>(
-            r#"
+            r"
             UPDATE league_invitations
             SET status = $2, responded_by = $3, responded_at = NOW()
             WHERE id = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(id.as_uuid())
         .bind(status.as_str())
@@ -630,10 +629,10 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         user_id: UserId,
     ) -> Result<Option<LeagueInvitation>, DomainError> {
         let invitation = sqlx::query_as::<_, LeagueInvitationRow>(
-            r#"
+            r"
             SELECT * FROM league_invitations
             WHERE league_id = $1 AND user_id = $2 AND status = 'pending'
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .bind(user_id.as_uuid())
@@ -649,11 +648,11 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         league_id: LeagueId,
     ) -> Result<Vec<LeagueInvitation>, DomainError> {
         let invitations = sqlx::query_as::<_, LeagueInvitationRow>(
-            r#"
+            r"
             SELECT * FROM league_invitations
             WHERE league_id = $1 AND status = 'pending'
             ORDER BY created_at DESC
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .fetch_all(&self.pool)
@@ -668,11 +667,11 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         user_id: UserId,
     ) -> Result<Vec<LeagueInvitation>, DomainError> {
         let invitations = sqlx::query_as::<_, LeagueInvitationRow>(
-            r#"
+            r"
             SELECT * FROM league_invitations
             WHERE user_id = $1 AND status = 'pending' AND invitation_type = 'invite'
             ORDER BY created_at DESC
-            "#,
+            ",
         )
         .bind(user_id.as_uuid())
         .fetch_all(&self.pool)
@@ -684,11 +683,11 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
 
     async fn cancel_pending(&self, league_id: LeagueId, user_id: UserId) -> Result<(), DomainError> {
         sqlx::query(
-            r#"
+            r"
             UPDATE league_invitations
             SET status = 'expired'
             WHERE league_id = $1 AND user_id = $2 AND status = 'pending'
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .bind(user_id.as_uuid())
@@ -701,10 +700,10 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
 
     async fn count_pending_applications(&self, league_id: LeagueId) -> Result<i64, DomainError> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM league_invitations
             WHERE league_id = $1 AND status = 'pending' AND invitation_type = 'application'
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .fetch_one(&self.pool)

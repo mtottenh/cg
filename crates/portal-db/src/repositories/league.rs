@@ -10,7 +10,7 @@ use crate::DbPool;
 use async_trait::async_trait;
 #[cfg(test)]
 use mockall::automock;
-use portal_core::{GameId, LeagueId, LeagueInvitationId, LeagueMemberId, UserId};
+use portal_core::{GameId, LeagueId, LeagueInvitationId, UserId};
 use sqlx::Row;
 
 // =============================================================================
@@ -51,13 +51,13 @@ pub trait LeagueRepository: Send + Sync {
     async fn search(
         &self,
         query: &str,
-        game_id: Option<&GameId>,
+        game_id: Option<GameId>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<LeagueRow>, RepositoryError>;
 
     /// Count search results.
-    async fn count_search(&self, query: &str, game_id: Option<&GameId>) -> Result<i64, RepositoryError>;
+    async fn count_search(&self, query: &str, game_id: Option<GameId>) -> Result<i64, RepositoryError>;
 }
 
 // =============================================================================
@@ -184,16 +184,16 @@ pub trait LeagueInvitationRepository: Send + Sync {
 // PostgreSQL Implementations
 // =============================================================================
 
-/// PostgreSQL implementation of LeagueRepository.
+/// `PostgreSQL` implementation of `LeagueRepository`.
 #[derive(Clone)]
 pub struct PgLeagueRepository {
     pool: DbPool,
 }
 
 impl PgLeagueRepository {
-    /// Create a new PostgreSQL league repository.
+    /// Create a new `PostgreSQL` league repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
@@ -220,13 +220,13 @@ impl LeagueRepository for PgLeagueRepository {
 
     async fn create(&self, new_league: NewLeague) -> Result<LeagueRow, RepositoryError> {
         let league = sqlx::query_as::<_, LeagueRow>(
-            r#"
+            r"
             INSERT INTO leagues (game_id, name, slug, description, logo_url, access_type, created_by)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING *
-            "#,
+            ",
         )
-        .bind(&new_league.game_id)
+        .bind(new_league.game_id)
         .bind(&new_league.name)
         .bind(&new_league.slug)
         .bind(&new_league.description)
@@ -242,7 +242,7 @@ impl LeagueRepository for PgLeagueRepository {
 
     async fn update(&self, id: LeagueId, update: UpdateLeague) -> Result<LeagueRow, RepositoryError> {
         let league = sqlx::query_as::<_, LeagueRow>(
-            r#"
+            r"
             UPDATE leagues SET
                 name = COALESCE($2, name),
                 slug = COALESCE($3, slug),
@@ -253,7 +253,7 @@ impl LeagueRepository for PgLeagueRepository {
                 settings = COALESCE($8, settings)
             WHERE id = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(id.as_uuid())
         .bind(update.name)
@@ -277,12 +277,12 @@ impl LeagueRepository for PgLeagueRepository {
         offset: i64,
     ) -> Result<Vec<LeagueRow>, RepositoryError> {
         let leagues = sqlx::query_as::<_, LeagueRow>(
-            r#"
+            r"
             SELECT * FROM leagues
             WHERE game_id = $1 AND status = 'active'
             ORDER BY name
             LIMIT $2 OFFSET $3
-            "#,
+            ",
         )
         .bind(game_id.to_string())
         .bind(limit)
@@ -314,21 +314,21 @@ impl LeagueRepository for PgLeagueRepository {
     async fn search(
         &self,
         query: &str,
-        game_id: Option<&GameId>,
+        game_id: Option<GameId>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<LeagueRow>, RepositoryError> {
         let leagues = match game_id {
             Some(gid) => {
                 sqlx::query_as::<_, LeagueRow>(
-                    r#"
+                    r"
                     SELECT * FROM leagues
                     WHERE status = 'active' AND game_id = $1 AND name ILIKE '%' || $2 || '%'
                     ORDER BY name
                     LIMIT $3 OFFSET $4
-                    "#,
+                    ",
                 )
-                .bind(gid.to_string())
+                .bind(gid.as_uuid())
                 .bind(query)
                 .bind(limit)
                 .bind(offset)
@@ -337,12 +337,12 @@ impl LeagueRepository for PgLeagueRepository {
             }
             None => {
                 sqlx::query_as::<_, LeagueRow>(
-                    r#"
+                    r"
                     SELECT * FROM leagues
                     WHERE status = 'active' AND name ILIKE '%' || $1 || '%'
                     ORDER BY name
                     LIMIT $2 OFFSET $3
-                    "#,
+                    ",
                 )
                 .bind(query)
                 .bind(limit)
@@ -355,26 +355,26 @@ impl LeagueRepository for PgLeagueRepository {
         Ok(leagues)
     }
 
-    async fn count_search(&self, query: &str, game_id: Option<&GameId>) -> Result<i64, RepositoryError> {
+    async fn count_search(&self, query: &str, game_id: Option<GameId>) -> Result<i64, RepositoryError> {
         let row = match game_id {
             Some(gid) => {
                 sqlx::query(
-                    r#"
+                    r"
                     SELECT COUNT(*) as count FROM leagues
                     WHERE status = 'active' AND game_id = $1 AND name ILIKE '%' || $2 || '%'
-                    "#,
+                    ",
                 )
-                .bind(gid.to_string())
+                .bind(gid.as_uuid())
                 .bind(query)
                 .fetch_one(&self.pool)
                 .await?
             }
             None => {
                 sqlx::query(
-                    r#"
+                    r"
                     SELECT COUNT(*) as count FROM leagues
                     WHERE status = 'active' AND name ILIKE '%' || $1 || '%'
-                    "#,
+                    ",
                 )
                 .bind(query)
                 .fetch_one(&self.pool)
@@ -390,16 +390,16 @@ impl LeagueRepository for PgLeagueRepository {
 // PostgreSQL League Member Repository
 // =============================================================================
 
-/// PostgreSQL implementation of LeagueMemberRepository.
+/// `PostgreSQL` implementation of `LeagueMemberRepository`.
 #[derive(Clone)]
 pub struct PgLeagueMemberRepository {
     pool: DbPool,
 }
 
 impl PgLeagueMemberRepository {
-    /// Create a new PostgreSQL league member repository.
+    /// Create a new `PostgreSQL` league member repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
@@ -429,7 +429,7 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         offset: i64,
     ) -> Result<Vec<LeagueMemberWithUserRow>, RepositoryError> {
         let members = sqlx::query_as::<_, LeagueMemberWithUserRow>(
-            r#"
+            r"
             SELECT
                 lm.id, lm.league_id, lm.user_id, lm.membership_type, lm.joined_at,
                 u.username, u.email
@@ -444,7 +444,7 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
                 END,
                 lm.joined_at
             LIMIT $2 OFFSET $3
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .bind(limit)
@@ -466,11 +466,11 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
 
     async fn create(&self, new_member: NewLeagueMember) -> Result<LeagueMemberRow, RepositoryError> {
         let member = sqlx::query_as::<_, LeagueMemberRow>(
-            r#"
+            r"
             INSERT INTO league_members (league_id, user_id, membership_type)
             VALUES ($1, $2, $3)
             RETURNING *
-            "#,
+            ",
         )
         .bind(new_member.league_id)
         .bind(new_member.user_id)
@@ -506,11 +506,11 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         membership_type: &str,
     ) -> Result<LeagueMemberRow, RepositoryError> {
         let member = sqlx::query_as::<_, LeagueMemberRow>(
-            r#"
+            r"
             UPDATE league_members SET membership_type = $3
             WHERE league_id = $1 AND user_id = $2
             RETURNING *
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .bind(user_id.as_uuid())
@@ -565,7 +565,7 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         user_id: UserId,
     ) -> Result<Vec<UserLeagueMembershipRow>, RepositoryError> {
         let memberships = sqlx::query_as::<_, UserLeagueMembershipRow>(
-            r#"
+            r"
             SELECT
                 l.id as league_id,
                 l.name as league_name,
@@ -578,7 +578,7 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
             INNER JOIN leagues l ON l.id = lm.league_id
             WHERE lm.user_id = $1 AND l.status = 'active'
             ORDER BY lm.joined_at DESC
-            "#,
+            ",
         )
         .bind(user_id.as_uuid())
         .fetch_all(&self.pool)
@@ -603,16 +603,16 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
 // PostgreSQL League Invitation Repository
 // =============================================================================
 
-/// PostgreSQL implementation of LeagueInvitationRepository.
+/// `PostgreSQL` implementation of `LeagueInvitationRepository`.
 #[derive(Clone)]
 pub struct PgLeagueInvitationRepository {
     pool: DbPool,
 }
 
 impl PgLeagueInvitationRepository {
-    /// Create a new PostgreSQL league invitation repository.
+    /// Create a new `PostgreSQL` league invitation repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
@@ -637,11 +637,11 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         invitation: NewLeagueInvitation,
     ) -> Result<LeagueInvitationRow, RepositoryError> {
         let row = sqlx::query_as::<_, LeagueInvitationRow>(
-            r#"
+            r"
             INSERT INTO league_invitations (league_id, user_id, invitation_type, message, invited_by, expires_at)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING *
-            "#,
+            ",
         )
         .bind(invitation.league_id)
         .bind(invitation.user_id)
@@ -662,14 +662,14 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         update: UpdateLeagueInvitation,
     ) -> Result<LeagueInvitationRow, RepositoryError> {
         let row = sqlx::query_as::<_, LeagueInvitationRow>(
-            r#"
+            r"
             UPDATE league_invitations SET
                 status = $2,
                 responded_by = $3,
                 responded_at = NOW()
             WHERE id = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(id.as_uuid())
         .bind(&update.status)
@@ -687,11 +687,11 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         user_id: UserId,
     ) -> Result<Option<LeagueInvitationRow>, RepositoryError> {
         let row = sqlx::query_as::<_, LeagueInvitationRow>(
-            r#"
+            r"
             SELECT * FROM league_invitations
             WHERE league_id = $1 AND user_id = $2 AND status = 'pending'
                 AND (expires_at IS NULL OR expires_at > NOW())
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .bind(user_id.as_uuid())
@@ -706,12 +706,12 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         league_id: LeagueId,
     ) -> Result<Vec<LeagueInvitationRow>, RepositoryError> {
         let rows = sqlx::query_as::<_, LeagueInvitationRow>(
-            r#"
+            r"
             SELECT * FROM league_invitations
             WHERE league_id = $1 AND status = 'pending'
                 AND (expires_at IS NULL OR expires_at > NOW())
             ORDER BY created_at DESC
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .fetch_all(&self.pool)
@@ -725,12 +725,12 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         user_id: UserId,
     ) -> Result<Vec<LeagueInvitationRow>, RepositoryError> {
         let rows = sqlx::query_as::<_, LeagueInvitationRow>(
-            r#"
+            r"
             SELECT * FROM league_invitations
             WHERE user_id = $1 AND status = 'pending'
                 AND (expires_at IS NULL OR expires_at > NOW())
             ORDER BY created_at DESC
-            "#,
+            ",
         )
         .bind(user_id.as_uuid())
         .fetch_all(&self.pool)
@@ -745,10 +745,10 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         user_id: UserId,
     ) -> Result<(), RepositoryError> {
         sqlx::query(
-            r#"
+            r"
             UPDATE league_invitations SET status = 'expired', responded_at = NOW()
             WHERE league_id = $1 AND user_id = $2 AND status = 'pending'
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .bind(user_id.as_uuid())
@@ -760,11 +760,11 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
 
     async fn count_pending_applications(&self, league_id: LeagueId) -> Result<i64, RepositoryError> {
         let row = sqlx::query(
-            r#"
+            r"
             SELECT COUNT(*) as count FROM league_invitations
             WHERE league_id = $1 AND status = 'pending' AND invitation_type = 'application'
                 AND (expires_at IS NULL OR expires_at > NOW())
-            "#,
+            ",
         )
         .bind(league_id.as_uuid())
         .fetch_one(&self.pool)
@@ -797,21 +797,23 @@ mod tests {
     }
 
     // Helper to create a test game
-    async fn create_test_game(pool: &DbPool, id: &str) -> String {
+    async fn create_test_game(pool: &DbPool, slug: &str) -> uuid::Uuid {
+        let id = uuid::Uuid::now_v7();
         sqlx::query(
             r#"
-            INSERT INTO games (id, name, display_name, status)
-            VALUES ($1, $2, $3, 'active')
-            ON CONFLICT (id) DO NOTHING
+            INSERT INTO games (id, slug, name, display_name, status)
+            VALUES ($1, $2, $3, $4, 'active')
+            ON CONFLICT (slug) DO NOTHING
             "#,
         )
         .bind(id)
-        .bind(id)
-        .bind(id.to_uppercase())
+        .bind(slug)
+        .bind(slug)
+        .bind(slug.to_uppercase())
         .execute(pool)
         .await
         .unwrap();
-        id.to_string()
+        id
     }
 
     // ===========================================

@@ -14,7 +14,7 @@ pub struct GameRepository {
 impl GameRepository {
     /// Create a new game repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 
@@ -63,12 +63,12 @@ impl GameRepository {
     /// Create a new game.
     pub async fn create(&self, new_game: NewGame) -> Result<GameRow, RepositoryError> {
         let game = sqlx::query_as::<_, GameRow>(
-            r#"
+            r"
             INSERT INTO games (slug, display_name, short_name, description, plugin_id, plugin_version,
                               team_size_min, team_size_max, team_size_default)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
-            "#,
+            ",
         )
         .bind(&new_game.slug)
         .bind(&new_game.display_name)
@@ -89,7 +89,7 @@ impl GameRepository {
     /// Update a game by slug.
     pub async fn update(&self, slug: &str, update: UpdateGame) -> Result<GameRow, RepositoryError> {
         let game = sqlx::query_as::<_, GameRow>(
-            r#"
+            r"
             UPDATE games SET
                 display_name = COALESCE($2, display_name),
                 short_name = COALESCE($3, short_name),
@@ -107,7 +107,7 @@ impl GameRepository {
                 updated_at = NOW()
             WHERE slug = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(slug)
         .bind(update.display_name)
@@ -133,13 +133,13 @@ impl GameRepository {
     /// Enable a game by slug.
     pub async fn enable(&self, slug: &str) -> Result<GameRow, RepositoryError> {
         let game = sqlx::query_as::<_, GameRow>(
-            r#"
+            r"
             UPDATE games SET
                 status = 'active',
                 updated_at = NOW()
             WHERE slug = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(slug)
         .fetch_optional(&self.pool)
@@ -152,13 +152,13 @@ impl GameRepository {
     /// Disable a game (set to maintenance) by slug.
     pub async fn disable(&self, slug: &str) -> Result<GameRow, RepositoryError> {
         let game = sqlx::query_as::<_, GameRow>(
-            r#"
+            r"
             UPDATE games SET
                 status = 'maintenance',
                 updated_at = NOW()
             WHERE slug = $1
             RETURNING *
-            "#,
+            ",
         )
         .bind(slug)
         .fetch_optional(&self.pool)

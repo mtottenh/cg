@@ -1,7 +1,7 @@
 //! League team database entities.
 //!
-//! These entities map to the `league_seasons`, `league_teams`, `league_team_members`,
-//! and `league_team_invitations` tables.
+//! These entities map to the `league_seasons`, `league_teams`, `league_team_seasons`,
+//! `league_team_members`, `league_team_invitations`, and `league_season_participants` tables.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -30,9 +30,9 @@ pub struct LeagueSeasonRow {
     pub season_end: Option<DateTime<Utc>>,
 
     // Team settings
-    pub team_size_min: i32,
-    pub team_size_max: i32,
-    pub max_substitutes: i32,
+    pub team_size_min: Option<i32>,
+    pub team_size_max: Option<i32>,
+    pub max_substitutes: Option<i32>,
     pub max_teams: Option<i32>,
 
     // Roster lock
@@ -61,9 +61,9 @@ pub struct NewLeagueSeason {
     pub registration_end: Option<DateTime<Utc>>,
     pub season_start: Option<DateTime<Utc>>,
     pub season_end: Option<DateTime<Utc>>,
-    pub team_size_min: i32,
-    pub team_size_max: i32,
-    pub max_substitutes: i32,
+    pub team_size_min: Option<i32>,
+    pub team_size_max: Option<i32>,
+    pub max_substitutes: Option<i32>,
     pub max_teams: Option<i32>,
     pub created_by: Uuid,
 }
@@ -90,47 +90,36 @@ pub struct UpdateLeagueSeason {
 }
 
 // =============================================================================
-// LEAGUE TEAM
+// LEAGUE TEAM (Persistent Identity - League-Scoped)
 // =============================================================================
 
 /// Database row for the `league_teams` table.
+///
+/// Teams belong to a league (not a season) and have persistent identity.
+/// Seasonal participation is tracked via `league_team_seasons`.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct LeagueTeamRow {
     pub id: Uuid,
-    pub season_id: Uuid,
+    pub league_id: Uuid,
 
-    // Identity
+    // Identity (persistent)
     pub name: String,
     pub name_normalized: String,
     pub tag: String,
     pub tag_normalized: String,
 
-    // Profile
+    // Profile (persistent)
     pub description: Option<String>,
     pub logo_url: Option<String>,
     pub banner_url: Option<String>,
     pub primary_color: Option<String>,
     pub secondary_color: Option<String>,
 
-    // Captain
-    pub captain_user_id: Uuid,
+    // Ownership (permanent owner, can transfer)
+    pub owner_player_id: Uuid,
 
     // Status
     pub status: String,
-
-    // Registration
-    pub registered_at: Option<DateTime<Utc>>,
-    pub registration_notes: Option<String>,
-
-    // Statistics
-    pub matches_played: i32,
-    pub matches_won: i32,
-    pub matches_lost: i32,
-    pub matches_drawn: i32,
-
-    // Ranking
-    pub seed: Option<i32>,
-    pub rating: Option<i32>,
 
     // Timestamps
     pub created_at: DateTime<Utc>,
@@ -141,14 +130,14 @@ pub struct LeagueTeamRow {
 /// Data for inserting a new league team.
 #[derive(Debug, Clone)]
 pub struct NewLeagueTeam {
-    pub season_id: Uuid,
+    pub league_id: Uuid,
     pub name: String,
     pub tag: String,
     pub description: Option<String>,
     pub logo_url: Option<String>,
     pub primary_color: Option<String>,
     pub secondary_color: Option<String>,
-    pub captain_user_id: Uuid,
+    pub owner_player_id: Uuid,
 }
 
 /// Data for updating an existing league team.
@@ -162,42 +151,109 @@ pub struct UpdateLeagueTeam {
     pub primary_color: Option<String>,
     pub secondary_color: Option<String>,
     pub status: Option<String>,
+    pub disbanded_at: Option<DateTime<Utc>>,
+}
+
+// =============================================================================
+// LEAGUE TEAM SEASON (Seasonal Participation)
+// =============================================================================
+
+/// Database row for the `league_team_seasons` table.
+///
+/// Tracks a team's participation in a specific season.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LeagueTeamSeasonRow {
+    pub id: Uuid,
+    pub team_id: Uuid,
+    pub season_id: Uuid,
+
+    // Status
+    pub status: String,
+
+    // Registration
     pub registered_at: Option<DateTime<Utc>>,
     pub registration_notes: Option<String>,
+
+    // Statistics (season-specific)
+    pub matches_played: i32,
+    pub matches_won: i32,
+    pub matches_lost: i32,
+    pub matches_drawn: i32,
+
+    // Ranking
     pub seed: Option<i32>,
     pub rating: Option<i32>,
-    pub captain_user_id: Option<Uuid>,
-    pub disbanded_at: Option<DateTime<Utc>>,
+
+    // Timestamps
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Data for inserting a new league team season registration.
+#[derive(Debug, Clone)]
+pub struct NewLeagueTeamSeason {
+    pub team_id: Uuid,
+    pub season_id: Uuid,
+    pub status: Option<String>,
+    pub registration_notes: Option<String>,
+}
+
+/// Data for updating a league team season.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateLeagueTeamSeason {
+    pub status: Option<String>,
+    pub registration_notes: Option<String>,
+    pub matches_played: Option<i32>,
+    pub matches_won: Option<i32>,
+    pub matches_lost: Option<i32>,
+    pub matches_drawn: Option<i32>,
+    pub seed: Option<i32>,
+    pub rating: Option<i32>,
 }
 
 /// League team summary row with member counts (from view or aggregated query).
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct LeagueTeamSummaryRow {
+    // Team info (persistent)
     pub team_id: Uuid,
-    pub season_id: Uuid,
     pub league_id: Uuid,
     pub team_name: String,
     pub team_tag: String,
+    pub team_logo_url: Option<String>,
+    pub owner_player_id: Uuid,
     pub team_status: String,
-    pub captain_user_id: Uuid,
+
+    // Season participation info
+    pub team_season_id: Option<Uuid>,
+    pub season_id: Option<Uuid>,
+    pub season_status: Option<String>,
+
+    // Member counts (for current season)
     pub active_member_count: i64,
-    pub primary_member_count: i64,
+    pub captain_count: i64,
+    pub player_count: i64,
     pub substitute_count: i64,
-    pub team_size_min: i32,
-    pub team_size_max: i32,
-    pub roster_lock_status: String,
+
+    // Season settings
+    pub team_size_min: Option<i32>,
+    pub team_size_max: Option<i32>,
+    pub roster_lock_status: Option<String>,
 }
 
 // =============================================================================
-// LEAGUE TEAM MEMBER
+// LEAGUE TEAM MEMBER (Seasonal Roster)
 // =============================================================================
 
 /// Database row for the `league_team_members` table.
+///
+/// Members belong to a team's seasonal roster (via `team_season_id`).
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct LeagueTeamMemberRow {
     pub id: Uuid,
-    pub team_id: Uuid,
-    pub user_id: Uuid,
+    pub team_season_id: Uuid,
+    pub player_id: Uuid,
+    /// Denormalized `season_id` (auto-populated by trigger)
+    pub season_id: Uuid,
 
     // Role
     pub role: String,
@@ -211,16 +267,16 @@ pub struct LeagueTeamMemberRow {
     pub joined_at: DateTime<Utc>,
     pub left_at: Option<DateTime<Utc>>,
 
-    // Added by
+    // Added by (user_id since this is an admin/captain action)
     pub added_by: Option<Uuid>,
 }
 
-/// League team member with user details (from JOIN).
+/// League team member with player details (from JOIN).
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct LeagueTeamMemberWithUserRow {
+pub struct LeagueTeamMemberWithPlayerRow {
     pub id: Uuid,
-    pub team_id: Uuid,
-    pub user_id: Uuid,
+    pub team_season_id: Uuid,
+    pub player_id: Uuid,
     pub role: String,
     pub position: Option<String>,
     pub jersey_number: Option<i32>,
@@ -228,17 +284,16 @@ pub struct LeagueTeamMemberWithUserRow {
     pub joined_at: DateTime<Utc>,
     pub left_at: Option<DateTime<Utc>>,
 
-    // User info
-    pub username: String,
-    pub display_name: Option<String>,
+    // Player info
+    pub display_name: String,
     pub avatar_url: Option<String>,
 }
 
 /// Data for inserting a new league team member.
 #[derive(Debug, Clone)]
 pub struct NewLeagueTeamMember {
-    pub team_id: Uuid,
-    pub user_id: Uuid,
+    pub team_season_id: Uuid,
+    pub player_id: Uuid,
     pub role: String,
     pub position: Option<String>,
     pub jersey_number: Option<i32>,
@@ -260,19 +315,20 @@ pub struct UpdateLeagueTeamMember {
 // =============================================================================
 
 /// Database row for the `league_team_invitations` table.
+///
+/// Invitations target a team's seasonal roster (via `team_season_id`).
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct LeagueTeamInvitationRow {
     pub id: Uuid,
-    pub team_id: Uuid,
-    pub user_id: Uuid,
+    pub team_season_id: Uuid,
+    pub player_id: Uuid,
 
     // Invitation details
-    #[sqlx(rename = "type")]
     pub invitation_type: String,
     pub role: String,
     pub message: Option<String>,
 
-    // Sender
+    // Sender (user_id since this is an admin/captain action)
     pub invited_by: Option<Uuid>,
 
     // Status
@@ -291,9 +347,8 @@ pub struct LeagueTeamInvitationRow {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct LeagueTeamInvitationWithTeamRow {
     pub id: Uuid,
-    pub team_id: Uuid,
-    pub user_id: Uuid,
-    #[sqlx(rename = "type")]
+    pub team_season_id: Uuid,
+    pub player_id: Uuid,
     pub invitation_type: String,
     pub role: String,
     pub message: Option<String>,
@@ -304,6 +359,7 @@ pub struct LeagueTeamInvitationWithTeamRow {
     pub created_at: DateTime<Utc>,
 
     // Team info
+    pub team_id: Uuid,
     pub team_name: String,
     pub team_tag: String,
     pub team_logo_url: Option<String>,
@@ -320,8 +376,8 @@ pub struct LeagueTeamInvitationWithTeamRow {
 /// Data for inserting a new league team invitation.
 #[derive(Debug, Clone)]
 pub struct NewLeagueTeamInvitation {
-    pub team_id: Uuid,
-    pub user_id: Uuid,
+    pub team_season_id: Uuid,
+    pub player_id: Uuid,
     pub invitation_type: String,
     pub role: String,
     pub message: Option<String>,
@@ -336,18 +392,77 @@ pub struct UpdateLeagueTeamInvitation {
 }
 
 // =============================================================================
-// USER LEAGUE TEAM MEMBERSHIP
+// LEAGUE SEASON PARTICIPANT (For Individual Format)
 // =============================================================================
 
-/// A user's membership in a league team, including team/season/league details.
-/// Used for fetching "what league teams is this user on?"
+/// Database row for the `league_season_participants` table.
+///
+/// Used for individual format leagues (1v1 tournaments).
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct UserLeagueTeamMembershipRow {
+pub struct LeagueSeasonParticipantRow {
+    pub id: Uuid,
+    pub season_id: Uuid,
+    pub player_id: Uuid,
+
+    // Status
+    pub status: String,
+
+    // Ranking
+    pub seed: Option<i32>,
+    pub rating: Option<i32>,
+
+    // Statistics
+    pub matches_played: i32,
+    pub matches_won: i32,
+    pub matches_lost: i32,
+    pub matches_drawn: i32,
+
+    // Timestamps
+    pub registered_at: DateTime<Utc>,
+    pub withdrawn_at: Option<DateTime<Utc>>,
+}
+
+/// Data for inserting a new league season participant.
+#[derive(Debug, Clone)]
+pub struct NewLeagueSeasonParticipant {
+    pub season_id: Uuid,
+    pub player_id: Uuid,
+    pub seed: Option<i32>,
+}
+
+/// Data for updating a league season participant.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateLeagueSeasonParticipant {
+    pub status: Option<String>,
+    pub seed: Option<i32>,
+    pub rating: Option<i32>,
+    pub matches_played: Option<i32>,
+    pub matches_won: Option<i32>,
+    pub matches_lost: Option<i32>,
+    pub matches_drawn: Option<i32>,
+    pub withdrawn_at: Option<DateTime<Utc>>,
+}
+
+// =============================================================================
+// PLAYER LEAGUE TEAM MEMBERSHIP
+// =============================================================================
+
+/// A player's membership in a league team, including team/season/league details.
+/// Used for fetching "what league teams is this player on?"
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct PlayerLeagueTeamMembershipRow {
+    // Player info
+    pub player_id: Uuid,
+
     // Team info
     pub team_id: Uuid,
     pub team_name: String,
     pub team_tag: String,
     pub team_logo_url: Option<String>,
+
+    // Team season info
+    pub team_season_id: Uuid,
+    pub team_season_status: String,
 
     // Membership info
     pub role: String,

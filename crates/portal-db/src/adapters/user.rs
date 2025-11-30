@@ -73,16 +73,16 @@ impl From<PlayerRow> for Player {
 // User Repository Adapter
 // =============================================================================
 
-/// PostgreSQL implementation of the domain UserRepository trait.
+/// `PostgreSQL` implementation of the domain `UserRepository` trait.
 #[derive(Clone)]
 pub struct PgUserRepository {
     pool: DbPool,
 }
 
 impl PgUserRepository {
-    /// Create a new PostgreSQL user repository.
+    /// Create a new `PostgreSQL` user repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
@@ -124,11 +124,11 @@ impl UserRepository for PgUserRepository {
         let user = match cmd.id {
             Some(id) => {
                 sqlx::query_as::<_, UserRow>(
-                    r#"
+                    r"
                     INSERT INTO users (id, username, email, password_hash)
                     VALUES ($1, $2, $3, $4)
                     RETURNING *
-                    "#,
+                    ",
                 )
                 .bind(id.as_uuid())
                 .bind(&cmd.username)
@@ -140,11 +140,11 @@ impl UserRepository for PgUserRepository {
             }
             None => {
                 sqlx::query_as::<_, UserRow>(
-                    r#"
+                    r"
                     INSERT INTO users (username, email, password_hash)
                     VALUES ($1, $2, $3)
                     RETURNING *
-                    "#,
+                    ",
                 )
                 .bind(&cmd.username)
                 .bind(cmd.email.to_lowercase())
@@ -184,10 +184,10 @@ impl UserRepository for PgUserRepository {
     ) -> Result<Option<UserWithCredentials>, DomainError> {
         // Try to find by email first (if input contains @), otherwise by username
         let user = sqlx::query_as::<_, UserRow>(
-            r#"
+            r"
             SELECT * FROM users
             WHERE email = $1 OR lower(username) = lower($1)
-            "#,
+            ",
         )
         .bind(username_or_email.to_lowercase())
         .fetch_optional(&self.pool)
@@ -212,16 +212,16 @@ impl UserRepository for PgUserRepository {
 // Player Repository Adapter
 // =============================================================================
 
-/// PostgreSQL implementation of the domain PlayerRepository trait.
+/// `PostgreSQL` implementation of the domain `PlayerRepository` trait.
 #[derive(Clone)]
 pub struct PgPlayerRepository {
     pool: DbPool,
 }
 
 impl PgPlayerRepository {
-    /// Create a new PostgreSQL player repository.
+    /// Create a new `PostgreSQL` player repository.
     #[must_use]
-    pub fn new(pool: DbPool) -> Self {
+    pub const fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
@@ -262,11 +262,11 @@ impl PlayerRepository for PgPlayerRepository {
 
     async fn create(&self, cmd: CreatePlayer) -> Result<Player, DomainError> {
         let player = sqlx::query_as::<_, PlayerRow>(
-            r#"
+            r"
             INSERT INTO players (id, user_id, display_name)
             VALUES ($1, $2, $3)
             RETURNING *
-            "#,
+            ",
         )
         .bind(cmd.id.as_uuid())
         .bind(cmd.user_id.as_uuid())
@@ -285,12 +285,12 @@ impl PlayerRepository for PgPlayerRepository {
         offset: i64,
     ) -> Result<Vec<Player>, DomainError> {
         let players = sqlx::query_as::<_, PlayerRow>(
-            r#"
+            r"
             SELECT * FROM players
             WHERE display_name_normalized LIKE $1 || '%'
             ORDER BY display_name_normalized
             LIMIT $2 OFFSET $3
-            "#,
+            ",
         )
         .bind(query.to_lowercase())
         .bind(limit)

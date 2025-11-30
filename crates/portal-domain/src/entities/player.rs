@@ -19,7 +19,7 @@ pub struct SocialLinks {
     /// Twitter/X handle.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub twitter: Option<String>,
-    /// YouTube channel URL.
+    /// `YouTube` channel URL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub youtube: Option<String>,
 }
@@ -27,7 +27,7 @@ pub struct SocialLinks {
 impl SocialLinks {
     /// Check if all social links are empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.steam.is_none()
             && self.discord.is_none()
             && self.twitch.is_none()
@@ -59,7 +59,7 @@ pub struct Player {
 impl Player {
     /// Check if the player has linked their Steam account.
     #[must_use]
-    pub fn has_steam_linked(&self) -> bool {
+    pub const fn has_steam_linked(&self) -> bool {
         self.steam_id.is_some()
     }
 

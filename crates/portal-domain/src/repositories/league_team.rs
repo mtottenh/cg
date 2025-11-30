@@ -1,19 +1,31 @@
 //! League team repository traits.
 //!
-//! These repositories handle league-scoped teams, which are distinct from global teams.
+//! These repositories handle league-scoped teams with seasonal rosters.
+//!
+//! Architecture:
+//!   - `LeagueTeam`: Persistent team identity (belongs to league)
+//!   - `LeagueTeamSeason`: Team's participation in a specific season
+//!   - `LeagueTeamMember`: Roster for a team-season
+//!   - `LeagueTeamInvitation`: Invites/requests to join a team-season roster
+//!   - `LeagueSeasonParticipant`: Individual players in individual-format leagues
+//!
+//! Note on `UserId` vs `PlayerId`:
+//! - `PlayerId` is used for player-related operations (team membership, invitations)
+//! - `UserId` is used for admin/audit fields (`created_by`, `added_by`, `invited_by`, `locked_by`)
 
 use crate::entities::league_team::{
-    LeagueSeason, LeagueTeam, LeagueTeamInvitation, LeagueTeamInvitationWithTeam, LeagueTeamMember,
-    LeagueTeamMemberWithUser, LeagueTeamSummary, UserLeagueTeamMembership,
+    LeagueSeason, LeagueSeasonParticipant, LeagueTeam, LeagueTeamInvitation,
+    LeagueTeamInvitationWithTeam, LeagueTeamMember, LeagueTeamMemberWithPlayer, LeagueTeamSeason,
+    LeagueTeamSummary, PlayerLeagueTeamMembership,
 };
 use async_trait::async_trait;
 use portal_core::types::{
     LeagueTeamInvitationStatus, LeagueTeamInvitationType, LeagueTeamMemberStatus, LeagueTeamRole,
-    LeagueTeamStatus, RosterLockStatus, SeasonStatus,
+    LeagueTeamSeasonStatus, LeagueTeamStatus, RosterLockStatus, SeasonStatus,
 };
 use portal_core::{
     DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId,
-    LeagueTeamMemberId, UserId,
+    LeagueTeamMemberId, LeagueTeamSeasonId, PlayerId, UserId,
 };
 
 // =============================================================================
@@ -77,8 +89,11 @@ pub trait LeagueSeasonRepository: Send + Sync {
         status: SeasonStatus,
     ) -> Result<LeagueSeason, DomainError>;
 
-    /// Count teams in a season.
+    /// Count teams registered in a season.
     async fn count_teams(&self, season_id: LeagueSeasonId) -> Result<i64, DomainError>;
+
+    /// Count individual participants in a season (for individual format).
+    async fn count_participants(&self, season_id: LeagueSeasonId) -> Result<i64, DomainError>;
 }
 
 /// Data for creating a new league season.
@@ -92,9 +107,9 @@ pub struct CreateLeagueSeason {
     pub registration_end: Option<chrono::DateTime<chrono::Utc>>,
     pub season_start: Option<chrono::DateTime<chrono::Utc>>,
     pub season_end: Option<chrono::DateTime<chrono::Utc>>,
-    pub team_size_min: i32,
-    pub team_size_max: i32,
-    pub max_substitutes: i32,
+    pub team_size_min: Option<i32>,
+    pub team_size_max: Option<i32>,
+    pub max_substitutes: Option<i32>,
     pub max_teams: Option<i32>,
     pub created_by: UserId,
 }
@@ -118,55 +133,58 @@ pub struct UpdateLeagueSeason {
 }
 
 // =============================================================================
-// LEAGUE TEAM REPOSITORY
+// LEAGUE TEAM REPOSITORY (Persistent Identity)
 // =============================================================================
 
 /// Repository trait for league team operations.
+///
+/// Teams have persistent identity at the league level (not season level).
+/// Seasonal participation is handled by `LeagueTeamSeasonRepository`.
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait LeagueTeamRepository: Send + Sync {
     /// Find a team by ID.
     async fn find_by_id(&self, id: LeagueTeamId) -> Result<Option<LeagueTeam>, DomainError>;
 
-    /// Find a team by season and name.
+    /// Find a team by league and name (case-insensitive).
     async fn find_by_name(
         &self,
-        season_id: LeagueSeasonId,
+        league_id: LeagueId,
         name: &str,
     ) -> Result<Option<LeagueTeam>, DomainError>;
 
-    /// Find a team by season and tag.
+    /// Find a team by league and tag (case-insensitive).
     async fn find_by_tag(
         &self,
-        season_id: LeagueSeasonId,
+        league_id: LeagueId,
         tag: &str,
     ) -> Result<Option<LeagueTeam>, DomainError>;
 
     /// Create a new team.
     async fn create(&self, team: CreateLeagueTeam) -> Result<LeagueTeam, DomainError>;
 
-    /// Update a team.
+    /// Update a team's profile.
     async fn update(
         &self,
         id: LeagueTeamId,
         update: UpdateLeagueTeam,
     ) -> Result<LeagueTeam, DomainError>;
 
-    /// List teams for a season with optional filters and pagination.
-    async fn list_by_season(
+    /// List teams in a league with optional filters and pagination.
+    async fn list_by_league(
         &self,
-        season_id: LeagueSeasonId,
+        league_id: LeagueId,
         status_filter: Option<LeagueTeamStatus>,
         search: Option<String>,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<LeagueTeam>, i64), DomainError>;
 
-    /// List all teams a user is captain of in a season.
-    async fn list_by_captain(
+    /// List all teams owned by a player in a league.
+    async fn list_by_owner(
         &self,
-        season_id: LeagueSeasonId,
-        captain_user_id: UserId,
+        league_id: LeagueId,
+        owner_player_id: PlayerId,
     ) -> Result<Vec<LeagueTeam>, DomainError>;
 
     /// Update team status.
@@ -176,39 +194,34 @@ pub trait LeagueTeamRepository: Send + Sync {
         status: LeagueTeamStatus,
     ) -> Result<LeagueTeam, DomainError>;
 
-    /// Update team captain.
-    async fn update_captain(
+    /// Transfer team ownership.
+    async fn transfer_ownership(
         &self,
         id: LeagueTeamId,
-        captain_user_id: UserId,
+        new_owner_player_id: PlayerId,
     ) -> Result<LeagueTeam, DomainError>;
 
-    /// Check if a name is taken in a season.
-    async fn name_exists(&self, season_id: LeagueSeasonId, name: &str) -> Result<bool, DomainError>;
+    /// Check if a name is taken in a league.
+    async fn name_exists(&self, league_id: LeagueId, name: &str) -> Result<bool, DomainError>;
 
-    /// Check if a tag is taken in a season.
-    async fn tag_exists(&self, season_id: LeagueSeasonId, tag: &str) -> Result<bool, DomainError>;
+    /// Check if a tag is taken in a league.
+    async fn tag_exists(&self, league_id: LeagueId, tag: &str) -> Result<bool, DomainError>;
 
-    /// Get team summaries with member counts for a season.
-    async fn list_summaries(
-        &self,
-        season_id: LeagueSeasonId,
-        limit: i64,
-        offset: i64,
-    ) -> Result<(Vec<LeagueTeamSummary>, i64), DomainError>;
+    /// Delete a team (should rarely be used - prefer disbanding).
+    async fn delete(&self, id: LeagueTeamId) -> Result<(), DomainError>;
 }
 
 /// Data for creating a new league team.
 #[derive(Debug, Clone)]
 pub struct CreateLeagueTeam {
-    pub season_id: LeagueSeasonId,
+    pub league_id: LeagueId,
     pub name: String,
     pub tag: String,
     pub description: Option<String>,
     pub logo_url: Option<String>,
     pub primary_color: Option<String>,
     pub secondary_color: Option<String>,
-    pub captain_user_id: UserId,
+    pub owner_player_id: PlayerId,
 }
 
 /// Data for updating a league team.
@@ -224,10 +237,103 @@ pub struct UpdateLeagueTeam {
 }
 
 // =============================================================================
-// LEAGUE TEAM MEMBER REPOSITORY
+// LEAGUE TEAM SEASON REPOSITORY (Seasonal Participation)
+// =============================================================================
+
+/// Repository trait for team seasonal participation.
+///
+/// Tracks a team's registration and performance in a specific season.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait LeagueTeamSeasonRepository: Send + Sync {
+    /// Find a team-season by ID.
+    async fn find_by_id(
+        &self,
+        id: LeagueTeamSeasonId,
+    ) -> Result<Option<LeagueTeamSeason>, DomainError>;
+
+    /// Find a team's registration for a specific season.
+    async fn find_by_team_and_season(
+        &self,
+        team_id: LeagueTeamId,
+        season_id: LeagueSeasonId,
+    ) -> Result<Option<LeagueTeamSeason>, DomainError>;
+
+    /// Register a team for a season.
+    async fn create(
+        &self,
+        registration: CreateLeagueTeamSeason,
+    ) -> Result<LeagueTeamSeason, DomainError>;
+
+    /// Update a team-season.
+    async fn update(
+        &self,
+        id: LeagueTeamSeasonId,
+        update: UpdateLeagueTeamSeason,
+    ) -> Result<LeagueTeamSeason, DomainError>;
+
+    /// List all team registrations for a season.
+    async fn list_by_season(
+        &self,
+        season_id: LeagueSeasonId,
+        status_filter: Option<LeagueTeamSeasonStatus>,
+        search: Option<String>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<LeagueTeamSeason>, i64), DomainError>;
+
+    /// List all seasons a team has participated in.
+    async fn list_by_team(
+        &self,
+        team_id: LeagueTeamId,
+    ) -> Result<Vec<LeagueTeamSeason>, DomainError>;
+
+    /// Update team-season status.
+    async fn update_status(
+        &self,
+        id: LeagueTeamSeasonId,
+        status: LeagueTeamSeasonStatus,
+    ) -> Result<LeagueTeamSeason, DomainError>;
+
+    /// Get team summaries with member counts for a season.
+    async fn list_summaries(
+        &self,
+        season_id: LeagueSeasonId,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<LeagueTeamSummary>, i64), DomainError>;
+
+    /// Check if a team is registered for a season.
+    async fn is_registered(
+        &self,
+        team_id: LeagueTeamId,
+        season_id: LeagueSeasonId,
+    ) -> Result<bool, DomainError>;
+}
+
+/// Data for registering a team for a season.
+#[derive(Debug, Clone)]
+pub struct CreateLeagueTeamSeason {
+    pub team_id: LeagueTeamId,
+    pub season_id: LeagueSeasonId,
+}
+
+/// Data for updating a team-season.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateLeagueTeamSeason {
+    pub status: Option<LeagueTeamSeasonStatus>,
+    pub registration_notes: Option<String>,
+    pub seed: Option<i32>,
+    pub rating: Option<i32>,
+}
+
+// =============================================================================
+// LEAGUE TEAM MEMBER REPOSITORY (Seasonal Roster)
 // =============================================================================
 
 /// Repository trait for league team member operations.
+///
+/// Members belong to a team-season (roster is per-season).
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait LeagueTeamMemberRepository: Send + Sync {
@@ -237,96 +343,115 @@ pub trait LeagueTeamMemberRepository: Send + Sync {
         id: LeagueTeamMemberId,
     ) -> Result<Option<LeagueTeamMember>, DomainError>;
 
-    /// Find a member by team and user.
+    /// Find a member by team-season and player.
     async fn find_member(
         &self,
-        team_id: LeagueTeamId,
-        user_id: UserId,
+        team_season_id: LeagueTeamSeasonId,
+        player_id: PlayerId,
     ) -> Result<Option<LeagueTeamMember>, DomainError>;
 
-    /// Add a member to a team.
+    /// Add a member to a team-season roster.
     async fn add_member(&self, member: AddLeagueTeamMember) -> Result<LeagueTeamMember, DomainError>;
 
     /// Update a member's role.
     async fn update_role(
         &self,
-        team_id: LeagueTeamId,
-        user_id: UserId,
+        team_season_id: LeagueTeamSeasonId,
+        player_id: PlayerId,
         new_role: LeagueTeamRole,
     ) -> Result<LeagueTeamMember, DomainError>;
 
     /// Update a member's status.
     async fn update_status(
         &self,
-        team_id: LeagueTeamId,
-        user_id: UserId,
+        team_season_id: LeagueTeamSeasonId,
+        player_id: PlayerId,
         status: LeagueTeamMemberStatus,
     ) -> Result<LeagueTeamMember, DomainError>;
 
-    /// Remove a member from a team (set left_at timestamp).
-    async fn remove_member(&self, team_id: LeagueTeamId, user_id: UserId) -> Result<(), DomainError>;
+    /// Remove a member from a team-season (set `left_at` timestamp, status = left).
+    async fn remove_member(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+        player_id: PlayerId,
+    ) -> Result<(), DomainError>;
 
-    /// List all active members of a team.
+    /// List all active members of a team-season.
     async fn list_members(
         &self,
-        team_id: LeagueTeamId,
+        team_season_id: LeagueTeamSeasonId,
     ) -> Result<Vec<LeagueTeamMember>, DomainError>;
 
-    /// List all active members of a team with user details.
-    async fn list_members_with_users(
+    /// List all active members of a team-season with player details.
+    async fn list_members_with_players(
         &self,
-        team_id: LeagueTeamId,
-    ) -> Result<Vec<LeagueTeamMemberWithUser>, DomainError>;
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<Vec<LeagueTeamMemberWithPlayer>, DomainError>;
 
-    /// Count members by role in a team.
+    /// Count members by role in a team-season.
     async fn count_by_role(
         &self,
-        team_id: LeagueTeamId,
+        team_season_id: LeagueTeamSeasonId,
         role: LeagueTeamRole,
     ) -> Result<i64, DomainError>;
 
-    /// Count all active members in a team.
-    async fn count_active_members(&self, team_id: LeagueTeamId) -> Result<i64, DomainError>;
+    /// Count all active members in a team-season.
+    async fn count_active_members(&self, team_season_id: LeagueTeamSeasonId)
+        -> Result<i64, DomainError>;
 
-    /// Count primary members (captain + players) in a team.
-    async fn count_primary_members(&self, team_id: LeagueTeamId) -> Result<i64, DomainError>;
+    /// Count primary members (captain + players) in a team-season.
+    async fn count_primary_members(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<i64, DomainError>;
 
-    /// Count substitutes in a team.
-    async fn count_substitutes(&self, team_id: LeagueTeamId) -> Result<i64, DomainError>;
+    /// Count substitutes in a team-season.
+    async fn count_substitutes(&self, team_season_id: LeagueTeamSeasonId) -> Result<i64, DomainError>;
 
-    /// Check if a user is a member of a team.
-    async fn is_member(&self, team_id: LeagueTeamId, user_id: UserId) -> Result<bool, DomainError>;
+    /// Count captains in a team-season.
+    async fn count_captains(&self, team_season_id: LeagueTeamSeasonId) -> Result<i64, DomainError>;
 
-    /// Check if a user is a captain of a team.
-    async fn is_captain(&self, team_id: LeagueTeamId, user_id: UserId) -> Result<bool, DomainError>;
+    /// Check if a player is a member of a team-season.
+    async fn is_member(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+        player_id: PlayerId,
+    ) -> Result<bool, DomainError>;
 
-    /// Check if a user is already a primary member of another team in the same season.
-    /// Returns the team ID if they are, None otherwise.
+    /// Check if a player is a captain of a team-season.
+    async fn is_captain(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+        player_id: PlayerId,
+    ) -> Result<bool, DomainError>;
+
+    /// Check if a player is already a primary member of another team in the same season.
+    /// Returns the team-season ID if they are, None otherwise.
     async fn find_primary_team_in_season(
         &self,
         season_id: LeagueSeasonId,
-        user_id: UserId,
-    ) -> Result<Option<LeagueTeamId>, DomainError>;
+        player_id: PlayerId,
+    ) -> Result<Option<LeagueTeamSeasonId>, DomainError>;
 
-    /// List all team memberships for a user across all seasons.
-    async fn list_memberships_for_user(
+    /// List all team memberships for a player across all seasons.
+    async fn list_memberships_for_player(
         &self,
-        user_id: UserId,
-    ) -> Result<Vec<UserLeagueTeamMembership>, DomainError>;
+        player_id: PlayerId,
+    ) -> Result<Vec<PlayerLeagueTeamMembership>, DomainError>;
 
-    /// List all team memberships for a user in a specific season.
+    /// List all team memberships for a player in a specific season.
     async fn list_memberships_in_season(
         &self,
-        user_id: UserId,
+        player_id: PlayerId,
         season_id: LeagueSeasonId,
-    ) -> Result<Vec<UserLeagueTeamMembership>, DomainError>;
+    ) -> Result<Vec<PlayerLeagueTeamMembership>, DomainError>;
 }
 
 /// Data for adding a league team member.
 #[derive(Debug, Clone)]
 pub struct AddLeagueTeamMember {
-    pub team_id: LeagueTeamId,
-    pub user_id: UserId,
+    pub team_season_id: LeagueTeamSeasonId,
+    pub player_id: PlayerId,
     pub role: LeagueTeamRole,
     pub position: Option<String>,
     pub jersey_number: Option<i32>,
@@ -338,6 +463,8 @@ pub struct AddLeagueTeamMember {
 // =============================================================================
 
 /// Repository trait for league team invitation operations.
+///
+/// Invitations are for joining a team-season roster.
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait LeagueTeamInvitationRepository: Send + Sync {
@@ -359,30 +486,30 @@ pub trait LeagueTeamInvitationRepository: Send + Sync {
         id: LeagueTeamInvitationId,
     ) -> Result<Option<LeagueTeamInvitationWithTeam>, DomainError>;
 
-    /// Find all pending invitations for a team.
-    async fn find_pending_by_team(
+    /// Find all pending invitations for a team-season.
+    async fn find_pending_by_team_season(
         &self,
-        team_id: LeagueTeamId,
+        team_season_id: LeagueTeamSeasonId,
     ) -> Result<Vec<LeagueTeamInvitation>, DomainError>;
 
-    /// Find all pending invitations/requests for a user.
-    async fn find_pending_for_user(
+    /// Find all pending invitations/requests for a player.
+    async fn find_pending_for_player(
         &self,
-        user_id: UserId,
+        player_id: PlayerId,
     ) -> Result<Vec<LeagueTeamInvitationWithTeam>, DomainError>;
 
-    /// Find all pending invitations for a user in a specific season.
-    async fn find_pending_for_user_in_season(
+    /// Find all pending invitations for a player in a specific season.
+    async fn find_pending_for_player_in_season(
         &self,
-        user_id: UserId,
+        player_id: PlayerId,
         season_id: LeagueSeasonId,
     ) -> Result<Vec<LeagueTeamInvitationWithTeam>, DomainError>;
 
-    /// Check if there's an existing pending invitation for this user/team.
+    /// Check if there's an existing pending invitation for this player/team-season.
     async fn find_existing_pending(
         &self,
-        team_id: LeagueTeamId,
-        user_id: UserId,
+        team_season_id: LeagueTeamSeasonId,
+        player_id: PlayerId,
     ) -> Result<Option<LeagueTeamInvitation>, DomainError>;
 
     /// Update invitation status.
@@ -393,15 +520,15 @@ pub trait LeagueTeamInvitationRepository: Send + Sync {
         response_message: Option<String>,
     ) -> Result<LeagueTeamInvitation, DomainError>;
 
-    /// Cancel all pending invitations for a user on a specific team.
-    async fn cancel_pending_for_user(
+    /// Cancel all pending invitations for a player on a specific team-season.
+    async fn cancel_pending_for_player(
         &self,
-        team_id: LeagueTeamId,
-        user_id: UserId,
+        team_season_id: LeagueTeamSeasonId,
+        player_id: PlayerId,
     ) -> Result<(), DomainError>;
 
-    /// Count pending invitations for a user.
-    async fn count_pending_for_user(&self, user_id: UserId) -> Result<i64, DomainError>;
+    /// Count pending invitations for a player.
+    async fn count_pending_for_player(&self, player_id: PlayerId) -> Result<i64, DomainError>;
 
     /// Expire all invitations past their expiration date.
     async fn expire_old_invitations(&self) -> Result<i64, DomainError>;
@@ -410,10 +537,73 @@ pub trait LeagueTeamInvitationRepository: Send + Sync {
 /// Data for creating a new league team invitation.
 #[derive(Debug, Clone)]
 pub struct CreateLeagueTeamInvitation {
-    pub team_id: LeagueTeamId,
-    pub user_id: UserId,
+    pub team_season_id: LeagueTeamSeasonId,
+    pub player_id: PlayerId,
     pub invitation_type: LeagueTeamInvitationType,
     pub role: LeagueTeamRole,
     pub message: Option<String>,
     pub invited_by: Option<UserId>,
+}
+
+// =============================================================================
+// LEAGUE SEASON PARTICIPANT REPOSITORY (Individual Format)
+// =============================================================================
+
+/// Repository trait for individual format league participants.
+///
+/// Used for 1v1 tournaments and other formats where teams are not required.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait LeagueSeasonParticipantRepository: Send + Sync {
+    /// Find a participant by ID.
+    async fn find_by_id(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<Option<LeagueSeasonParticipant>, DomainError>;
+
+    /// Find a participant by season and player.
+    async fn find_by_season_and_player(
+        &self,
+        season_id: LeagueSeasonId,
+        player_id: PlayerId,
+    ) -> Result<Option<LeagueSeasonParticipant>, DomainError>;
+
+    /// Register a player for an individual format season.
+    async fn register(
+        &self,
+        registration: RegisterLeagueSeasonParticipant,
+    ) -> Result<LeagueSeasonParticipant, DomainError>;
+
+    /// List all participants in a season.
+    async fn list_by_season(
+        &self,
+        season_id: LeagueSeasonId,
+        status_filter: Option<String>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<LeagueSeasonParticipant>, i64), DomainError>;
+
+    /// Update participant status.
+    async fn update_status(
+        &self,
+        id: uuid::Uuid,
+        status: String,
+    ) -> Result<LeagueSeasonParticipant, DomainError>;
+
+    /// Withdraw a participant.
+    async fn withdraw(&self, id: uuid::Uuid) -> Result<LeagueSeasonParticipant, DomainError>;
+
+    /// Check if a player is registered for a season.
+    async fn is_registered(
+        &self,
+        season_id: LeagueSeasonId,
+        player_id: PlayerId,
+    ) -> Result<bool, DomainError>;
+}
+
+/// Data for registering an individual participant.
+#[derive(Debug, Clone)]
+pub struct RegisterLeagueSeasonParticipant {
+    pub season_id: LeagueSeasonId,
+    pub player_id: PlayerId,
 }

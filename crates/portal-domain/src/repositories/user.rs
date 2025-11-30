@@ -113,7 +113,7 @@ pub struct UpdatePlayer {
 impl UpdatePlayer {
     /// Check if there are any updates to apply.
     #[must_use]
-    pub fn has_updates(&self) -> bool {
+    pub const fn has_updates(&self) -> bool {
         self.display_name.is_some()
             || self.avatar_url.is_some()
             || self.banner_url.is_some()

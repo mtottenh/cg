@@ -60,7 +60,7 @@ where
     PR: PlayerRepository,
 {
     /// Create a new user service.
-    pub fn new(user_repo: Arc<UR>, player_repo: Arc<PR>) -> Self {
+    pub const fn new(user_repo: Arc<UR>, player_repo: Arc<PR>) -> Self {
         Self {
             user_repo,
             player_repo,
@@ -78,7 +78,7 @@ where
 
     /// Get the current authenticated user.
     ///
-    /// This is the same as get_user but semantically indicates it's for the "me" endpoint.
+    /// This is the same as `get_user` but semantically indicates it's for the "me" endpoint.
     #[instrument(skip(self))]
     pub async fn get_current_user(&self, id: UserId) -> Result<User, DomainError> {
         self.get_user(id).await

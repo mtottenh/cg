@@ -66,7 +66,7 @@ impl User {
 
     /// Check if the user is banned or suspended.
     #[must_use]
-    pub fn is_restricted(&self) -> bool {
+    pub const fn is_restricted(&self) -> bool {
         matches!(self.status, UserStatus::Banned | UserStatus::Suspended)
     }
 

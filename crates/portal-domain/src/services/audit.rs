@@ -32,7 +32,7 @@ where
     ECR: EntityChangeRepository,
 {
     /// Create a new audit service.
-    pub fn new(entity_change_repo: Arc<ECR>) -> Self {
+    pub const fn new(entity_change_repo: Arc<ECR>) -> Self {
         Self { entity_change_repo }
     }
 
@@ -48,8 +48,8 @@ where
         changed_by: PlayerId,
         ctx: &ChangeContext,
     ) -> Result<EntityChange, DomainError> {
-        let old_json = old_value.map(|v| serde_json::to_value(v).ok()).flatten();
-        let new_json = new_value.map(|v| serde_json::to_value(v).ok()).flatten();
+        let old_json = old_value.and_then(|v| serde_json::to_value(v).ok());
+        let new_json = new_value.and_then(|v| serde_json::to_value(v).ok());
 
         let cmd = CreateEntityChange {
             entity_type: entity_type.to_string(),
@@ -206,7 +206,7 @@ where
         self.entity_change_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Change not found: {}", id)))
+            .ok_or_else(|| DomainError::Internal(format!("Change not found: {id}")))
     }
 
     /// Revert a specific change.
@@ -278,29 +278,29 @@ impl FieldChange {
 pub struct ChangeDetector;
 
 impl ChangeDetector {
-    /// Compare two optional values and return a FieldChange if they differ.
+    /// Compare two optional values and return a `FieldChange` if they differ.
     pub fn compare_optional<T: Serialize + PartialEq>(
         field_name: &str,
         old: &Option<T>,
         new: &Option<T>,
     ) -> Option<FieldChange> {
-        if old != new {
-            Some(FieldChange::new(field_name, old.as_ref(), new.as_ref()))
-        } else {
+        if old == new {
             None
+        } else {
+            Some(FieldChange::new(field_name, old.as_ref(), new.as_ref()))
         }
     }
 
-    /// Compare two values and return a FieldChange if they differ.
+    /// Compare two values and return a `FieldChange` if they differ.
     pub fn compare<T: Serialize + PartialEq>(
         field_name: &str,
         old: &T,
         new: &T,
     ) -> Option<FieldChange> {
-        if old != new {
-            Some(FieldChange::new(field_name, Some(old), Some(new)))
-        } else {
+        if old == new {
             None
+        } else {
+            Some(FieldChange::new(field_name, Some(old), Some(new)))
         }
     }
 }

@@ -32,7 +32,7 @@ where
     LIR: LeagueInvitationRepository,
 {
     /// Create a new league service.
-    pub fn new(league_repo: Arc<LR>, member_repo: Arc<LMR>, invitation_repo: Arc<LIR>) -> Self {
+    pub const fn new(league_repo: Arc<LR>, member_repo: Arc<LMR>, invitation_repo: Arc<LIR>) -> Self {
         Self {
             league_repo,
             member_repo,
@@ -115,8 +115,7 @@ where
             let league = self.get_league(league_id).await?;
             if slug != &league.slug && self.league_repo.slug_exists(slug).await? {
                 return Err(DomainError::Conflict(format!(
-                    "league slug '{}' is already taken",
-                    slug
+                    "league slug '{slug}' is already taken"
                 )));
             }
         }
@@ -160,7 +159,7 @@ where
     pub async fn search_leagues(
         &self,
         query: &str,
-        game_id: Option<&GameId>,
+        game_id: Option<GameId>,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<League>, i64), DomainError> {

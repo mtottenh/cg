@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 //! Business logic and domain services for the Gaming Portal.
 //!
 //! This crate contains:
@@ -22,6 +23,6 @@ pub mod services;
 // Re-export commonly used types
 pub use auth::{hash_password, verify_password};
 pub use jwt::{generate_access_token, generate_access_token_with_admin, generate_access_token_with_expiry, validate_token, Claims};
-pub use entities::team::{Team, TeamMember};
+pub use entities::league_team::{LeagueSeason, LeagueTeam, LeagueTeamMember};
 pub use services::league::LeagueService;
-pub use services::team::TeamService;
+pub use services::league_team::{LeagueSeasonService, LeagueTeamInvitationService, LeagueTeamService};

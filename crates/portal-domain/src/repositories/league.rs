@@ -42,13 +42,13 @@ pub trait LeagueRepository: Send + Sync {
     async fn search(
         &self,
         query: &str,
-        game_id: Option<&GameId>,
+        game_id: Option<GameId>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<League>, DomainError>;
 
     /// Count search results.
-    async fn count_search(&self, query: &str, game_id: Option<&GameId>) -> Result<i64, DomainError>;
+    async fn count_search(&self, query: &str, game_id: Option<GameId>) -> Result<i64, DomainError>;
 }
 
 /// Data for creating a new league.

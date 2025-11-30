@@ -7,7 +7,8 @@ use tracing::instrument;
 
 /// Well-known admin permission.
 /// Users with this permission are considered platform administrators.
-const ADMIN_PERMISSION: &str = "admin.users.view";
+/// We use `users.view_all` which is granted to `platform_admin`, `super_admin`, and moderator roles.
+const ADMIN_PERMISSION: &str = "users.view_all";
 
 /// Service for authorization and permission checks.
 pub struct PermissionService<PR>
@@ -22,7 +23,7 @@ where
     PR: PermissionRepository,
 {
     /// Create a new permission service.
-    pub fn new(permission_repo: Arc<PR>) -> Self {
+    pub const fn new(permission_repo: Arc<PR>) -> Self {
         Self { permission_repo }
     }
 

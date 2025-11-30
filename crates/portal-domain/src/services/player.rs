@@ -1,10 +1,10 @@
 //! Player service with business logic.
 
-use crate::entities::team::{PlayerTeamMembership, Team};
+use crate::entities::league_team::PlayerLeagueTeamMembership;
 use crate::entities::Player;
-use crate::repositories::team::{TeamMemberRepository, TeamRepository};
+use crate::repositories::league_team::LeagueTeamMemberRepository;
 use crate::repositories::{PlayerRepository, UpdatePlayer};
-use portal_core::{DomainError, PlayerId, UserId};
+use portal_core::{DomainError, LeagueSeasonId, PlayerId, UserId};
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -18,29 +18,25 @@ pub struct PlayerSearchResult {
 }
 
 /// Service for player-related business logic.
-pub struct PlayerService<PR, TR, TMR>
+pub struct PlayerService<PR, LTMR>
 where
     PR: PlayerRepository,
-    TR: TeamRepository,
-    TMR: TeamMemberRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     player_repo: Arc<PR>,
-    team_repo: Arc<TR>,
-    team_member_repo: Arc<TMR>,
+    league_team_member_repo: Arc<LTMR>,
 }
 
-impl<PR, TR, TMR> PlayerService<PR, TR, TMR>
+impl<PR, LTMR> PlayerService<PR, LTMR>
 where
     PR: PlayerRepository,
-    TR: TeamRepository,
-    TMR: TeamMemberRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     /// Create a new player service.
-    pub fn new(player_repo: Arc<PR>, team_repo: Arc<TR>, team_member_repo: Arc<TMR>) -> Self {
+    pub const fn new(player_repo: Arc<PR>, league_team_member_repo: Arc<LTMR>) -> Self {
         Self {
             player_repo,
-            team_repo,
-            team_member_repo,
+            league_team_member_repo,
         }
     }
 
@@ -59,7 +55,7 @@ where
         self.player_repo
             .find_by_user_id(user_id)
             .await?
-            .ok_or_else(|| DomainError::PlayerNotFound(format!("user:{}", user_id)))
+            .ok_or_else(|| DomainError::PlayerNotFound(format!("user:{user_id}")))
     }
 
     /// Search players by display name.
@@ -76,24 +72,31 @@ where
         Ok(PlayerSearchResult { players, total })
     }
 
-    /// Get teams for a player.
+    /// Get all league team memberships for a player (with team/season/league details).
+    ///
+    /// This is the primary method for fetching a player's team affiliations
+    /// across all leagues and seasons.
     #[instrument(skip(self))]
-    pub async fn get_player_teams(&self, player_id: PlayerId) -> Result<Vec<Team>, DomainError> {
-        // Verify player exists
-        let _ = self.get_player(player_id).await?;
-        self.team_repo.list_by_player(player_id).await
-    }
-
-    /// Get team memberships for a player (with team details and role).
-    #[instrument(skip(self))]
-    pub async fn get_player_team_memberships(
+    pub async fn get_player_league_team_memberships(
         &self,
         player_id: PlayerId,
-    ) -> Result<Vec<PlayerTeamMembership>, DomainError> {
+    ) -> Result<Vec<PlayerLeagueTeamMembership>, DomainError> {
         // Verify player exists
-        let _ = self.get_player(player_id).await?;
-        self.team_member_repo
+        let _player = self.get_player(player_id).await?;
+        self.league_team_member_repo
             .list_memberships_for_player(player_id)
+            .await
+    }
+
+    /// Get league team memberships for a player in a specific season.
+    #[instrument(skip(self))]
+    pub async fn get_player_league_team_memberships_in_season(
+        &self,
+        player_id: PlayerId,
+        season_id: LeagueSeasonId,
+    ) -> Result<Vec<PlayerLeagueTeamMembership>, DomainError> {
+        self.league_team_member_repo
+            .list_memberships_in_season(player_id, season_id)
             .await
     }
 
@@ -120,8 +123,7 @@ where
             if let Some(existing) = self.player_repo.find_by_display_name(new_name).await? {
                 if existing.id != player_id {
                     return Err(DomainError::Conflict(format!(
-                        "Display name '{}' is already taken",
-                        new_name
+                        "Display name '{new_name}' is already taken"
                     )));
                 }
             }
@@ -131,17 +133,15 @@ where
     }
 }
 
-impl<PR, TR, TMR> Clone for PlayerService<PR, TR, TMR>
+impl<PR, LTMR> Clone for PlayerService<PR, LTMR>
 where
     PR: PlayerRepository,
-    TR: TeamRepository,
-    TMR: TeamMemberRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     fn clone(&self) -> Self {
         Self {
             player_repo: Arc::clone(&self.player_repo),
-            team_repo: Arc::clone(&self.team_repo),
-            team_member_repo: Arc::clone(&self.team_member_repo),
+            league_team_member_repo: Arc::clone(&self.league_team_member_repo),
         }
     }
 }

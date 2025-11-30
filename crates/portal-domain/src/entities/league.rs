@@ -7,18 +7,29 @@ use serde::{Deserialize, Serialize};
 /// A league that organizes tournaments for a specific game.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct League {
+    /// Unique identifier for the league.
     pub id: LeagueId,
-    /// Game UUID identifier.
+    /// The game this league is for.
     pub game_id: GameId,
+    /// Display name of the league.
     pub name: String,
+    /// URL-friendly slug for the league.
     pub slug: String,
+    /// Optional description of the league.
     pub description: Option<String>,
+    /// URL to the league's logo image.
     pub logo_url: Option<String>,
+    /// How users can join this league.
     pub access_type: LeagueAccessType,
+    /// Current status of the league.
     pub status: LeagueStatus,
+    /// League-specific settings as JSON.
     pub settings: serde_json::Value,
+    /// User who created the league.
     pub created_by: UserId,
+    /// When the league was created.
     pub created_at: DateTime<Utc>,
+    /// When the league was last updated.
     pub updated_at: DateTime<Utc>,
 }
 
@@ -46,7 +57,7 @@ impl LeagueAccessType {
     }
 
     /// Convert to string.
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Open => "open",
             Self::InviteOnly => "invite_only",
@@ -85,7 +96,7 @@ impl LeagueStatus {
     }
 
     /// Convert to string.
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Active => "active",
             Self::Archived => "archived",
@@ -103,22 +114,34 @@ impl std::fmt::Display for LeagueStatus {
 /// A member of a league.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeagueMember {
+    /// Unique identifier for this membership.
     pub id: LeagueMemberId,
+    /// The league this membership belongs to.
     pub league_id: LeagueId,
+    /// The user who is a member.
     pub user_id: UserId,
+    /// The member's role in the league.
     pub membership_type: LeagueMembershipType,
+    /// When the user joined the league.
     pub joined_at: DateTime<Utc>,
 }
 
 /// League member with user info.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeagueMemberWithUser {
+    /// Unique identifier for this membership.
     pub id: LeagueMemberId,
+    /// The league this membership belongs to.
     pub league_id: LeagueId,
+    /// The user who is a member.
     pub user_id: UserId,
+    /// The member's role in the league.
     pub membership_type: LeagueMembershipType,
+    /// When the user joined the league.
     pub joined_at: DateTime<Utc>,
+    /// The member's username.
     pub username: String,
+    /// The member's email address.
     pub email: String,
 }
 
@@ -146,7 +169,7 @@ impl LeagueMembershipType {
     }
 
     /// Convert to string.
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Admin => "admin",
             Self::Moderator => "moderator",
@@ -155,12 +178,12 @@ impl LeagueMembershipType {
     }
 
     /// Check if this role can manage other members.
-    pub fn can_manage_members(&self) -> bool {
+    pub const fn can_manage_members(&self) -> bool {
         matches!(self, Self::Admin | Self::Moderator)
     }
 
     /// Check if this role can manage league settings.
-    pub fn can_manage_league(&self) -> bool {
+    pub const fn can_manage_league(&self) -> bool {
         matches!(self, Self::Admin)
     }
 }
@@ -174,16 +197,27 @@ impl std::fmt::Display for LeagueMembershipType {
 /// An invitation to join a league (or application to join).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeagueInvitation {
+    /// Unique identifier for this invitation.
     pub id: LeagueInvitationId,
+    /// The league the invitation is for.
     pub league_id: LeagueId,
+    /// The user being invited or applying.
     pub user_id: UserId,
+    /// Whether this is an invite or application.
     pub invitation_type: LeagueInvitationType,
+    /// Current status of the invitation.
     pub status: LeagueInvitationStatus,
+    /// Optional message with the invitation.
     pub message: Option<String>,
+    /// User who sent the invitation (for invites).
     pub invited_by: Option<UserId>,
+    /// User who responded to the invitation.
     pub responded_by: Option<UserId>,
+    /// When the invitation was responded to.
     pub responded_at: Option<DateTime<Utc>>,
+    /// When the invitation expires.
     pub expires_at: Option<DateTime<Utc>>,
+    /// When the invitation was created.
     pub created_at: DateTime<Utc>,
 }
 
@@ -208,7 +242,7 @@ impl LeagueInvitationType {
     }
 
     /// Convert to string.
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Invite => "invite",
             Self::Application => "application",
@@ -249,7 +283,7 @@ impl LeagueInvitationStatus {
     }
 
     /// Convert to string.
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Accepted => "accepted",
@@ -268,35 +302,54 @@ impl std::fmt::Display for LeagueInvitationStatus {
 /// User's league membership with league details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserLeagueMembership {
+    /// The league ID.
     pub league_id: LeagueId,
+    /// The league name.
     pub league_name: String,
+    /// The league URL slug.
     pub league_slug: String,
+    /// URL to the league's logo.
     pub league_logo_url: Option<String>,
-    /// Game UUID identifier.
+    /// The game this league is for.
     pub game_id: GameId,
+    /// The user's role in the league.
     pub membership_type: LeagueMembershipType,
+    /// When the user joined.
     pub joined_at: DateTime<Utc>,
 }
 
 /// Command to create a new league.
 #[derive(Debug, Clone)]
 pub struct CreateLeagueCommand {
+    /// The game this league is for.
     pub game_id: GameId,
+    /// Display name of the league.
     pub name: String,
+    /// URL-friendly slug.
     pub slug: String,
+    /// Optional description.
     pub description: Option<String>,
+    /// URL to the league's logo.
     pub logo_url: Option<String>,
+    /// How users can join.
     pub access_type: LeagueAccessType,
 }
 
 /// Command to update a league.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateLeagueCommand {
+    /// New name for the league.
     pub name: Option<String>,
+    /// New URL slug.
     pub slug: Option<String>,
+    /// New description.
     pub description: Option<String>,
+    /// New logo URL.
     pub logo_url: Option<String>,
+    /// New access type.
     pub access_type: Option<LeagueAccessType>,
+    /// New status.
     pub status: Option<LeagueStatus>,
+    /// New settings.
     pub settings: Option<serde_json::Value>,
 }

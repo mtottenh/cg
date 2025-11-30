@@ -68,7 +68,7 @@ impl TryFrom<String> for TeamName {
 }
 
 impl From<TeamName> for String {
-    fn from(name: TeamName) -> String {
+    fn from(name: TeamName) -> Self {
         name.0
     }
 }
@@ -142,7 +142,7 @@ impl TryFrom<String> for TeamTag {
 }
 
 impl From<TeamTag> for String {
-    fn from(tag: TeamTag) -> String {
+    fn from(tag: TeamTag) -> Self {
         tag.0
     }
 }
@@ -208,7 +208,7 @@ impl TryFrom<String> for DisplayName {
 }
 
 impl From<DisplayName> for String {
-    fn from(name: DisplayName) -> String {
+    fn from(name: DisplayName) -> Self {
         name.0
     }
 }
@@ -291,7 +291,7 @@ impl TryFrom<String> for Email {
 }
 
 impl From<Email> for String {
-    fn from(email: Email) -> String {
+    fn from(email: Email) -> Self {
         email.0
     }
 }

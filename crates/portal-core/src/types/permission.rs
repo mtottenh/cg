@@ -11,7 +11,7 @@ use std::fmt;
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::{LeagueId, MatchId, TeamId, TournamentId};
+use crate::{LeagueId, LeagueTeamId, MatchId, TournamentId};
 
 /// Types of scopes for permission checking.
 ///
@@ -45,12 +45,12 @@ impl ScopeType {
 
     /// Get all available scope types.
     #[must_use]
-    pub const fn all() -> &'static [ScopeType] {
+    pub const fn all() -> &'static [Self] {
         &[
-            ScopeType::Team,
-            ScopeType::League,
-            ScopeType::Tournament,
-            ScopeType::Match,
+            Self::Team,
+            Self::League,
+            Self::Tournament,
+            Self::Match,
         ]
     }
 }
@@ -64,6 +64,7 @@ impl fmt::Display for ScopeType {
 /// Error when parsing an invalid scope type string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseScopeTypeError {
+    /// The input string that failed to parse.
     pub input: String,
 }
 
@@ -126,9 +127,9 @@ impl PermissionScope {
         }
     }
 
-    /// Create a team-scoped permission from a TeamId.
+    /// Create a team-scoped permission from a `LeagueTeamId`.
     #[must_use]
-    pub fn from_team_id(id: TeamId) -> Self {
+    pub const fn from_league_team_id(id: LeagueTeamId) -> Self {
         Self {
             scope_type: ScopeType::Team,
             scope_id: id.as_uuid(),
@@ -144,9 +145,9 @@ impl PermissionScope {
         }
     }
 
-    /// Create a league-scoped permission from a LeagueId.
+    /// Create a league-scoped permission from a `LeagueId`.
     #[must_use]
-    pub fn from_league_id(id: LeagueId) -> Self {
+    pub const fn from_league_id(id: LeagueId) -> Self {
         Self {
             scope_type: ScopeType::League,
             scope_id: id.as_uuid(),
@@ -162,9 +163,9 @@ impl PermissionScope {
         }
     }
 
-    /// Create a tournament-scoped permission from a TournamentId.
+    /// Create a tournament-scoped permission from a `TournamentId`.
     #[must_use]
-    pub fn from_tournament_id(id: TournamentId) -> Self {
+    pub const fn from_tournament_id(id: TournamentId) -> Self {
         Self {
             scope_type: ScopeType::Tournament,
             scope_id: id.as_uuid(),
@@ -182,9 +183,9 @@ impl PermissionScope {
         }
     }
 
-    /// Create a match-scoped permission from a MatchId.
+    /// Create a match-scoped permission from a `MatchId`.
     #[must_use]
-    pub fn from_match_id(id: MatchId) -> Self {
+    pub const fn from_match_id(id: MatchId) -> Self {
         Self {
             scope_type: ScopeType::Match,
             scope_id: id.as_uuid(),
@@ -259,8 +260,8 @@ mod tests {
 
     #[test]
     fn test_permission_scope_from_typed_ids() {
-        let team_id = TeamId::new();
-        let scope = PermissionScope::from_team_id(team_id);
+        let team_id = LeagueTeamId::new();
+        let scope = PermissionScope::from_league_team_id(team_id);
         assert_eq!(scope.scope_type, ScopeType::Team);
         assert_eq!(scope.scope_id, team_id.as_uuid());
     }

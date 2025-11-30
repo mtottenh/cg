@@ -95,7 +95,7 @@ impl FromStr for MatchStatus {
 impl MatchStatus {
     /// Check if the match is in a terminal state.
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
+    pub const fn is_terminal(&self) -> bool {
         matches!(
             self,
             Self::Completed | Self::Cancelled | Self::Forfeited
@@ -104,13 +104,13 @@ impl MatchStatus {
 
     /// Check if the match can be cancelled.
     #[must_use]
-    pub fn can_cancel(&self) -> bool {
+    pub const fn can_cancel(&self) -> bool {
         matches!(self, Self::Pending | Self::Ready)
     }
 
     /// Check if the match can be started.
     #[must_use]
-    pub fn can_start(&self) -> bool {
+    pub const fn can_start(&self) -> bool {
         matches!(self, Self::Ready)
     }
 }
@@ -122,7 +122,9 @@ pub enum TournamentStatus {
     /// Tournament is a draft (not published).
     #[default]
     Draft,
-    /// Tournament is published and open for registration.
+    /// Tournament is published but registration not yet open.
+    Published,
+    /// Registration is open.
     Registration,
     /// Registration is closed, tournament hasn't started.
     Scheduled,
@@ -140,6 +142,7 @@ impl fmt::Display for TournamentStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Draft => write!(f, "draft"),
+            Self::Published => write!(f, "published"),
             Self::Registration => write!(f, "registration"),
             Self::Scheduled => write!(f, "scheduled"),
             Self::InProgress => write!(f, "in_progress"),
@@ -156,6 +159,7 @@ impl FromStr for TournamentStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "draft" => Ok(Self::Draft),
+            "published" => Ok(Self::Published),
             "registration" => Ok(Self::Registration),
             "scheduled" => Ok(Self::Scheduled),
             "in_progress" => Ok(Self::InProgress),
@@ -170,23 +174,44 @@ impl FromStr for TournamentStatus {
 impl TournamentStatus {
     /// Check if registration is open.
     #[must_use]
-    pub fn is_registration_open(&self) -> bool {
+    pub const fn is_registration_open(&self) -> bool {
         matches!(self, Self::Registration)
     }
 
     /// Check if the tournament is active (not finished or cancelled).
     #[must_use]
-    pub fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         matches!(
             self,
-            Self::Draft | Self::Registration | Self::Scheduled | Self::InProgress
+            Self::Draft | Self::Published | Self::Registration | Self::Scheduled | Self::InProgress
         )
     }
 
     /// Check if the tournament is in a terminal state.
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
+    pub const fn is_terminal(&self) -> bool {
         matches!(self, Self::Finalized | Self::Cancelled)
+    }
+
+    /// Valid transitions from this status.
+    #[must_use]
+    pub fn valid_transitions(&self) -> Vec<Self> {
+        match self {
+            Self::Draft => vec![Self::Published, Self::Cancelled],
+            Self::Published => vec![Self::Registration, Self::Cancelled],
+            Self::Registration => vec![Self::Scheduled, Self::InProgress, Self::Cancelled],
+            Self::Scheduled => vec![Self::InProgress, Self::Cancelled],
+            Self::InProgress => vec![Self::Completed, Self::Cancelled],
+            Self::Completed => vec![Self::Finalized],
+            Self::Finalized => vec![],
+            Self::Cancelled => vec![],
+        }
+    }
+
+    /// Check if a transition to the given status is valid.
+    #[must_use]
+    pub fn can_transition_to(&self, target: Self) -> bool {
+        self.valid_transitions().contains(&target)
     }
 }
 

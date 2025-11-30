@@ -44,7 +44,7 @@ impl Default for Glicko2Rating {
 impl Glicko2Rating {
     /// Create a new player rating with default values.
     #[must_use]
-    pub fn new_player() -> Self {
+    pub const fn new_player() -> Self {
         Self {
             rating: DEFAULT_RATING,
             rating_deviation: DEFAULT_RATING_DEVIATION,
@@ -54,7 +54,7 @@ impl Glicko2Rating {
 
     /// Create a rating with specific values.
     #[must_use]
-    pub fn new(rating: f64, rating_deviation: f64, volatility: f64) -> Self {
+    pub const fn new(rating: f64, rating_deviation: f64, volatility: f64) -> Self {
         Self {
             rating,
             rating_deviation: rating_deviation.clamp(MIN_RATING_DEVIATION, MAX_RATING_DEVIATION),
@@ -70,7 +70,7 @@ impl Glicko2Rating {
 
     /// Calculate the 95% confidence interval for the rating.
     ///
-    /// Returns (lower_bound, upper_bound).
+    /// Returns (`lower_bound`, `upper_bound`).
     #[must_use]
     pub fn confidence_interval(&self) -> (f64, f64) {
         let margin = 2.0 * self.rating_deviation;

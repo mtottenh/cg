@@ -57,25 +57,25 @@ impl FromStr for SeasonStatus {
 impl SeasonStatus {
     /// Check if the season is accepting team registrations.
     #[must_use]
-    pub fn is_registration_open(&self) -> bool {
+    pub const fn is_registration_open(&self) -> bool {
         matches!(self, Self::Registration)
     }
 
     /// Check if the season is currently active (competition ongoing).
     #[must_use]
-    pub fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         matches!(self, Self::Active | Self::Playoffs)
     }
 
     /// Check if the season allows roster changes.
     #[must_use]
-    pub fn allows_roster_changes(&self) -> bool {
+    pub const fn allows_roster_changes(&self) -> bool {
         matches!(self, Self::Draft | Self::Registration)
     }
 
     /// Check if the season is in a terminal state.
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
+    pub const fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::Cancelled)
     }
 }
@@ -119,51 +119,44 @@ impl FromStr for RosterLockStatus {
 impl RosterLockStatus {
     /// Check if primary roster members can be added/removed.
     #[must_use]
-    pub fn allows_primary_changes(&self) -> bool {
+    pub const fn allows_primary_changes(&self) -> bool {
         matches!(self, Self::Open)
     }
 
     /// Check if substitute members can be added/removed.
     #[must_use]
-    pub fn allows_substitute_changes(&self) -> bool {
+    pub const fn allows_substitute_changes(&self) -> bool {
         matches!(self, Self::Open | Self::SoftLock)
     }
 
     /// Check if any roster changes are allowed.
     #[must_use]
-    pub fn allows_any_changes(&self) -> bool {
+    pub const fn allows_any_changes(&self) -> bool {
         !matches!(self, Self::HardLock)
     }
 }
 
-/// Status of a league team.
+/// Status of a league team (persistent identity).
+///
+/// This is the status of the team entity itself, not its seasonal participation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamStatus {
-    /// Still recruiting, roster incomplete.
+    /// Team is active and can participate in seasons.
     #[default]
-    Forming,
-    /// Submitted for registration review.
-    Pending,
-    /// Fully registered and active.
     Active,
-    /// Removed from competition.
-    Disqualified,
-    /// Voluntarily disbanded.
+    /// Team is temporarily inactive.
+    Inactive,
+    /// Team has been permanently disbanded.
     Disbanded,
-    /// Eliminated from tournament/playoffs.
-    Eliminated,
 }
 
 impl fmt::Display for LeagueTeamStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Forming => write!(f, "forming"),
-            Self::Pending => write!(f, "pending"),
             Self::Active => write!(f, "active"),
-            Self::Disqualified => write!(f, "disqualified"),
+            Self::Inactive => write!(f, "inactive"),
             Self::Disbanded => write!(f, "disbanded"),
-            Self::Eliminated => write!(f, "eliminated"),
         }
     }
 }
@@ -173,34 +166,100 @@ impl FromStr for LeagueTeamStatus {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "forming" => Ok(Self::Forming),
-            "pending" => Ok(Self::Pending),
             "active" => Ok(Self::Active),
-            "disqualified" => Ok(Self::Disqualified),
+            "inactive" => Ok(Self::Inactive),
             "disbanded" => Ok(Self::Disbanded),
-            "eliminated" => Ok(Self::Eliminated),
             _ => Err(format!("invalid league team status: {s}")),
         }
     }
 }
 
 impl LeagueTeamStatus {
-    /// Check if the team can compete in matches.
+    /// Check if the team can participate in new seasons.
     #[must_use]
-    pub fn can_compete(&self) -> bool {
+    pub const fn can_participate(&self) -> bool {
         matches!(self, Self::Active)
-    }
-
-    /// Check if the team roster can be modified.
-    #[must_use]
-    pub fn can_modify_roster(&self) -> bool {
-        matches!(self, Self::Forming | Self::Pending | Self::Active)
     }
 
     /// Check if the team is in a terminal state (cannot be reactivated).
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Disbanded | Self::Disqualified)
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Disbanded)
+    }
+}
+
+/// Status of a team's participation in a season.
+///
+/// This tracks the team's status within a specific season (forming roster,
+/// competing, eliminated, etc.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LeagueTeamSeasonStatus {
+    /// Still recruiting, roster incomplete.
+    #[default]
+    Forming,
+    /// Submitted for registration review.
+    Pending,
+    /// Registered and ready but season not started.
+    Registered,
+    /// Actively competing in season.
+    Active,
+    /// Eliminated from tournament/playoffs.
+    Eliminated,
+    /// Removed from competition by admin.
+    Disqualified,
+    /// Voluntarily withdrew from season.
+    Withdrawn,
+}
+
+impl fmt::Display for LeagueTeamSeasonStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Forming => write!(f, "forming"),
+            Self::Pending => write!(f, "pending"),
+            Self::Registered => write!(f, "registered"),
+            Self::Active => write!(f, "active"),
+            Self::Eliminated => write!(f, "eliminated"),
+            Self::Disqualified => write!(f, "disqualified"),
+            Self::Withdrawn => write!(f, "withdrawn"),
+        }
+    }
+}
+
+impl FromStr for LeagueTeamSeasonStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "forming" => Ok(Self::Forming),
+            "pending" => Ok(Self::Pending),
+            "registered" => Ok(Self::Registered),
+            "active" => Ok(Self::Active),
+            "eliminated" => Ok(Self::Eliminated),
+            "disqualified" => Ok(Self::Disqualified),
+            "withdrawn" => Ok(Self::Withdrawn),
+            _ => Err(format!("invalid league team season status: {s}")),
+        }
+    }
+}
+
+impl LeagueTeamSeasonStatus {
+    /// Check if the team can compete in matches this season.
+    #[must_use]
+    pub const fn can_compete(&self) -> bool {
+        matches!(self, Self::Registered | Self::Active)
+    }
+
+    /// Check if the team roster can be modified this season.
+    #[must_use]
+    pub const fn can_modify_roster(&self) -> bool {
+        matches!(self, Self::Forming | Self::Pending | Self::Registered | Self::Active)
+    }
+
+    /// Check if the team's season participation is in a terminal state.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Eliminated | Self::Disqualified | Self::Withdrawn)
     }
 }
 
@@ -243,13 +302,13 @@ impl FromStr for LeagueTeamRole {
 impl LeagueTeamRole {
     /// Check if this is a primary role (counts toward roster minimum).
     #[must_use]
-    pub fn is_primary(&self) -> bool {
+    pub const fn is_primary(&self) -> bool {
         matches!(self, Self::Captain | Self::Player)
     }
 
     /// Check if this role can manage the team roster.
     #[must_use]
-    pub fn can_manage_roster(&self) -> bool {
+    pub const fn can_manage_roster(&self) -> bool {
         matches!(self, Self::Captain)
     }
 }
@@ -297,13 +356,13 @@ impl FromStr for LeagueTeamMemberStatus {
 impl LeagueTeamMemberStatus {
     /// Check if the member is currently on the active roster.
     #[must_use]
-    pub fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         matches!(self, Self::Active)
     }
 
     /// Check if the member can be re-added to the team.
     #[must_use]
-    pub fn can_rejoin(&self) -> bool {
+    pub const fn can_rejoin(&self) -> bool {
         matches!(self, Self::Inactive | Self::Left)
     }
 }
@@ -387,13 +446,13 @@ impl FromStr for LeagueTeamInvitationStatus {
 impl LeagueTeamInvitationStatus {
     /// Check if the invitation can still be responded to.
     #[must_use]
-    pub fn is_actionable(&self) -> bool {
+    pub const fn is_actionable(&self) -> bool {
         matches!(self, Self::Pending)
     }
 
     /// Check if the invitation is in a terminal state.
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
+    pub const fn is_terminal(&self) -> bool {
         !matches!(self, Self::Pending)
     }
 }
@@ -432,13 +491,24 @@ mod tests {
 
     #[test]
     fn test_league_team_status() {
-        assert!(!LeagueTeamStatus::Forming.can_compete());
-        assert!(LeagueTeamStatus::Active.can_compete());
-        assert!(!LeagueTeamStatus::Disbanded.can_compete());
+        assert!(LeagueTeamStatus::Active.can_participate());
+        assert!(!LeagueTeamStatus::Inactive.can_participate());
+        assert!(!LeagueTeamStatus::Disbanded.can_participate());
 
-        assert!(LeagueTeamStatus::Forming.can_modify_roster());
-        assert!(LeagueTeamStatus::Active.can_modify_roster());
-        assert!(!LeagueTeamStatus::Disbanded.can_modify_roster());
+        assert!(!LeagueTeamStatus::Active.is_terminal());
+        assert!(LeagueTeamStatus::Disbanded.is_terminal());
+    }
+
+    #[test]
+    fn test_league_team_season_status() {
+        assert!(!LeagueTeamSeasonStatus::Forming.can_compete());
+        assert!(LeagueTeamSeasonStatus::Registered.can_compete());
+        assert!(LeagueTeamSeasonStatus::Active.can_compete());
+        assert!(!LeagueTeamSeasonStatus::Eliminated.can_compete());
+
+        assert!(LeagueTeamSeasonStatus::Forming.can_modify_roster());
+        assert!(LeagueTeamSeasonStatus::Active.can_modify_roster());
+        assert!(!LeagueTeamSeasonStatus::Eliminated.can_modify_roster());
     }
 
     #[test]

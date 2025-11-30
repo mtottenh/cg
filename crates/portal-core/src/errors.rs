@@ -155,148 +155,274 @@ impl std::error::Error for ValidationError {}
 /// not due to invalid input or infrastructure failures.
 #[derive(Debug, Error)]
 pub enum DomainError {
-    // Entity not found errors
+    /// The requested user was not found.
     #[error("user not found: {0}")]
     UserNotFound(String),
 
+    /// The requested player was not found.
     #[error("player not found: {0}")]
     PlayerNotFound(String),
 
+    /// The requested team was not found.
     #[error("team not found: {0}")]
     TeamNotFound(String),
 
+    /// The requested game was not found.
     #[error("game not found: {0}")]
     GameNotFound(String),
 
+    /// The requested match was not found.
     #[error("match not found: {0}")]
     MatchNotFound(String),
 
+    /// The requested tournament was not found.
     #[error("tournament not found: {0}")]
     TournamentNotFound(String),
 
+    /// The requested league was not found.
     #[error("league not found: {0}")]
     LeagueNotFound(String),
 
+    /// The requested lobby was not found.
     #[error("lobby not found: {0}")]
     LobbyNotFound(String),
 
+    /// The requested league season was not found.
     #[error("league season not found: {0}")]
     LeagueSeasonNotFound(String),
 
+    /// The requested league team was not found.
     #[error("league team not found: {0}")]
     LeagueTeamNotFound(String),
 
+    /// The requested league team invitation was not found.
     #[error("league team invitation not found: {0}")]
     LeagueTeamInvitationNotFound(String),
 
-    // Authorization errors
+    /// The requested ban record was not found.
+    #[error("ban not found: {0}")]
+    BanNotFound(String),
+
+    /// The requested tournament stage was not found.
+    #[error("tournament stage not found: {0}")]
+    TournamentStageNotFound(String),
+
+    /// The requested tournament bracket was not found.
+    #[error("tournament bracket not found: {0}")]
+    TournamentBracketNotFound(String),
+
+    /// The requested tournament match was not found.
+    #[error("tournament match not found: {0}")]
+    TournamentMatchNotFound(String),
+
+    /// The requested tournament registration was not found.
+    #[error("tournament registration not found: {0}")]
+    TournamentRegistrationNotFound(String),
+
+    /// Tournament is not open for registration.
+    #[error("tournament is not open for registration")]
+    TournamentNotOpen,
+
+    /// Tournament registration has closed.
+    #[error("tournament registration has closed")]
+    TournamentRegistrationClosed,
+
+    /// Tournament has already started and cannot be modified.
+    #[error("tournament has already started")]
+    TournamentAlreadyStarted,
+
+    /// Tournament is at maximum capacity.
+    #[error("tournament is at maximum capacity")]
+    TournamentFull,
+
+    /// Participant is already registered for this tournament.
+    #[error("already registered for this tournament")]
+    AlreadyRegisteredForTournament,
+
+    /// Participant is not registered for this tournament.
+    #[error("not registered for this tournament")]
+    NotRegisteredForTournament,
+
+    /// Tournament registration is still pending approval.
+    #[error("tournament registration is pending approval")]
+    TournamentRegistrationPending,
+
+    /// Participant has not checked in for the tournament.
+    #[error("participant has not checked in")]
+    NotCheckedIn,
+
+    /// Match is not ready to start.
+    #[error("match is not ready")]
+    MatchNotReady,
+
+    /// Match has already been completed.
+    #[error("match has already been completed")]
+    MatchAlreadyCompleted,
+
+    /// The submitted match result is invalid.
+    #[error("invalid match result: {0}")]
+    InvalidMatchResult(String),
+
+    /// Bracket generation failed.
+    #[error("bracket generation failed: {0}")]
+    BracketGenerationFailed(String),
+
+    /// Not enough participants to start the tournament.
+    #[error("insufficient participants for tournament")]
+    InsufficientParticipants,
+
+    /// Invalid tournament state transition.
+    #[error("invalid tournament state transition: {from} -> {to}")]
+    InvalidTournamentTransition {
+        /// The current state.
+        from: String,
+        /// The attempted target state.
+        to: String,
+    },
+
+    /// The user is not authorized to perform this action.
     #[error("not authorized: {0}")]
     NotAuthorized(String),
 
+    /// The user is forbidden from accessing this resource.
     #[error("forbidden: {0}")]
     Forbidden(String),
 
-    // Authentication errors
+    /// The authentication token is invalid or missing.
     #[error("invalid or missing token")]
     InvalidToken,
 
+    /// The authentication token has expired.
     #[error("token has expired")]
     TokenExpired,
 
+    /// The provided credentials are invalid.
     #[error("invalid credentials")]
     InvalidCredentials,
 
-    // Team-specific errors
+    /// The player is already a member of this team.
     #[error("player is already a member of this team")]
     AlreadyTeamMember,
 
+    /// The player is not a member of this team.
     #[error("player is not a member of this team")]
     NotTeamMember,
 
+    /// Cannot remove the team founder from the team.
     #[error("cannot remove the team founder")]
     CannotRemoveFounder,
 
+    /// Cannot demote the team founder to a lower role.
     #[error("cannot demote the team founder")]
     CannotDemoteFounder,
 
+    /// The team must have at least one captain.
     #[error("team must have at least one captain")]
     TeamMustHaveCaptain,
 
+    /// The team invitation has expired.
     #[error("team invitation has expired")]
     InvitationExpired,
 
+    /// The team invitation is not found or has already been used.
     #[error("team invitation not found or already used")]
     InvitationInvalid,
 
+    /// The player already has a pending invitation to this team.
     #[error("player already has a pending invitation to this team")]
     InvitationAlreadyExists,
 
+    /// The team has reached its maximum member count.
     #[error("team has reached maximum member count")]
     TeamFull,
 
-    // Match/Queue errors
+    /// The player is already in a matchmaking queue.
     #[error("player is already in queue")]
     AlreadyInQueue,
 
+    /// The player is not in any matchmaking queue.
     #[error("player is not in queue")]
     NotInQueue,
 
+    /// The match has already started.
     #[error("match has already started")]
     MatchAlreadyStarted,
 
+    /// The match has already ended.
     #[error("match has already ended")]
     MatchAlreadyEnded,
 
-    // Lobby errors
+    /// The lobby is full.
     #[error("lobby is full")]
     LobbyFull,
 
+    /// The player is already in a lobby.
     #[error("player is already in a lobby")]
     AlreadyInLobby,
 
+    /// The player is not in the lobby.
     #[error("player is not in lobby")]
     NotInLobby,
 
+    /// Invalid lobby state transition.
     #[error("invalid lobby state transition: {from} -> {to}")]
-    InvalidLobbyTransition { from: String, to: String },
+    InvalidLobbyTransition {
+        /// The current state of the lobby.
+        from: String,
+        /// The attempted target state.
+        to: String,
+    },
 
-    // Tournament/League errors
+    /// Tournament or league registration is closed.
     #[error("tournament registration is closed")]
     RegistrationClosed,
 
+    /// The team is already registered for this tournament.
     #[error("team is already registered for this tournament")]
     AlreadyRegistered,
 
+    /// The team does not meet tournament requirements.
     #[error("team does not meet tournament requirements")]
     RequirementsNotMet(String),
 
+    /// The user is not a member of this league.
     #[error("not a league member")]
     NotLeagueMember,
 
+    /// League membership is invite-only.
     #[error("league membership is invite-only")]
     LeagueInviteOnly,
 
-    // Rating errors
+    /// Rating calculation failed.
     #[error("rating calculation failed: {0}")]
     RatingCalculationFailed(String),
 
-    // Saga errors
+    /// A saga (distributed transaction) failed.
     #[error("saga failed: {0}")]
     SagaFailed(String),
 
+    /// A step in a saga failed.
     #[error("saga step failed: {step} - {reason}")]
-    SagaStepFailed { step: String, reason: String },
+    SagaStepFailed {
+        /// The name of the failed step.
+        step: String,
+        /// The reason for the failure.
+        reason: String,
+    },
 
-    // Generic errors
+    /// A conflict occurred (e.g., duplicate resource).
     #[error("conflict: {0}")]
     Conflict(String),
 
+    /// The entity is in an invalid state for the requested operation.
     #[error("invalid state: {0}")]
     InvalidState(String),
 
+    /// Validation failed.
     #[error("validation failed")]
     Validation(#[from] ValidationError),
 
+    /// An internal error occurred.
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -340,18 +466,23 @@ impl DomainError {
             "game" => Self::GameNotFound(id),
             "match" => Self::MatchNotFound(id),
             "tournament" => Self::TournamentNotFound(id),
+            "tournament stage" => Self::TournamentStageNotFound(id),
+            "tournament bracket" => Self::TournamentBracketNotFound(id),
+            "tournament match" => Self::TournamentMatchNotFound(id),
+            "tournament registration" => Self::TournamentRegistrationNotFound(id),
             "league" => Self::LeagueNotFound(id),
             "lobby" => Self::LobbyNotFound(id),
             "league season" => Self::LeagueSeasonNotFound(id),
             "league team" => Self::LeagueTeamNotFound(id),
             "league team invitation" => Self::LeagueTeamInvitationNotFound(id),
+            "ban" => Self::BanNotFound(id),
             _ => Self::Internal(format!("{entity_type} not found: {id}")),
         }
     }
 
     /// Check if this is a "not found" type error.
     #[must_use]
-    pub fn is_not_found(&self) -> bool {
+    pub const fn is_not_found(&self) -> bool {
         matches!(
             self,
             Self::UserNotFound(_)
@@ -360,17 +491,22 @@ impl DomainError {
                 | Self::GameNotFound(_)
                 | Self::MatchNotFound(_)
                 | Self::TournamentNotFound(_)
+                | Self::TournamentStageNotFound(_)
+                | Self::TournamentBracketNotFound(_)
+                | Self::TournamentMatchNotFound(_)
+                | Self::TournamentRegistrationNotFound(_)
                 | Self::LeagueNotFound(_)
                 | Self::LobbyNotFound(_)
                 | Self::LeagueSeasonNotFound(_)
                 | Self::LeagueTeamNotFound(_)
                 | Self::LeagueTeamInvitationNotFound(_)
+                | Self::BanNotFound(_)
         )
     }
 
     /// Check if this is an authorization error.
     #[must_use]
-    pub fn is_auth_error(&self) -> bool {
+    pub const fn is_auth_error(&self) -> bool {
         matches!(self, Self::NotAuthorized(_) | Self::Forbidden(_))
     }
 }

@@ -26,7 +26,9 @@ use uuid::Uuid;
 /// Error when parsing an invalid ID string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseIdError {
+    /// The name of the ID type that failed to parse.
     pub type_name: &'static str,
+    /// The input string that failed to parse.
     pub input: String,
 }
 
@@ -217,17 +219,6 @@ define_id!(
     PlayerId
 );
 
-// Team IDs
-define_id!(
-    /// Unique identifier for a team.
-    TeamId
-);
-
-define_id!(
-    /// Unique identifier for a team invitation.
-    TeamInvitationId
-);
-
 // Game IDs
 define_id!(
     /// Unique identifier for a game (e.g., CS2, AoE4).
@@ -268,6 +259,36 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for a stage within a tournament.
+    TournamentStageId
+);
+
+define_id!(
+    /// Unique identifier for a bracket within a tournament stage.
+    TournamentBracketId
+);
+
+define_id!(
+    /// Unique identifier for a tournament registration (participant entry).
+    TournamentRegistrationId
+);
+
+define_id!(
+    /// Unique identifier for a match within a tournament bracket.
+    TournamentMatchId
+);
+
+define_id!(
+    /// Unique identifier for an individual game within a tournament match (Bo3, Bo5 series).
+    TournamentMatchGameId
+);
+
+define_id!(
+    /// Unique identifier for a tournament map pool configuration.
+    TournamentMapPoolId
+);
+
+define_id!(
     /// Unique identifier for a league.
     LeagueId
 );
@@ -288,8 +309,13 @@ define_id!(
 );
 
 define_id!(
-    /// Unique identifier for a team within a league season.
+    /// Unique identifier for a team within a league (persistent identity).
     LeagueTeamId
+);
+
+define_id!(
+    /// Unique identifier for a team's participation in a season.
+    LeagueTeamSeasonId
 );
 
 define_id!(
@@ -300,13 +326,6 @@ define_id!(
 define_id!(
     /// Unique identifier for a league team invitation.
     LeagueTeamInvitationId
-);
-
-// Legacy: Keep for backwards compatibility during migration
-define_id!(
-    /// Unique identifier for a season within a league.
-    #[deprecated(note = "Use LeagueSeasonId instead")]
-    SeasonId
 );
 
 define_id!(
@@ -323,6 +342,11 @@ define_id!(
 define_id!(
     /// Unique identifier for a saga execution.
     SagaId
+);
+
+define_id!(
+    /// Unique identifier for a ban record.
+    BanId
 );
 
 // =============================================================================
@@ -350,9 +374,9 @@ mod tests {
 
     #[test]
     fn test_id_parsing() {
-        let id = TeamId::new();
+        let id = LeagueTeamId::new();
         let id_str = id.to_string();
-        let parsed: TeamId = id_str.parse().unwrap();
+        let parsed: LeagueTeamId = id_str.parse().unwrap();
         assert_eq!(id, parsed);
     }
 

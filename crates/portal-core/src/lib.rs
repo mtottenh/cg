@@ -17,8 +17,9 @@ pub mod validation;
 // Re-export commonly used types at crate root
 pub use errors::{DomainError, FieldError, ValidationError};
 pub use ids::{
-    GameId, GameSlug, LeagueId, LeagueInvitationId, LeagueMemberId, LeagueSeasonId, LeagueTeamId,
-    LeagueTeamInvitationId, LeagueTeamMemberId, LobbyId, MatchId, PlayerId, TeamId,
-    TeamInvitationId, TournamentId, UserId,
+    BanId, GameId, GameSlug, LeagueId, LeagueInvitationId, LeagueMemberId, LeagueSeasonId,
+    LeagueTeamId, LeagueTeamInvitationId, LeagueTeamMemberId, LeagueTeamSeasonId, LobbyId, MatchId,
+    PlayerId, TournamentBracketId, TournamentId, TournamentMapPoolId, TournamentMatchGameId,
+    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
 };
 pub use types::{ParseScopeTypeError, PermissionScope, ScopeType};

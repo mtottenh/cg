@@ -20,11 +20,11 @@ pub struct PageRequest {
     pub per_page: u32,
 }
 
-fn default_page() -> u32 {
+const fn default_page() -> u32 {
     1
 }
 
-fn default_per_page() -> u32 {
+const fn default_per_page() -> u32 {
     DEFAULT_PAGE_SIZE
 }
 
@@ -49,13 +49,13 @@ impl PageRequest {
 
     /// Calculate the offset for database queries.
     #[must_use]
-    pub fn offset(&self) -> u32 {
+    pub const fn offset(&self) -> u32 {
         (self.page.saturating_sub(1)) * self.per_page
     }
 
     /// Get the limit for database queries.
     #[must_use]
-    pub fn limit(&self) -> u32 {
+    pub const fn limit(&self) -> u32 {
         self.per_page
     }
 
@@ -89,7 +89,7 @@ impl Pagination {
         let total_pages = if total_items == 0 {
             1
         } else {
-            ((total_items as f64) / (request.per_page as f64)).ceil() as u32
+            ((total_items as f64) / f64::from(request.per_page)).ceil() as u32
         };
 
         Self {
@@ -102,13 +102,13 @@ impl Pagination {
 
     /// Check if there is a next page.
     #[must_use]
-    pub fn has_next(&self) -> bool {
+    pub const fn has_next(&self) -> bool {
         self.page < self.total_pages
     }
 
     /// Check if there is a previous page.
     #[must_use]
-    pub fn has_prev(&self) -> bool {
+    pub const fn has_prev(&self) -> bool {
         self.page > 1
     }
 }

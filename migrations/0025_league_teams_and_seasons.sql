@@ -118,8 +118,8 @@ CREATE TABLE league_teams (
     primary_color VARCHAR(7),
     secondary_color VARCHAR(7),
 
-    -- Captain/Creator
-    captain_user_id UUID NOT NULL REFERENCES users(id),
+    -- Captain/Creator (references player, not user - semantic purity)
+    captain_player_id UUID NOT NULL REFERENCES players(id),
 
     -- Status
     status VARCHAR(32) NOT NULL DEFAULT 'forming',
@@ -162,7 +162,7 @@ CREATE TABLE league_teams (
 );
 
 CREATE INDEX idx_league_teams_season ON league_teams(season_id);
-CREATE INDEX idx_league_teams_captain ON league_teams(captain_user_id);
+CREATE INDEX idx_league_teams_captain ON league_teams(captain_player_id);
 CREATE INDEX idx_league_teams_status ON league_teams(status);
 CREATE INDEX idx_league_teams_active ON league_teams(season_id)
     WHERE status = 'active';
@@ -185,7 +185,11 @@ COMMENT ON COLUMN league_teams.status IS 'forming=recruiting, pending=awaiting a
 CREATE TABLE league_team_members (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     team_id UUID NOT NULL REFERENCES league_teams(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id),
+    player_id UUID NOT NULL REFERENCES players(id),
+
+    -- Denormalized season_id for unique constraint enforcement
+    -- Kept in sync with league_teams.season_id via trigger
+    season_id UUID NOT NULL REFERENCES league_seasons(id),
 
     -- Role within team
     role VARCHAR(32) NOT NULL DEFAULT 'player',
@@ -203,11 +207,11 @@ CREATE TABLE league_team_members (
     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     left_at TIMESTAMPTZ,
 
-    -- Invited/Added by
+    -- Invited/Added by (user_id since this is an admin/captain action)
     added_by UUID REFERENCES users(id),
 
     -- Constraints
-    CONSTRAINT league_team_members_unique UNIQUE (team_id, user_id),
+    CONSTRAINT league_team_members_unique UNIQUE (team_id, player_id),
     CONSTRAINT league_team_members_check_role CHECK (role IN (
         'captain',         -- Team leader, can manage roster
         'player',          -- Primary roster player
@@ -225,7 +229,7 @@ CREATE TABLE league_team_members (
 );
 
 CREATE INDEX idx_league_team_members_team ON league_team_members(team_id);
-CREATE INDEX idx_league_team_members_user ON league_team_members(user_id);
+CREATE INDEX idx_league_team_members_player ON league_team_members(player_id);
 CREATE INDEX idx_league_team_members_active ON league_team_members(team_id)
     WHERE status = 'active';
 CREATE INDEX idx_league_team_members_role ON league_team_members(team_id, role);
@@ -234,25 +238,40 @@ COMMENT ON TABLE league_team_members IS 'Roster of players on a league team';
 COMMENT ON COLUMN league_team_members.role IS 'captain=team leader, player=primary roster, substitute=backup (can be on multiple teams)';
 
 -- =============================================================================
--- 4. UNIQUE CONSTRAINT: ONE PRIMARY TEAM PER USER PER SEASON
+-- 4. UNIQUE CONSTRAINT: ONE PRIMARY TEAM PER PLAYER PER SEASON
 -- =============================================================================
--- A user can only be captain or player (not substitute) on ONE team per season
--- This requires a partial unique index since we need to join through league_teams
+-- A player can only be captain or player (not substitute) on ONE team per season
+-- We use the denormalized season_id column for efficient index-based enforcement
 
--- First, create a function to get the season_id for a team
-CREATE OR REPLACE FUNCTION get_team_season_id(p_team_id UUID)
-RETURNS UUID AS $$
-    SELECT season_id FROM league_teams WHERE id = p_team_id;
-$$ LANGUAGE SQL STABLE;
+-- Trigger to auto-populate season_id from team on insert
+CREATE OR REPLACE FUNCTION set_league_team_member_season_id()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Get the season_id from the team
+    SELECT season_id INTO NEW.season_id
+    FROM league_teams WHERE id = NEW.team_id;
 
--- Create a unique index that enforces: one primary team per user per season
--- We use an expression index with the season_id lookup
+    IF NEW.season_id IS NULL THEN
+        RAISE EXCEPTION 'Team % not found', NEW.team_id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_league_team_members_set_season_id
+    BEFORE INSERT ON league_team_members
+    FOR EACH ROW
+    EXECUTE FUNCTION set_league_team_member_season_id();
+
+-- Create a unique index that enforces: one primary team per player per season
+-- Using the denormalized season_id column
 CREATE UNIQUE INDEX idx_one_primary_team_per_season
-ON league_team_members (user_id, get_team_season_id(team_id))
+ON league_team_members (player_id, season_id)
 WHERE role IN ('captain', 'player') AND status = 'active';
 
 COMMENT ON INDEX idx_one_primary_team_per_season IS
-    'Ensures a user can only be a primary member (captain/player) of one team per season';
+    'Ensures a player can only be a primary member (captain/player) of one team per season';
 
 -- =============================================================================
 -- 5. LEAGUE TEAM INVITATIONS
@@ -262,14 +281,14 @@ COMMENT ON INDEX idx_one_primary_team_per_season IS
 CREATE TABLE league_team_invitations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     team_id UUID NOT NULL REFERENCES league_teams(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id),
+    player_id UUID NOT NULL REFERENCES players(id),
 
     -- Invitation type
     type VARCHAR(20) NOT NULL,
     role VARCHAR(32) NOT NULL DEFAULT 'player',
     message TEXT,
 
-    -- Who sent it
+    -- Who sent it (user_id since this is an admin/captain action)
     invited_by UUID REFERENCES users(id),
 
     -- Status
@@ -292,8 +311,8 @@ CREATE TABLE league_team_invitations (
 );
 
 CREATE INDEX idx_league_team_invitations_team ON league_team_invitations(team_id);
-CREATE INDEX idx_league_team_invitations_user ON league_team_invitations(user_id);
-CREATE INDEX idx_league_team_invitations_pending ON league_team_invitations(user_id, status)
+CREATE INDEX idx_league_team_invitations_player ON league_team_invitations(player_id);
+CREATE INDEX idx_league_team_invitations_pending ON league_team_invitations(player_id, status)
     WHERE status = 'pending';
 
 COMMENT ON TABLE league_team_invitations IS 'Invitations and join requests for league teams';
@@ -329,12 +348,12 @@ ALTER TABLE teams ADD COLUMN migrated_to_league_team_id UUID REFERENCES league_t
 -- =============================================================================
 
 -- Add new permissions for league team management
-INSERT INTO permissions (id, name, description, category)
+INSERT INTO permissions (id, name, display_name, description, category)
 VALUES
-    (gen_random_uuid(), 'league.teams.create', 'Create teams in a league season', 'league'),
-    (gen_random_uuid(), 'league.teams.manage', 'Manage all teams in a league (admin override)', 'league'),
-    (gen_random_uuid(), 'league.rosters.lock', 'Lock/unlock rosters for a season', 'league'),
-    (gen_random_uuid(), 'league.seasons.manage', 'Create and manage league seasons', 'league')
+    (gen_random_uuid(), 'league.teams.create', 'Create League Teams', 'Create teams in a league season', 'league'),
+    (gen_random_uuid(), 'league.teams.manage', 'Manage League Teams', 'Manage all teams in a league (admin override)', 'league'),
+    (gen_random_uuid(), 'league.rosters.lock', 'Lock Rosters', 'Lock/unlock rosters for a season', 'league'),
+    (gen_random_uuid(), 'league.seasons.manage', 'Manage League Seasons', 'Create and manage league seasons', 'league')
 ON CONFLICT (name) DO NOTHING;
 
 -- Add permissions to league_admin role
@@ -364,7 +383,7 @@ SELECT
     lt.name AS team_name,
     lt.tag AS team_tag,
     lt.status AS team_status,
-    lt.captain_user_id,
+    lt.captain_player_id,
     COUNT(DISTINCT ltm.id) FILTER (WHERE ltm.status = 'active') AS active_member_count,
     COUNT(DISTINCT ltm.id) FILTER (WHERE ltm.role IN ('captain', 'player') AND ltm.status = 'active') AS primary_member_count,
     COUNT(DISTINCT ltm.id) FILTER (WHERE ltm.role = 'substitute' AND ltm.status = 'active') AS substitute_count,
@@ -374,20 +393,22 @@ SELECT
 FROM league_teams lt
 JOIN league_seasons ls ON ls.id = lt.season_id
 LEFT JOIN league_team_members ltm ON ltm.team_id = lt.id
-GROUP BY lt.id, lt.season_id, ls.league_id, lt.name, lt.tag, lt.status, lt.captain_user_id,
+GROUP BY lt.id, lt.season_id, ls.league_id, lt.name, lt.tag, lt.status, lt.captain_player_id,
          ls.team_size_min, ls.team_size_max, ls.roster_lock_status;
 
 COMMENT ON VIEW v_league_team_summary IS 'Summary of league teams with member counts and roster status';
 
--- View: User's team memberships across all seasons
-CREATE OR REPLACE VIEW v_user_league_teams AS
+-- View: Player's team memberships across all seasons
+CREATE OR REPLACE VIEW v_player_league_teams AS
 SELECT
-    ltm.user_id,
+    ltm.player_id,
     ltm.team_id,
     lt.name AS team_name,
     lt.tag AS team_tag,
+    lt.logo_url AS team_logo_url,
     ltm.role,
     ltm.status AS membership_status,
+    ltm.joined_at,
     lt.status AS team_status,
     ls.id AS season_id,
     ls.name AS season_name,
@@ -402,4 +423,4 @@ JOIN league_seasons ls ON ls.id = lt.season_id
 JOIN leagues l ON l.id = ls.league_id
 JOIN games g ON g.id = l.game_id;
 
-COMMENT ON VIEW v_user_league_teams IS 'All league team memberships for a user across all seasons';
+COMMENT ON VIEW v_player_league_teams IS 'All league team memberships for a player across all seasons';

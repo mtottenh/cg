@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 //! Plugin system for game-specific logic.
 //!
 //! Game plugins provide:

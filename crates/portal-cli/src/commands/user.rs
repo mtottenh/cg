@@ -210,55 +210,47 @@ async fn get_user(repo: &UserRepository, id: Uuid, format: OutputFormat) -> Resu
         .await
         .context("Failed to fetch user")?;
 
-    match user {
-        Some(u) => {
-            match format {
-                OutputFormat::Json => {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "id": u.id,
-                            "username": u.username,
-                            "email": u.email,
-                            "email_verified": u.email_verified,
-                            "status": u.status,
-                            "status_reason": u.status_reason,
-                            "two_factor_enabled": u.two_factor_enabled,
-                            "locale": u.locale,
-                            "timezone": u.timezone,
-                            "created_at": u.created_at,
-                            "updated_at": u.updated_at,
-                            "last_login_at": u.last_login_at,
-                        }))?
-                    );
-                }
-                _ => {
-                    println!("User Details:");
-                    println!("  ID:              {}", u.id);
-                    println!("  Username:        {}", u.username);
-                    println!("  Email:           {}", u.email);
-                    println!("  Email Verified:  {}", u.email_verified);
-                    println!("  Status:          {}", u.status);
-                    println!("  Status Reason:   {}", format_optional(&u.status_reason));
-                    println!("  2FA Enabled:     {}", u.two_factor_enabled);
-                    println!("  Locale:          {}", format_optional(&u.locale));
-                    println!("  Timezone:        {}", format_optional(&u.timezone));
-                    println!("  Created:         {}", format_timestamp(&u.created_at));
-                    println!("  Updated:         {}", format_timestamp(&u.updated_at));
-                    println!(
-                        "  Last Login:      {}",
-                        u.last_login_at
-                            .map(|t| format_timestamp(&t))
-                            .unwrap_or_else(|| "Never".to_string())
-                    );
-                }
-            }
-            Ok(())
+    if let Some(u) = user {
+        if matches!(format, OutputFormat::Json) {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "id": u.id,
+                    "username": u.username,
+                    "email": u.email,
+                    "email_verified": u.email_verified,
+                    "status": u.status,
+                    "status_reason": u.status_reason,
+                    "two_factor_enabled": u.two_factor_enabled,
+                    "locale": u.locale,
+                    "timezone": u.timezone,
+                    "created_at": u.created_at,
+                    "updated_at": u.updated_at,
+                    "last_login_at": u.last_login_at,
+                }))?
+            );
+        } else {
+            println!("User Details:");
+            println!("  ID:              {}", u.id);
+            println!("  Username:        {}", u.username);
+            println!("  Email:           {}", u.email);
+            println!("  Email Verified:  {}", u.email_verified);
+            println!("  Status:          {}", u.status);
+            println!("  Status Reason:   {}", format_optional(&u.status_reason));
+            println!("  2FA Enabled:     {}", u.two_factor_enabled);
+            println!("  Locale:          {}", format_optional(&u.locale));
+            println!("  Timezone:        {}", format_optional(&u.timezone));
+            println!("  Created:         {}", format_timestamp(&u.created_at));
+            println!("  Updated:         {}", format_timestamp(&u.updated_at));
+            println!(
+                "  Last Login:      {}",
+                u.last_login_at.map_or_else(|| "Never".to_string(), |t| format_timestamp(&t))
+            );
         }
-        None => {
-            error(&format!("User not found: {id}"));
-            std::process::exit(1);
-        }
+        Ok(())
+    } else {
+        error(&format!("User not found: {id}"));
+        std::process::exit(1);
     }
 }
 

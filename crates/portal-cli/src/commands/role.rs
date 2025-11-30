@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use portal_core::UserId;
 use portal_db::entities::{NewRole, NewUserRole};
 use portal_db::repositories::{PermissionRepository, RoleRepository};
 use portal_db::PgPool;
@@ -178,51 +177,45 @@ async fn get_role(repo: &RoleRepository, role: &str, format: OutputFormat) -> Re
         .await
         .context("Failed to fetch role")?;
 
-    match role_row {
-        Some(r) => {
-            let permissions = repo
-                .get_permissions(r.id)
-                .await
-                .context("Failed to fetch permissions")?;
+    if let Some(r) = role_row {
+        let permissions = repo
+            .get_permissions(r.id)
+            .await
+            .context("Failed to fetch permissions")?;
 
-            match format {
-                OutputFormat::Json => {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "id": r.id,
-                            "name": r.name,
-                            "display_name": r.display_name,
-                            "description": r.description,
-                            "category": r.category,
-                            "priority": r.priority,
-                            "is_system": r.is_system,
-                            "is_default": r.is_default,
-                            "color": r.color,
-                            "permissions": permissions.iter().map(|p| &p.name).collect::<Vec<_>>()
-                        }))?
-                    );
-                }
-                _ => {
-                    println!("Role: {}", r.display_name);
-                    println!("  ID:       {}", r.id);
-                    println!("  Name:     {}", r.name);
-                    println!("  Category: {}", r.category);
-                    println!("  Priority: {}", r.priority);
-                    println!("  System:   {}", r.is_system);
-                    println!("  Default:  {}", r.is_default);
-                    println!("\nPermissions ({}):", permissions.len());
-                    for p in &permissions {
-                        println!("  - {} ({})", p.name, p.category);
-                    }
-                }
+        if matches!(format, OutputFormat::Json) {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "id": r.id,
+                    "name": r.name,
+                    "display_name": r.display_name,
+                    "description": r.description,
+                    "category": r.category,
+                    "priority": r.priority,
+                    "is_system": r.is_system,
+                    "is_default": r.is_default,
+                    "color": r.color,
+                    "permissions": permissions.iter().map(|p| &p.name).collect::<Vec<_>>()
+                }))?
+            );
+        } else {
+            println!("Role: {}", r.display_name);
+            println!("  ID:       {}", r.id);
+            println!("  Name:     {}", r.name);
+            println!("  Category: {}", r.category);
+            println!("  Priority: {}", r.priority);
+            println!("  System:   {}", r.is_system);
+            println!("  Default:  {}", r.is_default);
+            println!("\nPermissions ({}):", permissions.len());
+            for p in &permissions {
+                println!("  - {} ({})", p.name, p.category);
             }
-            Ok(())
         }
-        None => {
-            error(&format!("Role not found: {role}"));
-            std::process::exit(1);
-        }
+        Ok(())
+    } else {
+        error(&format!("Role not found: {role}"));
+        std::process::exit(1);
     }
 }
 
@@ -254,27 +247,24 @@ async fn delete_role(repo: &RoleRepository, role: &str) -> Result<()> {
         .await
         .context("Failed to fetch role")?;
 
-    match role_row {
-        Some(r) => {
-            if r.is_system {
-                error("Cannot delete system roles");
-                std::process::exit(1);
-            }
-
-            let deleted = repo.delete(r.id).await.context("Failed to delete role")?;
-
-            if deleted {
-                success(&format!("Deleted role: {}", r.id));
-            } else {
-                error("Role not found or is a system role");
-                std::process::exit(1);
-            }
-            Ok(())
-        }
-        None => {
-            error(&format!("Role not found: {role}"));
+    if let Some(r) = role_row {
+        if r.is_system {
+            error("Cannot delete system roles");
             std::process::exit(1);
         }
+
+        let deleted = repo.delete(r.id).await.context("Failed to delete role")?;
+
+        if deleted {
+            success(&format!("Deleted role: {}", r.id));
+        } else {
+            error("Role not found or is a system role");
+            std::process::exit(1);
+        }
+        Ok(())
+    } else {
+        error(&format!("Role not found: {role}"));
+        std::process::exit(1);
     }
 }
 
@@ -406,33 +396,30 @@ async fn revoke_role(
 async fn list_permissions(repo: &PermissionRepository, format: OutputFormat) -> Result<()> {
     let perms = repo.list().await.context("Failed to fetch permissions")?;
 
-    match format {
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &perms
-                        .iter()
-                        .map(|p| serde_json::json!({
-                            "name": p.name,
-                            "display_name": p.display_name,
-                            "category": p.category,
-                            "is_dangerous": p.is_dangerous
-                        }))
-                        .collect::<Vec<_>>()
-                )?
-            );
-        }
-        _ => {
-            let mut current_cat = String::new();
-            for p in &perms {
-                if p.category != current_cat {
-                    println!("\n[{}]", p.category);
-                    current_cat.clone_from(&p.category);
-                }
-                let danger = if p.is_dangerous { " (DANGEROUS)" } else { "" };
-                println!("  {} - {}{}", p.name, p.display_name, danger);
+    if matches!(format, OutputFormat::Json) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &perms
+                    .iter()
+                    .map(|p| serde_json::json!({
+                        "name": p.name,
+                        "display_name": p.display_name,
+                        "category": p.category,
+                        "is_dangerous": p.is_dangerous
+                    }))
+                    .collect::<Vec<_>>()
+            )?
+        );
+    } else {
+        let mut current_cat = String::new();
+        for p in &perms {
+            if p.category != current_cat {
+                println!("\n[{}]", p.category);
+                current_cat.clone_from(&p.category);
             }
+            let danger = if p.is_dangerous { " (DANGEROUS)" } else { "" };
+            println!("  {} - {}{}", p.name, p.display_name, danger);
         }
     }
     Ok(())

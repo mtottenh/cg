@@ -29,6 +29,9 @@ chrono = { workspace = true }
 # Fake data generation
 fake = { workspace = true }
 
+# Slug generation
+slug = { workspace = true }
+
 # Test containers
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }

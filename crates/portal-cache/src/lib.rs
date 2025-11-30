@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 //! Redis cache layer for the Gaming Portal.
 //!
 //! Provides caching for:

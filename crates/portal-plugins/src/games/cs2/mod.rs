@@ -23,21 +23,21 @@ pub struct Cs2Plugin;
 
 impl Cs2Plugin {
     /// Create a new CS2 plugin instance.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }
 
 impl GamePlugin for Cs2Plugin {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "cs2"
     }
 
-    fn display_name(&self) -> &str {
+    fn display_name(&self) -> &'static str {
         "Counter-Strike 2"
     }
 
-    fn short_name(&self) -> &str {
+    fn short_name(&self) -> &'static str {
         "CS2"
     }
 
@@ -292,13 +292,13 @@ impl GamePlugin for Cs2Plugin {
             .teams
             .iter()
             .find(|t| t.team_id == player_data.team_id);
-        let match_rounds = match_team.and_then(|t| t.rounds_won).unwrap_or(0) as i64;
-        let enemy_rounds = match_data
+        let match_rounds = i64::from(match_team.and_then(|t| t.rounds_won).unwrap_or(0));
+        let enemy_rounds = i64::from(match_data
             .teams
             .iter()
             .find(|t| t.team_id != player_data.team_id)
             .and_then(|t| t.rounds_won)
-            .unwrap_or(0) as i64;
+            .unwrap_or(0));
         stats["rounds_played"] = json!(current_rounds + match_rounds + enemy_rounds);
 
         // Update match count
@@ -308,8 +308,7 @@ impl GamePlugin for Cs2Plugin {
         // Update wins if this player won
         let won = match_data
             .winner_team_id
-            .map(|w| w == player_data.team_id)
-            .unwrap_or(false);
+            .is_some_and(|w| w == player_data.team_id);
         if won {
             let current_wins = stats["matches_won"].as_i64().unwrap_or(0);
             stats["matches_won"] = json!(current_wins + 1);
@@ -361,14 +360,14 @@ impl GamePlugin for Cs2Plugin {
             DisplayStat {
                 key: "win_rate".to_string(),
                 label: "Win Rate".to_string(),
-                value: format!("{:.1}%", win_rate),
+                value: format!("{win_rate:.1}%"),
                 category: "General".to_string(),
                 sort_order: 2,
             },
             DisplayStat {
                 key: "kd_ratio".to_string(),
                 label: "K/D Ratio".to_string(),
-                value: format!("{:.2}", kd_ratio),
+                value: format!("{kd_ratio:.2}"),
                 category: "Combat".to_string(),
                 sort_order: 3,
             },
@@ -396,14 +395,14 @@ impl GamePlugin for Cs2Plugin {
             DisplayStat {
                 key: "hs_percent".to_string(),
                 label: "HS%".to_string(),
-                value: format!("{:.1}%", hs_percent),
+                value: format!("{hs_percent:.1}%"),
                 category: "Combat".to_string(),
                 sort_order: 7,
             },
             DisplayStat {
                 key: "adr".to_string(),
                 label: "ADR".to_string(),
-                value: format!("{:.1}", adr),
+                value: format!("{adr:.1}"),
                 category: "Combat".to_string(),
                 sort_order: 8,
             },
@@ -447,8 +446,8 @@ impl GamePlugin for Cs2Plugin {
         }
 
         // Calculate average ratings
-        let avg_rating_1: f64 = team1.iter().map(|p| p.rating as f64).sum::<f64>() / team1.len() as f64;
-        let avg_rating_2: f64 = team2.iter().map(|p| p.rating as f64).sum::<f64>() / team2.len() as f64;
+        let avg_rating_1: f64 = team1.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team1.len() as f64;
+        let avg_rating_2: f64 = team2.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team2.len() as f64;
 
         // Expected scores (Elo formula)
         // Using 2000 as divisor instead of 400 due to the larger CS2 Premier scale (0-35,000+)
@@ -456,7 +455,7 @@ impl GamePlugin for Cs2Plugin {
         let expected_2 = 1.0 - expected_1;
 
         // Determine actual scores
-        let team1_won = team1.first().map(|p| p.is_winner).unwrap_or(false);
+        let team1_won = team1.first().is_some_and(|p| p.is_winner);
         let actual_1 = if team1_won { 1.0 } else { 0.0 };
         let actual_2 = if team1_won { 0.0 } else { 1.0 };
 

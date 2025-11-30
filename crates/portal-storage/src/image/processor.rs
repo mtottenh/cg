@@ -133,7 +133,7 @@ impl ImageProcessor {
         })
     }
 
-    fn validate_dimensions(width: u32, height: u32, config: &ImageConfig) -> Result<(), ImageError> {
+    const fn validate_dimensions(width: u32, height: u32, config: &ImageConfig) -> Result<(), ImageError> {
         let (min_w, min_h) = config.min_dimensions;
         let (max_w, max_h) = config.max_dimensions;
 

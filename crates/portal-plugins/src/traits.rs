@@ -70,7 +70,7 @@ pub trait GamePlugin: Send + Sync {
         let available: Vec<String> = self.available_maps().iter().map(|m| m.id.clone()).collect();
         for map in maps {
             if !available.contains(map) {
-                return Err(format!("Unknown map: {}", map));
+                return Err(format!("Unknown map: {map}"));
             }
         }
         Ok(())
@@ -135,7 +135,7 @@ pub trait GamePlugin: Send + Sync {
             .into_iter()
             .find(|tier| {
                 rating >= tier.min_rating
-                    && tier.max_rating.map_or(true, |max| rating <= max)
+                    && tier.max_rating.is_none_or(|max| rating <= max)
             })
     }
 

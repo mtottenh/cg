@@ -1,6 +1,6 @@
 //! Test database management.
 //!
-//! Provides isolated PostgreSQL databases for testing using testcontainers.
+//! Provides isolated `PostgreSQL` databases for testing using testcontainers.
 //!
 //! ## Usage
 //!
@@ -38,7 +38,7 @@ static DB_COUNTER: AtomicU32 = AtomicU32::new(0);
 /// Test database wrapper that provides an isolated database.
 ///
 /// Each `TestDb` instance creates a unique database within a shared
-/// PostgreSQL container. The database is automatically dropped when
+/// `PostgreSQL` container. The database is automatically dropped when
 /// the `TestDb` is dropped.
 pub struct TestDb {
     /// The database connection pool.
@@ -51,7 +51,7 @@ impl TestDb {
     /// Create a new test database.
     ///
     /// This creates a fresh database with a unique name and runs all migrations.
-    /// The first call will start the shared PostgreSQL container (takes ~3-5 sec),
+    /// The first call will start the shared `PostgreSQL` container (takes ~3-5 sec),
     /// subsequent calls only create a new database (~100ms).
     ///
     /// # Panics
@@ -102,7 +102,7 @@ impl TestDb {
     }
 
     /// Get a reference to the connection pool.
-    pub fn pool(&self) -> &DbPool {
+    pub const fn pool(&self) -> &DbPool {
         &self.pool
     }
 
@@ -118,7 +118,7 @@ impl TestDb {
     pub async fn clean(&self) -> Result<(), sqlx::Error> {
         self.pool
             .execute(
-                r#"
+                r"
                 DO $$ DECLARE
                     r RECORD;
                 BEGIN
@@ -126,7 +126,7 @@ impl TestDb {
                         EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE';
                     END LOOP;
                 END $$;
-                "#,
+                ",
             )
             .await?;
         Ok(())
@@ -161,16 +161,14 @@ impl Drop for TestDb {
                         // Terminate any remaining connections
                         let _ = admin_pool
                             .execute(sqlx::query(&format!(
-                                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}'",
-                                db_name
+                                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{db_name}'"
                             )))
                             .await;
 
                         // Drop the database
                         let _ = admin_pool
                             .execute(sqlx::query(&format!(
-                                "DROP DATABASE IF EXISTS \"{}\"",
-                                db_name
+                                "DROP DATABASE IF EXISTS \"{db_name}\""
                             )))
                             .await;
                     }
@@ -199,7 +197,7 @@ impl TestTransaction {
     }
 
     /// Get the pool (which is in a transaction).
-    pub fn pool(&self) -> &DbPool {
+    pub const fn pool(&self) -> &DbPool {
         &self.pool
     }
 }

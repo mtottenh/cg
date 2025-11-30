@@ -44,17 +44,17 @@ pub enum MatchFormat {
 
 impl MatchFormat {
     /// Get the number of maps in this format.
-    pub fn map_count(&self) -> u32 {
+    pub const fn map_count(&self) -> u32 {
         match self {
-            MatchFormat::Bo1 => 1,
-            MatchFormat::Bo3 => 3,
-            MatchFormat::Bo5 => 5,
-            MatchFormat::Bo7 => 7,
+            Self::Bo1 => 1,
+            Self::Bo3 => 3,
+            Self::Bo5 => 5,
+            Self::Bo7 => 7,
         }
     }
 
     /// Get the number of wins required.
-    pub fn wins_required(&self) -> u32 {
+    pub const fn wins_required(&self) -> u32 {
         (self.map_count() / 2) + 1
     }
 }
@@ -62,10 +62,10 @@ impl MatchFormat {
 impl std::fmt::Display for MatchFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MatchFormat::Bo1 => write!(f, "bo1"),
-            MatchFormat::Bo3 => write!(f, "bo3"),
-            MatchFormat::Bo5 => write!(f, "bo5"),
-            MatchFormat::Bo7 => write!(f, "bo7"),
+            Self::Bo1 => write!(f, "bo1"),
+            Self::Bo3 => write!(f, "bo3"),
+            Self::Bo5 => write!(f, "bo5"),
+            Self::Bo7 => write!(f, "bo7"),
         }
     }
 }
@@ -230,12 +230,12 @@ pub enum TournamentFormatId {
 impl std::fmt::Display for TournamentFormatId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TournamentFormatId::SingleElimination => write!(f, "single_elimination"),
-            TournamentFormatId::DoubleElimination => write!(f, "double_elimination"),
-            TournamentFormatId::RoundRobin => write!(f, "round_robin"),
-            TournamentFormatId::Swiss => write!(f, "swiss"),
-            TournamentFormatId::GroupStage => write!(f, "group_stage"),
-            TournamentFormatId::Custom(s) => write!(f, "{}", s),
+            Self::SingleElimination => write!(f, "single_elimination"),
+            Self::DoubleElimination => write!(f, "double_elimination"),
+            Self::RoundRobin => write!(f, "round_robin"),
+            Self::Swiss => write!(f, "swiss"),
+            Self::GroupStage => write!(f, "group_stage"),
+            Self::Custom(s) => write!(f, "{s}"),
         }
     }
 }

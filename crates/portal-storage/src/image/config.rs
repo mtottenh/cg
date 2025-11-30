@@ -138,7 +138,7 @@ impl ImageType {
 
     /// Get the storage path prefix for this image type.
     #[must_use]
-    pub fn prefix(&self) -> &'static str {
+    pub const fn prefix(&self) -> &'static str {
         match self {
             Self::TeamLogo => "teams/logos",
             Self::TeamBanner => "teams/banners",
@@ -149,7 +149,7 @@ impl ImageType {
 
     /// Get the MIME type for the output format.
     #[must_use]
-    pub fn output_content_type(&self) -> &'static str {
+    pub const fn output_content_type(&self) -> &'static str {
         "image/webp"
     }
 }

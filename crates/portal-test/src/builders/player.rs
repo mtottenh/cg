@@ -1,10 +1,8 @@
 //! Player builder for tests.
 
 use chrono::Utc;
-use fake::faker::internet::en::Username;
 use fake::faker::name::en::Name;
 use fake::Fake;
-use portal_core::PlayerId;
 use portal_db::entities::PlayerRow;
 use portal_db::DbPool;
 use uuid::Uuid;
@@ -34,7 +32,7 @@ impl Default for PlayerBuilder {
 impl PlayerBuilder {
     /// Create a new player builder with random defaults.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             id: None,
             user_id: None,
@@ -49,14 +47,14 @@ impl PlayerBuilder {
 
     /// Set a specific ID.
     #[must_use]
-    pub fn id(mut self, id: Uuid) -> Self {
+    pub const fn id(mut self, id: Uuid) -> Self {
         self.id = Some(id);
         self
     }
 
     /// Link to an existing user.
     #[must_use]
-    pub fn user_id(mut self, user_id: Uuid) -> Self {
+    pub const fn user_id(mut self, user_id: Uuid) -> Self {
         self.user_id = Some(user_id);
         self.create_user = false;
         self
@@ -98,7 +96,7 @@ impl PlayerBuilder {
     }
 
     /// Build an in-memory player (not persisted).
-    /// Note: This requires a user_id to be set.
+    /// Note: This requires a `user_id` to be set.
     #[must_use]
     pub fn build(self, user_id: Uuid) -> PlayerRow {
         let now = Utc::now();
@@ -137,7 +135,7 @@ impl PlayerBuilder {
 
     /// Build and persist the player to the database.
     ///
-    /// If no user_id is set, creates a new user automatically.
+    /// If no `user_id` is set, creates a new user automatically.
     pub async fn build_persisted(self, pool: &DbPool) -> PlayerRow {
         // Create user if needed
         let user_id = if let Some(id) = self.user_id {
@@ -150,11 +148,11 @@ impl PlayerBuilder {
         let player = self.build(user_id);
 
         sqlx::query_as::<_, PlayerRow>(
-            r#"
+            r"
             INSERT INTO players (id, user_id, display_name, avatar_url, bio, country_code, steam_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING *
-            "#,
+            ",
         )
         .bind(player.id)
         .bind(player.user_id)

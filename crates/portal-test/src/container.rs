@@ -1,6 +1,6 @@
-//! Shared PostgreSQL container management for testing.
+//! Shared `PostgreSQL` container management for testing.
 //!
-//! Uses testcontainers to spin up a single PostgreSQL instance
+//! Uses testcontainers to spin up a single `PostgreSQL` instance
 //! that is shared across all tests in the process.
 
 use std::sync::Arc;
@@ -8,10 +8,10 @@ use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 
-/// PostgreSQL image tag for testing.
+/// `PostgreSQL` image tag for testing.
 const POSTGRES_TAG: &str = "16-alpine";
 
-/// PostgreSQL default port.
+/// `PostgreSQL` default port.
 const POSTGRES_PORT: u16 = 5432;
 
 /// Shared container instance.
@@ -46,7 +46,7 @@ impl SharedPostgresContainer {
     }
 }
 
-/// Initialize or retrieve the shared PostgreSQL container.
+/// Initialize or retrieve the shared `PostgreSQL` container.
 ///
 /// This function is idempotent and thread-safe. The first call will
 /// start the container; subsequent calls return the existing instance.
@@ -61,7 +61,7 @@ pub async fn get_or_init_container() -> Result<Arc<SharedPostgresContainer>, Con
         .cloned()
 }
 
-/// Start a new PostgreSQL container.
+/// Start a new `PostgreSQL` container.
 async fn start_container() -> Result<Arc<SharedPostgresContainer>, ContainerError> {
     tracing::info!("Starting shared PostgreSQL container (tag: {})", POSTGRES_TAG);
 
@@ -95,7 +95,7 @@ async fn start_container() -> Result<Arc<SharedPostgresContainer>, ContainerErro
 /// Errors that can occur during container management.
 #[derive(Debug, thiserror::Error)]
 pub enum ContainerError {
-    /// Failed to start the PostgreSQL container.
+    /// Failed to start the `PostgreSQL` container.
     #[error("Failed to start PostgreSQL container: {0}")]
     StartFailed(#[source] testcontainers::TestcontainersError),
 

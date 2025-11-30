@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::path::Path;
 
 /// CLI configuration.
 #[derive(Debug, Deserialize)]

@@ -89,7 +89,7 @@ async fn list_games(repo: &GameRepository, format: OutputFormat) -> Result<()> {
     let rows: Vec<GameTableRow> = games
         .into_iter()
         .map(|g| GameTableRow {
-            id: g.id,
+            id: g.slug,
             display_name: g.display_name,
             team_size: g.team_size_default,
             status: g.status,
@@ -99,56 +99,50 @@ async fn list_games(repo: &GameRepository, format: OutputFormat) -> Result<()> {
     output_list(&rows, format)
 }
 
-async fn get_game(repo: &GameRepository, id: &str, format: OutputFormat) -> Result<()> {
-    let game = repo.find_by_id(id).await.context("Failed to fetch game")?;
+async fn get_game(repo: &GameRepository, slug: &str, format: OutputFormat) -> Result<()> {
+    let game = repo.find_by_slug(slug).await.context("Failed to fetch game")?;
 
-    match game {
-        Some(g) => {
-            match format {
-                OutputFormat::Json => {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "id": g.id,
-                            "display_name": g.display_name,
-                            "short_name": g.short_name,
-                            "description": g.description,
-                            "team_size_min": g.team_size_min,
-                            "team_size_max": g.team_size_max,
-                            "team_size_default": g.team_size_default,
-                            "status": g.status,
-                            "is_featured": g.is_featured,
-                            "sort_order": g.sort_order,
-                        }))?
-                    );
-                }
-                _ => {
-                    println!("Game: {}", g.display_name);
-                    println!("  ID:         {}", g.id);
-                    println!(
-                        "  Team Size:  {} (min: {}, max: {})",
-                        g.team_size_default, g.team_size_min, g.team_size_max
-                    );
-                    println!("  Status:     {}", g.status);
-                    println!("  Featured:   {}", g.is_featured);
-                }
-            }
-            Ok(())
+    if let Some(g) = game {
+        if matches!(format, OutputFormat::Json) {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "id": g.slug,
+                    "display_name": g.display_name,
+                    "short_name": g.short_name,
+                    "description": g.description,
+                    "team_size_min": g.team_size_min,
+                    "team_size_max": g.team_size_max,
+                    "team_size_default": g.team_size_default,
+                    "status": g.status,
+                    "is_featured": g.is_featured,
+                    "sort_order": g.sort_order,
+                }))?
+            );
+        } else {
+            println!("Game: {}", g.display_name);
+            println!("  Slug:       {}", g.slug);
+            println!(
+                "  Team Size:  {} (min: {}, max: {})",
+                g.team_size_default, g.team_size_min, g.team_size_max
+            );
+            println!("  Status:     {}", g.status);
+            println!("  Featured:   {}", g.is_featured);
         }
-        None => {
-            error(&format!("Game not found: {id}"));
-            std::process::exit(1);
-        }
+        Ok(())
+    } else {
+        error(&format!("Game not found: {slug}"));
+        std::process::exit(1);
     }
 }
 
-async fn create_game(repo: &GameRepository, id: &str, name: &str, team_size: i32) -> Result<()> {
+async fn create_game(repo: &GameRepository, slug: &str, name: &str, team_size: i32) -> Result<()> {
     let new_game = NewGame {
-        id: id.to_string(),
+        slug: slug.to_string(),
         display_name: name.to_string(),
         short_name: None,
         description: None,
-        plugin_id: id.to_string(), // Default to same as game ID
+        plugin_id: slug.to_string(), // Default to same as game slug
         plugin_version: "1.0.0".to_string(),
         team_size_min: team_size,
         team_size_max: team_size,
@@ -159,7 +153,7 @@ async fn create_game(repo: &GameRepository, id: &str, name: &str, team_size: i32
         .await
         .context("Failed to create game")?;
 
-    success(&format!("Created game: {} ({})", name, id));
+    success(&format!("Created game: {name} ({slug})"));
     Ok(())
 }
 

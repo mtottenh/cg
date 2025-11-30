@@ -57,7 +57,7 @@ impl PluginManager {
 
     /// List all registered plugin IDs.
     pub fn list(&self) -> Vec<&str> {
-        self.plugins.keys().map(|s| s.as_str()).collect()
+        self.plugins.keys().map(std::string::String::as_str).collect()
     }
 
     /// List all registered plugins.

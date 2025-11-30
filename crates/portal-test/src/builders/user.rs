@@ -1,9 +1,6 @@
 //! User builder for tests.
 
-use chrono::{DateTime, Utc};
-use fake::faker::internet::en::{FreeEmail, Username};
-use fake::Fake;
-use portal_core::UserId;
+use chrono::Utc;
 use portal_db::entities::UserRow;
 use portal_db::DbPool;
 use uuid::Uuid;
@@ -43,7 +40,7 @@ impl UserBuilder {
 
     /// Set a specific ID.
     #[must_use]
-    pub fn id(mut self, id: Uuid) -> Self {
+    pub const fn id(mut self, id: Uuid) -> Self {
         self.id = Some(id);
         self
     }
@@ -64,7 +61,7 @@ impl UserBuilder {
 
     /// Set email verification status.
     #[must_use]
-    pub fn email_verified(mut self, verified: bool) -> Self {
+    pub const fn email_verified(mut self, verified: bool) -> Self {
         self.email_verified = verified;
         self
     }
@@ -93,7 +90,7 @@ impl UserBuilder {
 
     /// Enable 2FA.
     #[must_use]
-    pub fn with_2fa(mut self) -> Self {
+    pub const fn with_2fa(mut self) -> Self {
         self.two_factor_enabled = true;
         self
     }
@@ -102,10 +99,13 @@ impl UserBuilder {
     #[must_use]
     pub fn build(self) -> UserRow {
         let now = Utc::now();
+        // Generate username that matches constraint: ^[a-zA-Z0-9_-]{3,32}$
+        // Use UUID to ensure uniqueness and avoid invalid characters
+        let unique_id = Uuid::new_v4();
         UserRow {
             id: self.id.unwrap_or_else(Uuid::now_v7),
-            username: self.username.unwrap_or_else(|| Username().fake()),
-            email: self.email.unwrap_or_else(|| FreeEmail().fake()),
+            username: self.username.unwrap_or_else(|| format!("user_{}", &unique_id.to_string()[..16])),
+            email: self.email.unwrap_or_else(|| format!("{}@test.com", &unique_id.to_string()[..16])),
             email_verified: self.email_verified,
             email_verified_at: if self.email_verified { Some(now) } else { None },
             password_hash: self.password_hash,
@@ -125,16 +125,18 @@ impl UserBuilder {
     }
 
     /// Build and persist the user to the database.
+    /// Also creates an associated player record.
     pub async fn build_persisted(self, pool: &DbPool) -> UserRow {
         let user = self.build();
 
-        sqlx::query_as::<_, UserRow>(
-            r#"
+        // Create user
+        let user = sqlx::query_as::<_, UserRow>(
+            r"
             INSERT INTO users (id, username, email, email_verified, email_verified_at,
                 password_hash, status, two_factor_enabled, locale, timezone)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *
-            "#,
+            ",
         )
         .bind(user.id)
         .bind(&user.username)
@@ -148,6 +150,22 @@ impl UserBuilder {
         .bind(&user.timezone)
         .fetch_one(pool)
         .await
-        .expect("Failed to create test user")
+        .expect("Failed to create test user");
+
+        // Create associated player record
+        sqlx::query(
+            r"
+            INSERT INTO players (id, user_id, display_name)
+            VALUES ($1, $2, $3)
+            ",
+        )
+        .bind(user.id) // Use same UUID for player
+        .bind(user.id)
+        .bind(&user.username)
+        .execute(pool)
+        .await
+        .expect("Failed to create test player");
+
+        user
     }
 }

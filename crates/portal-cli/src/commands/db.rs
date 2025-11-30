@@ -42,7 +42,7 @@ enum DbSubcommand {
 impl DbCommand {
     pub async fn execute(&self, pool: &PgPool, _format: OutputFormat) -> Result<()> {
         match &self.command {
-            DbSubcommand::Migrate => run_migrations(pool).await,
+            DbSubcommand::Migrate => run_migrations(pool),
             DbSubcommand::Status => show_status(pool).await,
             DbSubcommand::Stats => show_stats(pool).await,
             DbSubcommand::Seed { users } => seed_database(pool, *users).await,
@@ -51,7 +51,8 @@ impl DbCommand {
     }
 }
 
-async fn run_migrations(_pool: &PgPool) -> Result<()> {
+#[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other db commands
+fn run_migrations(_pool: &PgPool) -> Result<()> {
     info("Running migrations...");
 
     // Note: In a real implementation, you would use sqlx-cli or run migrations here
@@ -107,23 +108,26 @@ async fn show_stats(pool: &PgPool) -> Result<()> {
     let tables = [
         ("users", "Users"),
         ("players", "Players"),
-        ("teams", "Teams"),
-        ("team_members", "Team Members"),
+        ("leagues", "Leagues"),
+        ("league_seasons", "League Seasons"),
+        ("league_teams", "League Teams"),
+        ("league_team_seasons", "Team Seasons"),
+        ("league_team_members", "Team Members"),
+        ("league_team_invitations", "Team Invitations"),
         ("matches", "Matches"),
         ("tournaments", "Tournaments"),
-        ("leagues", "Leagues"),
         ("games", "Games"),
         ("bans", "Bans"),
         ("roles", "Roles"),
     ];
 
     for (table, display) in tables {
-        let query = format!("SELECT COUNT(*) FROM {}", table);
+        let query = format!("SELECT COUNT(*) FROM {table}");
         match sqlx::query_scalar::<_, i64>(&query)
             .fetch_one(pool)
             .await
         {
-            Ok(count) => println!("{:20} {:>10}", display, count),
+            Ok(count) => println!("{display:20} {count:>10}"),
             Err(_) => println!("{:20} {:>10}", display, "(not found)"),
         }
     }
@@ -133,8 +137,7 @@ async fn show_stats(pool: &PgPool) -> Result<()> {
 
 async fn seed_database(pool: &PgPool, user_count: i32) -> Result<()> {
     warn(&format!(
-        "This will create {} test users with associated data",
-        user_count
+        "This will create {user_count} test users with associated data"
     ));
 
     let confirm = dialoguer::Confirm::new()
@@ -161,18 +164,18 @@ async fn seed_database(pool: &PgPool, user_count: i32) -> Result<()> {
     let mut tx = pool.begin().await.context("Failed to start transaction")?;
 
     for i in 1..=user_count {
-        let username = format!("testuser{}", i);
-        let email = format!("testuser{}@example.com", i);
-        let display_name = format!("Test User {}", i);
+        let username = format!("testuser{i}");
+        let email = format!("testuser{i}@example.com");
+        let display_name = format!("Test User {i}");
 
         // Create user
         let user: Option<(uuid::Uuid,)> = sqlx::query_as(
-            r#"
+            r"
             INSERT INTO users (username, email, password_hash, status, email_verified)
             VALUES ($1, $2, $3, 'active', TRUE)
             ON CONFLICT (email) DO NOTHING
             RETURNING id
-            "#,
+            ",
         )
         .bind(&username)
         .bind(&email)
@@ -184,10 +187,10 @@ async fn seed_database(pool: &PgPool, user_count: i32) -> Result<()> {
         if let Some((user_id,)) = user {
             // Create player
             sqlx::query(
-                r#"
+                r"
                 INSERT INTO players (user_id, display_name, country_code)
                 VALUES ($1, $2, 'US')
-                "#,
+                ",
             )
             .bind(user_id)
             .bind(&display_name)
@@ -199,8 +202,8 @@ async fn seed_database(pool: &PgPool, user_count: i32) -> Result<()> {
 
     tx.commit().await.context("Failed to commit transaction")?;
 
-    success(&format!("Created {} test users", user_count));
-    println!("Password for all test users: {}", password);
+    success(&format!("Created {user_count} test users"));
+    println!("Password for all test users: {password}");
 
     Ok(())
 }
@@ -251,12 +254,16 @@ async fn clear_database(pool: &PgPool, confirm: &str) -> Result<()> {
         "season_standings",
         "season_participants",
         "seasons",
+        // League team system (new)
+        "league_team_invitations",
+        "league_team_members",
+        "league_team_seasons",
+        "league_season_participants",
+        "league_teams",
+        "league_seasons",
         "league_invitations",
         "league_members",
         "leagues",
-        "team_invitations",
-        "team_members",
-        "teams",
         "player_game_profiles",
         "player_relationships",
         "players",
@@ -270,10 +277,10 @@ async fn clear_database(pool: &PgPool, confirm: &str) -> Result<()> {
     ];
 
     for table in tables {
-        let query = format!("TRUNCATE TABLE {} CASCADE", table);
+        let query = format!("TRUNCATE TABLE {table} CASCADE");
         match sqlx::query(&query).execute(pool).await {
-            Ok(_) => println!("  Cleared: {}", table),
-            Err(e) => println!("  Skipped: {} ({})", table, e),
+            Ok(_) => println!("  Cleared: {table}"),
+            Err(e) => println!("  Skipped: {table} ({e})"),
         }
     }
 

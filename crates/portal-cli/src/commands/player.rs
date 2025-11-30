@@ -171,42 +171,36 @@ async fn get_player(repo: &PlayerRepository, id: Uuid, format: OutputFormat) -> 
         .await
         .context("Failed to fetch player")?;
 
-    match player {
-        Some(p) => {
-            match format {
-                OutputFormat::Json => {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "id": p.id,
-                            "user_id": p.user_id,
-                            "display_name": p.display_name,
-                            "country_code": p.country_code,
-                            "region": p.region,
-                            "timezone": p.timezone,
-                            "bio": p.bio,
-                            "steam_id": p.steam_id,
-                            "created_at": p.created_at,
-                        }))?
-                    );
-                }
-                _ => {
-                    println!("Player: {}", p.display_name);
-                    println!("  ID:        {}", p.id);
-                    println!("  User ID:   {}", p.user_id);
-                    println!("  Country:   {}", format_optional(&p.country_code));
-                    println!("  Region:    {}", format_optional(&p.region));
-                    println!("  Steam ID:  {}", format_optional(&p.steam_id));
-                    println!("  Bio:       {}", format_optional(&p.bio));
-                    println!("  Created:   {}", format_timestamp(&p.created_at));
-                }
-            }
-            Ok(())
+    if let Some(p) = player {
+        if matches!(format, OutputFormat::Json) {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "id": p.id,
+                    "user_id": p.user_id,
+                    "display_name": p.display_name,
+                    "country_code": p.country_code,
+                    "region": p.region,
+                    "timezone": p.timezone,
+                    "bio": p.bio,
+                    "steam_id": p.steam_id,
+                    "created_at": p.created_at,
+                }))?
+            );
+        } else {
+            println!("Player: {}", p.display_name);
+            println!("  ID:        {}", p.id);
+            println!("  User ID:   {}", p.user_id);
+            println!("  Country:   {}", format_optional(&p.country_code));
+            println!("  Region:    {}", format_optional(&p.region));
+            println!("  Steam ID:  {}", format_optional(&p.steam_id));
+            println!("  Bio:       {}", format_optional(&p.bio));
+            println!("  Created:   {}", format_timestamp(&p.created_at));
         }
-        None => {
-            error(&format!("Player not found: {id}"));
-            std::process::exit(1);
-        }
+        Ok(())
+    } else {
+        error(&format!("Player not found: {id}"));
+        std::process::exit(1);
     }
 }
 

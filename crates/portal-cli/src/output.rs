@@ -24,6 +24,7 @@ pub trait TableDisplay: Tabled + Serialize {}
 impl<T: Tabled + Serialize> TableDisplay for T {}
 
 /// Output a single item.
+#[allow(dead_code)] // May be used in future CLI commands
 pub fn output_item<T: Serialize + Display>(item: &T, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Table => {
@@ -150,22 +151,7 @@ pub struct PlayerTableRow {
     pub created_at: String,
 }
 
-/// Table row for team display.
-#[derive(Tabled, Serialize)]
-pub struct TeamTableRow {
-    #[tabled(rename = "ID")]
-    pub id: String,
-    #[tabled(rename = "Name")]
-    pub name: String,
-    #[tabled(rename = "Tag")]
-    pub tag: String,
-    #[tabled(rename = "Game")]
-    pub game: String,
-    #[tabled(rename = "Status")]
-    pub status: String,
-    #[tabled(rename = "Members")]
-    pub member_count: i32,
-}
+// TODO: Add LeagueTeamTableRow once the league team system is fully implemented
 
 /// Table row for game display.
 #[derive(Tabled, Serialize)]

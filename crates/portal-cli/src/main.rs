@@ -1,7 +1,8 @@
+#![allow(missing_docs)]
 //! Portal CLI - Administration tool for the Gaming Portal.
 //!
 //! This CLI provides direct database access for administrative operations
-//! including user management, RBAC, team management, and more.
+//! including user management, RBAC, and more.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -11,7 +12,7 @@ mod commands;
 mod config;
 mod output;
 
-use commands::{db, game, player, role, team, user};
+use commands::{db, game, player, role, user};
 use config::CliConfig;
 use output::OutputFormat;
 
@@ -52,14 +53,12 @@ pub enum Commands {
     /// Player profile management
     Player(player::PlayerCommand),
 
-    /// Team management
-    Team(team::TeamCommand),
-
     /// Game configuration
     Game(game::GameCommand),
 
     /// Database utilities
     Db(db::DbCommand),
+    // TODO: Add LeagueTeam command once the league team system is fully implemented
 }
 
 #[tokio::main]
@@ -83,7 +82,6 @@ async fn main() -> Result<()> {
         Commands::User(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Role(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Player(cmd) => cmd.execute(&pool, cli.format).await?,
-        Commands::Team(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Game(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Db(cmd) => cmd.execute(&pool, cli.format).await?,
     }

@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 //! Test utilities for the Gaming Portal.
 //!
 //! This crate provides:
@@ -11,7 +12,7 @@
 //! use portal_test::prelude::*;
 //!
 //! #[tokio::test]
-//! async fn test_team_creation() {
+//! async fn test_player_creation() {
 //!     // TestDb automatically starts a PostgreSQL container
 //!     let db = TestDb::new().await;
 //!
@@ -19,11 +20,7 @@
 //!         .display_name("TestPlayer")
 //!         .build_persisted(&db.pool).await;
 //!
-//!     let team = TeamBuilder::new("Test Team")
-//!         .with_founder(player.id)
-//!         .build_persisted(&db.pool).await;
-//!
-//!     assert_eq!(team.created_by, player.id);
+//!     assert!(!player.display_name.is_empty());
 //! }
 //! ```
 //!
@@ -38,7 +35,11 @@ pub mod database;
 
 /// Common test imports.
 pub mod prelude {
-    pub use crate::builders::{PlayerBuilder, TeamBuilder, UserBuilder};
+    pub use crate::builders::{
+        LeagueBuilder, LeagueSeasonBuilder, LeagueSeasonParticipantBuilder, LeagueTeamBuilder,
+        LeagueTeamInvitationBuilder, LeagueTeamMemberBuilder, LeagueTeamSeasonBuilder,
+        PlayerBuilder, UserBuilder,
+    };
     pub use crate::database::TestDb;
     pub use portal_core::*;
 }

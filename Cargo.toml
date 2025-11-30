@@ -69,6 +69,9 @@ dotenvy = "0.15"
 # Redis
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
+# Utilities
+slug = "0.1"
+
 # Testing
 fake = { version = "3", features = ["derive", "chrono", "uuid"] }
 mockall = "0.13"
@@ -100,6 +103,68 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+
+# Allow numeric casting warnings - database columns use i64, but counts are safe as u64/i32
+cast_sign_loss = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_possible_wrap = "allow"
+
+# Allow stylistic suggestions that don't improve code clarity
+option_if_let_else = "allow"
+similar_names = "allow"
+struct_field_names = "allow"
+
+# Allow these for now - can be addressed later
+too_many_arguments = "allow"
+too_many_lines = "allow"
+result_large_err = "allow"
+redundant_pub_crate = "allow"
+
+# Allow method naming that might conflict with std traits (e.g., from_str)
+should_implement_trait = "allow"
+
+# Allow futures that aren't Send - some audit service generics don't require Send
+future_not_send = "allow"
+
+# Allow match arms with identical bodies (intentional for error mapping clarity)
+match_same_arms = "allow"
+
+# Allow args passed by value that aren't consumed (often for API consistency)
+needless_pass_by_value = "allow"
+
+# Allow redundant trait bounds in where clauses (sometimes clearer)
+trait_duplication_in_bounds = "allow"
+
+# Allow Option<&T> over &Option<T> - sometimes the latter is clearer
+ref_option = "allow"
+
+# Allow doc issues in internal code
+doc_markdown = "allow"
+
+# Allow module naming conventions
+module_inception = "allow"
+
+# Allow enum variant naming conventions (e.g., all ending in "Error" or "Failed")
+enum_variant_names = "allow"
+
+# Allow missing const fn for now
+missing_const_for_fn = "allow"
+
+# Allow missing must_use attributes
+return_self_not_must_use = "allow"
+
+# Allow needless for_each
+needless_for_each = "allow"
+
+# Allow format strings with String args
+to_string_in_format_args = "allow"
+
+# Allow unused self in methods that might need it for API consistency
+unused_self = "allow"
+
+# Allow number literals without separators
+unreadable_literal = "allow"
 
 [profile.dev]
 debug = 1

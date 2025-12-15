@@ -566,6 +566,14 @@ VALUES
     (gen_random_uuid(), 'tournament.disputes.resolve', 'Resolve Disputes', 'Handle match disputes', 'tournament')
 ON CONFLICT (name) DO NOTHING;
 
+-- Assign tournament permissions to super_admin (who gets ALL permissions)
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r, permissions p
+WHERE r.name = 'super_admin'
+  AND p.name LIKE 'tournament.%'
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
 -- =============================================================================
 -- 11. MATERIALIZED VIEW FOR BRACKET DISPLAY
 -- =============================================================================

@@ -9,7 +9,7 @@ use portal_core::{GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId
 use portal_domain::entities::tournament::{
     CreateTournamentCommand, CreateTournamentStageCommand, UpdateTournamentCommand,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -84,7 +84,7 @@ pub struct CreateTournamentRequest {
     #[serde(default)]
     pub team_size: Option<i32>,
 
-    /// Minimum participants required.
+    /// Minimum participants required (at least 2 for any tournament).
     #[validate(range(min = 2, max = 1024))]
     pub min_participants: i32,
 
@@ -520,6 +520,52 @@ pub struct WithdrawRequest {
     pub reason: Option<String>,
 }
 
+/// Request to reject a registration.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct RejectRegistrationRequest {
+    /// Reason for rejection.
+    #[validate(length(min = 1, max = 500))]
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Request to disqualify a participant.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct DisqualifyRequest {
+    /// Reason for disqualification.
+    #[validate(length(min = 1, max = 500))]
+    pub reason: String,
+}
+
+/// Request to auto-seed participants.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AutoSeedRequest {
+    /// Seeding algorithm to use: random, rating, season_rank.
+    #[serde(default = "default_seeding_algorithm")]
+    pub algorithm: String,
+}
+
+fn default_seeding_algorithm() -> String {
+    "random".to_string()
+}
+
+/// Request to manually set seeds.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct ManualSeedRequest {
+    /// List of seed assignments (registration_id, seed_number).
+    #[validate(length(min = 1))]
+    pub seeds: Vec<SeedAssignment>,
+}
+
+/// Individual seed assignment.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct SeedAssignment {
+    /// Registration ID.
+    pub registration_id: String,
+    /// Seed number (1 = highest seed).
+    pub seed: i32,
+}
+
 // =============================================================================
 // TOURNAMENT MATCH REQUESTS
 // =============================================================================
@@ -604,4 +650,84 @@ pub struct ListTournamentsQuery {
     /// Search by name.
     #[serde(default)]
     pub search: Option<String>,
+}
+
+// =============================================================================
+// MATCH LIFECYCLE REQUESTS
+// =============================================================================
+
+/// Request to check in for a match.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct MatchCheckInRequest {
+    /// Registration ID of the participant checking in.
+    pub registration_id: String,
+}
+
+/// Request for admin to force a match status transition.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct AdminMatchTransitionRequest {
+    /// Target status to transition to.
+    pub to_status: String,
+
+    /// Reason for the admin override.
+    #[validate(length(min = 5, max = 500))]
+    pub override_reason: String,
+}
+
+/// Request to forfeit a match.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct ForfeitMatchRequest {
+    /// Registration ID of the participant forfeiting.
+    pub registration_id: String,
+}
+
+// =============================================================================
+// SCHEDULE PROPOSAL REQUESTS
+// =============================================================================
+
+/// Request to propose match times.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct ProposeScheduleRequest {
+    /// Proposed time slots (1-5 options).
+    #[validate(length(min = 1, max = 5))]
+    pub proposed_times: Vec<DateTime<Utc>>,
+}
+
+/// Request to accept a schedule proposal.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct AcceptScheduleProposalRequest {
+    /// ID of the proposal to accept.
+    pub proposal_id: String,
+
+    /// Selected time from the proposed times.
+    pub selected_time: DateTime<Utc>,
+}
+
+/// Request to reject a schedule proposal.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct RejectScheduleProposalRequest {
+    /// ID of the proposal to reject.
+    pub proposal_id: String,
+}
+
+/// Request to counter-propose new times.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct CounterProposeRequest {
+    /// ID of the original proposal.
+    pub original_proposal_id: String,
+
+    /// New proposed time slots (1-5 options).
+    #[validate(length(min = 1, max = 5))]
+    pub proposed_times: Vec<DateTime<Utc>>,
+}
+
+/// Request for admin to directly schedule a match.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct AdminScheduleRequest {
+    /// Time to schedule the match.
+    pub scheduled_at: DateTime<Utc>,
+
+    /// Optional notes for the scheduling decision.
+    #[serde(default)]
+    pub notes: Option<String>,
 }

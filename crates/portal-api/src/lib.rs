@@ -26,6 +26,8 @@ pub mod middleware;
 pub mod openapi;
 pub mod routes;
 pub mod state;
+pub mod websocket;
 
 pub use app::create_app;
 pub use state::AppState;
+pub use websocket::spawn_timeout_warning_task;

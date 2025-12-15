@@ -860,6 +860,11 @@ pub struct TournamentStanding {
     pub buchholz_score: Option<f64>,
     pub opponent_match_wins: Option<f64>,
 
+    // Extended tiebreakers
+    pub head_to_head: HeadToHead,
+    pub tiebreaker_score: f64,
+    pub is_tied: bool,
+
     // Points
     pub points: i32,
 
@@ -877,6 +882,69 @@ impl TournamentStanding {
             Some(f64::from(self.matches_won) / f64::from(self.matches_played))
         }
     }
+
+    /// Check if this standing beats another via head-to-head.
+    #[must_use]
+    pub fn beats_head_to_head(&self, other: &Self) -> Option<bool> {
+        if let Some(record) = self.head_to_head.get(&other.registration_id) {
+            if record.wins > record.losses {
+                Some(true)
+            } else if record.losses > record.wins {
+                Some(false)
+            } else {
+                None // Tied
+            }
+        } else {
+            None
+        }
+    }
+}
+
+/// Head-to-head records against other participants.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HeadToHead {
+    /// Records indexed by opponent registration ID
+    pub records: std::collections::HashMap<TournamentRegistrationId, HeadToHeadRecord>,
+}
+
+impl HeadToHead {
+    /// Create empty head-to-head data.
+    pub fn new() -> Self {
+        Self {
+            records: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Get record against a specific opponent.
+    pub fn get(&self, opponent: &TournamentRegistrationId) -> Option<&HeadToHeadRecord> {
+        self.records.get(opponent)
+    }
+
+    /// Record a win against an opponent.
+    pub fn record_win(&mut self, opponent: TournamentRegistrationId) {
+        let entry = self.records.entry(opponent).or_default();
+        entry.wins += 1;
+    }
+
+    /// Record a loss against an opponent.
+    pub fn record_loss(&mut self, opponent: TournamentRegistrationId) {
+        let entry = self.records.entry(opponent).or_default();
+        entry.losses += 1;
+    }
+
+    /// Record a draw against an opponent.
+    pub fn record_draw(&mut self, opponent: TournamentRegistrationId) {
+        let entry = self.records.entry(opponent).or_default();
+        entry.draws += 1;
+    }
+}
+
+/// Record of matches against a specific opponent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HeadToHeadRecord {
+    pub wins: i32,
+    pub losses: i32,
+    pub draws: i32,
 }
 
 // =============================================================================

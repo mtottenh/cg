@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::entities::tournament::TournamentStandingRow;
+use crate::transaction::DbTransaction;
 use crate::DbPool;
 use portal_core::{DomainError, TournamentBracketId, TournamentRegistrationId};
 use portal_domain::entities::tournament::TournamentStanding;
@@ -176,5 +177,102 @@ impl TournamentStandingsRepository for PgTournamentStandingsRepository {
         }
 
         Ok(results)
+    }
+}
+
+// =============================================================================
+// TRANSACTIONAL METHODS
+// =============================================================================
+
+impl PgTournamentStandingsRepository {
+    /// Update standings after a match within a transaction.
+    pub async fn update_after_match_in_tx(
+        tx: &mut DbTransaction<'_>,
+        update: UpdateTournamentStanding,
+    ) -> Result<TournamentStanding, DomainError> {
+        let now = Utc::now();
+
+        let row = sqlx::query_as::<_, TournamentStandingRow>(
+            r"
+            UPDATE tournament_standings SET
+                matches_played = matches_played + 1,
+                matches_won = matches_won + $3,
+                matches_lost = matches_lost + $4,
+                matches_drawn = matches_drawn + $5,
+                game_wins = game_wins + $6,
+                game_losses = game_losses + $7,
+                game_differential = game_differential + ($6 - $7),
+                points = points + $8,
+                updated_at = $9
+            WHERE bracket_id = $1 AND registration_id = $2
+            RETURNING *
+            ",
+        )
+        .bind(update.bracket_id.as_uuid())
+        .bind(update.registration_id.as_uuid())
+        .bind(update.matches_won_delta)
+        .bind(update.matches_lost_delta)
+        .bind(update.matches_drawn_delta)
+        .bind(update.game_wins_delta)
+        .bind(update.game_losses_delta)
+        .bind(update.points_delta)
+        .bind(now)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentStanding::from(row))
+    }
+
+    /// Recalculate standings positions within a transaction.
+    pub async fn recalculate_positions_in_tx(
+        tx: &mut DbTransaction<'_>,
+        bracket_id: TournamentBracketId,
+    ) -> Result<(), DomainError> {
+        let now = Utc::now();
+
+        sqlx::query(
+            r"
+            WITH ranked AS (
+                SELECT id,
+                    ROW_NUMBER() OVER (
+                        ORDER BY points DESC, game_differential DESC, matches_won DESC
+                    ) as new_position
+                FROM tournament_standings
+                WHERE bracket_id = $1
+            )
+            UPDATE tournament_standings s
+            SET position = r.new_position, updated_at = $2
+            FROM ranked r
+            WHERE s.id = r.id
+            ",
+        )
+        .bind(bracket_id.as_uuid())
+        .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// List standings by bracket within a transaction.
+    pub async fn list_by_bracket_in_tx(
+        tx: &mut DbTransaction<'_>,
+        bracket_id: TournamentBracketId,
+    ) -> Result<Vec<TournamentStanding>, DomainError> {
+        let rows = sqlx::query_as::<_, TournamentStandingRow>(
+            r"
+            SELECT * FROM tournament_standings
+            WHERE bracket_id = $1
+            ORDER BY position ASC
+            ",
+        )
+        .bind(bracket_id.as_uuid())
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(TournamentStanding::from).collect())
     }
 }

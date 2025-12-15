@@ -2,11 +2,23 @@
 
 pub mod admin;
 pub mod auth;
+pub mod availability;
 pub mod bans;
+pub mod demos;
+pub mod dispute;
+pub mod evidence;
+pub mod forfeit;
 pub mod games;
 pub mod league_teams;
 pub mod leagues;
 pub mod players;
+pub mod progression;
+pub mod result_reviews;
+pub mod results;
+pub mod roles;
 pub mod tournaments;
 pub mod uploads;
 pub mod users;
+pub mod veto;
+pub mod veto_delegates;
+pub mod veto_ws;

@@ -33,6 +33,9 @@ jsonwebtoken = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# Random number generation (for seeding algorithms)
+rand = "0.9"
+
 [dev-dependencies]
 mockall = { workspace = true }
 

@@ -17,9 +17,13 @@ pub mod validation;
 // Re-export commonly used types at crate root
 pub use errors::{DomainError, FieldError, ValidationError};
 pub use ids::{
-    BanId, GameId, GameSlug, LeagueId, LeagueInvitationId, LeagueMemberId, LeagueSeasonId,
-    LeagueTeamId, LeagueTeamInvitationId, LeagueTeamMemberId, LeagueTeamSeasonId, LobbyId, MatchId,
-    PlayerId, TournamentBracketId, TournamentId, TournamentMapPoolId, TournamentMatchGameId,
-    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
+    AvailabilityExceptionId, AvailabilityWindowId, BanId, DemoId, DemoMatchLinkId, DemoPlayerId,
+    DisputeId, DisputeMessageId, EvidenceId, ForfeitRecordId, GameId, GameSlug, LeagueId,
+    LeagueInvitationId, LeagueMemberId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId,
+    LeagueTeamMemberId, LeagueTeamSeasonId, LobbyId, MatchId, MatchStatusLogId, PlayerId,
+    ProgressionLogId, ResultClaimId, ResultReviewId, SagaId, ScheduleProposalId, SuggestedTimeId,
+    TournamentBracketId, TournamentId, TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId,
+    TournamentRegistrationId, TournamentStageId, UserId, VetoActionId, VetoDelegateId,
+    VetoLobbyMessageId, VetoSessionId,
 };
-pub use types::{ParseScopeTypeError, PermissionScope, ScopeType};
+pub use types::{DemoCategory, DemoLinkType, DemoStatus, ParseScopeTypeError, PermissionScope, ScopeType};

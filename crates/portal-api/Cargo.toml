@@ -30,6 +30,10 @@ bytes = { workspace = true }
 # Async
 tokio = { workspace = true }
 async-trait = { workspace = true }
+futures-util = { workspace = true }
+
+# Concurrent data structures
+dashmap = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -62,11 +66,13 @@ tracing = { workspace = true }
 [dev-dependencies]
 portal-test = { path = "../portal-test" }
 portal-domain = { path = "../portal-domain" }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 mime = "0.3"
 sqlx = { workspace = true }
+tokio-tungstenite = "0.26"
+futures-util = { workspace = true }
 
 # Enable test-utils feature for integration tests
 [[test]]
@@ -95,6 +101,34 @@ required-features = ["test-utils"]
 
 [[test]]
 name = "tournaments_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "veto_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "results_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "evidence_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "forfeit_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "dispute_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "veto_delegates_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "veto_ws_test"
 required-features = ["test-utils"]
 
 [lints]

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::entities::tournament::TournamentMatchRow;
+use crate::transaction::DbTransaction;
 use crate::DbPool;
 use portal_core::types::TournamentMatchStatus;
 use portal_core::{
@@ -290,11 +291,12 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
     ) -> Result<TournamentMatch, DomainError> {
         let now = Utc::now();
 
+        // Note: Only update scheduled_at. The status transition is handled
+        // by the service layer through the transition() method.
         let row = sqlx::query_as::<_, TournamentMatchRow>(
             r"
             UPDATE tournament_matches SET
                 scheduled_at = $2,
-                status = 'scheduled',
                 updated_at = $3
             WHERE id = $1
             RETURNING *
@@ -617,5 +619,173 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
+    }
+}
+
+// =============================================================================
+// TRANSACTIONAL METHODS
+// =============================================================================
+
+impl PgTournamentMatchRepository {
+    /// Find a match by ID within a transaction.
+    pub async fn find_by_id_in_tx(
+        tx: &mut DbTransaction<'_>,
+        id: TournamentMatchId,
+    ) -> Result<Option<TournamentMatch>, DomainError> {
+        let row = sqlx::query_as::<_, TournamentMatchRow>(
+            "SELECT * FROM tournament_matches WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(row.map(TournamentMatch::from))
+    }
+
+    /// Update match status within a transaction.
+    pub async fn update_status_in_tx(
+        tx: &mut DbTransaction<'_>,
+        id: TournamentMatchId,
+        status: TournamentMatchStatus,
+    ) -> Result<TournamentMatch, DomainError> {
+        let now = Utc::now();
+
+        let row = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            UPDATE tournament_matches SET status = $2, updated_at = $3
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(status.to_string())
+        .bind(now)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentMatch::from(row))
+    }
+
+    /// Submit match result within a transaction.
+    pub async fn submit_result_in_tx(
+        tx: &mut DbTransaction<'_>,
+        id: TournamentMatchId,
+        participant1_score: i32,
+        participant2_score: i32,
+        winner_id: TournamentRegistrationId,
+        loser_id: TournamentRegistrationId,
+    ) -> Result<TournamentMatch, DomainError> {
+        let now = Utc::now();
+
+        let row = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            UPDATE tournament_matches SET
+                participant1_score = $2,
+                participant2_score = $3,
+                winner_registration_id = $4,
+                loser_registration_id = $5,
+                completed_at = $6,
+                status = 'completed',
+                updated_at = $6
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(participant1_score)
+        .bind(participant2_score)
+        .bind(winner_id.as_uuid())
+        .bind(loser_id.as_uuid())
+        .bind(now)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentMatch::from(row))
+    }
+
+    /// Assign a participant to a match slot within a transaction.
+    pub async fn assign_participant_in_tx(
+        tx: &mut DbTransaction<'_>,
+        id: TournamentMatchId,
+        slot: ParticipantSlot,
+        registration_id: TournamentRegistrationId,
+        name: String,
+        logo_url: Option<String>,
+        seed: Option<i32>,
+    ) -> Result<TournamentMatch, DomainError> {
+        let now = Utc::now();
+
+        let row = match slot {
+            ParticipantSlot::One => {
+                sqlx::query_as::<_, TournamentMatchRow>(
+                    r"
+                    UPDATE tournament_matches SET
+                        participant1_registration_id = $2,
+                        participant1_name = $3,
+                        participant1_logo_url = $4,
+                        participant1_seed = $5,
+                        updated_at = $6
+                    WHERE id = $1
+                    RETURNING *
+                    ",
+                )
+                .bind(id.as_uuid())
+                .bind(registration_id.as_uuid())
+                .bind(&name)
+                .bind(&logo_url)
+                .bind(seed)
+                .bind(now)
+                .fetch_one(&mut **tx)
+                .await
+            }
+            ParticipantSlot::Two => {
+                sqlx::query_as::<_, TournamentMatchRow>(
+                    r"
+                    UPDATE tournament_matches SET
+                        participant2_registration_id = $2,
+                        participant2_name = $3,
+                        participant2_logo_url = $4,
+                        participant2_seed = $5,
+                        updated_at = $6
+                    WHERE id = $1
+                    RETURNING *
+                    ",
+                )
+                .bind(id.as_uuid())
+                .bind(registration_id.as_uuid())
+                .bind(&name)
+                .bind(&logo_url)
+                .bind(seed)
+                .bind(now)
+                .fetch_one(&mut **tx)
+                .await
+            }
+        }
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentMatch::from(row))
+    }
+
+    /// List matches by bracket within a transaction.
+    pub async fn list_by_bracket_in_tx(
+        tx: &mut DbTransaction<'_>,
+        bracket_id: TournamentBracketId,
+    ) -> Result<Vec<TournamentMatch>, DomainError> {
+        let rows = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            SELECT * FROM tournament_matches
+            WHERE bracket_id = $1
+            ORDER BY round ASC, match_number ASC
+            ",
+        )
+        .bind(bracket_id.as_uuid())
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(TournamentMatch::from).collect())
     }
 }

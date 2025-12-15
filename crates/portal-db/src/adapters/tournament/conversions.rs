@@ -243,6 +243,9 @@ impl From<TournamentStandingRow> for TournamentStanding {
             game_differential: row.game_differential,
             buchholz_score: row.buchholz_score,
             opponent_match_wins: row.opponent_match_wins,
+            head_to_head: serde_json::from_value(row.head_to_head).unwrap_or_default(),
+            tiebreaker_score: row.tiebreaker_score,
+            is_tied: row.is_tied,
             points: row.points,
             updated_at: row.updated_at,
         }

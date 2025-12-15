@@ -6,16 +6,29 @@
 //! - 5v5 team size
 //! - Map pick/ban formats
 //! - CS2-specific stats (K/D, ADR, HLTV rating, etc.)
+//! - Demo evidence discovery and validation
+
+pub mod demo_client;
+pub mod demo_stats;
+pub mod evidence_validator;
+
+pub use demo_client::Cs2DemoClient;
+pub use demo_stats::Cs2DemoStats;
+pub use evidence_validator::Cs2EvidenceValidator;
 
 use serde_json::{json, Value};
+use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::error::{RatingError, StatsError};
-use crate::traits::{GamePlugin, MapInfo, RankTier};
+use crate::error::{PluginError, RatingError, StatsError};
+use crate::traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier, SideOption, TournamentPlugin, VetoFormat};
 use crate::types::{
-    DisplayStat, MapPickBanFormat, MapVetoAction, MatchData, MatchFormat, MatchmakingCriteria,
-    RankedParticipant, RatingChange, TournamentFormatId, VetoActionType,
+    DemoMetadata, DiscoveredEvidence, DisplayStat, EvidenceStorage, EvidenceType,
+    EvidenceValidation, ExtractedResult, GameResult, MapPickBanFormat, MapVetoAction, MatchContext,
+    MatchData, MatchFormat, MatchmakingCriteria, RankedParticipant, RatingChange,
+    TournamentFormatId, VetoActionType,
 };
+use chrono::Utc;
 
 /// Counter-Strike 2 game plugin.
 #[derive(Debug, Clone, Default)]
@@ -592,6 +605,323 @@ impl GamePlugin for Cs2Plugin {
 
     fn supported_match_formats(&self) -> Vec<MatchFormat> {
         vec![MatchFormat::Bo1, MatchFormat::Bo3, MatchFormat::Bo5]
+    }
+}
+
+// ============================================================================
+// TournamentPlugin Implementation
+// ============================================================================
+
+impl TournamentPlugin for Cs2Plugin {
+    fn veto_formats(&self) -> Vec<VetoFormat> {
+        vec![
+            VetoFormat::bo1(),
+            VetoFormat::bo3(),
+            VetoFormat::bo5(),
+        ]
+    }
+
+    fn default_veto_format(&self, match_format: MatchFormat) -> Option<String> {
+        match match_format {
+            MatchFormat::Bo1 => Some("bo1_veto".to_string()),
+            MatchFormat::Bo3 => Some("bo3_veto".to_string()),
+            MatchFormat::Bo5 => Some("bo5_veto".to_string()),
+            MatchFormat::Bo7 => None, // CS2 doesn't typically do Bo7
+        }
+    }
+
+    fn get_available_sides(&self, _map_id: &str) -> Vec<SideOption> {
+        // CS2 has CT and T sides for all maps
+        vec![
+            SideOption {
+                id: "ct".to_string(),
+                display_name: "Counter-Terrorist".to_string(),
+                short_name: "CT".to_string(),
+            },
+            SideOption {
+                id: "t".to_string(),
+                display_name: "Terrorist".to_string(),
+                short_name: "T".to_string(),
+            },
+        ]
+    }
+}
+
+// ============================================================================
+// EvidencePlugin Implementation
+// ============================================================================
+
+#[async_trait::async_trait]
+impl EvidencePlugin for Cs2Plugin {
+    async fn discover_evidence(
+        &self,
+        match_context: &MatchContext,
+    ) -> Result<Vec<DiscoveredEvidence>, PluginError> {
+        // This would scan S3 for demo files matching the match timeframe
+        // For now, return empty - actual implementation would use S3 client
+        let discovered = Vec::new();
+
+        // In a real implementation:
+        // 1. List objects in S3 with prefix for this game
+        // 2. Filter by timestamp (match start/end time with buffer)
+        // 3. Filter by player Steam IDs from participant context
+        // 4. Calculate relevance scores based on timing and player matches
+
+        // Example of what a discovered demo would look like:
+        if match_context.completed_at.is_some() {
+            // Would scan for demos here
+            // Placeholder: in production, this calls S3 list_objects
+        }
+
+        Ok(discovered)
+    }
+
+    async fn validate_evidence(
+        &self,
+        evidence_storage: &EvidenceStorage,
+        claimed_result: &GameResult,
+    ) -> Result<EvidenceValidation, PluginError> {
+        // Parse the demo file and extract the actual result
+        // For CS2, we'd parse the .dem file format
+
+        // In a real implementation:
+        // 1. Download demo from storage (or use presigned URL)
+        // 2. Parse demo header for basic info (map, teams, scores)
+        // 3. Optionally parse full demo for detailed validation
+        // 4. Compare extracted result with claimed result
+
+        match evidence_storage {
+            EvidenceStorage::S3 { bucket: _, key: _ } => {
+                // Would parse the demo file here
+                // For now, return validation result indicating we need real implementation
+
+                // Placeholder validation - just check the result is valid on its own
+                let is_valid_score = claimed_result.participant1_score >= 0
+                    && claimed_result.participant2_score >= 0
+                    && claimed_result.participant1_score != claimed_result.participant2_score;
+
+                if !is_valid_score {
+                    return Ok(EvidenceValidation {
+                        is_valid: false,
+                        confidence: 0.0,
+                        extracted_result: None,
+                        warnings: Vec::new(),
+                        errors: vec!["Invalid game score claimed".to_string()],
+                    });
+                }
+
+                // In production, we'd actually parse the demo
+                Ok(EvidenceValidation {
+                    is_valid: true,
+                    confidence: 0.5, // Low confidence since we didn't actually parse
+                    extracted_result: None,
+                    warnings: vec![
+                        "Demo parsing not fully implemented - basic validation only".to_string(),
+                    ],
+                    errors: Vec::new(),
+                })
+            }
+            EvidenceStorage::Url { url: _ } => {
+                // External URL - might be a VOD or something
+                Ok(EvidenceValidation {
+                    is_valid: true,
+                    confidence: 0.0,
+                    extracted_result: None,
+                    warnings: vec!["Cannot validate external URL evidence automatically".to_string()],
+                    errors: Vec::new(),
+                })
+            }
+            EvidenceStorage::Inline { content: _ } => {
+                Ok(EvidenceValidation {
+                    is_valid: false,
+                    confidence: 0.0,
+                    extracted_result: None,
+                    warnings: Vec::new(),
+                    errors: vec!["Demo files cannot be stored inline".to_string()],
+                })
+            }
+        }
+    }
+
+    async fn get_demo_metadata(
+        &self,
+        storage: &EvidenceStorage,
+    ) -> Result<DemoMetadata, PluginError> {
+        match storage {
+            EvidenceStorage::S3 { bucket: _, key } => {
+                // In a real implementation, we'd download and parse the demo header
+                // CS2 demos have a header with map name, duration, player info, etc.
+
+                // For now, try to extract map name from key if it follows naming convention
+                let map_name = if key.contains("de_dust2") {
+                    "de_dust2"
+                } else if key.contains("de_mirage") {
+                    "de_mirage"
+                } else if key.contains("de_inferno") {
+                    "de_inferno"
+                } else if key.contains("de_nuke") {
+                    "de_nuke"
+                } else if key.contains("de_ancient") {
+                    "de_ancient"
+                } else if key.contains("de_anubis") {
+                    "de_anubis"
+                } else if key.contains("de_vertigo") {
+                    "de_vertigo"
+                } else {
+                    "unknown"
+                };
+
+                // Placeholder - real implementation would parse demo header
+                Ok(DemoMetadata {
+                    map_name: map_name.to_string(),
+                    duration_seconds: 0, // Would be extracted from demo
+                    player_count: 10,    // Standard 5v5
+                    team1_score: 0,
+                    team2_score: 0,
+                    recorded_at: Utc::now(), // Would be from demo timestamp
+                    server_name: None,
+                    demo_version: "cs2".to_string(),
+                })
+            }
+            _ => Err(PluginError::NotSupported(
+                "Demo metadata can only be extracted from S3 storage".to_string(),
+            )),
+        }
+    }
+
+    fn supports_evidence_discovery(&self) -> bool {
+        true
+    }
+
+    fn supports_evidence_validation(&self) -> bool {
+        true
+    }
+
+    fn supported_evidence_types(&self) -> Vec<EvidenceType> {
+        vec![
+            EvidenceType::Demo,
+            EvidenceType::Screenshot,
+            EvidenceType::Video,
+        ]
+    }
+
+    fn demo_file_extension(&self) -> Option<&str> {
+        Some("dem")
+    }
+
+    fn demo_storage_prefix(&self) -> Option<&str> {
+        Some("demos/cs2")
+    }
+}
+
+// ============================================================================
+// CS2 Plugin with Enhanced Evidence Support
+// ============================================================================
+
+/// CS2 plugin with enhanced evidence support using the external demo service.
+///
+/// This variant fetches demo stats from `https://demos.cs210mans.uk` and
+/// validates results against claimed match outcomes.
+#[derive(Clone)]
+pub struct Cs2PluginWithEvidence {
+    /// Inner plugin (reserved for future game-specific operations).
+    #[allow(dead_code)]
+    inner: Cs2Plugin,
+    demo_client: Arc<Cs2DemoClient>,
+}
+
+impl Default for Cs2PluginWithEvidence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for Cs2PluginWithEvidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cs2PluginWithEvidence")
+            .field("base_url", &self.demo_client.base_url())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Cs2PluginWithEvidence {
+    /// Create a new CS2 plugin with evidence support.
+    pub fn new() -> Self {
+        Self {
+            inner: Cs2Plugin::new(),
+            demo_client: Arc::new(Cs2DemoClient::default()),
+        }
+    }
+
+    /// Create with a custom demo service URL.
+    pub fn with_demo_url(base_url: String) -> Self {
+        Self {
+            inner: Cs2Plugin::new(),
+            demo_client: Arc::new(Cs2DemoClient::new(base_url)),
+        }
+    }
+
+    /// Get the demo client for direct access.
+    pub fn demo_client(&self) -> &Cs2DemoClient {
+        &self.demo_client
+    }
+
+    /// Fetch and validate a demo against a claimed result.
+    ///
+    /// # Arguments
+    /// * `demo_name` - Demo file name (e.g., "match_12345.dem")
+    /// * `claimed_result` - The result being claimed
+    /// * `team1_steam_ids` - Steam IDs for team 1
+    /// * `team2_steam_ids` - Steam IDs for team 2
+    pub async fn validate_demo(
+        &self,
+        demo_name: &str,
+        claimed_result: &GameResult,
+        team1_steam_ids: &[String],
+        team2_steam_ids: &[String],
+    ) -> Result<EvidenceValidation, PluginError> {
+        // Fetch stats from external service
+        let stats = self.demo_client.get_demo_stats(demo_name).await?;
+
+        // Validate against claimed result
+        let validation = Cs2EvidenceValidator::validate(
+            &stats,
+            claimed_result,
+            team1_steam_ids,
+            team2_steam_ids,
+        );
+
+        Ok(validation)
+    }
+
+    /// Fetch demo stats without validation.
+    pub async fn get_demo_stats(&self, demo_name: &str) -> Result<Cs2DemoStats, PluginError> {
+        self.demo_client.get_demo_stats(demo_name).await
+    }
+
+    /// Extract result from a demo without comparing to a claim.
+    pub async fn extract_demo_result(
+        &self,
+        demo_name: &str,
+        team1_steam_ids: &[String],
+        team2_steam_ids: &[String],
+    ) -> Result<Option<ExtractedResult>, PluginError> {
+        let stats = self.demo_client.get_demo_stats(demo_name).await?;
+        Ok(Cs2EvidenceValidator::extract_result(
+            &stats,
+            team1_steam_ids,
+            team2_steam_ids,
+        ))
+    }
+
+    /// Get the download URL for a demo.
+    pub fn get_demo_url(&self, demo_name: &str) -> String {
+        self.demo_client.get_demo_url(demo_name)
+    }
+
+    /// Get the stats URL for a demo.
+    pub fn get_stats_url(&self, demo_name: &str) -> String {
+        self.demo_client.get_stats_url(demo_name)
     }
 }
 

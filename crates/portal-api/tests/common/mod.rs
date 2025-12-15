@@ -1,5 +1,7 @@
 //! Test helpers for API integration tests.
 
+pub mod ws;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
@@ -9,12 +11,15 @@ use portal_api::state::AppState;
 use portal_db::DbPool;
 use portal_test::database::TestDb;
 use serde::de::DeserializeOwned;
+use std::net::SocketAddr;
 use tower::util::ServiceExt;
 
 /// Test application wrapper.
 pub struct TestApp {
     pub app: Router,
     pub db: TestDb,
+    /// Bound address when server is started for WebSocket tests.
+    server_addr: Option<SocketAddr>,
 }
 
 impl TestApp {
@@ -24,7 +29,34 @@ impl TestApp {
         let state = AppState::new(db.pool.clone(), "test-jwt-secret");
         let app = create_app(state);
 
-        Self { app, db }
+        Self { app, db, server_addr: None }
+    }
+
+    /// Start the server on a random port and return the bound address.
+    ///
+    /// This is required for WebSocket tests since they need a real TCP connection.
+    pub async fn start_server(&mut self) -> SocketAddr {
+        if let Some(addr) = self.server_addr {
+            return addr;
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind to address");
+        let addr = listener.local_addr().expect("Failed to get local address");
+
+        let app = self.app.clone();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        self.server_addr = Some(addr);
+        addr
+    }
+
+    /// Get the JWT secret used for this test app.
+    pub fn jwt_secret(&self) -> &str {
+        "test-jwt-secret"
     }
 
     /// Get the database pool.
@@ -228,6 +260,19 @@ impl TestApp {
         self.request(
             Request::builder()
                 .method("POST")
+                .uri(uri)
+                .header("Authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    /// Make a DELETE request with a specific token.
+    pub async fn delete_with_token(&self, uri: &str, token: &str) -> TestResponse {
+        self.request(
+            Request::builder()
+                .method("DELETE")
                 .uri(uri)
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())

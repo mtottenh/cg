@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::entities::tournament::TournamentRegistrationRow;
+use crate::transaction::DbTransaction;
 use crate::DbPool;
 use portal_core::types::TournamentRegistrationStatus;
 use portal_core::{DomainError, LeagueTeamSeasonId, PlayerId, TournamentId, TournamentRegistrationId, UserId};
@@ -190,7 +191,7 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
                 checked_in = true,
                 checked_in_at = $2,
                 checked_in_by = $3,
-                status = 'confirmed',
+                status = 'checked_in',
                 updated_at = $2
             WHERE id = $1
             RETURNING *
@@ -305,7 +306,7 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
         let rows = sqlx::query_as::<_, TournamentRegistrationRow>(
             r"
             SELECT * FROM tournament_registrations
-            WHERE tournament_id = $1 AND checked_in = true AND status = 'confirmed'
+            WHERE tournament_id = $1 AND checked_in = true AND status IN ('checked_in', 'active')
             ORDER BY seed ASC NULLS LAST, registered_at ASC
             ",
         )
@@ -325,8 +326,7 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
             r"
             SELECT * FROM tournament_registrations
             WHERE tournament_id = $1
-              AND status IN ('confirmed', 'approved')
-              AND checked_in = true
+              AND status IN ('checked_in', 'approved', 'active')
             ORDER BY seed ASC NULLS LAST, seed_rating DESC NULLS LAST, registered_at ASC
             ",
         )
@@ -382,6 +382,24 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
         Ok(())
     }
 
+    async fn clear_seeds(&self, tournament_id: TournamentId) -> Result<(), DomainError> {
+        let now = Utc::now();
+
+        sqlx::query(
+            r"
+            UPDATE tournament_registrations SET seed = NULL, seed_rating = NULL, updated_at = $2
+            WHERE tournament_id = $1
+            ",
+        )
+        .bind(tournament_id.as_uuid())
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(())
+    }
+
     async fn delete(&self, id: TournamentRegistrationId) -> Result<(), DomainError> {
         sqlx::query("DELETE FROM tournament_registrations WHERE id = $1")
             .bind(id.as_uuid())
@@ -390,5 +408,27 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
+    }
+}
+
+// =============================================================================
+// TRANSACTIONAL METHODS
+// =============================================================================
+
+impl PgTournamentRegistrationRepository {
+    /// Find a registration by ID within a transaction.
+    pub async fn find_by_id_in_tx(
+        tx: &mut DbTransaction<'_>,
+        id: TournamentRegistrationId,
+    ) -> Result<Option<TournamentRegistration>, DomainError> {
+        let row = sqlx::query_as::<_, TournamentRegistrationRow>(
+            "SELECT * FROM tournament_registrations WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(row.map(TournamentRegistration::from))
     }
 }

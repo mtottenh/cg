@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::entities::tournament::TournamentBracketRow;
+use crate::transaction::DbTransaction;
 use crate::DbPool;
 use portal_core::types::BracketStatus;
 use portal_core::{DomainError, TournamentBracketId, TournamentId, TournamentStageId};
@@ -196,5 +197,77 @@ impl TournamentBracketRepository for PgTournamentBracketRepository {
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
+    }
+}
+
+// =============================================================================
+// TRANSACTIONAL METHODS
+// =============================================================================
+
+impl PgTournamentBracketRepository {
+    /// Find a bracket by ID within a transaction.
+    pub async fn find_by_id_in_tx(
+        tx: &mut DbTransaction<'_>,
+        id: TournamentBracketId,
+    ) -> Result<Option<TournamentBracket>, DomainError> {
+        let row = sqlx::query_as::<_, TournamentBracketRow>(
+            "SELECT * FROM tournament_brackets WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(row.map(TournamentBracket::from))
+    }
+
+    /// Advance bracket round within a transaction.
+    pub async fn advance_round_in_tx(
+        tx: &mut DbTransaction<'_>,
+        id: TournamentBracketId,
+    ) -> Result<TournamentBracket, DomainError> {
+        let now = Utc::now();
+
+        let row = sqlx::query_as::<_, TournamentBracketRow>(
+            r"
+            UPDATE tournament_brackets SET
+                current_round = current_round + 1,
+                updated_at = $2
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(now)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentBracket::from(row))
+    }
+
+    /// Update bracket status within a transaction.
+    pub async fn update_status_in_tx(
+        tx: &mut DbTransaction<'_>,
+        id: TournamentBracketId,
+        status: BracketStatus,
+    ) -> Result<TournamentBracket, DomainError> {
+        let now = Utc::now();
+
+        let row = sqlx::query_as::<_, TournamentBracketRow>(
+            r"
+            UPDATE tournament_brackets SET status = $2, updated_at = $3
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(status.to_string())
+        .bind(now)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentBracket::from(row))
     }
 }

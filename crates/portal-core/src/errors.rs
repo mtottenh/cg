@@ -219,6 +219,50 @@ pub enum DomainError {
     #[error("tournament registration not found: {0}")]
     TournamentRegistrationNotFound(String),
 
+    /// The requested dispute was not found.
+    #[error("dispute not found: {0}")]
+    DisputeNotFound(String),
+
+    /// The requested forfeit record was not found.
+    #[error("forfeit record not found: {0}")]
+    ForfeitRecordNotFound(String),
+
+    /// The requested evidence was not found.
+    #[error("evidence not found: {0}")]
+    EvidenceNotFound(String),
+
+    /// The requested result claim was not found.
+    #[error("result claim not found: {0}")]
+    ResultClaimNotFound(String),
+
+    /// The requested veto session was not found.
+    #[error("veto session not found: {0}")]
+    VetoSessionNotFound(String),
+
+    /// The requested demo was not found.
+    #[error("demo not found: {0}")]
+    DemoNotFound(String),
+
+    /// The requested demo-match link was not found.
+    #[error("demo-match link not found: {0}")]
+    DemoMatchLinkNotFound(String),
+
+    /// Demo is not linked to the specified match.
+    #[error("demo link {0} is not linked to match {1}")]
+    DemoNotLinkedToMatch(String, String),
+
+    /// The requested result review was not found.
+    #[error("result review not found: {0}")]
+    ResultReviewNotFound(String),
+
+    /// Invalid review state for the requested operation.
+    #[error("invalid review state '{0}': {1}")]
+    InvalidReviewState(String, String),
+
+    /// The review has already been acknowledged by the specified captain.
+    #[error("review already acknowledged by captain {0}")]
+    ReviewAlreadyAcknowledged(i32),
+
     /// Tournament is not open for registration.
     #[error("tournament is not open for registration")]
     TournamentNotOpen,
@@ -470,12 +514,20 @@ impl DomainError {
             "tournament bracket" => Self::TournamentBracketNotFound(id),
             "tournament match" => Self::TournamentMatchNotFound(id),
             "tournament registration" => Self::TournamentRegistrationNotFound(id),
+            "dispute" => Self::DisputeNotFound(id),
+            "forfeit record" => Self::ForfeitRecordNotFound(id),
+            "evidence" => Self::EvidenceNotFound(id),
+            "result claim" => Self::ResultClaimNotFound(id),
+            "veto session" => Self::VetoSessionNotFound(id),
             "league" => Self::LeagueNotFound(id),
             "lobby" => Self::LobbyNotFound(id),
             "league season" => Self::LeagueSeasonNotFound(id),
             "league team" => Self::LeagueTeamNotFound(id),
             "league team invitation" => Self::LeagueTeamInvitationNotFound(id),
             "ban" => Self::BanNotFound(id),
+            "demo" => Self::DemoNotFound(id),
+            "demo match link" => Self::DemoMatchLinkNotFound(id),
+            "result review" => Self::ResultReviewNotFound(id),
             _ => Self::Internal(format!("{entity_type} not found: {id}")),
         }
     }
@@ -495,12 +547,20 @@ impl DomainError {
                 | Self::TournamentBracketNotFound(_)
                 | Self::TournamentMatchNotFound(_)
                 | Self::TournamentRegistrationNotFound(_)
+                | Self::DisputeNotFound(_)
+                | Self::ForfeitRecordNotFound(_)
+                | Self::EvidenceNotFound(_)
+                | Self::ResultClaimNotFound(_)
+                | Self::VetoSessionNotFound(_)
                 | Self::LeagueNotFound(_)
                 | Self::LobbyNotFound(_)
                 | Self::LeagueSeasonNotFound(_)
                 | Self::LeagueTeamNotFound(_)
                 | Self::LeagueTeamInvitationNotFound(_)
                 | Self::BanNotFound(_)
+                | Self::DemoNotFound(_)
+                | Self::DemoMatchLinkNotFound(_)
+                | Self::ResultReviewNotFound(_)
         )
     }
 

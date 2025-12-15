@@ -23,7 +23,7 @@ async fn test_list_games() {
     assert!(body["data"].is_array());
     // CS2 should be seeded
     let games = body["data"].as_array().unwrap();
-    assert!(games.iter().any(|g| g["id"] == "cs2"));
+    assert!(games.iter().any(|g| g["slug"] == "cs2"));
 }
 
 #[tokio::test]
@@ -35,7 +35,7 @@ async fn test_get_game() {
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
-    assert_eq!(body["data"]["id"], "cs2");
+    assert_eq!(body["data"]["slug"], "cs2");
     assert_eq!(body["data"]["display_name"], "Counter-Strike 2");
     assert!(body["data"]["maps"].is_array());
     assert!(body["data"]["rank_tiers"].is_array());
@@ -224,7 +224,7 @@ async fn test_update_game_with_admin_permission() {
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
-    assert_eq!(body["data"]["id"], "cs2");
+    assert_eq!(body["data"]["slug"], "cs2");
     // Note: description is in the response but may be from DB or plugin
 }
 
@@ -342,7 +342,7 @@ async fn test_disable_and_enable_game() {
     list_response.assert_status(StatusCode::OK);
     let list_body: serde_json::Value = list_response.json();
     let games = list_body["data"].as_array().unwrap();
-    assert!(!games.iter().any(|g| g["id"] == "cs2"));
+    assert!(!games.iter().any(|g| g["slug"] == "cs2"));
 
     // Re-enable CS2
     let response = app.post_auth("/v1/games/cs2/enable").await;
@@ -356,7 +356,7 @@ async fn test_disable_and_enable_game() {
     list_response.assert_status(StatusCode::OK);
     let list_body: serde_json::Value = list_response.json();
     let games = list_body["data"].as_array().unwrap();
-    assert!(games.iter().any(|g| g["id"] == "cs2"));
+    assert!(games.iter().any(|g| g["slug"] == "cs2"));
 }
 
 #[tokio::test]

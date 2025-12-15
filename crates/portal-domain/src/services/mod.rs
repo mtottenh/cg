@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod ban;
+pub mod demo;
 pub mod league;
 pub mod league_team;
 pub mod permission;
@@ -11,6 +12,7 @@ pub mod user;
 
 pub use audit::{AuditService, ChangeContext, ChangeDetector, FieldChange};
 pub use ban::BanService;
+pub use demo::{DemoPlayerInput, DemoService};
 pub use league::LeagueService;
 pub use league_team::{
     LeagueSeasonParticipantService, LeagueSeasonService, LeagueTeamInvitationService,

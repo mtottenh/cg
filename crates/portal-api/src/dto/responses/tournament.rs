@@ -5,6 +5,8 @@ use portal_domain::entities::tournament::{
     Tournament, TournamentBracket, TournamentMatch, TournamentMatchGame, TournamentRegistration,
     TournamentStage, TournamentStanding,
 };
+use portal_domain::entities::{MatchStatusLog, ScheduleProposal};
+use portal_domain::services::tournament::MatchStatusDetails;
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -554,6 +556,198 @@ impl From<TournamentStanding> for TournamentStandingResponse {
             points: s.points,
             win_rate,
             updated_at: s.updated_at,
+        }
+    }
+}
+
+// =============================================================================
+// SEEDING RESPONSES
+// =============================================================================
+
+/// Response DTO for a seeded participant.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SeededParticipantResponse {
+    /// Registration ID.
+    pub registration_id: String,
+    /// Participant display name.
+    pub participant_name: String,
+    /// Assigned seed number (1 = highest seed).
+    pub seed: i32,
+    /// Rating used for seeding (if applicable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed_rating: Option<i32>,
+}
+
+/// Response DTO for check-in status.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CheckInStatusResponse {
+    /// Tournament ID.
+    pub tournament_id: String,
+    /// Whether check-in is required for this tournament.
+    pub check_in_required: bool,
+    /// Whether the check-in window is currently open.
+    pub check_in_open: bool,
+    /// Number of participants who have checked in.
+    pub checked_in_count: i64,
+    /// Total eligible participants (approved + checked_in).
+    pub total_eligible: i64,
+}
+
+// =============================================================================
+// MATCH LIFECYCLE RESPONSES
+// =============================================================================
+
+/// Response DTO for match status details.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MatchStatusDetailsResponse {
+    /// Match ID.
+    pub match_id: String,
+    /// Current status.
+    pub current_status: String,
+    /// Allowed transitions from current status.
+    pub allowed_transitions: Vec<String>,
+    /// Whether match is in terminal state.
+    pub is_terminal: bool,
+    /// Whether match is actively in progress.
+    pub is_active: bool,
+    /// Scheduled time (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_at: Option<DateTime<Utc>>,
+    /// When match started (if started).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    /// When match completed (if completed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+    /// Number of status transitions.
+    pub transition_count: usize,
+    /// Latest transition log entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_transition: Option<MatchStatusLogResponse>,
+}
+
+/// Response DTO for a match status log entry.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MatchStatusLogResponse {
+    /// Log entry ID.
+    pub id: String,
+    /// Match ID.
+    pub match_id: String,
+    /// Status before the transition.
+    pub from_status: String,
+    /// Status after the transition.
+    pub to_status: String,
+    /// Human-readable reason for the transition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transition_reason: Option<String>,
+    /// User who triggered the transition (if not system).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triggered_by_user_id: Option<String>,
+    /// Whether the transition was triggered by a background job.
+    pub triggered_by_system: bool,
+    /// Whether this was an admin override.
+    pub is_admin_override: bool,
+    /// When the transition occurred.
+    pub transitioned_at: DateTime<Utc>,
+}
+
+impl From<MatchStatusLog> for MatchStatusLogResponse {
+    fn from(log: MatchStatusLog) -> Self {
+        let is_admin_override = log.is_admin_override();
+        Self {
+            id: log.id.to_string(),
+            match_id: log.match_id.to_string(),
+            from_status: log.from_status.to_string(),
+            to_status: log.to_status.to_string(),
+            transition_reason: log.transition_reason,
+            triggered_by_user_id: log.triggered_by_user_id.map(|id| id.to_string()),
+            triggered_by_system: log.triggered_by_system,
+            is_admin_override,
+            transitioned_at: log.transitioned_at,
+        }
+    }
+}
+
+impl From<MatchStatusDetails> for MatchStatusDetailsResponse {
+    fn from(details: MatchStatusDetails) -> Self {
+        Self {
+            match_id: details.match_id.to_string(),
+            current_status: details.current_status.to_string(),
+            allowed_transitions: details
+                .allowed_transitions
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect(),
+            is_terminal: details.is_terminal,
+            is_active: details.is_active,
+            scheduled_at: details.scheduled_at,
+            started_at: details.started_at,
+            completed_at: details.completed_at,
+            transition_count: details.transition_count,
+            latest_transition: details.latest_transition.map(Into::into),
+        }
+    }
+}
+
+// =============================================================================
+// SCHEDULE PROPOSAL RESPONSES
+// =============================================================================
+
+/// Response DTO for a schedule proposal.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ScheduleProposalResponse {
+    /// Proposal ID.
+    pub id: String,
+    /// Match ID this proposal is for.
+    pub match_id: String,
+    /// Registration ID of the proposer.
+    pub proposed_by_registration_id: String,
+    /// User ID of the proposer.
+    pub proposed_by_user_id: String,
+    /// Proposed time slots (1-5 options).
+    pub proposed_times: Vec<DateTime<Utc>>,
+    /// Selected time (when accepted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_time: Option<DateTime<Utc>>,
+    /// When the proposal was responded to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub responded_at: Option<DateTime<Utc>>,
+    /// User who responded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub responded_by_user_id: Option<String>,
+    /// Counter-proposal ID if this was counter-proposed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counter_proposal_id: Option<String>,
+    /// Current status.
+    pub status: String,
+    /// When this proposal expires.
+    pub expires_at: DateTime<Utc>,
+    /// Notes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<ScheduleProposal> for ScheduleProposalResponse {
+    fn from(p: ScheduleProposal) -> Self {
+        Self {
+            id: p.id.to_string(),
+            match_id: p.match_id.to_string(),
+            proposed_by_registration_id: p.proposed_by_registration_id.to_string(),
+            proposed_by_user_id: p.proposed_by_user_id.to_string(),
+            proposed_times: p.proposed_times,
+            selected_time: p.selected_time,
+            responded_at: p.responded_at,
+            responded_by_user_id: p.responded_by_user_id.map(|id| id.to_string()),
+            counter_proposal_id: p.counter_proposal_id.map(|id| id.to_string()),
+            status: p.status.as_str().to_string(),
+            expires_at: p.expires_at,
+            notes: p.notes,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
         }
     }
 }

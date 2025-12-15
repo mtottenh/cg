@@ -258,3 +258,164 @@ pub trait LobbyStateMachine: Send + Sync {
     /// Get state data as JSON.
     fn state_data(&self) -> Value;
 }
+
+// ============================================================================
+// Evidence Types
+// ============================================================================
+
+/// Context for evidence discovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchContext {
+    /// Tournament ID
+    pub tournament_id: Uuid,
+    /// Match ID
+    pub match_id: Uuid,
+    /// Game identifier (e.g., "cs2")
+    pub game_id: String,
+    /// Participants in the match
+    pub participants: Vec<ParticipantContext>,
+    /// When the match was scheduled
+    pub scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// When the match started
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// When the match completed
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Context for a match participant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParticipantContext {
+    /// Registration ID
+    pub registration_id: Uuid,
+    /// Display name
+    pub name: String,
+    /// Player IDs (for team registration)
+    pub player_ids: Vec<Uuid>,
+    /// Steam IDs (for CS2, etc.)
+    pub steam_ids: Vec<String>,
+}
+
+/// Evidence discovered by a plugin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredEvidence {
+    /// External identifier for this evidence
+    pub external_id: String,
+    /// Type of evidence
+    pub evidence_type: EvidenceType,
+    /// Display name
+    pub name: String,
+    /// Storage location
+    pub storage: EvidenceStorage,
+    /// File size if known
+    pub file_size_bytes: Option<i64>,
+    /// Plugin-specific metadata
+    pub metadata: Value,
+    /// When this was discovered
+    pub discovered_at: chrono::DateTime<chrono::Utc>,
+    /// Relevance score (0.0 to 1.0, higher = more likely to be the correct demo)
+    pub relevance_score: f32,
+}
+
+/// Type of evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceType {
+    /// Game replay/demo file
+    Demo,
+    /// Screenshot image
+    Screenshot,
+    /// Video recording
+    Video,
+    /// External link
+    Link,
+    /// Game server log
+    ServerLog,
+}
+
+impl std::fmt::Display for EvidenceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Demo => write!(f, "demo"),
+            Self::Screenshot => write!(f, "screenshot"),
+            Self::Video => write!(f, "video"),
+            Self::Link => write!(f, "link"),
+            Self::ServerLog => write!(f, "server_log"),
+        }
+    }
+}
+
+/// Storage location for evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EvidenceStorage {
+    /// Stored in S3
+    S3 { bucket: String, key: String },
+    /// External URL
+    Url { url: String },
+    /// Inline content
+    Inline { content: String },
+}
+
+/// Result of evidence validation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceValidation {
+    /// Whether the evidence validates the claimed result
+    pub is_valid: bool,
+    /// Confidence level (0.0 to 1.0)
+    pub confidence: f32,
+    /// Extracted result from the evidence
+    pub extracted_result: Option<ExtractedResult>,
+    /// Warnings (non-fatal issues)
+    pub warnings: Vec<String>,
+    /// Errors (reasons for invalid)
+    pub errors: Vec<String>,
+}
+
+/// Result extracted from evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedResult {
+    /// Map identifier
+    pub map_id: String,
+    /// Score for participant 1
+    pub participant1_score: i32,
+    /// Score for participant 2
+    pub participant2_score: i32,
+    /// Duration in seconds
+    pub duration_seconds: i64,
+    /// Game-specific player statistics
+    pub player_stats: Value,
+}
+
+/// Metadata from a demo file header.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DemoMetadata {
+    /// Map name
+    pub map_name: String,
+    /// Duration in seconds
+    pub duration_seconds: i64,
+    /// Number of players
+    pub player_count: u32,
+    /// Team 1 final score
+    pub team1_score: i32,
+    /// Team 2 final score
+    pub team2_score: i32,
+    /// When the demo was recorded
+    pub recorded_at: chrono::DateTime<chrono::Utc>,
+    /// Server name if available
+    pub server_name: Option<String>,
+    /// Demo file format version
+    pub demo_version: String,
+}
+
+/// A claimed game result for evidence validation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameResult {
+    /// Game number in series
+    pub game_number: i32,
+    /// Map ID
+    pub map_id: Option<String>,
+    /// Participant 1 score
+    pub participant1_score: i32,
+    /// Participant 2 score
+    pub participant2_score: i32,
+}

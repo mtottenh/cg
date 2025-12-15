@@ -5,6 +5,7 @@
 //! - Database row types (entities) that map directly to SQL tables
 //! - Repository implementations for data access
 //! - Adapters that implement domain repository traits
+//! - Transaction support for atomic operations
 //! - Migrations
 //!
 //! ## Architecture
@@ -19,27 +20,38 @@
 //!
 //! - **Repositories** (`repositories` module): Lower-level data access that
 //!   returns raw DB rows. Used by adapters internally.
+//!
+//! - **Transaction** (`transaction` module): Transaction support for executing
+//!   multiple operations atomically.
 
 pub mod adapters;
 pub mod entities;
 pub mod error;
 pub mod pool;
 pub mod repositories;
+pub mod transaction;
 
 pub use adapters::{
-    PgBanRepository, PgEntityChangeRepository, PgLeagueInvitationRepository,
+    complete_match_in_transaction, LocalEvidenceStorage, MatchCompletionTxInput,
+    MatchCompletionTxOutput, PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository,
+    PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository, PgDemoRepository,
+    PgDisputeMessageRepository, PgDisputeRepository, PgEntityChangeRepository,
+    PgEvidenceRepository, PgForfeitRecordRepository, PgLeagueInvitationRepository,
     PgLeagueMemberRepository, PgLeagueRepository, PgLeagueSeasonParticipantRepository,
     PgLeagueSeasonRepository, PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository,
-    PgLeagueTeamRepository, PgLeagueTeamSeasonRepository, PgPermissionRepository,
-    PgPlayerRepository, PgTournamentBracketRepository, PgTournamentMapPoolRepository,
-    PgTournamentMatchGameRepository, PgTournamentMatchRepository, PgTournamentRegistrationRepository,
-    PgTournamentRepository, PgTournamentStageRepository, PgTournamentStandingsRepository,
-    PgUserRepository,
+    PgLeagueTeamRepository, PgLeagueTeamSeasonRepository, PgMatchStatusLogRepository,
+    PgPermissionRepository, PgPlayerRepository, PgResultClaimRepository, PgResultReviewRepository,
+    PgScheduleProposalRepository, PgSuggestedTimeRepository, PgTournamentBracketRepository,
+    PgTournamentMapPoolRepository, PgTournamentMatchGameRepository, PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
+    PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
+    PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
 };
 pub use entities::NewUserRole;
 pub use error::RepositoryError;
 pub use pool::{create_pool, DbPool, PoolConfig};
 pub use repositories::{GameRepository, PermissionRepository, PlatformStats, RoleRepository, StatsRepository};
+pub use transaction::{begin_transaction, with_transaction, DbTransaction, Transactional};
 
 /// Re-export sqlx types for convenience.
 pub use sqlx::{PgPool, Postgres};

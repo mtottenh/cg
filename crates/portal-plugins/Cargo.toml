@@ -26,5 +26,11 @@ thiserror = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# Time
+chrono = { workspace = true }
+
+# HTTP client for external demo service
+reqwest = { workspace = true }
+
 [lints]
 workspace = true

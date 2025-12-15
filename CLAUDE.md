@@ -6,7 +6,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 This is a **Multi-Game Competitive Gaming Portal** backend built in Rust using Axum, SQLx, and PostgreSQL. The system supports competitive gaming across multiple game titles through a plugin-based architecture.
 
-**Current Status**: Active development. Core authentication, teams, players, invitations, and RBAC systems are implemented. Matches, tournaments, and leagues are planned.
+**Current Status**: Active development. Core authentication, players, leagues, league teams (seasonal rosters), and RBAC systems are implemented. Matches and tournaments are planned.
 
 ## Technology Stack
 
@@ -67,26 +67,26 @@ portal-app ─────► portal-api ─────► portal-domain ──
 1. **Handler**: Add `#[utoipa::path(...)]` attribute with all parameters, request body, responses
 2. **DTOs**: Derive `ToSchema` for all request/response types
 3. **Register in openapi.rs**: Add handler to `paths(...)` and schemas to `components(schemas(...))`
-4. **Tags**: Use appropriate tag (teams, players, auth, etc.)
+4. **Tags**: Use appropriate tag (league_teams, players, auth, etc.)
 
 ### Example Handler with OpenAPI
 
 ```rust
-/// Create a new team.
+/// Create a new league team.
 #[utoipa::path(
     post,
-    path = "/v1/teams",
-    request_body = CreateTeamRequest,
+    path = "/v1/leagues/{league_id}/teams",
+    request_body = CreateLeagueTeamRequest,
     responses(
-        (status = 201, description = "Team created", body = DataResponse<TeamResponse>),
+        (status = 201, description = "Team created", body = DataResponse<LeagueTeamResponse>),
         (status = 400, description = "Validation error", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 409, description = "Team name or tag already taken", body = ApiError),
     ),
     security(("bearer_auth" = [])),
-    tag = "teams"
+    tag = "league_teams"
 )]
-pub async fn create_team(...) -> ApiResult<...> { ... }
+pub async fn create_league_team(...) -> ApiResult<...> { ... }
 ```
 
 ### OpenAPI Registration (portal-api/src/openapi.rs)
@@ -96,15 +96,15 @@ pub async fn create_team(...) -> ApiResult<...> { ... }
 #[openapi(
     paths(
         // Add your handler here
-        teams::create_team,
-        teams::get_team,
+        league_teams::create_league_team,
+        league_teams::get_league_team,
         // ... etc
     ),
     components(
         schemas(
             // Add your DTOs here
-            CreateTeamRequest,
-            TeamResponse,
+            CreateLeagueTeamRequest,
+            LeagueTeamResponse,
             // ... etc
         )
     ),
@@ -119,31 +119,49 @@ pub struct ApiDoc;
 - `POST /register` - Register new user with player profile
 - `POST /login` - Authenticate and get JWT token
 
-### Teams (`/v1/teams`)
-- `POST /` - Create team (creator becomes founding captain)
-- `GET /` - List teams with search/pagination
-- `GET /{id}` - Get team by ID
-- `PATCH /{id}` - Update team (requires `team.settings.manage`)
-- `GET /{id}/members` - List team members
-- `PATCH /{id}/members/{player_id}` - Update member role (requires `team.roles.manage`)
-- `DELETE /{id}/members/{player_id}` - Remove member (requires `team.roster.manage`)
-- `POST /{id}/leave` - Leave team voluntarily
-- `POST /{id}/logo` - Upload team logo (multipart)
-- `POST /{id}/banner` - Upload team banner (multipart)
+### Leagues (`/v1/leagues`)
+- `POST /` - Create a league
+- `GET /` - List leagues with pagination
+- `GET /{id}` - Get league by ID
+- `PATCH /{id}` - Update league settings
 
-### Team Invitations (`/v1/invitations`, `/v1/teams/{id}/invitations`)
-- `POST /teams/{id}/invitations` - Invite player to team
-- `GET /teams/{id}/invitations` - Get team's pending invitations
-- `GET /invitations/me` - Get my pending invitations
-- `GET /invitations/me/count` - Count my pending invitations
-- `POST /invitations/{id}/accept` - Accept invitation
-- `POST /invitations/{id}/decline` - Decline invitation
-- `DELETE /invitations/{id}` - Cancel invitation (captain)
+### League Seasons (`/v1/leagues/{league_id}/seasons`)
+- `POST /` - Create a new season
+- `GET /` - List seasons for a league
+- `GET /{season_id}` - Get season details
+- `PATCH /{season_id}` - Update season (dates, status)
+
+### League Teams (`/v1/leagues/{league_id}/teams`)
+Teams are scoped to leagues with seasonal participation:
+- `POST /` - Create team within league (creator becomes captain)
+- `GET /` - List teams in league
+- `GET /{team_id}` - Get team details
+- `PATCH /{team_id}` - Update team (requires `team.settings.manage`)
+
+### League Team Seasons (`/v1/leagues/{league_id}/seasons/{season_id}/teams`)
+- `POST /` - Register team for season
+- `GET /` - List teams participating in season
+- `GET /{team_id}` - Get team's season participation details
+
+### League Team Members (`/v1/leagues/{league_id}/teams/{team_id}/members`)
+Seasonal rosters:
+- `GET /` - List team members for current season
+- `PATCH /{member_id}` - Update member role (requires `team.roles.manage`)
+- `DELETE /{member_id}` - Remove member (requires `team.roster.manage`)
+- `POST /leave` - Leave team voluntarily
+
+### League Team Invitations (`/v1/leagues/{league_id}/teams/{team_id}/invitations`)
+- `POST /` - Invite player to team for season
+- `GET /` - Get team's pending invitations
+- `GET /me` - Get current player's pending invitations
+- `POST /{id}/accept` - Accept invitation
+- `POST /{id}/decline` - Decline invitation
+- `DELETE /{id}` - Cancel invitation (captain)
 
 ### Players (`/v1/players`)
 - `GET /` - Search players
 - `GET /{id}` - Get player by ID
-- `GET /{id}/teams` - Get player's team memberships
+- `GET /{id}/teams` - Get player's league team memberships
 - `GET /me` - Get current player's profile
 - `PATCH /me` - Update current player's profile
 - `POST /me/avatar` - Upload player avatar (multipart)
@@ -169,18 +187,18 @@ Conversions use `From`/`TryFrom` implementations.
 ```rust
 // Trait in portal-domain
 #[async_trait]
-pub trait TeamRepository: Send + Sync + 'static {
-    async fn find_by_id(&self, id: TeamId) -> Result<Option<Team>, DomainError>;
+pub trait LeagueTeamRepository: Send + Sync + 'static {
+    async fn find_by_id(&self, id: LeagueTeamId) -> Result<Option<LeagueTeam>, DomainError>;
     // ...
 }
 
 // Implementation in portal-db
-pub struct PgTeamRepository { pool: DbPool }
+pub struct PgLeagueTeamRepository { pool: DbPool }
 
 #[async_trait]
-impl TeamRepository for PgTeamRepository {
-    async fn find_by_id(&self, id: TeamId) -> Result<Option<Team>, DomainError> {
-        // SQLx query, convert DbTeam -> Team
+impl LeagueTeamRepository for PgLeagueTeamRepository {
+    async fn find_by_id(&self, id: LeagueTeamId) -> Result<Option<LeagueTeam>, DomainError> {
+        // SQLx query, convert DbLeagueTeam -> LeagueTeam
     }
 }
 ```
@@ -190,14 +208,14 @@ impl TeamRepository for PgTeamRepository {
 Services are generic over repository traits, enabling testability:
 
 ```rust
-pub struct TeamService<TR, TMR, PR>
+pub struct LeagueTeamService<LTR, LTMR, PR>
 where
-    TR: TeamRepository,
-    TMR: TeamMemberRepository,
+    LTR: LeagueTeamRepository,
+    LTMR: LeagueTeamMemberRepository,
     PR: PlayerRepository,
 {
-    team_repo: Arc<TR>,
-    member_repo: Arc<TMR>,
+    team_repo: Arc<LTR>,
+    member_repo: Arc<LTMR>,
     player_repo: Arc<PR>,
 }
 ```
@@ -226,7 +244,7 @@ All entity IDs use newtype wrappers from `portal-core/src/ids.rs`:
 
 ```rust
 // Use the ID types, never raw UUIDs in domain code
-let team_id: TeamId = "...".parse()?;
+let team_id: LeagueTeamId = "...".parse()?;
 let player_id = PlayerId::new(); // UUID v7
 ```
 
@@ -239,7 +257,9 @@ Located in `/migrations/`. Run automatically on server startup.
 Current tables:
 - `users`, `players`, `player_game_profiles`
 - `games`
-- `teams`, `team_members`, `team_invitations`
+- `leagues`, `league_members`, `league_invitations`
+- `league_seasons`
+- `league_teams`, `league_team_seasons`, `league_team_members`, `league_team_invitations`
 - `roles`, `permissions`, `role_permissions`, `user_roles`
 - `bans`
 - `entity_changes` (audit log)
@@ -302,7 +322,7 @@ cargo test -p portal-api
 RUST_LOG=debug cargo test -- --nocapture
 
 # Run specific test
-cargo test test_create_team
+cargo test test_create_league_team
 ```
 
 ### SQLx Offline Mode
@@ -324,10 +344,16 @@ Use `TestApp` wrapper with testcontainers:
 
 ```rust
 #[tokio::test]
-async fn test_create_team() {
+async fn test_create_league_team() {
     let app = TestApp::new().await;  // Spins up PostgreSQL container
 
-    let response = app.post_json("/v1/teams", &json!({
+    // First create a league
+    let league = LeagueBuilder::new()
+        .name("Test League")
+        .build_persisted(app.pool())
+        .await;
+
+    let response = app.post_json(&format!("/v1/leagues/{}/teams", league.id), &json!({
         "name": "Test Team",
         "tag": "TST"
     })).await;
@@ -347,16 +373,23 @@ let user = UserBuilder::new()
     .build_persisted(app.pool())
     .await;
 
-let team = TeamBuilder::new()
+let league = LeagueBuilder::new()
+    .name("Test League")
+    .build_persisted(app.pool())
+    .await;
+
+let team = LeagueTeamBuilder::new()
     .name("Test Team")
-    .with_founder(player.id)
+    .league_id(league.id)
     .build_persisted(app.pool())
     .await;
 ```
 
 ### Dev Auth Mode
 
-When `DEV_AUTH=true`, the `AuthenticatedUser` extractor accepts `Bearer dev-token` and uses the seeded dev user. Useful for manual testing.
+Dev auth mode is used only for Rust integration tests (enabled via `test-utils` feature flag). The frontend dev mode button has been removed - E2E tests now use real admin authentication via `loginAsAdmin()`.
+
+For Rust integration tests, the `AuthenticatedUser` extractor accepts `Bearer dev-token` and uses the seeded dev user when the `test-utils` feature is enabled.
 
 ## CLI Tool
 
@@ -371,9 +404,9 @@ portal user get <user_id>
 portal role list
 portal role assign <user_id> <role_name>
 
-# Team management
-portal team list
-portal team get <team_id>
+# League management
+portal league list
+portal league get <league_id>
 
 # Database utilities
 portal db stats
@@ -397,7 +430,7 @@ Errors flow through layers:
 impl From<DomainError> for ApiError {
     fn from(e: DomainError) -> Self {
         match e {
-            DomainError::TeamNotFound(_) => ApiError::not_found(e.to_string()),
+            DomainError::LeagueTeamNotFound(_) => ApiError::not_found(e.to_string()),
             DomainError::NotAuthorized(_) => ApiError::forbidden(e.to_string()),
             // ...
         }
@@ -411,10 +444,10 @@ Image uploads use `portal-storage` with automatic processing:
 
 ```rust
 // Supported image types with size limits
-ImageType::TeamLogo     // 512x512, max 2MB
-ImageType::TeamBanner   // 1920x480, max 5MB
-ImageType::PlayerAvatar // 256x256, max 1MB
-ImageType::PlayerBanner // 1920x480, max 5MB
+ImageType::LeagueTeamLogo   // 512x512, max 2MB
+ImageType::LeagueTeamBanner // 1920x480, max 5MB
+ImageType::PlayerAvatar     // 256x256, max 1MB
+ImageType::PlayerBanner     // 1920x480, max 5MB
 ```
 
 Storage backends: `LocalStorage` (default), `S3Storage` (feature flag).

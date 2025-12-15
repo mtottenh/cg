@@ -20,6 +20,26 @@ pub enum PluginError {
     /// Invalid plugin configuration.
     #[error("Invalid plugin configuration: {0}")]
     InvalidConfiguration(String),
+
+    /// Feature not supported by this plugin.
+    #[error("Not supported: {0}")]
+    NotSupported(String),
+
+    /// Evidence parsing error.
+    #[error("Evidence parsing error: {0}")]
+    EvidenceParseError(String),
+
+    /// Storage error (S3, etc.).
+    #[error("Storage error: {0}")]
+    StorageError(String),
+
+    /// External service error (demo API, etc.).
+    #[error("External service error: {0}")]
+    ExternalService(String),
+
+    /// Parse error (JSON, etc.).
+    #[error("Parse error: {0}")]
+    ParseError(String),
 }
 
 /// Errors that can occur during stats calculation.

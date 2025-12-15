@@ -96,6 +96,56 @@ impl RoleRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Update a role.
+    pub async fn update(
+        &self,
+        id: Uuid,
+        display_name: Option<&str>,
+        description: Option<&str>,
+        priority: Option<i32>,
+        color: Option<&str>,
+    ) -> Result<Option<RoleRow>, RepositoryError> {
+        let role = sqlx::query_as::<_, RoleRow>(
+            r"
+            UPDATE roles SET
+                display_name = COALESCE($2, display_name),
+                description = COALESCE($3, description),
+                priority = COALESCE($4, priority),
+                color = COALESCE($5, color),
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id)
+        .bind(display_name)
+        .bind(description)
+        .bind(priority)
+        .bind(color)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(role)
+    }
+
+    /// Get all role assignments for a user (with assignment metadata).
+    pub async fn get_user_role_assignments(&self, user_id: Uuid) -> Result<Vec<UserRoleRow>, RepositoryError> {
+        let assignments = sqlx::query_as::<_, UserRoleRow>(
+            r"
+            SELECT ur.*
+            FROM user_roles ur
+            WHERE ur.user_id = $1
+              AND ur.revoked_at IS NULL
+              AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
+            ",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(assignments)
+    }
+
     /// Get permissions for a role.
     pub async fn get_permissions(&self, role_id: Uuid) -> Result<Vec<PermissionRow>, RepositoryError> {
         let permissions = sqlx::query_as::<_, PermissionRow>(
@@ -222,6 +272,26 @@ impl RoleRepository {
         .await?;
 
         Ok(roles)
+    }
+
+    /// Get all users who have a specific role (global roles only).
+    pub async fn get_users_with_role(&self, role_name: &str) -> Result<Vec<Uuid>, RepositoryError> {
+        let users = sqlx::query_as::<_, (Uuid,)>(
+            r"
+            SELECT DISTINCT ur.user_id
+            FROM user_roles ur
+            JOIN roles r ON r.id = ur.role_id
+            WHERE r.name = $1
+              AND ur.revoked_at IS NULL
+              AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
+              AND ur.scope_type IS NULL
+            ",
+        )
+        .bind(role_name)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(users.into_iter().map(|(id,)| id).collect())
     }
 
     // =========================================
@@ -654,6 +724,87 @@ impl BanRepository {
         .await?;
 
         Ok(row.is_some())
+    }
+
+    /// Find a ban by ID.
+    pub async fn find_by_id(&self, id: Uuid) -> Result<Option<BanRow>, RepositoryError> {
+        let ban = sqlx::query_as::<_, BanRow>("SELECT * FROM bans WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(ban)
+    }
+
+    /// List bans with optional filters.
+    pub async fn list(
+        &self,
+        user_id: Option<Uuid>,
+        ban_type: Option<&str>,
+        active_only: bool,
+        scope_type: Option<&str>,
+        scope_id: Option<Uuid>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<BanRow>, RepositoryError> {
+        let mut query = String::from("SELECT * FROM bans WHERE 1=1");
+
+        if user_id.is_some() {
+            query.push_str(" AND user_id = $1");
+        }
+        if ban_type.is_some() {
+            query.push_str(" AND ban_type = $2");
+        }
+        if active_only {
+            query.push_str(" AND lifted_at IS NULL AND (ends_at IS NULL OR ends_at > NOW())");
+        }
+        if scope_type.is_some() {
+            query.push_str(" AND scope_type = $3");
+        }
+        if scope_id.is_some() {
+            query.push_str(" AND scope_id = $4");
+        }
+        query.push_str(" ORDER BY created_at DESC LIMIT $5 OFFSET $6");
+
+        let bans = sqlx::query_as::<_, BanRow>(&query)
+            .bind(user_id)
+            .bind(ban_type)
+            .bind(scope_type)
+            .bind(scope_id)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(bans)
+    }
+
+    /// Lift a specific ban by ID.
+    pub async fn lift_by_id(
+        &self,
+        id: Uuid,
+        lifted_by: Option<Uuid>,
+        lift_reason: Option<&str>,
+    ) -> Result<Option<BanRow>, RepositoryError> {
+        let ban = sqlx::query_as::<_, BanRow>(
+            r"
+            UPDATE bans SET
+                lifted_at = NOW(),
+                lifted_by = $2,
+                lift_reason = $3,
+                updated_at = NOW()
+            WHERE id = $1
+              AND lifted_at IS NULL
+            RETURNING *
+            ",
+        )
+        .bind(id)
+        .bind(lifted_by)
+        .bind(lift_reason)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(ban)
     }
 }
 

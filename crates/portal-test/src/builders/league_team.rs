@@ -202,23 +202,22 @@ impl LeagueTeamBuilder {
 
         let team = self.build(league_id, owner_player_id);
 
+        // Note: name_normalized and tag_normalized are generated columns
         sqlx::query_as::<_, LeagueTeamRow>(
             r"
             INSERT INTO league_teams (
-                id, league_id, name, name_normalized, tag, tag_normalized,
+                id, league_id, name, tag,
                 description, logo_url, banner_url, primary_color, secondary_color,
                 owner_player_id, status
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             ",
         )
         .bind(team.id)
         .bind(team.league_id)
         .bind(&team.name)
-        .bind(&team.name_normalized)
         .bind(&team.tag)
-        .bind(&team.tag_normalized)
         .bind(&team.description)
         .bind(&team.logo_url)
         .bind(&team.banner_url)

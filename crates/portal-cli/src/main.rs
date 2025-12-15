@@ -11,8 +11,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 mod commands;
 mod config;
 mod output;
+mod repl;
 
-use commands::{db, game, player, role, user};
+use commands::{audit, ban, bootstrap, db, demo, game, league_team, player, role, user};
 use config::CliConfig;
 use output::OutputFormat;
 
@@ -38,8 +39,12 @@ pub struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
 
+    /// Start interactive REPL mode
+    #[arg(short, long, global = true)]
+    interactive: bool,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -58,7 +63,23 @@ pub enum Commands {
 
     /// Database utilities
     Db(db::DbCommand),
-    // TODO: Add LeagueTeam command once the league team system is fully implemented
+
+    /// Bootstrap commands (initial setup)
+    Bootstrap(bootstrap::BootstrapCommand),
+
+    /// Ban management
+    Ban(ban::BanCommand),
+
+    /// Audit log viewing
+    Audit(audit::AuditCommand),
+
+    /// League team management
+    LeagueTeam(league_team::LeagueTeamCommand),
+
+    /// Demo catalog management
+    Demo(demo::DemoCommand),
+    // TODO: Add these commands as they are implemented:
+    // Tournament(tournament::TournamentCommand),
 }
 
 #[tokio::main]
@@ -77,13 +98,29 @@ async fn main() -> Result<()> {
     // Connect to database
     let pool = sqlx::PgPool::connect(&config.database_url).await?;
 
+    // Handle interactive mode
+    if cli.interactive {
+        return repl::run(&pool).await;
+    }
+
+    // Require a command if not in interactive mode
+    let Some(command) = cli.command else {
+        eprintln!("No command specified. Use --help for usage, or -i for interactive mode.");
+        std::process::exit(1);
+    };
+
     // Execute command
-    match cli.command {
+    match command {
         Commands::User(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Role(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Player(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Game(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Db(cmd) => cmd.execute(&pool, cli.format).await?,
+        Commands::Bootstrap(cmd) => cmd.execute(&pool, cli.format).await?,
+        Commands::Ban(cmd) => cmd.execute(&pool, cli.format).await?,
+        Commands::Audit(cmd) => cmd.execute(&pool, cli.format).await?,
+        Commands::LeagueTeam(cmd) => cmd.execute(&pool, cli.format).await?,
+        Commands::Demo(cmd) => cmd.execute(&pool, cli.format).await?,
     }
 
     Ok(())

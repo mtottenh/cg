@@ -8,6 +8,7 @@
 //! - Lobby state machines
 //! - Ranking calculations
 //! - Tournament format support
+//! - Evidence discovery and validation
 
 pub mod error;
 pub mod games;
@@ -17,11 +18,14 @@ pub mod types;
 
 // Re-export main types for convenience
 pub use error::{PluginError, RatingError, StatsError};
-pub use games::Cs2Plugin;
+pub use games::{
+    Cs2DemoClient, Cs2DemoStats, Cs2EvidenceValidator, Cs2Plugin, Cs2PluginWithEvidence,
+};
 pub use manager::PluginManager;
 pub use traits::{GamePlugin, MapInfo, RankTier};
 pub use types::{
-    DisplayStat, LobbyStateMachine, MapPickBanFormat, MapVetoAction, MatchConfig, MatchData,
+    DisplayStat, EvidenceType, EvidenceValidation, ExtractedResult, GameResult,
+    LobbyStateMachine, MapPickBanFormat, MapVetoAction, MatchConfig, MatchContext, MatchData,
     MatchFormat, MatchPlayerData, MatchTeamData, MatchmakingCriteria, PlayerInfo,
     RankedParticipant, RatingChange, TournamentFormatId, VetoActionType,
 };

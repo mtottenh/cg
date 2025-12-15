@@ -1,8 +1,8 @@
 //! Tournament routes.
 
-use crate::handlers::tournaments;
+use crate::handlers::{availability, dispute, forfeit, tournaments};
 use crate::state::AppState;
-use axum::routing::{get, post, patch};
+use axum::routing::{delete, get, patch, post};
 use axum::Router;
 
 /// Tournament routes.
@@ -29,7 +29,101 @@ pub fn routes() -> Router<AppState> {
             "/{tournament_id}/registrations/{registration_id}/check-in",
             post(tournaments::check_in),
         )
+        // Registration management
+        .route(
+            "/{tournament_id}/registrations/{registration_id}",
+            delete(tournaments::withdraw),
+        )
+        .route(
+            "/{tournament_id}/registrations/{registration_id}/approve",
+            post(tournaments::approve_registration),
+        )
+        .route(
+            "/{tournament_id}/registrations/{registration_id}/reject",
+            post(tournaments::reject_registration),
+        )
+        .route(
+            "/{tournament_id}/registrations/{registration_id}/disqualify",
+            post(tournaments::disqualify),
+        )
+        .route(
+            "/{tournament_id}/registrations/{registration_id}/admin-check-in",
+            post(tournaments::admin_check_in),
+        )
+        // Check-in status
+        .route("/{tournament_id}/check-in-status", get(tournaments::get_check_in_status))
+        .route("/{tournament_id}/process-no-shows", post(tournaments::process_no_shows))
+        // Seeding
+        .route("/{tournament_id}/seeding", get(tournaments::get_seeding))
+        .route("/{tournament_id}/seeding", delete(tournaments::clear_seeding))
+        .route("/{tournament_id}/seeding/auto", post(tournaments::auto_seed))
+        .route("/{tournament_id}/seeding/manual", post(tournaments::manual_seed))
         // Tournament brackets and matches
         .route("/{tournament_id}/brackets", get(tournaments::get_brackets))
         .route("/{tournament_id}/matches", get(tournaments::get_matches))
+        // Match lifecycle
+        .route(
+            "/{tournament_id}/matches/{match_id}/status",
+            get(tournaments::get_match_status),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/status-history",
+            get(tournaments::get_match_status_history),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/check-in",
+            post(tournaments::match_check_in),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/schedule",
+            post(tournaments::schedule_match),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/forfeit",
+            post(tournaments::forfeit_match),
+        )
+        // Match scheduling (proposal workflow)
+        .route(
+            "/{tournament_id}/matches/{match_id}/schedule/propose",
+            post(tournaments::propose_schedule),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/schedule/accept",
+            post(tournaments::accept_schedule_proposal),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/schedule/reject",
+            post(tournaments::reject_schedule_proposal),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/schedule/counter",
+            post(tournaments::counter_propose),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/schedule/active",
+            get(tournaments::get_active_proposal),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/schedule/history",
+            get(tournaments::get_proposal_history),
+        )
+        // Match time suggestions (availability-based)
+        .route(
+            "/{tournament_id}/matches/{match_id}/suggestions",
+            get(availability::get_suggestions),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/suggestions/generate",
+            post(availability::generate_suggestions),
+        )
+        // Forfeit routes (participant)
+        .route(
+            "/{tournament_id}/registrations/{registration_id}/withdraw",
+            post(forfeit::withdraw_from_tournament),
+        )
+        // Dispute routes (participant)
+        .route(
+            "/{tournament_id}/matches/{match_id}/dispute",
+            post(dispute::raise_dispute),
+        )
 }

@@ -534,6 +534,7 @@ mod tests {
     use super::*;
     use crate::entities::{NewPlayer, NewPlayerGameProfile, UpdatePlayer, UpdateUser};
     use portal_test::database::TestDb;
+    use uuid::Uuid;
 
     // ===========================================
     // UserRepository Tests

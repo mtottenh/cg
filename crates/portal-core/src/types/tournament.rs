@@ -289,6 +289,8 @@ impl FromStr for TournamentMatchStatus {
 
 impl TournamentMatchStatus {
     /// Check if the match is in a terminal state.
+    ///
+    /// Terminal states are final - no further transitions are possible.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         matches!(
@@ -303,7 +305,9 @@ impl TournamentMatchStatus {
         matches!(self, Self::Ready | Self::Scheduled | Self::CheckingIn)
     }
 
-    /// Check if the match is awaiting action.
+    /// Check if the match is awaiting action (actively in progress).
+    ///
+    /// Active states require participant or system action to proceed.
     #[must_use]
     pub const fn is_active(&self) -> bool {
         matches!(
@@ -318,28 +322,87 @@ impl TournamentMatchStatus {
         matches!(self, Self::InProgress | Self::AwaitingResult)
     }
 
+    /// Check if the match can be scheduled.
+    #[must_use]
+    pub const fn can_schedule(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
+
+    /// Check if the match can be forfeited.
+    ///
+    /// Forfeit is possible from any active state (after scheduling).
+    #[must_use]
+    pub const fn can_forfeit(&self) -> bool {
+        matches!(
+            self,
+            Self::Scheduled
+                | Self::CheckingIn
+                | Self::PickBan
+                | Self::InProgress
+                | Self::AwaitingResult
+        )
+    }
+
+    /// Check if the match can be cancelled.
+    ///
+    /// Cancellation is only possible before the match becomes active.
+    #[must_use]
+    pub const fn can_cancel(&self) -> bool {
+        matches!(self, Self::Pending | Self::Ready | Self::Scheduled)
+    }
+
+    /// Check if the match is in a disputeable state.
+    #[must_use]
+    pub const fn can_dispute(&self) -> bool {
+        matches!(self, Self::AwaitingResult)
+    }
+
+    /// Get the allowed transitions from this state.
+    ///
+    /// This implements the match lifecycle state machine as defined in the
+    /// Phase 3 design document.
+    #[must_use]
+    pub fn allowed_transitions(&self) -> Vec<Self> {
+        match self {
+            // Pending: waiting for both participants to be determined
+            Self::Pending => vec![Self::Ready, Self::Cancelled],
+            // Ready: both participants set, can be scheduled
+            Self::Ready => vec![Self::Scheduled, Self::Cancelled],
+            // Scheduled: time assigned, can transition based on requirements
+            Self::Scheduled => vec![
+                Self::CheckingIn,
+                Self::PickBan,
+                Self::InProgress,
+                Self::Forfeit,
+                Self::Cancelled,
+            ],
+            // CheckingIn: pre-match check-in phase
+            Self::CheckingIn => vec![Self::PickBan, Self::InProgress, Self::Forfeit],
+            // PickBan: map veto in progress
+            Self::PickBan => vec![Self::InProgress, Self::Forfeit],
+            // InProgress: match being played
+            Self::InProgress => vec![Self::AwaitingResult, Self::Forfeit],
+            // AwaitingResult: waiting for result submission
+            Self::AwaitingResult => vec![Self::Completed, Self::Disputed, Self::Forfeit],
+            // Disputed: result under admin review
+            Self::Disputed => vec![Self::Completed],
+            // Terminal states - no further transitions
+            Self::Completed | Self::Forfeit | Self::Cancelled => vec![],
+        }
+    }
+
     /// Valid transitions from this status.
+    ///
+    /// Alias for `allowed_transitions` for backwards compatibility.
     #[must_use]
     pub fn valid_transitions(&self) -> Vec<Self> {
-        match self {
-            Self::Pending => vec![Self::Ready, Self::Cancelled],
-            Self::Ready => vec![Self::Scheduled, Self::CheckingIn, Self::InProgress, Self::Cancelled, Self::Forfeit],
-            Self::Scheduled => vec![Self::CheckingIn, Self::InProgress, Self::Cancelled, Self::Forfeit],
-            Self::CheckingIn => vec![Self::PickBan, Self::InProgress, Self::Forfeit],
-            Self::PickBan => vec![Self::InProgress],
-            Self::InProgress => vec![Self::AwaitingResult, Self::Completed, Self::Forfeit, Self::Disputed],
-            Self::AwaitingResult => vec![Self::Completed, Self::Disputed],
-            Self::Completed => vec![Self::Disputed],
-            Self::Cancelled => vec![],
-            Self::Forfeit => vec![],
-            Self::Disputed => vec![Self::Completed],
-        }
+        self.allowed_transitions()
     }
 
     /// Check if a transition to the given status is valid.
     #[must_use]
     pub fn can_transition_to(&self, target: Self) -> bool {
-        self.valid_transitions().contains(&target)
+        self.allowed_transitions().contains(&target)
     }
 }
 
@@ -836,6 +899,140 @@ impl fmt::Display for MatchParticipantSource {
             Self::WinnerOf(pos) => write!(f, "winner_of_{pos}"),
             Self::LoserOf(pos) => write!(f, "loser_of_{pos}"),
             Self::Bye => write!(f, "bye"),
+        }
+    }
+}
+
+// ============================================================================
+// Schedule Proposal Status
+// ============================================================================
+
+/// Status of a schedule proposal in the negotiation workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalStatus {
+    /// Proposal awaiting response from opponent.
+    #[default]
+    Pending,
+    /// Proposal accepted, match scheduled.
+    Accepted,
+    /// Proposal rejected.
+    Rejected,
+    /// Counter-proposal was made.
+    CounterProposed,
+    /// Proposal expired without response.
+    Expired,
+    /// Proposal cancelled by proposer.
+    Cancelled,
+}
+
+impl fmt::Display for ProposalStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Accepted => write!(f, "accepted"),
+            Self::Rejected => write!(f, "rejected"),
+            Self::CounterProposed => write!(f, "counter_proposed"),
+            Self::Expired => write!(f, "expired"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl FromStr for ProposalStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "pending" => Ok(Self::Pending),
+            "accepted" => Ok(Self::Accepted),
+            "rejected" => Ok(Self::Rejected),
+            "counter_proposed" => Ok(Self::CounterProposed),
+            "expired" => Ok(Self::Expired),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => Err(format!("invalid proposal status: {s}")),
+        }
+    }
+}
+
+impl ProposalStatus {
+    /// Check if the proposal is in a terminal state.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Accepted | Self::Rejected | Self::Expired | Self::Cancelled
+        )
+    }
+
+    /// Check if the proposal can still be responded to.
+    #[must_use]
+    pub const fn can_respond(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+
+    /// Get the status as a string slice.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::CounterProposed => "counter_proposed",
+            Self::Expired => "expired",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Check if a transition to the given status is valid.
+    #[must_use]
+    pub fn can_transition_to(&self, target: Self) -> bool {
+        matches!(
+            (self, target),
+            (
+                Self::Pending,
+                Self::Accepted
+                    | Self::Rejected
+                    | Self::CounterProposed
+                    | Self::Expired
+                    | Self::Cancelled
+            )
+        )
+    }
+}
+
+// ============================================================================
+// Availability Exception Type
+// ============================================================================
+
+/// Type of availability exception.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExceptionType {
+    /// Player is completely blocked (unavailable) on this date.
+    #[default]
+    Blocked,
+    /// Custom override hours for this specific date.
+    Override,
+}
+
+impl fmt::Display for ExceptionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Blocked => write!(f, "blocked"),
+            Self::Override => write!(f, "override"),
+        }
+    }
+}
+
+impl FromStr for ExceptionType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "blocked" => Ok(Self::Blocked),
+            "override" => Ok(Self::Override),
+            _ => Err(format!("invalid exception type: {s}")),
         }
     }
 }

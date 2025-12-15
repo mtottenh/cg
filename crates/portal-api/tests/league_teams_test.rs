@@ -8,17 +8,6 @@ use portal_test::prelude::*;
 use serde_json::json;
 use sqlx::Row;
 
-/// Helper to get a game's UUID by slug.
-async fn get_game_uuid(app: &TestApp, slug: &str) -> String {
-    let row = sqlx::query("SELECT id FROM games WHERE slug = $1")
-        .bind(slug)
-        .fetch_one(app.pool())
-        .await
-        .expect("Game should exist");
-    let id: uuid::Uuid = row.get("id");
-    id.to_string()
-}
-
 /// Helper to create a league for testing.
 async fn create_test_league(app: &TestApp, game_id: &str, slug: &str) -> serde_json::Value {
     let response = app
@@ -73,43 +62,13 @@ async fn create_test_season(app: &TestApp, league_id: &str, slug: &str) -> serde
 /// Helper to grant league admin permission to dev user.
 async fn grant_league_admin_permission(app: &TestApp) {
     let dev_user_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
-
-    // Get or create league_admin role
-    let role_row = sqlx::query("SELECT id FROM roles WHERE name = 'league_admin'")
-        .fetch_optional(app.pool())
-        .await
-        .expect("Query should succeed");
-
-    let role_id: uuid::Uuid = if let Some(row) = role_row {
-        row.get("id")
-    } else {
-        let row = sqlx::query(
-            "INSERT INTO roles (id, name, description, is_global) VALUES (gen_random_uuid(), 'league_admin', 'League administrator', false) RETURNING id"
-        )
-        .fetch_one(app.pool())
-        .await
-        .expect("Failed to create role");
-        row.get("id")
-    };
-
-    sqlx::query(
-        "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
-    )
-    .bind(dev_user_id)
-    .bind(role_id)
-    .execute(app.pool())
-    .await
-    .expect("Failed to assign role");
+    assign_role_to_user(app.pool(), dev_user_id, "league_admin").await;
 }
 
 /// Create a JWT token for a user.
 /// The user_id and player_id are assumed to be the same (as per UserBuilder behavior).
 fn create_token_for_user(user_id: uuid::Uuid) -> String {
-    use portal_domain::generate_access_token;
-
-    // User and player have the same ID per UserBuilder
-    generate_access_token(user_id, user_id, "testuser", "test-jwt-secret")
-        .expect("Failed to create token")
+    create_test_token(user_id, user_id, "testuser", TEST_JWT_SECRET)
 }
 
 /// Helper to create a team and return team info.
@@ -144,7 +103,7 @@ async fn create_test_team(
 #[tokio::test]
 async fn test_create_season() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Grant league admin permission
     grant_league_admin_permission(&app).await;
@@ -186,7 +145,7 @@ async fn test_create_season() {
 #[tokio::test]
 async fn test_get_season() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "get-season-league").await;
@@ -204,7 +163,7 @@ async fn test_get_season() {
 #[tokio::test]
 async fn test_list_seasons() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "list-seasons-league").await;
@@ -226,7 +185,7 @@ async fn test_list_seasons() {
 #[tokio::test]
 async fn test_update_season() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "update-season-league").await;
@@ -257,7 +216,7 @@ async fn test_update_season() {
 #[tokio::test]
 async fn test_create_team() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "create-team-league").await;
@@ -293,7 +252,7 @@ async fn test_create_team() {
 #[tokio::test]
 async fn test_get_team() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "get-team-league").await;
@@ -316,7 +275,7 @@ async fn test_get_team() {
 #[tokio::test]
 async fn test_list_teams_in_season() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "list-teams-league").await;
@@ -359,7 +318,7 @@ async fn test_list_teams_in_season() {
 #[tokio::test]
 async fn test_update_team() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "update-team-league").await;
@@ -393,7 +352,7 @@ async fn test_update_team() {
 #[tokio::test]
 async fn test_get_team_season() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "get-team-season-league").await;
@@ -418,7 +377,7 @@ async fn test_get_team_season() {
 #[tokio::test]
 async fn test_get_team_members() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "members-league").await;
@@ -442,7 +401,7 @@ async fn test_get_team_members() {
 #[tokio::test]
 async fn test_leave_team() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "leave-team-league").await;
@@ -528,7 +487,7 @@ async fn test_leave_team() {
 #[tokio::test]
 async fn test_invite_player_to_team() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "invite-league").await;
@@ -576,7 +535,7 @@ async fn test_invite_player_to_team() {
 #[tokio::test]
 async fn test_accept_team_invitation() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "accept-invite-league").await;
@@ -634,7 +593,7 @@ async fn test_accept_team_invitation() {
 #[tokio::test]
 async fn test_apply_to_team() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "apply-league").await;
@@ -675,7 +634,7 @@ async fn test_apply_to_team() {
 #[tokio::test]
 async fn test_decline_invitation() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "decline-invite-league").await;
@@ -727,7 +686,7 @@ async fn test_decline_invitation() {
 #[tokio::test]
 async fn test_get_my_team_invitations() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "my-invitations-league").await;
@@ -780,7 +739,7 @@ async fn test_get_my_team_invitations() {
 #[tokio::test]
 async fn test_get_my_league_teams() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "my-teams-league").await;
@@ -808,7 +767,7 @@ async fn test_get_my_league_teams() {
 #[tokio::test]
 async fn test_transfer_ownership() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "transfer-ownership-league").await;
@@ -876,7 +835,7 @@ async fn test_transfer_ownership() {
 #[tokio::test]
 async fn test_disband_team() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "disband-team-league").await;
@@ -906,7 +865,7 @@ async fn test_disband_team() {
 #[tokio::test]
 async fn test_promote_to_captain() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "promote-captain-league").await;
@@ -966,7 +925,7 @@ async fn test_promote_to_captain() {
 #[tokio::test]
 async fn test_demote_from_captain() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "demote-captain-league").await;
@@ -1035,7 +994,7 @@ async fn test_demote_from_captain() {
 #[tokio::test]
 async fn test_create_team_requires_auth() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "auth-test-league").await;
@@ -1059,7 +1018,7 @@ async fn test_create_team_requires_auth() {
 #[tokio::test]
 async fn test_create_team_validation_error() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "validation-test-league").await;
@@ -1084,7 +1043,7 @@ async fn test_create_team_validation_error() {
 #[tokio::test]
 async fn test_cannot_join_two_teams_same_season() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     grant_league_admin_permission(&app).await;
 
     let league = create_test_league(&app, &game_id, "two-teams-league").await;

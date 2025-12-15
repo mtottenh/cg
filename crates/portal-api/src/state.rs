@@ -1,19 +1,33 @@
 //! Application state for dependency injection.
 
 use portal_db::{
-    DbPool, GameRepository, PermissionRepository, PgBanRepository, PgLeagueInvitationRepository,
-    PgLeagueMemberRepository, PgLeagueRepository, PgLeagueSeasonParticipantRepository,
-    PgLeagueSeasonRepository, PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository,
-    PgLeagueTeamRepository, PgLeagueTeamSeasonRepository, PgPermissionRepository,
-    PgPlayerRepository, PgTournamentBracketRepository, PgTournamentMatchRepository,
-    PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
-    PgUserRepository, RoleRepository, StatsRepository,
+    DbPool, GameRepository, LocalEvidenceStorage, PermissionRepository,
+    PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgBanRepository,
+    PgDemoMatchLinkRepository, PgDemoPlayerRepository, PgDemoRepository,
+    PgDisputeMessageRepository, PgDisputeRepository, PgEvidenceRepository,
+    PgForfeitRecordRepository, PgLeagueInvitationRepository, PgLeagueMemberRepository,
+    PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
+    PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
+    PgLeagueTeamSeasonRepository, PgMatchStatusLogRepository, PgPermissionRepository,
+    PgPlayerRepository, PgResultClaimRepository, PgResultReviewRepository,
+    PgScheduleProposalRepository, PgSuggestedTimeRepository, PgTournamentBracketRepository,
+    PgTournamentMatchRepository, PgTournamentRegistrationRepository, PgTournamentRepository,
+    PgTournamentStageRepository, PgTournamentStandingsRepository, PgUserRepository,
+    PgVetoActionRepository, PgVetoDelegateRepository, PgVetoLobbyMessageRepository,
+    PgVetoSessionRepository, RoleRepository, StatsRepository,
 };
 use portal_domain::services::{
-    BanService, LeagueSeasonParticipantService, LeagueSeasonService, LeagueService,
+    tournament::{
+        AvailabilityService, CheckInService, DisputeService, EvidenceService,
+        EvidenceServiceConfig, ForfeitService, MatchLifecycleService, ProgressionService,
+        RegistrationService, ResultReviewService, ResultService, SchedulingService,
+        SeedingService, VetoAuthorizationService, VetoLobbyChatService, VetoService,
+    },
+    BanService, DemoService, LeagueSeasonParticipantService, LeagueSeasonService, LeagueService,
     LeagueTeamInvitationService, LeagueTeamService, PermissionService, PlayerService,
     TournamentService, UserService,
 };
+use crate::websocket::VetoLobbyManager;
 use portal_plugins::PluginManager;
 use portal_storage::{LocalStorage, StorageBackend};
 use std::sync::Arc;
@@ -48,6 +62,82 @@ pub type AppTournamentService = TournamentService<
     PgTournamentRegistrationRepository,
     PgTournamentMatchRepository,
 >;
+pub type AppRegistrationService =
+    RegistrationService<PgTournamentRepository, PgTournamentRegistrationRepository>;
+pub type AppCheckInService =
+    CheckInService<PgTournamentRepository, PgTournamentRegistrationRepository>;
+pub type AppSeedingService =
+    SeedingService<PgTournamentRepository, PgTournamentRegistrationRepository>;
+pub type AppMatchLifecycleService = MatchLifecycleService<
+    PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository,
+    PgMatchStatusLogRepository,
+>;
+pub type AppSchedulingService = SchedulingService<
+    PgScheduleProposalRepository,
+    PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository,
+>;
+pub type AppAvailabilityService = AvailabilityService<
+    PgAvailabilityWindowRepository,
+    PgAvailabilityOverrideRepository,
+    PgSuggestedTimeRepository,
+    PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository,
+>;
+pub type AppVetoService = VetoService<
+    PgVetoSessionRepository,
+    PgVetoActionRepository,
+    PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository,
+>;
+pub type AppResultService = ResultService<
+    PgResultClaimRepository,
+    PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository,
+    PgDemoMatchLinkRepository,
+>;
+pub type AppProgressionService = ProgressionService<
+    PgTournamentMatchRepository,
+    PgTournamentBracketRepository,
+    PgTournamentStageRepository,
+    PgTournamentRegistrationRepository,
+    PgTournamentStandingsRepository,
+>;
+pub type AppEvidenceService = EvidenceService<
+    PgEvidenceRepository,
+    PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository,
+    LocalEvidenceStorage,
+>;
+pub type AppForfeitService = ForfeitService<
+    PgForfeitRecordRepository,
+    PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository,
+>;
+pub type AppDisputeService = DisputeService<
+    PgDisputeRepository,
+    PgDisputeMessageRepository,
+    PgTournamentMatchRepository,
+    PgResultClaimRepository,
+>;
+pub type AppDemoService =
+    DemoService<PgDemoRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository>;
+pub type AppResultReviewService =
+    ResultReviewService<PgResultReviewRepository, PgTournamentMatchRepository>;
+pub type AppVetoLobbyChatService = VetoLobbyChatService<
+    PgVetoLobbyMessageRepository,
+    PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository,
+>;
+pub type AppVetoAuthorizationService = VetoAuthorizationService<
+    PgVetoDelegateRepository,
+    PgTournamentRegistrationRepository,
+    PgLeagueTeamSeasonRepository,
+    PgLeagueTeamRepository,
+    PgLeagueTeamMemberRepository,
+    PgPermissionRepository,
+>;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -74,6 +164,42 @@ pub struct AppState {
     pub ban_service: AppBanService,
     /// Tournament service.
     pub tournament_service: AppTournamentService,
+    /// Tournament registration service.
+    pub registration_service: AppRegistrationService,
+    /// Tournament check-in service.
+    pub checkin_service: AppCheckInService,
+    /// Tournament seeding service.
+    pub seeding_service: AppSeedingService,
+    /// Match lifecycle service.
+    pub match_lifecycle_service: AppMatchLifecycleService,
+    /// Match scheduling service.
+    pub scheduling_service: AppSchedulingService,
+    /// Availability service for player/participant availability.
+    pub availability_service: AppAvailabilityService,
+    /// Veto service for map pick/ban.
+    pub veto_service: AppVetoService,
+    /// Result service for match result submission.
+    pub result_service: AppResultService,
+    /// Progression service for bracket advancement.
+    pub progression_service: AppProgressionService,
+    /// Evidence service for match evidence management.
+    pub evidence_service: AppEvidenceService,
+    /// Forfeit service for handling forfeits (no-show, withdrawal, disqualification).
+    pub forfeit_service: AppForfeitService,
+    /// Dispute service for handling match result disputes.
+    pub dispute_service: AppDisputeService,
+    /// Demo catalog service for browsing and categorizing demos.
+    pub demo_service: AppDemoService,
+    /// Result review service for validation discrepancy handling.
+    pub result_review_service: AppResultReviewService,
+    /// Veto lobby chat service for real-time chat messages.
+    pub veto_lobby_chat_service: AppVetoLobbyChatService,
+    /// Veto authorization service for veto permission checks.
+    pub veto_authorization_service: AppVetoAuthorizationService,
+    /// Veto lobby manager for WebSocket connections.
+    pub veto_lobby_manager: Arc<VetoLobbyManager>,
+    /// Tournament match repository for direct match access.
+    pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
     /// Permission service for high-level authorization checks (`is_admin`, etc).
     pub permission_service: AppPermissionService,
     /// Permission repository for low-level/scoped permission checks.
@@ -142,6 +268,8 @@ impl AppState {
         let stats_repo = StatsRepository::new(db_pool.clone());
 
         // Create storage backend
+        // Save evidence base path before consuming storage_config
+        let evidence_base_path = format!("{}/evidence", storage_config.base_path);
         let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(
             storage_config.base_path,
             storage_config.base_url,
@@ -205,12 +333,157 @@ impl AppState {
 
         // Create tournament service
         let tournament_service = TournamentService::new(
-            tournament_repo,
-            tournament_stage_repo,
-            tournament_bracket_repo,
-            tournament_registration_repo,
-            tournament_match_repo,
+            Arc::clone(&tournament_repo),
+            Arc::clone(&tournament_stage_repo),
+            Arc::clone(&tournament_bracket_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&tournament_match_repo),
         );
+
+        // Create Phase 2 tournament services
+        let registration_service = RegistrationService::new(
+            Arc::clone(&tournament_repo),
+            Arc::clone(&tournament_registration_repo),
+        );
+        let checkin_service = CheckInService::new(
+            Arc::clone(&tournament_repo),
+            Arc::clone(&tournament_registration_repo),
+        );
+        let seeding_service = SeedingService::new(
+            Arc::clone(&tournament_repo),
+            Arc::clone(&tournament_registration_repo),
+        );
+
+        // Create Phase 3 tournament services
+        let match_status_log_repo = Arc::new(PgMatchStatusLogRepository::new(db_pool.clone()));
+        let match_lifecycle_service = MatchLifecycleService::new(
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&match_status_log_repo),
+        );
+
+        let schedule_proposal_repo = Arc::new(PgScheduleProposalRepository::new(db_pool.clone()));
+        let scheduling_service = SchedulingService::new(
+            Arc::clone(&schedule_proposal_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_registration_repo),
+        );
+
+        // Create availability repositories and service
+        let availability_window_repo = Arc::new(PgAvailabilityWindowRepository::new(db_pool.clone()));
+        let availability_override_repo =
+            Arc::new(PgAvailabilityOverrideRepository::new(db_pool.clone()));
+        let suggested_time_repo = Arc::new(PgSuggestedTimeRepository::new(db_pool.clone()));
+        let availability_service = AvailabilityService::new(
+            Arc::clone(&availability_window_repo),
+            Arc::clone(&availability_override_repo),
+            Arc::clone(&suggested_time_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_registration_repo),
+        );
+
+        // Create veto and result repositories and services
+        let veto_session_repo = Arc::new(PgVetoSessionRepository::new(db_pool.clone()));
+        let veto_action_repo = Arc::new(PgVetoActionRepository::new(db_pool.clone()));
+        let veto_service = VetoService::new(
+            Arc::clone(&veto_session_repo),
+            Arc::clone(&veto_action_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_registration_repo),
+        );
+
+        let result_claim_repo = Arc::new(PgResultClaimRepository::new(db_pool.clone()));
+
+        // Create demo repositories early (also used by demo_service below)
+        let demo_repo = Arc::new(PgDemoRepository::new(db_pool.clone()));
+        let demo_match_link_repo = Arc::new(PgDemoMatchLinkRepository::new(db_pool.clone()));
+        let demo_player_repo = Arc::new(PgDemoPlayerRepository::new(db_pool.clone()));
+
+        let result_service = ResultService::new(
+            Arc::clone(&result_claim_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&demo_match_link_repo),
+        );
+
+        // Create progression service for bracket advancement
+        let tournament_standings_repo = Arc::new(PgTournamentStandingsRepository::new(db_pool.clone()));
+        let progression_service = ProgressionService::new(
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_bracket_repo),
+            Arc::clone(&tournament_stage_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&tournament_standings_repo),
+        );
+
+        // Create evidence service with local storage
+        let evidence_repo = Arc::new(PgEvidenceRepository::new(db_pool.clone()));
+        let evidence_storage = Arc::new(LocalEvidenceStorage::new(evidence_base_path));
+        let evidence_config = EvidenceServiceConfig {
+            evidence_bucket: "evidence".to_string(),
+            ..Default::default()
+        };
+        let evidence_service = EvidenceService::new(
+            Arc::clone(&evidence_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&evidence_storage),
+            evidence_config,
+        );
+
+        // Create forfeit service
+        let forfeit_repo = Arc::new(PgForfeitRecordRepository::new(db_pool.clone()));
+        let forfeit_service = ForfeitService::new(
+            Arc::clone(&forfeit_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_registration_repo),
+        );
+
+        // Create dispute service
+        let dispute_repo = Arc::new(PgDisputeRepository::new(db_pool.clone()));
+        let dispute_message_repo = Arc::new(PgDisputeMessageRepository::new(db_pool.clone()));
+        let dispute_service = DisputeService::new(
+            Arc::clone(&dispute_repo),
+            Arc::clone(&dispute_message_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&result_claim_repo),
+        );
+
+        // Create demo catalog service (repositories already created above)
+        let demo_service = DemoService::new(
+            Arc::clone(&demo_repo),
+            Arc::clone(&demo_match_link_repo),
+            Arc::clone(&demo_player_repo),
+        );
+
+        // Create result review service
+        let result_review_repo = Arc::new(PgResultReviewRepository::new(db_pool.clone()));
+        let result_review_service = ResultReviewService::new(
+            Arc::clone(&result_review_repo),
+            Arc::clone(&tournament_match_repo),
+        );
+
+        // Create veto lobby chat service
+        let veto_lobby_message_repo = Arc::new(PgVetoLobbyMessageRepository::new(db_pool.clone()));
+        let veto_lobby_chat_service = VetoLobbyChatService::new(
+            Arc::clone(&veto_lobby_message_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_registration_repo),
+        );
+
+        // Create veto authorization service
+        let veto_delegate_repo = Arc::new(PgVetoDelegateRepository::new(db_pool.clone()));
+        let veto_authorization_service = VetoAuthorizationService::new(
+            Arc::clone(&veto_delegate_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&league_team_season_repo),
+            Arc::clone(&league_team_repo),
+            Arc::clone(&league_team_member_repo),
+            Arc::clone(&pg_permission_repo),
+        );
+
+        // Create veto lobby manager for WebSocket connections
+        let veto_lobby_manager = Arc::new(VetoLobbyManager::new());
 
         Self {
             db_pool,
@@ -224,6 +497,24 @@ impl AppState {
             league_season_participant_service,
             ban_service,
             tournament_service,
+            registration_service,
+            checkin_service,
+            seeding_service,
+            match_lifecycle_service,
+            scheduling_service,
+            availability_service,
+            veto_service,
+            result_service,
+            progression_service,
+            evidence_service,
+            forfeit_service,
+            dispute_service,
+            demo_service,
+            result_review_service,
+            veto_lobby_chat_service,
+            veto_authorization_service,
+            veto_lobby_manager,
+            tournament_match_repo,
             permission_service,
             permission_repo,
             role_repo,

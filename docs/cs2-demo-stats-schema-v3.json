@@ -1,0 +1,409 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://demos.cs210mans.uk/schemas/cs2-demo-stats-v3.json",
+  "title": "CS2 Demo Stats Schema v3",
+  "description": "Schema for pre-parsed CS2 demo statistics from the demo service",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "map",
+    "match_date",
+    "demo_file",
+    "match_id",
+    "teams",
+    "final_score",
+    "player_summaries",
+    "rounds"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "description": "Schema version number",
+      "const": 3
+    },
+    "map": {
+      "type": "string",
+      "description": "Map name (e.g., 'de_inferno', 'de_dust2')",
+      "examples": ["de_inferno", "de_dust2", "de_mirage"]
+    },
+    "match_date": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Match start time in ISO 8601 format"
+    },
+    "demo_file": {
+      "type": "string",
+      "description": "Demo file name"
+    },
+    "match_id": {
+      "type": "string",
+      "description": "Unique match identifier"
+    },
+    "teams": {
+      "type": "object",
+      "description": "Teams participating in the match, keyed by team name",
+      "additionalProperties": {
+        "$ref": "#/definitions/TeamInfo"
+      }
+    },
+    "final_score": {
+      "type": "object",
+      "description": "Final scores keyed by team name",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "player_summaries": {
+      "type": "object",
+      "description": "Aggregated player statistics keyed by Steam ID (as string)",
+      "additionalProperties": {
+        "$ref": "#/definitions/PlayerSummary"
+      }
+    },
+    "rounds": {
+      "type": "array",
+      "description": "Round-by-round data",
+      "items": {
+        "$ref": "#/definitions/RoundData"
+      }
+    }
+  },
+  "definitions": {
+    "TeamInfo": {
+      "type": "object",
+      "description": "Team information",
+      "required": ["team_id", "team_name", "team_side"],
+      "properties": {
+        "team_id": {
+          "type": "integer",
+          "description": "Team ID (typically 1, 2, or 3)"
+        },
+        "team_name": {
+          "type": "string",
+          "description": "Team name"
+        },
+        "team_side": {
+          "type": "string",
+          "description": "Starting side",
+          "enum": ["T", "CT"]
+        }
+      }
+    },
+    "PlayerSummary": {
+      "type": "object",
+      "description": "Aggregated player statistics for the entire match",
+      "required": [
+        "player_id",
+        "player_name",
+        "team",
+        "kills",
+        "deaths",
+        "assists",
+        "headshot_kills",
+        "flash_assists",
+        "damage_dealt",
+        "utility_damage",
+        "adr",
+        "hs_percentage",
+        "wallbangs",
+        "smoke_kills",
+        "blind_kills",
+        "blinded_kills",
+        "flash_duration",
+        "enemies_flashed",
+        "bomb_plants",
+        "bomb_defuses",
+        "outgoing_interactions",
+        "incoming_interactions",
+        "weapon_kills"
+      ],
+      "properties": {
+        "player_id": {
+          "type": "integer",
+          "description": "Steam ID as 64-bit integer"
+        },
+        "player_name": {
+          "type": "string",
+          "description": "Player display name during the match"
+        },
+        "team": {
+          "$ref": "#/definitions/TeamInfo"
+        },
+        "kills": {
+          "type": "integer",
+          "description": "Total kills"
+        },
+        "deaths": {
+          "type": "integer",
+          "description": "Total deaths"
+        },
+        "assists": {
+          "type": "integer",
+          "description": "Total assists"
+        },
+        "headshot_kills": {
+          "type": "integer",
+          "description": "Kills with headshots"
+        },
+        "flash_assists": {
+          "type": "integer",
+          "description": "Assists from flashbang blinds"
+        },
+        "damage_dealt": {
+          "type": "integer",
+          "description": "Total damage dealt"
+        },
+        "utility_damage": {
+          "type": "integer",
+          "description": "Damage dealt by utility (grenades)"
+        },
+        "adr": {
+          "type": "number",
+          "description": "Average Damage per Round"
+        },
+        "hs_percentage": {
+          "type": "number",
+          "description": "Headshot percentage (0-100)"
+        },
+        "wallbangs": {
+          "type": "integer",
+          "description": "Kills through walls/penetrable surfaces"
+        },
+        "smoke_kills": {
+          "type": "integer",
+          "description": "Kills through smoke"
+        },
+        "blind_kills": {
+          "type": "integer",
+          "description": "Kills while blinded"
+        },
+        "blinded_kills": {
+          "type": "integer",
+          "description": "Kills on blinded enemies"
+        },
+        "flash_duration": {
+          "type": "number",
+          "description": "Total time enemies were flashed by this player (seconds)"
+        },
+        "enemies_flashed": {
+          "type": "integer",
+          "description": "Number of times enemies were flashed"
+        },
+        "bomb_plants": {
+          "type": "integer",
+          "description": "Number of bomb plants"
+        },
+        "bomb_defuses": {
+          "type": "integer",
+          "description": "Number of bomb defuses"
+        },
+        "outgoing_interactions": {
+          "type": "object",
+          "description": "Interactions with other players (kills/assists given), keyed by target Steam ID",
+          "additionalProperties": {
+            "$ref": "#/definitions/PlayerInteraction"
+          }
+        },
+        "incoming_interactions": {
+          "type": "object",
+          "description": "Interactions from other players (kills/assists received), keyed by source Steam ID",
+          "additionalProperties": {
+            "$ref": "#/definitions/PlayerInteraction"
+          }
+        },
+        "weapon_kills": {
+          "type": "object",
+          "description": "Kills per weapon, keyed by weapon ID (as string)",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "PlayerInteraction": {
+      "type": "object",
+      "description": "Kill/assist interaction between players",
+      "properties": {
+        "killed": {
+          "type": "integer",
+          "description": "Number of times killed"
+        },
+        "assisted": {
+          "type": "integer",
+          "description": "Number of times assisted in killing"
+        }
+      }
+    },
+    "RoundData": {
+      "type": "object",
+      "description": "Data for a single round",
+      "required": [
+        "round_number",
+        "winner_team",
+        "winner_side",
+        "round_score",
+        "player_states",
+        "events",
+        "player_stats"
+      ],
+      "properties": {
+        "round_number": {
+          "type": "integer",
+          "description": "Round number (1-indexed)",
+          "minimum": 1
+        },
+        "winner_team": {
+          "type": "string",
+          "description": "Name of the winning team"
+        },
+        "winner_side": {
+          "type": "string",
+          "description": "Side that won",
+          "enum": ["T", "CT"]
+        },
+        "round_score": {
+          "type": "object",
+          "description": "Score after this round, keyed by team name",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "player_states": {
+          "type": "object",
+          "description": "Player states at round start, keyed by Steam ID",
+          "additionalProperties": {
+            "$ref": "#/definitions/PlayerState"
+          }
+        },
+        "events": {
+          "type": "array",
+          "description": "Events that occurred during the round",
+          "items": {
+            "$ref": "#/definitions/RoundEvent"
+          }
+        },
+        "player_stats": {
+          "type": "object",
+          "description": "Player stats for this round, keyed by Steam ID",
+          "additionalProperties": {
+            "$ref": "#/definitions/RoundPlayerStats"
+          }
+        }
+      }
+    },
+    "PlayerState": {
+      "type": "object",
+      "description": "Player state at round start",
+      "required": ["player_id", "player_name", "team", "starting_money"],
+      "properties": {
+        "player_id": {
+          "type": "integer",
+          "description": "Steam ID as 64-bit integer"
+        },
+        "player_name": {
+          "type": "string",
+          "description": "Player display name"
+        },
+        "team": {
+          "$ref": "#/definitions/TeamInfo"
+        },
+        "starting_money": {
+          "type": "integer",
+          "description": "Money at round start"
+        }
+      }
+    },
+    "RoundPlayerStats": {
+      "type": "object",
+      "description": "Player statistics for a single round",
+      "required": ["kills", "deaths", "assists", "damage"],
+      "properties": {
+        "kills": {
+          "type": "integer",
+          "description": "Kills this round"
+        },
+        "deaths": {
+          "type": "integer",
+          "description": "Deaths this round"
+        },
+        "assists": {
+          "type": "integer",
+          "description": "Assists this round"
+        },
+        "damage": {
+          "type": "integer",
+          "description": "Damage dealt this round"
+        }
+      }
+    },
+    "RoundEvent": {
+      "type": "object",
+      "description": "An event that occurred during a round",
+      "required": ["event_type", "event_time"],
+      "properties": {
+        "event_type": {
+          "type": "string",
+          "description": "Type of event",
+          "enum": ["damage", "kill", "assist", "flash", "bomb_plant", "bomb_defuse", "round_end"]
+        },
+        "event_time": {
+          "type": "number",
+          "description": "Time since round start (seconds)"
+        },
+        "source_player_id": {
+          "type": "integer",
+          "description": "Steam ID of the player who caused the event"
+        },
+        "target_player_id": {
+          "type": "integer",
+          "description": "Steam ID of the affected player"
+        },
+        "weapon": {
+          "type": "string",
+          "description": "Weapon name"
+        },
+        "weapon_type": {
+          "type": "integer",
+          "description": "Weapon type ID"
+        },
+        "attributes": {
+          "type": "object",
+          "description": "Event-specific attributes",
+          "properties": {
+            "damage": {
+              "type": "integer"
+            },
+            "armor_damage": {
+              "type": "integer"
+            },
+            "health_left": {
+              "type": "integer"
+            },
+            "armor_left": {
+              "type": "integer"
+            },
+            "hitgroup": {
+              "type": "integer"
+            },
+            "headshot": {
+              "type": "boolean"
+            },
+            "penetrated": {
+              "type": "boolean"
+            },
+            "flash_duration": {
+              "type": "number"
+            },
+            "winner": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    }
+  }
+}

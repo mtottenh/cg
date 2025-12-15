@@ -4,14 +4,31 @@
 //! Implementations are in the `portal-db` crate.
 
 pub mod audit;
+pub mod availability;
 pub mod ban;
+pub mod demo;
+pub mod dispute;
+pub mod evidence;
+pub mod forfeit;
 pub mod league;
 pub mod league_team;
+pub mod match_lifecycle;
 pub mod permission;
+pub mod result_review;
+pub mod schedule_proposal;
 pub mod tournament;
 pub mod user;
+pub mod veto_delegate;
+pub mod veto_lobby_message;
 
 pub use audit::{CreateEntityChange, EntityChangeRepository};
+pub use availability::{
+    AvailabilityOverrideRepository, AvailabilityWindowRepository, SuggestedTimeRepository,
+};
+pub use demo::{
+    CreateDemo, CreateDemoMatchLink, CreateDemoPlayer, DemoMatchLinkRepository,
+    DemoMatchLinkWithData, DemoPlayerRepository, DemoRepository,
+};
 pub use ban::{BanRepository, PaginatedBans, PaginationMeta};
 pub use league::{
     AddLeagueMember, CreateLeague, CreateLeagueInvitation, LeagueInvitationRepository,
@@ -20,17 +37,34 @@ pub use league::{
 pub use league_team::{
     AddLeagueTeamMember, CreateLeagueSeason, CreateLeagueTeam, CreateLeagueTeamInvitation,
     LeagueSeasonRepository, LeagueTeamInvitationRepository, LeagueTeamMemberRepository,
-    LeagueTeamRepository, UpdateLeagueSeason, UpdateLeagueTeam,
+    LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueSeason, UpdateLeagueTeam,
 };
+pub use match_lifecycle::{CreateMatchStatusLog, MatchStatusLogRepository};
 pub use permission::PermissionRepository;
+pub use schedule_proposal::ScheduleProposalRepository;
 pub use tournament::{
-    CreateTournament, CreateTournamentBracket, CreateTournamentMatch, CreateTournamentMatchGame,
-    CreateTournamentRegistration, CreateTournamentStage, CreateTournamentStanding,
-    ParticipantSlot, TournamentBracketRepository, TournamentFilters, TournamentMapPoolRepository,
-    TournamentMatchGameRepository, TournamentMatchRepository, TournamentRegistrationRepository,
-    TournamentRepository, TournamentStageRepository, TournamentStandingsRepository,
-    UpdateTournament, UpdateTournamentBracket, UpdateTournamentMatch, UpdateTournamentMatchGame,
-    UpdateTournamentRegistration, UpdateTournamentStage, UpdateTournamentStanding,
-    UpsertTournamentMapPool,
+    CreateResultClaim, CreateTournament, CreateTournamentBracket, CreateTournamentMatch,
+    CreateTournamentMatchGame, CreateTournamentRegistration, CreateTournamentStage,
+    CreateTournamentStanding, CreateVetoAction, CreateVetoSession, ParticipantSlot,
+    ResultClaimRepository, TournamentBracketRepository, TournamentFilters,
+    TournamentMapPoolRepository, TournamentMatchGameRepository, TournamentMatchRepository,
+    TournamentRegistrationRepository, TournamentRepository, TournamentStageRepository,
+    TournamentStandingsRepository, UpdateResultClaim, UpdateTournament, UpdateTournamentBracket,
+    UpdateTournamentMatch, UpdateTournamentMatchGame, UpdateTournamentRegistration,
+    UpdateTournamentStage, UpdateTournamentStanding, UpdateVetoSession, UpsertTournamentMapPool,
+    VetoActionRepository, VetoSessionRepository,
 };
 pub use user::{CreatePlayer, CreateUser, PlayerRepository, UpdatePlayer, UserRepository};
+pub use evidence::{
+    CreateEvidence, CreateEvidenceAccessLog, CreateProgressionLog, CreateSagaExecution,
+    EvidenceRepository, ProgressionLog, ProgressionLogRepository, ProgressionType,
+    SagaExecutionRepository, UpdateEvidence,
+};
+pub use forfeit::{CreateForfeitRecord, ForfeitRecordRepository};
+pub use dispute::{
+    CreateDispute, CreateDisputeMessage, DisputeMessageRepository, DisputeRepository,
+    UpdateDispute,
+};
+pub use result_review::{CreateResultReview, ResultReviewRepository};
+pub use veto_delegate::{CreateVetoDelegate, VetoDelegateRepository};
+pub use veto_lobby_message::{CreateVetoLobbyMessage, VetoLobbyMessageRepository};

@@ -8,17 +8,6 @@ use portal_test::prelude::*;
 use serde_json::json;
 use sqlx::Row;
 
-/// Helper to get a game's UUID by slug.
-async fn get_game_uuid(app: &TestApp, slug: &str) -> String {
-    let row = sqlx::query("SELECT id FROM games WHERE slug = $1")
-        .bind(slug)
-        .fetch_one(app.pool())
-        .await
-        .expect("Game should exist");
-    let id: uuid::Uuid = row.get("id");
-    id.to_string()
-}
-
 // ============================================================================
 // CREATE LEAGUE TESTS
 // ============================================================================
@@ -26,7 +15,7 @@ async fn get_game_uuid(app: &TestApp, slug: &str) -> String {
 #[tokio::test]
 async fn test_create_league() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create a league as the dev user
     let response = app
@@ -54,7 +43,7 @@ async fn test_create_league() {
 #[tokio::test]
 async fn test_create_league_validation_error() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Try to create a league with invalid name (too short)
     let response = app
@@ -74,7 +63,7 @@ async fn test_create_league_validation_error() {
 #[tokio::test]
 async fn test_create_league_invalid_slug() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Slug with invalid characters
     let response = app
@@ -94,7 +83,7 @@ async fn test_create_league_invalid_slug() {
 #[tokio::test]
 async fn test_create_league_duplicate_slug() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create first league
     let response = app
@@ -127,7 +116,7 @@ async fn test_create_league_duplicate_slug() {
 #[tokio::test]
 async fn test_create_league_requires_auth() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Try to create without auth
     let response = app
@@ -151,7 +140,7 @@ async fn test_create_league_requires_auth() {
 #[tokio::test]
 async fn test_get_league_by_id() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create a league
     let create_response = app
@@ -181,7 +170,7 @@ async fn test_get_league_by_id() {
 #[tokio::test]
 async fn test_get_league_by_slug() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create a league
     let create_response = app
@@ -222,7 +211,7 @@ async fn test_get_league_not_found() {
 #[tokio::test]
 async fn test_list_leagues() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create a couple of leagues
     app.post_json(
@@ -258,7 +247,7 @@ async fn test_list_leagues() {
 #[tokio::test]
 async fn test_list_leagues_by_game() {
     let app = TestApp::new().await;
-    let cs2_game_id = get_game_uuid(&app, "cs2").await;
+    let cs2_game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create a league for CS2
     app.post_json(
@@ -288,7 +277,7 @@ async fn test_list_leagues_by_game() {
 #[tokio::test]
 async fn test_join_open_league() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create user2 with their own token
     let user2 = UserBuilder::new()
@@ -329,7 +318,7 @@ async fn test_join_open_league() {
 #[tokio::test]
 async fn test_join_invite_only_league_fails() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create user2
     let user2 = UserBuilder::new()
@@ -371,7 +360,7 @@ async fn test_join_invite_only_league_fails() {
 #[tokio::test]
 async fn test_list_members() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create a league (dev user becomes admin)
     let create_response = app
@@ -401,7 +390,7 @@ async fn test_list_members() {
 #[tokio::test]
 async fn test_leave_league() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create user2
     let user2 = UserBuilder::new()
@@ -448,7 +437,7 @@ async fn test_leave_league() {
 #[tokio::test]
 async fn test_update_league() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Grant league admin permission to dev user
     grant_league_admin_permission(&app).await;
@@ -489,7 +478,7 @@ async fn test_update_league() {
 #[tokio::test]
 async fn test_update_league_requires_permission() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create user2 (not an admin)
     let user2 = UserBuilder::new()
@@ -536,7 +525,7 @@ async fn test_update_league_requires_permission() {
 #[tokio::test]
 async fn test_apply_to_league() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create user2
     let user2 = UserBuilder::new()
@@ -584,7 +573,7 @@ async fn test_apply_to_league() {
 #[tokio::test]
 async fn test_approve_application() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Grant league admin permission to dev user
     grant_league_admin_permission(&app).await;
@@ -644,7 +633,7 @@ async fn test_approve_application() {
 #[tokio::test]
 async fn test_reject_application() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Grant league admin permission to dev user
     grant_league_admin_permission(&app).await;
@@ -705,7 +694,7 @@ async fn test_reject_application() {
 #[tokio::test]
 async fn test_invite_user_to_league() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Grant league admin permission to dev user
     grant_league_admin_permission(&app).await;
@@ -753,7 +742,7 @@ async fn test_invite_user_to_league() {
 #[tokio::test]
 async fn test_accept_invitation() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Grant league admin permission to dev user
     grant_league_admin_permission(&app).await;
@@ -813,7 +802,7 @@ async fn test_accept_invitation() {
 #[tokio::test]
 async fn test_decline_invitation() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Grant league admin permission to dev user
     grant_league_admin_permission(&app).await;
@@ -874,7 +863,7 @@ async fn test_decline_invitation() {
 #[tokio::test]
 async fn test_get_my_leagues() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create a league (dev user becomes admin)
     app.post_json(
@@ -899,7 +888,7 @@ async fn test_get_my_leagues() {
 #[tokio::test]
 async fn test_get_my_league_invitations() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Grant league admin permission to dev user
     grant_league_admin_permission(&app).await;
@@ -957,7 +946,7 @@ async fn test_get_my_league_invitations() {
 #[tokio::test]
 async fn test_update_member_role() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Grant league admin permission to dev user
     grant_league_admin_permission(&app).await;
@@ -1011,7 +1000,7 @@ async fn test_update_member_role() {
 #[tokio::test]
 async fn test_remove_member() {
     let app = TestApp::new().await;
-    let game_id = get_game_uuid(&app, "cs2").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Grant league admin permission to dev user
     grant_league_admin_permission(&app).await;

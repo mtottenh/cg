@@ -1,7 +1,7 @@
 //! Gaming Portal server entry point.
 
 use anyhow::Result;
-use portal_api::{create_app, AppState};
+use portal_api::{create_app, spawn_timeout_warning_task, AppState};
 use portal_db::{create_pool, PoolConfig};
 use std::net::SocketAddr;
 use tracing::info;
@@ -40,6 +40,9 @@ async fn main() -> Result<()> {
 
     // Create app state
     let state = AppState::new(pool, jwt_secret);
+
+    // Start background tasks
+    spawn_timeout_warning_task(state.clone());
 
     // Create app
     let app = create_app(state);

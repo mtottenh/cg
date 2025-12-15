@@ -333,6 +333,69 @@ define_id!(
     BracketId
 );
 
+define_id!(
+    /// Unique identifier for a match status log entry.
+    ///
+    /// Used to track match state machine transitions for audit purposes.
+    MatchStatusLogId
+);
+
+define_id!(
+    /// Unique identifier for a schedule proposal.
+    ///
+    /// Used in the match scheduling negotiation system.
+    ScheduleProposalId
+);
+
+define_id!(
+    /// Unique identifier for an availability window.
+    ///
+    /// Represents a recurring time slot when a player or team is available.
+    AvailabilityWindowId
+);
+
+define_id!(
+    /// Unique identifier for an availability exception.
+    ///
+    /// Represents a specific date override for availability (blocked or custom hours).
+    AvailabilityExceptionId
+);
+
+define_id!(
+    /// Unique identifier for a suggested time slot.
+    ///
+    /// Represents an auto-generated or manual time suggestion for match scheduling.
+    SuggestedTimeId
+);
+
+define_id!(
+    /// Unique identifier for a veto session.
+    ///
+    /// Represents a map pick/ban session for a tournament match.
+    VetoSessionId
+);
+
+define_id!(
+    /// Unique identifier for a veto action.
+    ///
+    /// Represents a single ban, pick, or decider action in a veto session.
+    VetoActionId
+);
+
+define_id!(
+    /// Unique identifier for a result claim.
+    ///
+    /// Represents a submitted match result awaiting confirmation.
+    ResultClaimId
+);
+
+define_id!(
+    /// Unique identifier for match evidence.
+    ///
+    /// Represents demo files, screenshots, or other evidence linked to matches.
+    EvidenceId
+);
+
 // Infrastructure IDs
 define_id!(
     /// Unique identifier for a game server.
@@ -345,8 +408,77 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for a progression log entry.
+    ProgressionLogId
+);
+
+define_id!(
     /// Unique identifier for a ban record.
     BanId
+);
+
+define_id!(
+    /// Unique identifier for a forfeit record.
+    ///
+    /// Tracks forfeits due to no-show, withdrawal, disqualification, or technical default.
+    ForfeitRecordId
+);
+
+define_id!(
+    /// Unique identifier for a dispute.
+    ///
+    /// Used for match result disputes that require admin resolution.
+    DisputeId
+);
+
+define_id!(
+    /// Unique identifier for a dispute message.
+    ///
+    /// Messages in a dispute thread for communication between participants and admins.
+    DisputeMessageId
+);
+
+// Demo Catalog IDs
+define_id!(
+    /// Unique identifier for a demo file in the catalog.
+    ///
+    /// Demos exist independently of matches and can be browsed, categorized, and linked.
+    DemoId
+);
+
+define_id!(
+    /// Unique identifier for a demo-match link.
+    ///
+    /// Links a demo to a tournament match (many-to-many relationship).
+    DemoMatchLinkId
+);
+
+define_id!(
+    /// Unique identifier for a player's appearance in a demo.
+    ///
+    /// Tracks player stats extracted from demo files.
+    DemoPlayerId
+);
+
+define_id!(
+    /// Unique identifier for a result review.
+    ///
+    /// Used for tracking validation issues requiring human review before match completion.
+    ResultReviewId
+);
+
+define_id!(
+    /// Unique identifier for a veto lobby chat message.
+    ///
+    /// Messages sent in the real-time veto lobby (team chat, all chat, system messages).
+    VetoLobbyMessageId
+);
+
+define_id!(
+    /// Unique identifier for a veto delegate.
+    ///
+    /// Represents a delegation of veto (pick/ban) authority from a captain/owner to a team member.
+    VetoDelegateId
 );
 
 // =============================================================================

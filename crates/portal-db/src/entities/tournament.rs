@@ -446,6 +446,291 @@ pub struct TournamentStandingRow {
     pub game_differential: i32,
     pub buchholz_score: Option<f64>,
     pub opponent_match_wins: Option<f64>,
+    pub head_to_head: serde_json::Value,
+    pub tiebreaker_score: f64,
+    pub is_tied: bool,
     pub points: i32,
     pub updated_at: DateTime<Utc>,
+}
+
+// =============================================================================
+// MATCH STATUS LOG
+// =============================================================================
+
+/// Database row for the `match_status_log` table.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct MatchStatusLogRow {
+    pub id: Uuid,
+    pub match_id: Uuid,
+
+    // Transition details
+    pub from_status: String,
+    pub to_status: String,
+    pub transition_reason: Option<String>,
+
+    // Who triggered the transition
+    pub triggered_by_user_id: Option<Uuid>,
+    pub triggered_by_system: bool,
+
+    // Additional context
+    pub metadata: serde_json::Value,
+
+    // Timestamp
+    pub transitioned_at: DateTime<Utc>,
+}
+
+/// Data for inserting a new match status log entry.
+#[derive(Debug, Clone)]
+pub struct NewMatchStatusLog {
+    pub match_id: Uuid,
+    pub from_status: String,
+    pub to_status: String,
+    pub transition_reason: Option<String>,
+    pub triggered_by_user_id: Option<Uuid>,
+    pub triggered_by_system: bool,
+    pub metadata: serde_json::Value,
+}
+
+// =============================================================================
+// SCHEDULE PROPOSAL
+// =============================================================================
+
+/// Database row for the `schedule_proposals` table.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ScheduleProposalRow {
+    pub id: Uuid,
+    pub match_id: Uuid,
+
+    // Who proposed
+    pub proposed_by_registration_id: Uuid,
+    pub proposed_by_user_id: Uuid,
+
+    // Proposed times
+    pub proposed_times: Vec<DateTime<Utc>>,
+
+    // Selected time (when accepted)
+    pub selected_time: Option<DateTime<Utc>>,
+
+    // Response tracking
+    pub responded_at: Option<DateTime<Utc>>,
+    pub responded_by_user_id: Option<Uuid>,
+
+    // Counter-proposal reference
+    pub counter_proposal_id: Option<Uuid>,
+
+    // Status
+    pub status: String,
+
+    // Expiration
+    pub expires_at: DateTime<Utc>,
+
+    // Admin notes
+    pub notes: Option<String>,
+
+    // Timestamps
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Data for inserting a new schedule proposal.
+#[derive(Debug, Clone)]
+pub struct NewScheduleProposal {
+    pub match_id: Uuid,
+    pub proposed_by_registration_id: Uuid,
+    pub proposed_by_user_id: Uuid,
+    pub proposed_times: Vec<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
+    pub notes: Option<String>,
+}
+
+// =============================================================================
+// VETO SESSION
+// =============================================================================
+
+/// Database row for the `veto_sessions` table.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct VetoSessionRow {
+    pub id: Uuid,
+    pub match_id: Uuid,
+
+    // Format
+    pub veto_format_id: String,
+    pub map_pool: Vec<String>,
+
+    // Coin flip / first action
+    pub first_action_registration_id: Option<Uuid>,
+    pub coin_flip_winner_registration_id: Option<Uuid>,
+
+    // Current state
+    pub current_action_number: i32,
+    pub current_team_turn: Option<Uuid>,
+
+    // Maps
+    pub remaining_maps: Vec<String>,
+    pub selected_maps: Vec<String>,
+
+    // Status
+    pub status: String,
+
+    // Timing
+    pub action_deadline: Option<DateTime<Utc>>,
+    pub timeout_seconds: i32,
+
+    // Timestamps
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Data for inserting a new veto session.
+#[derive(Debug, Clone)]
+pub struct NewVetoSession {
+    pub match_id: Uuid,
+    pub veto_format_id: String,
+    pub map_pool: Vec<String>,
+    pub remaining_maps: Vec<String>,
+    pub timeout_seconds: i32,
+}
+
+/// Data for updating a veto session.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateVetoSession {
+    pub first_action_registration_id: Option<Uuid>,
+    pub coin_flip_winner_registration_id: Option<Uuid>,
+    pub current_action_number: Option<i32>,
+    pub current_team_turn: Option<Option<Uuid>>,
+    pub remaining_maps: Option<Vec<String>>,
+    pub selected_maps: Option<Vec<String>>,
+    pub status: Option<String>,
+    pub action_deadline: Option<Option<DateTime<Utc>>>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+// =============================================================================
+// VETO ACTION
+// =============================================================================
+
+/// Database row for the `veto_actions` table.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct VetoActionRow {
+    pub id: Uuid,
+    pub session_id: Uuid,
+
+    // Action details
+    pub action_number: i32,
+    pub action_type: String,
+    pub map_id: String,
+
+    // Who performed
+    pub performed_by_registration_id: Option<Uuid>,
+    pub performed_by_user_id: Option<Uuid>,
+
+    // Side selection
+    pub side_selection: Option<String>,
+    pub side_selected_by_registration_id: Option<Uuid>,
+
+    // Auto-action
+    pub was_auto_action: bool,
+    pub auto_action_reason: Option<String>,
+
+    // Timestamps
+    pub performed_at: DateTime<Utc>,
+    pub side_selected_at: Option<DateTime<Utc>>,
+}
+
+/// Data for inserting a new veto action.
+#[derive(Debug, Clone)]
+pub struct NewVetoAction {
+    pub session_id: Uuid,
+    pub action_number: i32,
+    pub action_type: String,
+    pub map_id: String,
+    pub performed_by_registration_id: Option<Uuid>,
+    pub performed_by_user_id: Option<Uuid>,
+    pub was_auto_action: bool,
+    pub auto_action_reason: Option<String>,
+}
+
+/// Data for updating a veto action (side selection).
+#[derive(Debug, Clone)]
+pub struct UpdateVetoAction {
+    pub side_selection: Option<String>,
+    pub side_selected_by_registration_id: Option<Uuid>,
+    pub side_selected_at: Option<DateTime<Utc>>,
+}
+
+// =============================================================================
+// RESULT CLAIM
+// =============================================================================
+
+/// Database row for the `result_claims` table.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ResultClaimRow {
+    pub id: Uuid,
+    pub match_id: Uuid,
+
+    // Who submitted
+    pub submitted_by_registration_id: Uuid,
+    pub submitted_by_user_id: Uuid,
+
+    // Claimed result
+    pub claimed_winner_registration_id: Uuid,
+    pub claimed_participant1_score: i32,
+    pub claimed_participant2_score: i32,
+
+    // Game-by-game results
+    pub game_results: serde_json::Value,
+
+    // Status
+    pub status: String,
+
+    // Confirmation
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub confirmed_by_registration_id: Option<Uuid>,
+    pub confirmed_by_user_id: Option<Uuid>,
+
+    // Auto-confirmation
+    pub auto_confirm_at: Option<DateTime<Utc>>,
+    pub was_auto_confirmed: bool,
+
+    // Evidence links
+    pub evidence_ids: Vec<Uuid>,
+
+    // Demo catalog links (references demo_match_links table)
+    pub demo_link_ids: Vec<Uuid>,
+
+    // Notes
+    pub submitter_notes: Option<String>,
+
+    // Timestamps
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Data for inserting a new result claim.
+#[derive(Debug, Clone)]
+pub struct NewResultClaim {
+    pub match_id: Uuid,
+    pub submitted_by_registration_id: Uuid,
+    pub submitted_by_user_id: Uuid,
+    pub claimed_winner_registration_id: Uuid,
+    pub claimed_participant1_score: i32,
+    pub claimed_participant2_score: i32,
+    pub game_results: serde_json::Value,
+    pub auto_confirm_at: DateTime<Utc>,
+    pub evidence_ids: Vec<Uuid>,
+    pub demo_link_ids: Vec<Uuid>,
+    pub submitter_notes: Option<String>,
+}
+
+/// Data for updating a result claim.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateResultClaim {
+    pub status: Option<String>,
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub confirmed_by_registration_id: Option<Uuid>,
+    pub confirmed_by_user_id: Option<Uuid>,
+    pub was_auto_confirmed: Option<bool>,
 }

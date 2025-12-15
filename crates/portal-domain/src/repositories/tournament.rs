@@ -21,9 +21,9 @@ use portal_core::types::{
     TournamentStatus, WithdrawalPolicy,
 };
 use portal_core::{
-    DomainError, GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentBracketId,
-    TournamentId, TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId,
-    TournamentRegistrationId, TournamentStageId, UserId,
+    DemoMatchLinkId, DomainError, GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId,
+    TournamentBracketId, TournamentId, TournamentMapPoolId, TournamentMatchGameId,
+    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
 };
 
 // =============================================================================
@@ -439,6 +439,9 @@ pub trait TournamentRegistrationRepository: Send + Sync {
         &self,
         seeds: Vec<(TournamentRegistrationId, i32)>,
     ) -> Result<(), DomainError>;
+
+    /// Clear all seeds for a tournament.
+    async fn clear_seeds(&self, tournament_id: TournamentId) -> Result<(), DomainError>;
 
     /// Delete a registration.
     async fn delete(&self, id: TournamentRegistrationId) -> Result<(), DomainError>;
@@ -875,4 +878,206 @@ pub struct UpsertTournamentMapPool {
     pub stage_id: Option<TournamentStageId>,
     pub maps: Vec<String>,
     pub veto_format_id: Option<String>,
+}
+
+// =============================================================================
+// VETO SESSION REPOSITORY
+// =============================================================================
+
+use crate::entities::veto::{VetoAction, VetoActionType, VetoSession, VetoStatus};
+use portal_core::{VetoActionId, VetoSessionId};
+
+/// Repository trait for veto session operations.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait VetoSessionRepository: Send + Sync {
+    /// Find a veto session by ID.
+    async fn find_by_id(&self, id: VetoSessionId) -> Result<Option<VetoSession>, DomainError>;
+
+    /// Find a veto session by match ID.
+    async fn find_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<VetoSession>, DomainError>;
+
+    /// Create a new veto session.
+    async fn create(&self, session: CreateVetoSession) -> Result<VetoSession, DomainError>;
+
+    /// Update a veto session.
+    async fn update(
+        &self,
+        id: VetoSessionId,
+        update: UpdateVetoSession,
+    ) -> Result<VetoSession, DomainError>;
+
+    /// Update veto session status.
+    async fn update_status(
+        &self,
+        id: VetoSessionId,
+        status: VetoStatus,
+    ) -> Result<VetoSession, DomainError>;
+
+    /// Find sessions with expired action deadlines.
+    async fn find_timed_out(&self) -> Result<Vec<VetoSession>, DomainError>;
+
+    /// Delete a veto session.
+    async fn delete(&self, id: VetoSessionId) -> Result<(), DomainError>;
+}
+
+/// Data for creating a veto session.
+#[derive(Debug, Clone)]
+pub struct CreateVetoSession {
+    pub match_id: TournamentMatchId,
+    pub veto_format_id: String,
+    pub map_pool: Vec<String>,
+    pub timeout_seconds: u32,
+}
+
+/// Data for updating a veto session.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateVetoSession {
+    pub first_action_registration_id: Option<TournamentRegistrationId>,
+    pub coin_flip_winner_registration_id: Option<TournamentRegistrationId>,
+    pub current_action_number: Option<u32>,
+    pub current_team_turn: Option<Option<TournamentRegistrationId>>,
+    pub remaining_maps: Option<Vec<String>>,
+    pub selected_maps: Option<Vec<String>>,
+    pub status: Option<VetoStatus>,
+    pub action_deadline: Option<Option<DateTime<Utc>>>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+// =============================================================================
+// VETO ACTION REPOSITORY
+// =============================================================================
+
+/// Repository trait for veto action operations.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait VetoActionRepository: Send + Sync {
+    /// Find a veto action by ID.
+    async fn find_by_id(&self, id: VetoActionId) -> Result<Option<VetoAction>, DomainError>;
+
+    /// Find a veto action by session and action number.
+    async fn find_by_session_and_number(
+        &self,
+        session_id: VetoSessionId,
+        action_number: u32,
+    ) -> Result<Option<VetoAction>, DomainError>;
+
+    /// List all actions for a session (ordered by action number).
+    async fn list_by_session(&self, session_id: VetoSessionId)
+        -> Result<Vec<VetoAction>, DomainError>;
+
+    /// Create a new veto action.
+    async fn create(&self, action: CreateVetoAction) -> Result<VetoAction, DomainError>;
+
+    /// Update side selection for an action.
+    async fn update_side_selection(
+        &self,
+        id: VetoActionId,
+        side: String,
+        selected_by: TournamentRegistrationId,
+    ) -> Result<VetoAction, DomainError>;
+}
+
+/// Data for creating a veto action.
+#[derive(Debug, Clone)]
+pub struct CreateVetoAction {
+    pub session_id: VetoSessionId,
+    pub action_number: u32,
+    pub action_type: VetoActionType,
+    pub map_id: String,
+    pub performed_by_registration_id: Option<TournamentRegistrationId>,
+    pub performed_by_user_id: Option<UserId>,
+    pub was_auto_action: bool,
+    pub auto_action_reason: Option<String>,
+}
+
+// =============================================================================
+// RESULT CLAIM REPOSITORY
+// =============================================================================
+
+use crate::entities::result_claim::{ClaimStatus, GameResult, ResultClaim};
+use portal_core::{EvidenceId, ResultClaimId};
+
+/// Repository trait for result claim operations.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait ResultClaimRepository: Send + Sync {
+    /// Find a result claim by ID.
+    async fn find_by_id(&self, id: ResultClaimId) -> Result<Option<ResultClaim>, DomainError>;
+
+    /// Find the pending claim for a match.
+    async fn find_pending_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<ResultClaim>, DomainError>;
+
+    /// List all claims for a match (ordered by created_at desc).
+    async fn list_by_match(&self, match_id: TournamentMatchId)
+        -> Result<Vec<ResultClaim>, DomainError>;
+
+    /// Create a new result claim.
+    async fn create(&self, claim: CreateResultClaim) -> Result<ResultClaim, DomainError>;
+
+    /// Update a result claim.
+    async fn update(
+        &self,
+        id: ResultClaimId,
+        update: UpdateResultClaim,
+    ) -> Result<ResultClaim, DomainError>;
+
+    /// Update result claim status.
+    async fn update_status(
+        &self,
+        id: ResultClaimId,
+        status: ClaimStatus,
+    ) -> Result<ResultClaim, DomainError>;
+
+    /// Confirm a result claim.
+    async fn confirm(
+        &self,
+        id: ResultClaimId,
+        confirmed_by_registration_id: TournamentRegistrationId,
+        confirmed_by_user_id: UserId,
+        was_auto: bool,
+    ) -> Result<ResultClaim, DomainError>;
+
+    /// Supersede all pending claims for a match (when a new claim is submitted).
+    async fn supersede_pending_claims(
+        &self,
+        match_id: TournamentMatchId,
+        except_claim_id: ResultClaimId,
+    ) -> Result<(), DomainError>;
+
+    /// Find claims ready for auto-confirmation.
+    async fn find_ready_for_auto_confirm(&self) -> Result<Vec<ResultClaim>, DomainError>;
+}
+
+/// Data for creating a result claim.
+#[derive(Debug, Clone)]
+pub struct CreateResultClaim {
+    pub match_id: TournamentMatchId,
+    pub submitted_by_registration_id: TournamentRegistrationId,
+    pub submitted_by_user_id: UserId,
+    pub claimed_winner_registration_id: TournamentRegistrationId,
+    pub participant1_score: i32,
+    pub participant2_score: i32,
+    pub game_results: Vec<GameResult>,
+    pub auto_confirm_at: DateTime<Utc>,
+    pub evidence_ids: Vec<EvidenceId>,
+    pub demo_link_ids: Vec<DemoMatchLinkId>,
+    pub notes: Option<String>,
+}
+
+/// Data for updating a result claim.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateResultClaim {
+    pub status: Option<ClaimStatus>,
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub confirmed_by_registration_id: Option<TournamentRegistrationId>,
+    pub confirmed_by_user_id: Option<UserId>,
+    pub was_auto_confirmed: Option<bool>,
 }

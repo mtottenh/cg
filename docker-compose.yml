@@ -16,5 +16,29 @@ services:
       timeout: 5s
       retries: 5
 
+  api:
+    build: .
+    container_name: portal-api
+    environment:
+      DATABASE_URL: postgres://portal:portal@postgres:5432/portal_dev
+      JWT_SECRET: ${JWT_SECRET:-e2e-test-jwt-secret-key-that-is-long-enough}
+      PORT: "3000"
+      RUST_LOG: portal=debug,tower_http=debug
+      # PostgreSQL connection for entrypoint script
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: portal
+      POSTGRES_DB: portal_dev
+      # E2E admin credentials (only set for testing)
+      E2E_ADMIN_EMAIL: ${E2E_ADMIN_EMAIL:-admin@example.com}
+      E2E_ADMIN_PASSWORD: ${E2E_ADMIN_PASSWORD:-AdminPassword123!}
+      E2E_ADMIN_USERNAME: ${E2E_ADMIN_USERNAME:-e2e_admin}
+      E2E_ADMIN_DISPLAY_NAME: ${E2E_ADMIN_DISPLAY_NAME:-E2E Admin}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:

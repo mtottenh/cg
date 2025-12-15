@@ -33,7 +33,7 @@ if ! docker compose ps postgres 2>/dev/null | grep -q "running"; then
     echo -e "${GREEN}PostgreSQL is ready!${NC}"
 fi
 
-PORT=3001
+PORT=3000
 echo ""
 echo -e "${GREEN}Starting API server...${NC}"
 echo "  - API:        http://localhost:${PORT:-3000}"

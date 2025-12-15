@@ -103,6 +103,11 @@ impl ApiError {
         )
     }
 
+    /// Create a not implemented error.
+    pub fn not_implemented(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_IMPLEMENTED, "Not Implemented", detail)
+    }
+
     /// Create a validation error with field errors.
     pub fn validation(errors: Vec<FieldErrorDto>) -> Self {
         Self {
@@ -164,6 +169,39 @@ impl From<DomainError> for ApiError {
             }
             DomainError::TournamentRegistrationNotFound(id) => {
                 Self::not_found(format!("Tournament registration not found: {id}"))
+            }
+            DomainError::DisputeNotFound(id) => {
+                Self::not_found(format!("Dispute not found: {id}"))
+            }
+            DomainError::ForfeitRecordNotFound(id) => {
+                Self::not_found(format!("Forfeit record not found: {id}"))
+            }
+            DomainError::EvidenceNotFound(id) => {
+                Self::not_found(format!("Evidence not found: {id}"))
+            }
+            DomainError::ResultClaimNotFound(id) => {
+                Self::not_found(format!("Result claim not found: {id}"))
+            }
+            DomainError::VetoSessionNotFound(id) => {
+                Self::not_found(format!("Veto session not found: {id}"))
+            }
+            DomainError::DemoNotFound(id) => {
+                Self::not_found(format!("Demo not found: {id}"))
+            }
+            DomainError::DemoMatchLinkNotFound(id) => {
+                Self::not_found(format!("Demo-match link not found: {id}"))
+            }
+            DomainError::DemoNotLinkedToMatch(link_id, match_id) => {
+                Self::bad_request(format!("Demo link {link_id} is not linked to match {match_id}"))
+            }
+            DomainError::ResultReviewNotFound(id) => {
+                Self::not_found(format!("Result review not found: {id}"))
+            }
+            DomainError::InvalidReviewState(status, msg) => {
+                Self::conflict(format!("Invalid review state '{status}': {msg}"))
+            }
+            DomainError::ReviewAlreadyAcknowledged(captain) => {
+                Self::conflict(format!("Review already acknowledged by captain {captain}"))
             }
 
             // Authorization errors

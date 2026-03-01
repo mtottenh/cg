@@ -454,6 +454,14 @@ pub enum DomainError {
         reason: String,
     },
 
+    /// A saga is paused waiting for external resolution (e.g., review).
+    #[error("saga paused: {0}")]
+    SagaPaused(String),
+
+    /// The result was rejected by a review.
+    #[error("result rejected by review: {0}")]
+    ResultRejectedByReview(String),
+
     /// A conflict occurred (e.g., duplicate resource).
     #[error("conflict: {0}")]
     Conflict(String),

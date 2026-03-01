@@ -216,6 +216,12 @@ impl ResultReview {
         self.captain1_acknowledged && self.captain2_acknowledged
     }
 
+    /// Check if this review only has roster mismatches (no score/winner issues).
+    #[must_use]
+    pub const fn is_roster_only(&self) -> bool {
+        self.roster_mismatch && !self.score_mismatch && !self.winner_mismatch
+    }
+
     /// Check if this review requires admin action.
     #[must_use]
     pub const fn requires_admin(&self) -> bool {

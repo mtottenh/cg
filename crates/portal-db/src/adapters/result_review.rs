@@ -65,6 +65,17 @@ impl From<ResultReviewRow> for ResultReview {
 // Result Review Repository Adapter
 // =============================================================================
 
+/// Column list for SELECT queries. Casts `status` from the Postgres enum
+/// `result_review_status` to TEXT so SQLx can decode it into `String`.
+const SELECT_COLUMNS: &str = r"
+    id, result_claim_id, match_id, roster_mismatch, score_mismatch, winner_mismatch,
+    demo_link_id, validation_result, unrecognized_players, status::TEXT as status,
+    captain1_registration_id, captain1_acknowledged, captain1_acknowledged_at,
+    captain1_acknowledged_by_user_id, captain2_registration_id, captain2_acknowledged,
+    captain2_acknowledged_at, captain2_acknowledged_by_user_id,
+    reviewed_by_user_id, reviewed_at, admin_notes, created_at, updated_at
+";
+
 /// `PostgreSQL` implementation of the domain `ResultReviewRepository` trait.
 #[derive(Clone)]
 pub struct PgResultReviewRepository {
@@ -132,7 +143,7 @@ impl ResultReviewRepository for PgResultReviewRepository {
 
     async fn find_by_id(&self, id: ResultReviewId) -> Result<Option<ResultReview>, DomainError> {
         let review =
-            sqlx::query_as::<_, ResultReviewRow>("SELECT * FROM result_reviews WHERE id = $1")
+            sqlx::query_as::<_, ResultReviewRow>(&format!("SELECT {SELECT_COLUMNS} FROM result_reviews WHERE id = $1"))
                 .bind(id.as_uuid())
                 .fetch_optional(&self.pool)
                 .await
@@ -146,7 +157,7 @@ impl ResultReviewRepository for PgResultReviewRepository {
         claim_id: ResultClaimId,
     ) -> Result<Option<ResultReview>, DomainError> {
         let review = sqlx::query_as::<_, ResultReviewRow>(
-            "SELECT * FROM result_reviews WHERE result_claim_id = $1",
+            &format!("SELECT {SELECT_COLUMNS} FROM result_reviews WHERE result_claim_id = $1"),
         )
         .bind(claim_id.as_uuid())
         .fetch_optional(&self.pool)
@@ -161,7 +172,7 @@ impl ResultReviewRepository for PgResultReviewRepository {
         match_id: TournamentMatchId,
     ) -> Result<Option<ResultReview>, DomainError> {
         let review = sqlx::query_as::<_, ResultReviewRow>(
-            "SELECT * FROM result_reviews WHERE match_id = $1 ORDER BY created_at DESC LIMIT 1",
+            &format!("SELECT {SELECT_COLUMNS} FROM result_reviews WHERE match_id = $1 ORDER BY created_at DESC LIMIT 1"),
         )
         .bind(match_id.as_uuid())
         .fetch_optional(&self.pool)
@@ -177,12 +188,9 @@ impl ResultReviewRepository for PgResultReviewRepository {
         offset: i64,
     ) -> Result<Vec<ResultReview>, DomainError> {
         let reviews = sqlx::query_as::<_, ResultReviewRow>(
-            r"
-            SELECT * FROM result_reviews
-            WHERE status = 'pending_admin_review'
-            ORDER BY created_at ASC
-            LIMIT $1 OFFSET $2
-            ",
+            &format!(
+                "SELECT {SELECT_COLUMNS} FROM result_reviews WHERE status = 'pending_admin_review' ORDER BY created_at ASC LIMIT $1 OFFSET $2"
+            ),
         )
         .bind(limit)
         .bind(offset)

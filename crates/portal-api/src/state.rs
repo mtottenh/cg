@@ -9,24 +9,27 @@ use portal_db::{
     PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
     PgLeagueTeamSeasonRepository, PgMatchStatusLogRepository, PgPermissionRepository,
-    PgPlayerRepository, PgResultClaimRepository, PgResultReviewRepository,
-    PgScheduleProposalRepository, PgSuggestedTimeRepository, PgTournamentBracketRepository,
-    PgTournamentMatchRepository, PgTournamentRegistrationRepository, PgTournamentRepository,
-    PgTournamentStageRepository, PgTournamentStandingsRepository, PgUserRepository,
-    PgVetoActionRepository, PgVetoDelegateRepository, PgVetoLobbyMessageRepository,
-    PgVetoSessionRepository, RoleRepository, StatsRepository,
+    PgPlayerRepository, PgProgressionLogRepository, PgResultClaimRepository,
+    PgResultReviewRepository, PgSagaExecutionRepository, PgScheduleProposalRepository,
+    PgSuggestedTimeRepository, PgTournamentBracketRepository, PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
+    PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
+    PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
+    RoleRepository, StatsRepository,
 };
 use portal_domain::services::{
     tournament::{
         AvailabilityService, CheckInService, DisputeService, EvidenceService,
-        EvidenceServiceConfig, ForfeitService, MatchLifecycleService, ProgressionService,
-        RegistrationService, ResultReviewService, ResultService, SchedulingService,
-        SeedingService, VetoAuthorizationService, VetoLobbyChatService, VetoService,
+        EvidenceServiceConfig, ForfeitService, MatchCompletionSaga, MatchLifecycleService,
+        ProgressionService, RegistrationService, ResultReviewService, ResultService,
+        SchedulingService, SeedingService, VetoAuthorizationService, VetoLobbyChatService,
+        VetoService,
     },
     BanService, DemoService, LeagueSeasonParticipantService, LeagueSeasonService, LeagueService,
     LeagueTeamInvitationService, LeagueTeamService, PermissionService, PlayerService,
     TournamentService, UserService,
 };
+use crate::adapters::{DemoValidatorAdapter, ReviewCreatorAdapter};
 use crate::websocket::VetoLobbyManager;
 use portal_plugins::PluginManager;
 use portal_storage::{LocalStorage, StorageBackend};
@@ -138,6 +141,16 @@ pub type AppVetoAuthorizationService = VetoAuthorizationService<
     PgLeagueTeamMemberRepository,
     PgPermissionRepository,
 >;
+pub type AppMatchCompletionSaga = MatchCompletionSaga<
+    PgTournamentMatchRepository,
+    PgTournamentBracketRepository,
+    PgTournamentRegistrationRepository,
+    PgTournamentStandingsRepository,
+    PgSagaExecutionRepository,
+    PgProgressionLogRepository,
+    DemoValidatorAdapter,
+    ReviewCreatorAdapter,
+>;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -214,6 +227,8 @@ pub struct AppState {
     pub storage: Arc<dyn StorageBackend>,
     /// Plugin manager for game-specific logic.
     pub plugin_manager: Arc<PluginManager>,
+    /// Match completion saga for orchestrating post-confirmation workflow.
+    pub match_completion_saga: AppMatchCompletionSaga,
     /// CS2 demo service base URL (for CS2-specific handlers).
     pub cs2_demo_base_url: Option<String>,
 }
@@ -490,6 +505,27 @@ impl AppState {
         // Create veto lobby manager for WebSocket connections
         let veto_lobby_manager = Arc::new(VetoLobbyManager::new());
 
+        // Create match completion saga with adapters
+        let saga_execution_repo = Arc::new(PgSagaExecutionRepository::new(db_pool.clone()));
+        let progression_log_repo = Arc::new(PgProgressionLogRepository::new(db_pool.clone()));
+        let demo_validator_adapter = Arc::new(DemoValidatorAdapter::new(
+            demo_service.clone(),
+            result_service.clone(),
+        ));
+        let review_creator_adapter = Arc::new(ReviewCreatorAdapter::new(
+            result_review_service.clone(),
+        ));
+        let match_completion_saga = MatchCompletionSaga::new(
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_bracket_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&tournament_standings_repo),
+            saga_execution_repo,
+            progression_log_repo,
+            demo_validator_adapter,
+            review_creator_adapter,
+        );
+
         Self {
             db_pool,
             jwt_secret: jwt_secret.into(),
@@ -527,6 +563,7 @@ impl AppState {
             stats_repo,
             storage,
             plugin_manager,
+            match_completion_saga,
             cs2_demo_base_url,
         }
     }

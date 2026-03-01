@@ -345,6 +345,14 @@ where
         self.claim_repo.find_pending_by_match(match_id).await
     }
 
+    /// Get a specific result claim by ID.
+    pub async fn get_claim_by_id(
+        &self,
+        claim_id: ResultClaimId,
+    ) -> Result<ResultClaim, DomainError> {
+        self.get_claim(claim_id).await
+    }
+
     /// Get claim history for a match.
     pub async fn get_claim_history(
         &self,

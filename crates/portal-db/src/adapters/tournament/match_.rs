@@ -620,6 +620,30 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
 
         Ok(())
     }
+
+    async fn set_progression_links(
+        &self,
+        id: TournamentMatchId,
+        winner_progresses_to: Option<TournamentMatchId>,
+        loser_progresses_to: Option<TournamentMatchId>,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            r"
+            UPDATE tournament_matches
+            SET winner_progresses_to = $2,
+                loser_progresses_to = $3
+            WHERE id = $1
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(winner_progresses_to.map(|id| id.as_uuid()))
+        .bind(loser_progresses_to.map(|id| id.as_uuid()))
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(())
+    }
 }
 
 // =============================================================================

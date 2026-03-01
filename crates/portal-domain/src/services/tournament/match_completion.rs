@@ -2,19 +2,26 @@
 //!
 //! Orchestrates the multi-step process of completing a match:
 //! 1. Validate the match result
-//! 2. Update match status to completed
-//! 3. Advance winner to next match
-//! 4. Route loser (to losers bracket or eliminate)
-//! 5. Update standings (for round robin/swiss formats)
+//! 2. Validate demos (if any linked) and create review if needed
+//! 3. Get bracket info
+//! 4. Complete match status
+//! 5. Advance winner to next match
+//! 6. Route loser (to losers bracket or eliminate)
+//! 7. Update standings (for round robin/swiss formats)
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use portal_core::types::{BracketType, TournamentMatchStatus};
-use portal_core::{DomainError, SagaId, TournamentMatchId, TournamentRegistrationId};
+use portal_core::{
+    DomainError, ResultClaimId, ResultReviewId, SagaId, TournamentMatchId,
+    TournamentRegistrationId,
+};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, instrument, warn};
 
+use crate::entities::demo_validation::{DemoValidationResult, UnrecognizedPlayer};
+use crate::entities::result_review::{ResultReview, ResultReviewStatus};
 use crate::entities::saga::{SagaContext, SagaExecution};
 use crate::entities::tournament::{TournamentBracket, TournamentMatch};
 use crate::repositories::evidence::{
@@ -22,9 +29,64 @@ use crate::repositories::evidence::{
 };
 use crate::repositories::tournament::{
     ParticipantSlot, TournamentBracketRepository, TournamentMatchRepository,
-    TournamentRegistrationRepository, TournamentStandingsRepository,
+    TournamentRegistrationRepository, TournamentStandingsRepository, UpdateTournamentStanding,
 };
 use crate::services::tournament::{Saga, SagaCoordinator, SagaDefinition, SagaResult};
+use portal_core::types::MatchParticipantSource;
+
+// =============================================================================
+// DEMO VALIDATION & REVIEW TRAITS
+// =============================================================================
+
+/// Outcome of validating a single demo-match link.
+#[derive(Debug, Clone)]
+pub struct DemoValidationOutcome {
+    /// The demo match link ID that was validated.
+    pub link_id: portal_core::DemoMatchLinkId,
+    /// The validation result.
+    pub validation: DemoValidationResult,
+    /// Unrecognized players found in the demo.
+    pub unrecognized_players: Vec<UnrecognizedPlayer>,
+}
+
+/// Trait for validating demos linked to a match.
+///
+/// Used by the saga to validate demo evidence without depending on the full DemoService.
+#[async_trait]
+pub trait MatchDemoValidator: Send + Sync + 'static {
+    /// Validate all demos linked to a match against the confirmed result.
+    ///
+    /// Returns only outcomes with issues (non-empty warnings/errors).
+    async fn validate_match_demos(
+        &self,
+        match_id: TournamentMatchId,
+        claim_id: ResultClaimId,
+    ) -> Result<Vec<DemoValidationOutcome>, DomainError>;
+}
+
+/// Trait for creating result reviews from validation outcomes.
+///
+/// Used by the saga to create reviews without depending on the full ResultReviewService.
+#[async_trait]
+pub trait ReviewCreator: Send + Sync + 'static {
+    /// Create a result review if validation issues were found.
+    ///
+    /// Returns `None` if no review is needed.
+    async fn create_if_needed(
+        &self,
+        result_claim_id: ResultClaimId,
+        match_id: TournamentMatchId,
+        outcomes: &[DemoValidationOutcome],
+        captain1_reg_id: TournamentRegistrationId,
+        captain2_reg_id: TournamentRegistrationId,
+    ) -> Result<Option<ResultReview>, DomainError>;
+
+    /// Get the review for a match (if one exists).
+    async fn get_for_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<ResultReview>, DomainError>;
+}
 
 // =============================================================================
 // INPUT/OUTPUT TYPES
@@ -47,6 +109,8 @@ pub struct MatchCompletionInput {
     pub is_forfeit: bool,
     /// ID of the saga execution for tracking.
     pub saga_id: Option<SagaId>,
+    /// The result claim ID (used for demo validation).
+    pub result_claim_id: Option<ResultClaimId>,
 }
 
 /// Output of match completion saga.
@@ -60,6 +124,10 @@ pub struct MatchCompletionOutput {
     pub loser_next_match_id: Option<TournamentMatchId>,
     /// Whether standings were updated.
     pub standings_updated: bool,
+    /// Whether a review is pending.
+    pub review_pending: bool,
+    /// The review ID if one was created.
+    pub review_id: Option<ResultReviewId>,
     /// Summary message.
     pub summary: String,
 }
@@ -72,20 +140,41 @@ pub struct MatchCompletionOutput {
 ///
 /// This saga handles:
 /// - Match result validation
+/// - Demo validation and review creation
 /// - Match completion
 /// - Winner advancement to next match
 /// - Loser routing (elimination or losers bracket)
 /// - Standings updates for round robin/swiss
-pub struct MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR> {
+pub struct MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC> {
     match_repo: Arc<TMR>,
     bracket_repo: Arc<TBR>,
     registration_repo: Arc<TRR>,
     standings_repo: Arc<TSTR>,
     saga_repo: Arc<SR>,
     progression_log_repo: Arc<PLR>,
+    demo_validator: Arc<MDV>,
+    review_creator: Arc<RC>,
 }
 
-impl<TMR, TBR, TRR, TSTR, SR, PLR> MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR>
+impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC> Clone
+    for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC>
+{
+    fn clone(&self) -> Self {
+        Self {
+            match_repo: Arc::clone(&self.match_repo),
+            bracket_repo: Arc::clone(&self.bracket_repo),
+            registration_repo: Arc::clone(&self.registration_repo),
+            standings_repo: Arc::clone(&self.standings_repo),
+            saga_repo: Arc::clone(&self.saga_repo),
+            progression_log_repo: Arc::clone(&self.progression_log_repo),
+            demo_validator: Arc::clone(&self.demo_validator),
+            review_creator: Arc::clone(&self.review_creator),
+        }
+    }
+}
+
+impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC>
+    MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC>
 where
     TMR: TournamentMatchRepository,
     TBR: TournamentBracketRepository,
@@ -93,8 +182,11 @@ where
     TSTR: TournamentStandingsRepository,
     SR: SagaExecutionRepository,
     PLR: ProgressionLogRepository,
+    MDV: MatchDemoValidator,
+    RC: ReviewCreator,
 {
     /// Create a new match completion saga.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         match_repo: Arc<TMR>,
         bracket_repo: Arc<TBR>,
@@ -102,6 +194,8 @@ where
         standings_repo: Arc<TSTR>,
         saga_repo: Arc<SR>,
         progression_log_repo: Arc<PLR>,
+        demo_validator: Arc<MDV>,
+        review_creator: Arc<RC>,
     ) -> Self {
         Self {
             match_repo,
@@ -110,6 +204,8 @@ where
             standings_repo,
             saga_repo,
             progression_log_repo,
+            demo_validator,
+            review_creator,
         }
     }
 
@@ -135,7 +231,85 @@ where
             .await?;
 
         // Execute the saga steps
-        let result = self.run_steps(&saga_coordinator, &mut execution, input).await;
+        let result = self
+            .run_steps(&saga_coordinator, &mut execution, input)
+            .await;
+
+        match result {
+            Ok(output) => {
+                saga_coordinator.complete_saga(&mut execution).await?;
+                Ok(SagaResult::success(execution, output))
+            }
+            Err(DomainError::SagaPaused(ref msg)) => {
+                saga_coordinator
+                    .pause_saga(&mut execution, msg)
+                    .await?;
+                Ok(SagaResult::paused(execution))
+            }
+            Err(e) => {
+                // Attempt compensation if needed
+                if self.should_compensate(&execution) {
+                    if let Err(comp_err) =
+                        self.compensate(&saga_coordinator, &mut execution).await
+                    {
+                        error!(
+                            saga_id = %execution.id,
+                            error = %comp_err,
+                            "Compensation failed"
+                        );
+                    }
+                }
+                saga_coordinator
+                    .fail_saga(&mut execution, &e.to_string())
+                    .await?;
+                Err(e)
+            }
+        }
+    }
+
+    /// Continue the saga after a review has been resolved.
+    ///
+    /// This resumes from step 3 (get bracket) onward, skipping validation steps.
+    #[instrument(skip(self))]
+    pub async fn continue_after_review(
+        &self,
+        match_id: TournamentMatchId,
+        input: MatchCompletionInput,
+    ) -> Result<SagaResult<MatchCompletionOutput>, DomainError> {
+        // Verify review is resolved
+        let review = self.review_creator.get_for_match(match_id).await?;
+        if let Some(ref review) = review {
+            if review.status.is_pending() {
+                return Err(DomainError::InvalidState(
+                    "Review is still pending".to_string(),
+                ));
+            }
+            if review.status == ResultReviewStatus::Rejected {
+                return Err(DomainError::ResultRejectedByReview(
+                    review.id.to_string(),
+                ));
+            }
+        }
+
+        let saga_coordinator = SagaCoordinator::new(Arc::clone(&self.saga_repo));
+
+        // Create a new saga execution for the continuation
+        let definition = self.definition();
+        let context = SagaContext::with_match(
+            input.match_id,
+            self.get_tournament_id(input.match_id).await?,
+        );
+        let input_json = serde_json::to_value(&input)
+            .map_err(|e| DomainError::Internal(format!("Failed to serialize input: {e}")))?;
+
+        let mut execution = saga_coordinator
+            .start_saga(&definition, context, input_json)
+            .await?;
+
+        // Run from step 3 onward (skip validation and demo validation)
+        let result = self
+            .run_progression_steps(&saga_coordinator, &mut execution, input)
+            .await;
 
         match result {
             Ok(output) => {
@@ -143,9 +317,10 @@ where
                 Ok(SagaResult::success(execution, output))
             }
             Err(e) => {
-                // Attempt compensation if needed
                 if self.should_compensate(&execution) {
-                    if let Err(comp_err) = self.compensate(&saga_coordinator, &mut execution).await {
+                    if let Err(comp_err) =
+                        self.compensate(&saga_coordinator, &mut execution).await
+                    {
                         error!(
                             saga_id = %execution.id,
                             error = %comp_err,
@@ -169,27 +344,85 @@ where
         input: MatchCompletionInput,
     ) -> Result<MatchCompletionOutput, DomainError> {
         // Step 1: Validate and get match state
-        let match_ = self.step_validate_match(saga_coordinator, execution, &input).await?;
+        let match_ = self
+            .step_validate_match(saga_coordinator, execution, &input)
+            .await?;
 
-        // Step 2: Get bracket info
-        let bracket = self.step_get_bracket(saga_coordinator, execution, &match_).await?;
+        // Step 2: Validate demos (if any linked)
+        let review = self
+            .step_validate_demos(saga_coordinator, execution, &input, &match_)
+            .await?;
 
-        // Step 3: Complete the match
-        self.step_complete_match(saga_coordinator, execution, &input).await?;
+        // If review is pending, pause the saga
+        if let Some(ref review) = review {
+            if review.status.is_pending() {
+                return Err(DomainError::SagaPaused(format!(
+                    "Awaiting review {} resolution",
+                    review.id
+                )));
+            }
+            if review.status == ResultReviewStatus::Rejected {
+                return Err(DomainError::ResultRejectedByReview(
+                    review.id.to_string(),
+                ));
+            }
+        }
 
-        // Step 4: Advance winner
+        // Steps 3-7: Bracket progression
+        self.run_progression_steps_inner(saga_coordinator, execution, input, &match_)
+            .await
+    }
+
+    /// Run only the progression steps (used for both initial and continuation).
+    async fn run_progression_steps(
+        &self,
+        saga_coordinator: &SagaCoordinator<SR>,
+        execution: &mut SagaExecution,
+        input: MatchCompletionInput,
+    ) -> Result<MatchCompletionOutput, DomainError> {
+        // Re-fetch the match state
+        let match_ = self
+            .match_repo
+            .find_by_id(input.match_id)
+            .await?
+            .ok_or_else(|| {
+                DomainError::TournamentMatchNotFound(input.match_id.to_string())
+            })?;
+
+        self.run_progression_steps_inner(saga_coordinator, execution, input, &match_)
+            .await
+    }
+
+    /// Inner progression steps (steps 3-7).
+    async fn run_progression_steps_inner(
+        &self,
+        saga_coordinator: &SagaCoordinator<SR>,
+        execution: &mut SagaExecution,
+        input: MatchCompletionInput,
+        match_: &TournamentMatch,
+    ) -> Result<MatchCompletionOutput, DomainError> {
+        // Step 3: Get bracket info
+        let bracket = self
+            .step_get_bracket(saga_coordinator, execution, match_)
+            .await?;
+
+        // Step 4: Complete the match
+        self.step_complete_match(saga_coordinator, execution, &input)
+            .await?;
+
+        // Step 5: Advance winner
         let winner_next_match_id = self
-            .step_advance_winner(saga_coordinator, execution, &match_, &input)
+            .step_advance_winner(saga_coordinator, execution, match_, &input)
             .await?;
 
-        // Step 5: Route loser
+        // Step 6: Route loser
         let loser_next_match_id = self
-            .step_route_loser(saga_coordinator, execution, &match_, &input, &bracket)
+            .step_route_loser(saga_coordinator, execution, match_, &input, &bracket)
             .await?;
 
-        // Step 6: Update standings (if applicable)
+        // Step 7: Update standings (if applicable)
         let standings_updated = self
-            .step_update_standings(saga_coordinator, execution, &match_, &bracket, &input)
+            .step_update_standings(saga_coordinator, execution, match_, &bracket, &input)
             .await?;
 
         // Build summary
@@ -205,6 +438,8 @@ where
             winner_next_match_id,
             loser_next_match_id,
             standings_updated,
+            review_pending: false,
+            review_id: None,
             summary,
         })
     }
@@ -230,8 +465,14 @@ where
                 DomainError::TournamentMatchNotFound(input.match_id.to_string())
             })?;
 
-        // Validate match is in valid state for completion
-        if !match_.status.can_transition_to(TournamentMatchStatus::Completed) {
+        // Validate match is in valid state for completion.
+        // The match may already be completed (by confirm_claim) — that's OK,
+        // the saga handles progression from that point.
+        if match_.status != TournamentMatchStatus::Completed
+            && !match_
+                .status
+                .can_transition_to(TournamentMatchStatus::Completed)
+        {
             let err = format!(
                 "Match in {} status cannot be completed",
                 match_.status
@@ -252,7 +493,8 @@ where
             || p2 == Some(input.loser_registration_id);
 
         if !valid_winner || !valid_loser {
-            let err = "Winner or loser is not a participant in this match".to_string();
+            let err =
+                "Winner or loser is not a participant in this match".to_string();
             saga_coordinator
                 .fail_step(execution, STEP_NAME, &err)
                 .await?;
@@ -280,7 +522,112 @@ where
         Ok(match_)
     }
 
-    /// Step 2: Get bracket information.
+    /// Step 2: Validate demos linked to the match.
+    async fn step_validate_demos(
+        &self,
+        saga_coordinator: &SagaCoordinator<SR>,
+        execution: &mut SagaExecution,
+        input: &MatchCompletionInput,
+        match_: &TournamentMatch,
+    ) -> Result<Option<ResultReview>, DomainError> {
+        const STEP_NAME: &str = "validate_demos";
+
+        // Skip for forfeits (no demos to validate)
+        if input.is_forfeit {
+            saga_coordinator
+                .complete_step(
+                    execution,
+                    STEP_NAME,
+                    Some(serde_json::json!({"action": "skipped_forfeit"})),
+                )
+                .await?;
+            return Ok(None);
+        }
+
+        // Skip if no result claim ID
+        let Some(claim_id) = input.result_claim_id else {
+            saga_coordinator
+                .complete_step(
+                    execution,
+                    STEP_NAME,
+                    Some(serde_json::json!({"action": "no_claim_id"})),
+                )
+                .await?;
+            return Ok(None);
+        };
+
+        // Validate demos via the trait
+        let outcomes = self
+            .demo_validator
+            .validate_match_demos(input.match_id, claim_id)
+            .await?;
+
+        // If no issues found, skip review
+        if outcomes.is_empty() {
+            saga_coordinator
+                .complete_step(
+                    execution,
+                    STEP_NAME,
+                    Some(serde_json::json!({"action": "all_valid"})),
+                )
+                .await?;
+            return Ok(None);
+        }
+
+        // Determine captain registration IDs
+        let captain1 = match_
+            .participant1_registration_id
+            .ok_or_else(|| {
+                DomainError::InvalidState(
+                    "Match participant 1 not set".to_string(),
+                )
+            })?;
+        let captain2 = match_
+            .participant2_registration_id
+            .ok_or_else(|| {
+                DomainError::InvalidState(
+                    "Match participant 2 not set".to_string(),
+                )
+            })?;
+
+        // Create review if issues found
+        let review = self
+            .review_creator
+            .create_if_needed(claim_id, input.match_id, &outcomes, captain1, captain2)
+            .await?;
+
+        if let Some(ref review) = review {
+            saga_coordinator
+                .complete_step(
+                    execution,
+                    STEP_NAME,
+                    Some(serde_json::json!({
+                        "action": "review_created",
+                        "review_id": review.id.to_string(),
+                        "status": review.status.to_string()
+                    })),
+                )
+                .await?;
+
+            info!(
+                match_id = %input.match_id,
+                review_id = %review.id,
+                "Demo validation review created"
+            );
+        } else {
+            saga_coordinator
+                .complete_step(
+                    execution,
+                    STEP_NAME,
+                    Some(serde_json::json!({"action": "no_review_needed"})),
+                )
+                .await?;
+        }
+
+        Ok(review)
+    }
+
+    /// Step 3: Get bracket information.
     async fn step_get_bracket(
         &self,
         saga_coordinator: &SagaCoordinator<SR>,
@@ -304,7 +651,7 @@ where
         Ok(bracket)
     }
 
-    /// Step 3: Complete the match.
+    /// Step 4: Complete the match (idempotent — skips if already completed).
     async fn step_complete_match(
         &self,
         saga_coordinator: &SagaCoordinator<SR>,
@@ -313,7 +660,6 @@ where
     ) -> Result<(), DomainError> {
         const STEP_NAME: &str = "complete_match";
 
-        // Determine scores for participant1 and participant2
         let match_ = self
             .match_repo
             .find_by_id(input.match_id)
@@ -321,6 +667,26 @@ where
             .ok_or_else(|| {
                 DomainError::TournamentMatchNotFound(input.match_id.to_string())
             })?;
+
+        // If the match is already completed (e.g., by confirm_claim), skip
+        if match_.status == TournamentMatchStatus::Completed {
+            saga_coordinator
+                .complete_step(
+                    execution,
+                    STEP_NAME,
+                    Some(serde_json::json!({
+                        "action": "already_completed",
+                        "winner_id": input.winner_registration_id.to_string()
+                    })),
+                )
+                .await?;
+
+            info!(
+                match_id = %input.match_id,
+                "Match already completed, skipping"
+            );
+            return Ok(());
+        }
 
         let (p1_score, p2_score) =
             if match_.participant1_registration_id == Some(input.winner_registration_id) {
@@ -363,7 +729,7 @@ where
         Ok(())
     }
 
-    /// Step 4: Advance winner to next match.
+    /// Step 5: Advance winner to next match.
     async fn step_advance_winner(
         &self,
         saga_coordinator: &SagaCoordinator<SR>,
@@ -421,7 +787,11 @@ where
                 target_match_id: Some(next_match_id),
                 registration_id: input.winner_registration_id,
                 progression_type: ProgressionType::WinnerAdvance,
-                target_position: Some(if target_slot == ParticipantSlot::One { 1 } else { 2 }),
+                target_position: Some(if target_slot == ParticipantSlot::One {
+                    1
+                } else {
+                    2
+                }),
                 saga_id: Some(execution.id),
             })
             .await?;
@@ -447,7 +817,7 @@ where
         Ok(Some(next_match_id))
     }
 
-    /// Step 5: Route loser.
+    /// Step 6: Route loser.
     async fn step_route_loser(
         &self,
         saga_coordinator: &SagaCoordinator<SR>,
@@ -540,7 +910,11 @@ where
                 target_match_id: Some(loser_match_id),
                 registration_id: input.loser_registration_id,
                 progression_type: ProgressionType::LoserDrop,
-                target_position: Some(if target_slot == ParticipantSlot::One { 1 } else { 2 }),
+                target_position: Some(if target_slot == ParticipantSlot::One {
+                    1
+                } else {
+                    2
+                }),
                 saga_id: Some(execution.id),
             })
             .await?;
@@ -566,7 +940,7 @@ where
         Ok(Some(loser_match_id))
     }
 
-    /// Step 6: Update standings (for round robin/swiss).
+    /// Step 7: Update standings (for round robin/swiss).
     async fn step_update_standings(
         &self,
         saga_coordinator: &SagaCoordinator<SR>,
@@ -595,8 +969,6 @@ where
         }
 
         // Update standings using delta-based update
-        use crate::repositories::tournament::UpdateTournamentStanding;
-
         // Update winner
         let winner_update = UpdateTournamentStanding {
             bracket_id: match_.bracket_id,
@@ -608,7 +980,9 @@ where
             game_losses_delta: input.loser_score,
             points_delta: 3, // 3 points for a win
         };
-        self.standings_repo.update_after_match(winner_update).await?;
+        self.standings_repo
+            .update_after_match(winner_update)
+            .await?;
 
         // Update loser
         let loser_update = UpdateTournamentStanding {
@@ -621,7 +995,9 @@ where
             game_losses_delta: input.winner_score,
             points_delta: 0,
         };
-        self.standings_repo.update_after_match(loser_update).await?;
+        self.standings_repo
+            .update_after_match(loser_update)
+            .await?;
 
         // Recalculate positions
         self.standings_repo
@@ -715,7 +1091,7 @@ where
     }
 
     fn definition(&self) -> SagaDefinition {
-        SagaDefinition::new("match_completion", 1).with_max_retries(3)
+        SagaDefinition::new("match_completion", 2).with_max_retries(3)
     }
 
     /// Determine which slot (1 or 2) a participant should go to in the target match.
@@ -730,32 +1106,28 @@ where
             .match_repo
             .find_by_id(target_match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(target_match_id.to_string()))?;
+            .ok_or_else(|| {
+                DomainError::TournamentMatchNotFound(target_match_id.to_string())
+            })?;
 
         // Check which slot expects input from this match
-        use portal_core::types::MatchParticipantSource;
-
         // Check participant 1 source
-        if let Some(source) = &target_match.participant1_source {
-            match source {
-                MatchParticipantSource::WinnerOf(pos) | MatchParticipantSource::LoserOf(pos) => {
-                    if pos == &source_match.bracket_position {
-                        return Ok(ParticipantSlot::One);
-                    }
-                }
-                _ => {}
+        if let Some(
+            MatchParticipantSource::WinnerOf(pos) | MatchParticipantSource::LoserOf(pos),
+        ) = &target_match.participant1_source
+        {
+            if pos == &source_match.bracket_position {
+                return Ok(ParticipantSlot::One);
             }
         }
 
         // Check participant 2 source
-        if let Some(source) = &target_match.participant2_source {
-            match source {
-                MatchParticipantSource::WinnerOf(pos) | MatchParticipantSource::LoserOf(pos) => {
-                    if pos == &source_match.bracket_position {
-                        return Ok(ParticipantSlot::Two);
-                    }
-                }
-                _ => {}
+        if let Some(
+            MatchParticipantSource::WinnerOf(pos) | MatchParticipantSource::LoserOf(pos),
+        ) = &target_match.participant2_source
+        {
+            if pos == &source_match.bracket_position {
+                return Ok(ParticipantSlot::Two);
             }
         }
 
@@ -802,7 +1174,8 @@ where
 }
 
 #[async_trait]
-impl<TMR, TBR, TRR, TSTR, SR, PLR> Saga for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR>
+impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC> Saga
+    for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC>
 where
     TMR: TournamentMatchRepository,
     TBR: TournamentBracketRepository,
@@ -810,6 +1183,8 @@ where
     TSTR: TournamentStandingsRepository,
     SR: SagaExecutionRepository,
     PLR: ProgressionLogRepository,
+    MDV: MatchDemoValidator,
+    RC: ReviewCreator,
 {
     type Input = MatchCompletionInput;
     type Output = MatchCompletionOutput;
@@ -818,30 +1193,11 @@ where
         self.definition()
     }
 
-    async fn execute(&self, input: Self::Input) -> Result<SagaResult<Self::Output>, DomainError> {
+    async fn execute(
+        &self,
+        input: Self::Input,
+    ) -> Result<SagaResult<Self::Output>, DomainError> {
         self.execute_completion(input).await
-    }
-}
-
-// Manual Clone implementation
-impl<TMR, TBR, TRR, TSTR, SR, PLR> Clone for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR>
-where
-    TMR: TournamentMatchRepository,
-    TBR: TournamentBracketRepository,
-    TRR: TournamentRegistrationRepository,
-    TSTR: TournamentStandingsRepository,
-    SR: SagaExecutionRepository,
-    PLR: ProgressionLogRepository,
-{
-    fn clone(&self) -> Self {
-        Self {
-            match_repo: Arc::clone(&self.match_repo),
-            bracket_repo: Arc::clone(&self.bracket_repo),
-            registration_repo: Arc::clone(&self.registration_repo),
-            standings_repo: Arc::clone(&self.standings_repo),
-            saga_repo: Arc::clone(&self.saga_repo),
-            progression_log_repo: Arc::clone(&self.progression_log_repo),
-        }
     }
 }
 
@@ -859,6 +1215,7 @@ mod tests {
             loser_score: 1,
             is_forfeit: false,
             saga_id: None,
+            result_claim_id: None,
         };
 
         assert_eq!(input.winner_score, 2);
@@ -877,6 +1234,7 @@ mod tests {
             loser_score: 0,
             is_forfeit: true,
             saga_id: Some(SagaId::new()),
+            result_claim_id: None,
         };
 
         assert!(input.is_forfeit);
@@ -890,6 +1248,8 @@ mod tests {
             winner_next_match_id: Some(TournamentMatchId::new()),
             loser_next_match_id: None,
             standings_updated: false,
+            review_pending: false,
+            review_id: None,
             summary: "Match completed".to_string(),
         };
 
@@ -905,6 +1265,8 @@ mod tests {
             winner_next_match_id: None,
             loser_next_match_id: None,
             standings_updated: true,
+            review_pending: false,
+            review_id: None,
             summary: "Match completed, standings updated".to_string(),
         };
 
@@ -922,6 +1284,7 @@ mod tests {
             loser_score: 2,
             is_forfeit: false,
             saga_id: None,
+            result_claim_id: None,
         };
 
         // Test that serialization works
@@ -943,6 +1306,8 @@ mod tests {
             winner_next_match_id: Some(TournamentMatchId::new()),
             loser_next_match_id: Some(TournamentMatchId::new()),
             standings_updated: true,
+            review_pending: false,
+            review_id: None,
             summary: "All done".to_string(),
         };
 

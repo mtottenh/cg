@@ -537,6 +537,34 @@ where
             }
         }
 
+        // Link matches: set winner_progresses_to for each match.
+        // For SE brackets: R{r}M{m} winner → R{r+1}M{ceil(m/2)}.
+        for match_ in &matches {
+            // Parse bracket_position "R{round}M{match_in_round}"
+            let pos = &match_.bracket_position;
+            let parts: Vec<&str> = pos.split('M').collect();
+            if parts.len() != 2 {
+                continue;
+            }
+            let round: i32 = parts[0].trim_start_matches('R').parse().unwrap_or(0);
+            let match_in_round: i32 = parts[1].parse().unwrap_or(0);
+            if round == 0 || match_in_round == 0 {
+                continue;
+            }
+
+            // Compute next round position
+            let next_round = round + 1;
+            let next_match_in_round = (match_in_round + 1) / 2;
+            let next_pos = format!("R{next_round}M{next_match_in_round}");
+
+            if let Some(&next_match_id) = position_to_match.get(&next_pos) {
+                self.match_repo
+                    .set_progression_links(match_.id, Some(next_match_id), None)
+                    .await?;
+            }
+            // No next match means this is the final — winner_progresses_to stays None.
+        }
+
         // Update stage status
         self.stage_repo
             .update_status(stage.id, StageStatus::Active)

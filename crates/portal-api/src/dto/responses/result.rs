@@ -157,6 +157,12 @@ pub struct ResultConfirmationResponse {
     pub match_status: String,
     /// Whether bracket was advanced.
     pub bracket_advanced: bool,
+    /// Whether a review is pending (demo validation found issues).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_pending: Option<bool>,
+    /// The review ID if one was created.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_id: Option<String>,
 }
 
 /// Response after disputing a result claim.

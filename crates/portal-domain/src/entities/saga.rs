@@ -109,6 +109,12 @@ impl SagaExecution {
         matches!(self.status, SagaStatus::Failed)
     }
 
+    /// Check if the saga is paused.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        matches!(self.status, SagaStatus::Paused)
+    }
+
     /// Check if the saga is in a terminal state.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
@@ -180,6 +186,13 @@ impl SagaExecution {
         self.updated_at = Utc::now();
     }
 
+    /// Pause the saga (waiting for external resolution).
+    pub fn pause(&mut self, reason: String) {
+        self.status = SagaStatus::Paused;
+        self.last_error = Some(reason);
+        self.updated_at = Utc::now();
+    }
+
     /// Start compensation.
     pub fn start_compensation(&mut self) {
         self.status = SagaStatus::Compensating;
@@ -236,6 +249,8 @@ pub enum SagaStatus {
     Pending,
     /// Currently executing steps
     Running,
+    /// Paused waiting for external resolution (e.g., review)
+    Paused,
     /// All steps completed successfully
     Completed,
     /// Failed after max retries
@@ -251,6 +266,7 @@ impl std::fmt::Display for SagaStatus {
         match self {
             Self::Pending => write!(f, "pending"),
             Self::Running => write!(f, "running"),
+            Self::Paused => write!(f, "paused"),
             Self::Completed => write!(f, "completed"),
             Self::Failed => write!(f, "failed"),
             Self::Compensating => write!(f, "compensating"),
@@ -266,6 +282,7 @@ impl std::str::FromStr for SagaStatus {
         match s.to_lowercase().as_str() {
             "pending" => Ok(Self::Pending),
             "running" => Ok(Self::Running),
+            "paused" => Ok(Self::Paused),
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
             "compensating" => Ok(Self::Compensating),

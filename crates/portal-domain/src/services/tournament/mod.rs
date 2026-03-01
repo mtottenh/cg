@@ -44,7 +44,10 @@ pub use availability::AvailabilityService;
 pub use bracket_generator::{BracketGenerator, GeneratedBracket};
 pub use checkin::{CheckInService, CheckInStatus};
 pub use evidence::{EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig};
-pub use match_completion::{MatchCompletionInput, MatchCompletionOutput, MatchCompletionSaga};
+pub use match_completion::{
+    DemoValidationOutcome, MatchCompletionInput, MatchCompletionOutput, MatchCompletionSaga,
+    MatchDemoValidator, ReviewCreator,
+};
 pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails};
 pub use progression::{Advancement, LoserResult, ProgressionResult, ProgressionService};
 pub use registration::RegistrationService;

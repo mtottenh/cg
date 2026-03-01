@@ -161,6 +161,7 @@ impl DemoBuilder {
             "team2_name": team2,
             "team1_score": score1,
             "team2_score": score2,
+            "total_rounds": score1 + score2,
             "duration_seconds": 2400,
             "match_date": Utc::now().to_rfc3339()
         }))

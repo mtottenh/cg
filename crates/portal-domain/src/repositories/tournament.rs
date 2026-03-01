@@ -621,6 +621,14 @@ pub trait TournamentMatchRepository: Send + Sync {
 
     /// Delete all matches for a bracket (for regeneration).
     async fn delete_by_bracket(&self, bracket_id: TournamentBracketId) -> Result<(), DomainError>;
+
+    /// Set progression links on a match (winner_progresses_to / loser_progresses_to).
+    async fn set_progression_links(
+        &self,
+        id: TournamentMatchId,
+        winner_progresses_to: Option<TournamentMatchId>,
+        loser_progresses_to: Option<TournamentMatchId>,
+    ) -> Result<(), DomainError>;
 }
 
 /// Participant slot (1 or 2).

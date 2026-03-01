@@ -46,6 +46,7 @@ pub use adapters::{
     PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
     PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
     PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
+    PgProgressionLogRepository, PgSagaExecutionRepository,
 };
 pub use entities::NewUserRole;
 pub use error::RepositoryError;

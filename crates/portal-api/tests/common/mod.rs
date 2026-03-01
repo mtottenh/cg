@@ -25,6 +25,17 @@ pub struct TestApp {
 impl TestApp {
     /// Create a new test application with an isolated database.
     pub async fn new() -> Self {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                )
+                .with_test_writer()
+                .init();
+        });
+
         let db = TestDb::new().await;
         let state = AppState::new(db.pool.clone(), "test-jwt-secret");
         let app = create_app(state);

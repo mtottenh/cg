@@ -311,6 +311,12 @@ impl From<DomainError> for ApiError {
             DomainError::SagaStepFailed { step, reason } => {
                 Self::internal(format!("Operation failed at {step}: {reason}"))
             }
+            DomainError::SagaPaused(msg) => {
+                Self::conflict(format!("Operation paused: {msg}"))
+            }
+            DomainError::ResultRejectedByReview(msg) => {
+                Self::conflict(format!("Result rejected by review: {msg}"))
+            }
             DomainError::Internal(msg) => Self::internal(msg),
         }
     }

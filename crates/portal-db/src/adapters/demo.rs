@@ -569,7 +569,13 @@ impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
             .into_iter()
             .filter_map(|row| {
                 let id = row.id;
-                demo_row_to_domain(row).ok().map(|d| (id, d))
+                match demo_row_to_domain(row) {
+                    Ok(d) => Some((id, d)),
+                    Err(e) => {
+                        tracing::warn!(demo_id = %id, error = %e, "demo_row_to_domain failed");
+                        None
+                    }
+                }
             })
             .collect();
 

@@ -14,6 +14,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use portal_core::{DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::entities::result_claim::GameResultInput;
+use portal_domain::repositories::tournament::TournamentMatchRepository;
+use portal_domain::services::tournament::MatchCompletionInput;
+use tracing::warn;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -235,7 +238,7 @@ pub async fn confirm_result(
 ) -> ApiResult<Json<DataResponse<ResultConfirmationResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let _match_id: TournamentMatchId = match_id
+    let match_id: TournamentMatchId = match_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
@@ -243,18 +246,107 @@ pub async fn confirm_result(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid claim ID format"))?;
 
+    // Confirm the claim (marks match completed with scores)
     let claim = state
         .result_service
         .confirm_claim(claim_id, auth.user_id)
         .await?;
 
-    let response = ResultConfirmationResponse {
-        claim: ResultClaimResponse::from(claim),
-        match_status: "completed".to_string(), // TODO: Get actual match status
-        bracket_advanced: true, // TODO: Check if bracket was advanced
+    // Determine loser registration ID from match participants
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::not_found("Match not found"))?;
+
+    let loser_registration_id = if match_.participant1_registration_id
+        == Some(claim.claimed_winner_registration_id)
+    {
+        match_.participant2_registration_id
+    } else {
+        match_.participant1_registration_id
+    }
+    .ok_or_else(|| ApiError::internal("Loser participant not found on match"))?;
+
+    // Determine winner/loser scores
+    let (winner_score, loser_score) = if match_.participant1_registration_id
+        == Some(claim.claimed_winner_registration_id)
+    {
+        (
+            claim.claimed_participant1_score,
+            claim.claimed_participant2_score,
+        )
+    } else {
+        (
+            claim.claimed_participant2_score,
+            claim.claimed_participant1_score,
+        )
     };
 
-    Ok(Json(DataResponse::new(response, request_id)))
+    // Build saga input
+    let saga_input = MatchCompletionInput {
+        match_id,
+        winner_registration_id: claim.claimed_winner_registration_id,
+        loser_registration_id,
+        winner_score,
+        loser_score,
+        is_forfeit: false,
+        saga_id: None,
+        result_claim_id: Some(claim.id),
+    };
+
+    // Execute the match completion saga (may pause if review needed)
+    let saga_result = state
+        .match_completion_saga
+        .execute_completion(saga_input)
+        .await;
+
+    match saga_result {
+        Ok(result) if result.is_paused() => {
+            // Review pending — return response indicating progression is paused
+            let output = result.output.as_ref();
+            let response = ResultConfirmationResponse {
+                claim: ResultClaimResponse::from(claim),
+                match_status: "completed".to_string(),
+                bracket_advanced: false,
+                review_pending: Some(true),
+                review_id: output.and_then(|o| o.review_id.map(|id| id.to_string())),
+            };
+            Ok(Json(DataResponse::new(response, request_id)))
+        }
+        Ok(result) => {
+            // Full completion with bracket progression
+            let advanced = result
+                .output
+                .as_ref()
+                .is_some_and(|o| o.winner_next_match_id.is_some());
+            let response = ResultConfirmationResponse {
+                claim: ResultClaimResponse::from(claim),
+                match_status: "completed".to_string(),
+                bracket_advanced: advanced,
+                review_pending: None,
+                review_id: None,
+            };
+            Ok(Json(DataResponse::new(response, request_id)))
+        }
+        Err(e) => {
+            // Saga failed — log but still return success since the claim was confirmed
+            warn!(
+                match_id = %match_id,
+                error = %e,
+                "Match completion saga failed after result confirmation"
+            );
+            let response = ResultConfirmationResponse {
+                claim: ResultClaimResponse::from(claim),
+                match_status: "completed".to_string(),
+                bracket_advanced: false,
+                review_pending: None,
+                review_id: None,
+            };
+            Ok(Json(DataResponse::new(response, request_id)))
+        }
+    }
 }
 
 /// Dispute a result claim.

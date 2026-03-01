@@ -63,6 +63,20 @@ impl<T> SagaResult<T> {
             success: false,
         }
     }
+
+    /// Create a paused result (waiting for external resolution).
+    pub fn paused(execution: SagaExecution) -> Self {
+        Self {
+            execution,
+            output: None,
+            success: false,
+        }
+    }
+
+    /// Check if the saga is paused.
+    pub fn is_paused(&self) -> bool {
+        self.execution.is_paused()
+    }
 }
 
 /// Saga definition with typed steps.
@@ -236,6 +250,25 @@ where
             saga_id = %execution.id,
             error = error,
             "Saga failed"
+        );
+
+        Ok(())
+    }
+
+    /// Pause the saga (waiting for external resolution like review).
+    #[instrument(skip(self, execution))]
+    pub async fn pause_saga(
+        &self,
+        execution: &mut SagaExecution,
+        reason: &str,
+    ) -> Result<(), DomainError> {
+        execution.pause(reason.to_string());
+        self.saga_repo.update(execution).await?;
+
+        info!(
+            saga_id = %execution.id,
+            reason = reason,
+            "Saga paused"
         );
 
         Ok(())

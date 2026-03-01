@@ -11,12 +11,14 @@
 |-------|--------|---------|-----------|-------|
 | Phase 1: Core Foundation | 🟢 Complete | 2025-11-30 | 2025-11-30 | All tests passing |
 | Phase 2: Registration & Seeding | 🟢 Complete | 2025-11-30 | 2025-11-30 | Services + Handlers + Tests |
-| Phase 3: Match System | 🟡 In Progress | 2025-11-30 | - | Batches 1-3 complete (7/9 sub-phases done) |
-| Phase 4: Plugin Integration | 🟡 Partial | 2025-12-01 | - | Veto formats complete, evidence deferred |
+| Phase 3: Match System | 🟢 Complete | 2025-11-30 | 2026-03-01 | All 9 sub-phases done (Batches 1-4) |
+| Phase 4: Plugin & Demo Integration | 🟡 In Progress | 2025-12-01 | - | 4.1-4.3 complete, 4.4 (saga integration) remaining |
 | Phase 5: Advanced Formats | 🔴 Not Started | - | - | |
 | Phase 6: Polish & Performance | 🔴 Not Started | - | - | |
 
 **Legend**: 🔴 Not Started | 🟡 In Progress | 🟢 Complete | ⏸️ Blocked/Deferred
+
+**Overall Scale**: 194 API handlers, 228 OpenAPI paths, 44 database migrations, 27 domain services, 834+ integration tests across 18 test files.
 
 ---
 
@@ -216,9 +218,9 @@ DELETE /v1/tournaments/{id}/seeding                         # Clear seeding
 | 3.4: Pick-Ban Core | 🟢 Complete | Veto sessions, turn-based actions (18 tests) |
 | 3.5: Pick-Ban Plugin | 🟢 Complete | CS2 maps, veto formats, side selection |
 | 3.6: Result Submission | 🟢 Complete | Claim/confirm workflow (10 tests) |
-| 3.7: Evidence System | 🟡 Partial | Handlers exist, service not wired |
-| 3.8: Plugin Evidence | ⏸️ Deferred | Requires demo parser integration |
-| 3.9: Bracket Progression | 🟢 Complete | Saga, transactions, standings (5 tests) |
+| 3.7: Evidence System | 🟢 Complete | Services wired to AppState, catalog-based discovery (46 tests) |
+| 3.8: Plugin Evidence | 🟢 Complete | CS2 plugin evidence, scanner CLI, demo ingestion pipeline |
+| 3.9: Bracket Progression | 🟢 Complete | Saga, transactions, standings, wired to AppState (5 tests) |
 
 ### Goals
 - [x] Match status state machine (MatchLifecycleService)
@@ -229,8 +231,10 @@ DELETE /v1/tournaments/{id}/seeding                         # Clear seeding
 - [x] Match result confirmation (claim/confirm/dispute)
 - [x] Bracket progression logic (ProgressionService, MatchCompletionSaga)
 - [x] Forfeit handling
-- [ ] Evidence service wiring to AppState
-- [ ] Progression service wiring to AppState
+- [x] Evidence service wiring to AppState
+- [x] Progression service wiring to AppState
+- [x] Demo catalog integration into evidence discovery
+- [x] Scanner CLI for automated demo ingestion
 
 ### Files Created/Modified (Batch 1)
 ```
@@ -508,55 +512,227 @@ POST   /v1/admin/matches/{match_id}/progression/reapply # Reapply progression
 - [x] Transaction support implemented
 - [x] Match completion saga implemented
 - [x] All transaction tests passing (5 tests)
-- [ ] Evidence service needs wiring to AppState
-- [ ] Progression service needs wiring to AppState
+- [x] Evidence service wired to AppState
+- [x] Progression service wired to AppState
 
 ---
 
-## Phase 4: Plugin Integration
+### Files Created/Modified (Batch 4 — Evidence Wiring, Demo Catalog & Scanner)
+```
+# portal-api — Evidence & Demo handlers (fully wired)
+crates/portal-api/src/handlers/evidence.rs         # Full evidence service (upload, link, discover, validate)
+crates/portal-api/src/handlers/demos.rs            # +batch_catalog, submit_stats, mark_failed handlers
+crates/portal-api/src/handlers/games.rs            # +game management (update, enable/disable, map pool)
+crates/portal-api/src/adapters/evidence_plugin.rs  # Evidence plugin adapter layer
+crates/portal-api/src/adapters/mod.rs
+
+# portal-api — Routes & OpenAPI
+crates/portal-api/src/routes/admin.rs              # +batch, stats, stats-failed routes
+crates/portal-api/src/routes/games.rs              # +game management routes
+crates/portal-api/src/openapi.rs                   # Registered new handlers and schemas
+crates/portal-api/src/state.rs                     # Wired evidence, demo, progression, result_review services
+
+# portal-api — DTOs
+crates/portal-api/src/dto/requests/demo.rs         # +SubmitDemoStatsRequest, BatchCatalogDemosRequest, MarkDemoFailedRequest
+crates/portal-api/src/dto/requests/game.rs         # +UpdateGameRequest, SetMapPoolRequest
+crates/portal-api/src/dto/responses/demo.rs        # +BatchCatalogResultResponse
+
+# portal-domain — Services
+crates/portal-domain/src/services/demo.rs          # +discover_for_match, CatalogResult enum, relevance scoring
+crates/portal-domain/src/services/tournament/evidence.rs  # Full evidence service with S3 + plugin traits
+crates/portal-domain/src/repositories/demo.rs      # +find_matching_for_context trait method
+
+# portal-db — Adapters
+crates/portal-db/src/adapters/demo.rs              # +find_matching_for_context SQL implementation
+
+# portal-plugins
+crates/portal-plugins/src/traits.rs                # +EvidencePlugin trait with discover/validate
+crates/portal-plugins/src/games/cs2/mod.rs         # CS2 evidence discovery & validation implementation
+crates/portal-plugins/src/manager.rs               # Plugin manager evidence methods
+crates/portal-plugins/src/lib.rs                   # Export EvidencePlugin
+
+# portal-cli — Scanner
+crates/portal-cli/src/commands/scan.rs             # NEW: Scanner CLI (S3 list + API client)
+crates/portal-cli/src/commands/mod.rs              # +scan module
+crates/portal-cli/src/main.rs                      # +Scan command variant
+crates/portal-cli/Cargo.toml                       # +feature-gated scanner deps (reqwest, aws-sdk-s3)
+```
+
+### Tests Created (Batch 4)
+```
+# Evidence Tests (46 tests - crates/portal-api/tests/evidence_test.rs)
+  - Full evidence lifecycle tests
+  - Plugin-based discovery tests
+  - Catalog-based discovery tests
+  - Evidence linking tests
+
+# Demo Scanner Tests (7 new tests in crates/portal-api/tests/demos_test.rs)
+  - test_batch_catalog_demos_creates_new
+  - test_batch_catalog_demos_idempotent
+  - test_submit_demo_stats
+  - test_submit_demo_stats_idempotent
+  - test_mark_demo_stats_failed
+  - test_discover_evidence_finds_catalog_demos
+  - test_link_catalog_discovered_evidence
+
+# Game Tests (84 tests - crates/portal-api/tests/games_test.rs)
+  - Game CRUD, map pool management, enable/disable
+
+# Player Tests (24 tests - crates/portal-api/tests/players_test.rs)
+# Role Tests (32 tests - crates/portal-api/tests/roles_test.rs)
+```
+
+### API Endpoints Added (Batch 4)
+```
+# Evidence System (fully wired — no longer stubs)
+POST   /v1/matches/{match_id}/evidence/upload           # Initiate upload
+POST   /v1/matches/{match_id}/evidence/{id}/complete    # Complete upload
+POST   /v1/matches/{match_id}/evidence/link             # Add link evidence
+GET    /v1/matches/{match_id}/evidence                  # List evidence
+GET    /v1/matches/{match_id}/evidence/{id}/access      # Get access URL
+DELETE /v1/matches/{match_id}/evidence/{id}             # Delete evidence
+POST   /v1/matches/{match_id}/evidence/discover         # Discover available evidence
+POST   /v1/matches/{match_id}/evidence/link-discovered  # Link discovered evidence
+POST   /v1/matches/{match_id}/evidence/{id}/validate    # Validate evidence against result
+GET    /v1/matches/{match_id}/evidence/{id}             # Get single evidence
+GET    /v1/matches/{match_id}/games/{game_number}/evidence  # Get game evidence
+POST   /v1/matches/{match_id}/evidence/process-expired  # Process expired evidence
+GET    /v1/matches/{match_id}/demos                     # Get demos linked to match
+
+# Demo Ingestion (scanner support)
+POST   /v1/admin/demos/batch                            # Batch catalog demos
+POST   /v1/admin/demos/{id}/stats                       # Submit parsed demo stats
+POST   /v1/admin/demos/{id}/stats-failed                # Mark stats fetch as failed
+
+# Progression System (fully wired — no longer stubs)
+GET    /v1/matches/{match_id}/progression               # Get progression
+POST   /v1/admin/matches/{match_id}/progression/revert  # Revert progression
+POST   /v1/admin/matches/{match_id}/progression/reapply # Reapply progression
+POST   /v1/admin/matches/{match_id}/progression/process # Process progression
+
+# Game Management
+PATCH  /v1/games/{game_id}                              # Update game
+PUT    /v1/games/{game_id}/maps                         # Set map pool
+POST   /v1/games/{game_id}/enable                       # Enable game
+POST   /v1/games/{game_id}/disable                      # Disable game
+```
+
+### Acceptance Criteria (Batch 4)
+- [x] Evidence service fully wired with upload, link, discover, validate
+- [x] Progression service fully wired
+- [x] Demo catalog integration in evidence discovery (hybrid plugin + catalog)
+- [x] Batch demo cataloging API for scanner
+- [x] Stats submission and failure marking APIs
+- [x] Scanner CLI command with S3 listing and API client
+- [x] CS2 plugin evidence discovery and validation
+- [x] Game management endpoints (update, enable/disable, map pool)
+- [x] All tests passing (evidence: 46, demos: 34, games: 84)
+
+---
+
+## Phase 4: Plugin & Demo Integration
+
+> **Design Document**: [docs/phase4/00-overview.md](./phase4/00-overview.md)
+
+### Sub-Phase Progress
+
+| Sub-Phase | Status | Description |
+|-----------|--------|-------------|
+| 4.0: Veto Plugin | 🟢 Complete | TournamentPlugin trait, CS2 veto formats, map pool |
+| 4.1: Demo Handlers & Validation | 🟢 Complete | Match demos endpoint, unlink, DemoValidationResult |
+| 4.2: Result Claim Demo Bridge | 🟢 Complete | demo_link_ids on result_claims, submit with demo refs |
+| 4.3: Result Review System | 🟢 Complete | ResultReviewService, captain acknowledgment, admin approve/reject (28 tests) |
+| 4.4: Review Workflow Integration | 🔴 Not Started | Saga demo validation step, pause/resume on review |
 
 ### Goals
 - [x] Extended `GamePlugin` trait for tournaments (TournamentPlugin)
 - [x] Map pool configuration
 - [x] Map veto system (VetoService, VetoFormat)
 - [x] Game-specific settings validation
-- [ ] Plugin-provided seeding (optional)
-- [ ] Match result validation
-- [ ] Evidence discovery plugin (deferred - requires demo parser)
+- [x] Evidence discovery plugin (CS2 + catalog-based)
+- [x] Demo-to-match linking (GET /matches/{id}/demos, DELETE unlink)
+- [x] DemoValidationResult entity and validation methods
+- [x] Result claims with demo_link_ids (migration 0041)
+- [x] Result review system (migration 0042, service, handlers, 28 tests)
+- [ ] Plugin-provided seeding (optional, low priority)
+- [ ] Saga demo validation step (Phase 4.4)
 
 ### Files Created/Modified
 ```
 # Plugins
-crates/portal-plugins/src/traits.rs              # TournamentPlugin trait
+crates/portal-plugins/src/traits.rs              # TournamentPlugin + EvidencePlugin traits
 crates/portal-plugins/src/types.rs               # VetoFormat, MapMetadata, SideOption
-crates/portal-plugins/src/games/cs2/mod.rs       # CS2 veto formats, maps, sides
+crates/portal-plugins/src/games/cs2/mod.rs       # CS2 veto formats, maps, evidence discovery/validation
 
-# Services (implemented in Phase 3 Batch 2)
+# Veto (implemented in Phase 3 Batch 2)
 crates/portal-domain/src/services/tournament/veto.rs
-crates/portal-domain/src/entities/veto.rs        # VetoFormat with Bo1, Bo3, Bo5
-
-# Database
-migrations/0034_veto_sessions.sql                # Veto sessions and actions
-
-# Handlers (implemented in Phase 3 Batch 2)
+crates/portal-domain/src/entities/veto.rs
+migrations/0034_veto_sessions.sql
 crates/portal-api/src/handlers/veto.rs
+
+# Demo Integration (4.1)
+crates/portal-api/src/handlers/demos.rs          # get_demos_for_match, unlink_demo_from_match
+crates/portal-api/src/routes/matches.rs          # GET /{match_id}/demos route
+crates/portal-api/src/routes/admin.rs            # DELETE /demos/{id}/link/{match_id}
+crates/portal-domain/src/entities/demo_validation.rs  # DemoValidationResult entity
+
+# Result Claim Bridge (4.2)
+migrations/0041_result_claims_demo_links.sql     # Add demo_link_ids UUID[] to result_claims
+crates/portal-domain/src/entities/result_claim.rs    # demo_link_ids field
+crates/portal-api/src/dto/requests/result.rs         # demo_link_ids in SubmitResultClaimRequest
+crates/portal-db/src/adapters/tournament/result_claim.rs  # Handle demo_link_ids
+
+# Result Review System (4.3)
+migrations/0042_result_reviews.sql               # result_reviews table
+crates/portal-domain/src/entities/result_review.rs   # ResultReview entity
+crates/portal-domain/src/services/tournament/result_review.rs  # ResultReviewService
+crates/portal-api/src/handlers/result_reviews.rs     # Review handlers (341 lines)
+crates/portal-api/src/routes/matches.rs              # Review routes
+crates/portal-api/src/routes/admin.rs                # Admin review routes
 ```
 
 ### Tests Completed
 ```
-# Integration tests (18 tests - crates/portal-api/tests/veto_test.rs)
-  - Veto format validation (Bo1, Bo3, Bo5)
-  - Session creation and management
-  - Turn-based action validation
-  - Side selection
+# Veto Tests (50 tests - crates/portal-api/tests/veto_test.rs)
+# Veto Delegate Tests (20 tests - crates/portal-api/tests/veto_delegates_test.rs)
+# Veto WebSocket Tests (24 tests - crates/portal-api/tests/veto_ws_test.rs)
+# Result Review Tests (28 tests - crates/portal-api/tests/result_review_test.rs)
+```
+
+### API Endpoints Added
+```
+# Veto System
+POST   /v1/matches/{match_id}/veto                    # Create veto session
+GET    /v1/matches/{match_id}/veto                    # Get veto session
+POST   /v1/matches/{match_id}/veto/start              # Start veto
+POST   /v1/matches/{match_id}/veto/coin-flip          # Record coin flip
+POST   /v1/matches/{match_id}/veto/action             # Perform veto action
+POST   /v1/matches/{match_id}/veto/side               # Select side
+
+# Demo-Match Integration
+GET    /v1/matches/{match_id}/demos                   # Get demos for match
+DELETE /v1/admin/demos/{id}/link/{match_id}           # Unlink demo from match
+
+# Result Reviews
+GET    /v1/matches/{match_id}/result-review           # Get review status
+POST   /v1/matches/{match_id}/result-review/acknowledge  # Captain acknowledgment
+GET    /v1/admin/result-reviews                       # List pending reviews
+GET    /v1/admin/result-reviews/{id}                  # Get review details
+POST   /v1/admin/result-reviews/{id}/approve          # Admin approve
+POST   /v1/admin/result-reviews/{id}/reject           # Admin reject
 ```
 
 ### Acceptance Criteria
 - [x] Can configure tournament map pool
 - [x] Map veto flow works
 - [x] CS2 plugin validates tournament settings
-- [x] All tests passing (18 veto tests)
-- [ ] Evidence plugin integration (deferred)
+- [x] All veto tests passing (50 + 20 + 24 = 94 tests)
+- [x] Evidence plugin integration (CS2 + catalog discovery)
+- [x] Demo-to-match linking endpoints work
+- [x] Result claims support demo_link_ids
+- [x] Result review system with captain acknowledgment and admin resolution
+- [x] All result review tests passing (28 tests)
+- [ ] Saga demo validation step (Phase 4.4 — not started)
 
 ---
 
@@ -655,10 +831,11 @@ crates/portal-api/src/handlers/tournaments/admin.rs
 
 | Issue | Phase | Description | Resolution |
 |-------|-------|-------------|------------|
-| Evidence service not wired | 3.7 | EvidenceService needs to be added to AppState | Pending |
-| Progression service not wired | 3.9 | ProgressionService needs to be added to AppState | Pending |
-| Demo parser needed | 3.8 | CS2 demo parsing requires external library | Deferred |
-| S3 client implementation | 3.7 | Need S3Client trait implementation for presigned URLs | Pending |
+| ~~Evidence service not wired~~ | 3.7 | ~~EvidenceService needs to be added to AppState~~ | ✅ Resolved (Batch 4) |
+| ~~Progression service not wired~~ | 3.9 | ~~ProgressionService needs to be added to AppState~~ | ✅ Resolved (Batch 4) |
+| ~~Demo parser needed~~ | 3.8 | ~~CS2 demo parsing requires external library~~ | ✅ Resolved — external stats service + scanner CLI |
+| ~~S3 client implementation~~ | 3.7 | ~~Need S3Client trait implementation for presigned URLs~~ | ✅ Resolved (Batch 4) |
+| Saga demo validation | 4.4 | MatchCompletionSaga needs step_validate_demos() | Not started |
 
 ---
 
@@ -681,37 +858,57 @@ crates/portal-api/src/handlers/tournaments/admin.rs
 12. **2025-12-01** - Phase 3 Batch 3: Transaction support uses `DbTransaction<'a>` type alias for `sqlx::Transaction<'a, Postgres>`
 13. **2025-12-01** - Phase 3 Batch 3: Transactional repository methods use `_in_tx` suffix pattern (e.g., `find_by_id_in_tx`)
 14. **2025-12-01** - Phase 3 Batch 3: Match completion uses atomic transactions via `complete_match_in_transaction()` function
-15. **2025-12-01** - Phase 3 Batch 3: Evidence service and progression service handlers are stubs pending AppState wiring
+15. ~~**2025-12-01** - Phase 3 Batch 3: Evidence and progression handlers were stubs~~ → Resolved in Batch 4
+
+16. **2026-03-01** - Phase 3 Batch 4: Evidence service uses `EvidencePluginClient` and `EvidenceS3Client` traits for testability (adapter pattern in `portal-api/src/adapters/`)
+17. **2026-03-01** - Phase 3 Batch 4: Demo evidence discovery uses relevance scoring based on Steam ID overlap (0.50), time proximity (0.30), both-teams-present (0.15), and base score (0.05)
+18. **2026-03-01** - Phase 3 Batch 4: Scanner CLI is feature-gated (`#[cfg(feature = "scanner")]`) to avoid pulling in AWS SDK for normal builds
+19. **2026-03-01** - Phase 3 Batch 4: Demo ingestion API is game-agnostic (JSON blobs for stats) while typed columns are a CS2 optimization
+20. **2026-03-01** - Phase 4: Result claims bridge to demo catalog via `demo_link_ids UUID[]` column (migration 0041), keeping demos and evidence as separate first-class entities
+21. **2026-03-01** - Phase 4: Result review system uses two-tier model: roster mismatches need captain acknowledgment, score/winner mismatches need admin approval
 
 ### Deviations from Design Document
 
 1. **2025-11-30** - Migration file named `0030_create_tournaments.sql` (next available sequence number after existing migrations)
 2. **2025-11-30** - Phase 3 Batch 1: Implemented availability system early to support scheduling workflow (player availability informs match scheduling)
 3. **2025-11-30** - Phase 3 Batch 1: Scheduling uses proposal workflow (propose → accept/reject/counter) rather than direct scheduling for self-scheduled tournaments
-4. **2025-12-01** - Phase 3 Batch 3: Evidence plugin integration (3.8) deferred - requires external demo parser library
-5. **2025-12-01** - Phase 3 Batch 3: Evidence and progression handlers return "service not configured" until AppState wiring is complete
+4. ~~**2025-12-01** - Phase 3 Batch 3: Evidence plugin integration (3.8) deferred~~ → Resolved in Batch 4 via external stats service + scanner CLI
+5. ~~**2025-12-01** - Phase 3 Batch 3: Evidence and progression handlers are stubs~~ → Fully wired in Batch 4
+6. **2026-03-01** - Phase 3.8: Instead of embedding a demo parser library, uses external CS2 demo stats service (https://demos.cs210mans.uk) with a scanner CLI that fetches stats and submits via API
+7. **2026-03-01** - Evidence discovery uses hybrid approach: plugin-based + catalog-based discovery merged in the handler, with relevance scoring for catalog matches
 
 ---
 
 ## Commands Reference
 
 ```bash
-# Run all tournament tests
-cargo test -p portal-api --features="test-utils" tournaments
-cargo test -p portal-api --features="test-utils" veto
-cargo test -p portal-api --features="test-utils" results
+# Run all API tests (834+ tests)
+cargo test -p portal-api --features="test-utils"
+
+# Run specific test suites
+cargo test -p portal-api --features="test-utils" tournaments    # 104 tests
+cargo test -p portal-api --features="test-utils" veto           # 50 + 20 + 24 tests
+cargo test -p portal-api --features="test-utils" results        # 46 tests
+cargo test -p portal-api --features="test-utils" evidence       # 46 tests
+cargo test -p portal-api --features="test-utils" demos          # 34 tests
+cargo test -p portal-api --features="test-utils" games          # 84 tests
+cargo test -p portal-api --features="test-utils" result_review  # 28 tests
+cargo test -p portal-api --features="test-utils" dispute        # 64 tests
+cargo test -p portal-api --features="test-utils" forfeit        # 34 tests
+cargo test -p portal-api --features="test-utils" players        # 24 tests
+cargo test -p portal-api --features="test-utils" roles          # 32 tests
 
 # Run transaction tests
 cargo test -p portal-db --test transaction_test
 
-# Run all API tests
-cargo test -p portal-api --features="test-utils"
-
 # Check compilation
 cargo check --workspace
 
-# Run specific phase tests
-cargo test -p portal-api --features="test-utils" test_create_tournament
+# Lint
+cargo clippy -p portal-api -p portal-domain -p portal-db -- -D warnings
+
+# Build scanner CLI
+cargo build -p portal-cli --features scanner
 
 # Generate SQL for offline mode
 cargo sqlx prepare --workspace

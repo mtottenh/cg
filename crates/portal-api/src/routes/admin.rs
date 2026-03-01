@@ -109,8 +109,11 @@ pub fn routes() -> Router<AppState> {
         )
         // Demo admin routes
         .route("/demos", post(demos::catalog_demo))
+        .route("/demos/batch", post(demos::batch_catalog_demos))
         .route("/demos/stats", get(demos::get_demo_stats))
         .route("/demos/pending", get(demos::get_pending_demos))
+        .route("/demos/{id}/stats", post(demos::submit_demo_stats))
+        .route("/demos/{id}/stats-failed", post(demos::mark_demo_stats_failed))
         .route("/demos/{id}/categorize", post(demos::categorize_demo))
         .route("/demos/{id}/visibility", post(demos::set_demo_visibility))
         .route("/demos/{id}/associate", post(demos::associate_demo))

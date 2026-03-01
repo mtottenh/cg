@@ -368,7 +368,7 @@ where
         self.claim_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Result claim {} not found", id)))
+            .ok_or_else(|| DomainError::Internal(format!("Result claim {id} not found")))
     }
 
     async fn find_user_registration(
@@ -440,7 +440,7 @@ where
         }
 
         // Validate game count matches format
-        let wins_required = match_.match_format.wins_required() as i32;
+        let wins_required = match_.match_format.wins_required();
         let expected_games = participant1_score + participant2_score;
         let min_games = wins_required;
         let max_games = wins_required * 2 - 1;

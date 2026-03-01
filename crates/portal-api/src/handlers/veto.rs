@@ -119,7 +119,7 @@ pub async fn create_veto_session(
 
     // Broadcast session creation to WebSocket lobby (if any connections exist)
     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
-        let _ = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
+        let () = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
             session: VetoSessionResponse::from(session.clone()),
         }));
     }
@@ -212,7 +212,7 @@ pub async fn record_coin_flip(
 
     // Broadcast coin flip result to WebSocket lobby
     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
-        let _ = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
+        let () = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
             session: VetoSessionResponse::from(updated.clone()),
         }));
     }
@@ -262,7 +262,7 @@ pub async fn start_veto_session(
 
     // Broadcast session start to WebSocket lobby
     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
-        let _ = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
+        let () = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
             session: VetoSessionResponse::from(updated.clone()),
         }));
     }
@@ -328,13 +328,13 @@ pub async fn perform_veto_action(
     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
         if result.veto_complete {
             // Broadcast veto completion
-            let _ = lobby.broadcast(LobbyBroadcast::VetoComplete(VetoCompleteBroadcast {
+            let () = lobby.broadcast(LobbyBroadcast::VetoComplete(VetoCompleteBroadcast {
                 session: VetoSessionResponse::from(result.session.clone()),
                 selected_maps: result.session.selected_maps.clone(),
             }));
         } else {
             // Broadcast the action performed
-            let _ = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
+            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
                 session: VetoSessionResponse::from(result.session.clone()),
                 action: VetoActionResponse::from(result.action.clone()),
                 is_complete: false,
@@ -409,7 +409,7 @@ pub async fn select_side(
         .tournament_match_repo
         .find_by_id(match_id)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("Match {} not found", match_id)))?;
+        .ok_or_else(|| ApiError::not_found(format!("Match {match_id} not found")))?;
 
     // Determine opponent (who should select side)
     let opponent = if match_.participant1_registration_id == Some(picker) {
@@ -440,7 +440,7 @@ pub async fn select_side(
     // Get the updated session state for the broadcast
     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
         if let Ok(new_session_state) = state.veto_service.get_session_state(match_id).await {
-            let _ = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
+            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
                 session: VetoSessionResponse::from(new_session_state.session),
                 action: VetoActionResponse::from(updated.clone()),
                 is_complete: false,

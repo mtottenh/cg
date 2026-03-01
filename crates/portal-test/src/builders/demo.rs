@@ -216,7 +216,7 @@ impl DemoBuilder {
 
         let id = self.id.unwrap_or_else(Uuid::now_v7);
         let file_name = self.file_name.unwrap_or_else(|| format!("test_demo_{}.dem", &id.to_string()[..8]));
-        let s3_key = self.s3_key.unwrap_or_else(|| format!("demos/{}/{}", game_id, file_name));
+        let s3_key = self.s3_key.unwrap_or_else(|| format!("demos/{game_id}/{file_name}"));
 
         sqlx::query_as::<_, DemoRow>(
             r"

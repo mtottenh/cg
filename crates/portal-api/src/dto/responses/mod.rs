@@ -29,9 +29,9 @@ pub use availability::{
 pub use ban::{BanListResponse, BanResponse, PaginationMetaResponse};
 pub use auth::{LoginResponse, RegisterResponse};
 pub use demo::{
-    DemoIdListResponse, DemoListResponse, DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse,
-    DemoMetadataResponse, DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse,
-    DemoValidationResultResponse, DemoWithPlayersResponse,
+    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoIdListResponse, DemoListResponse,
+    DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse, DemoPlayerResponse,
+    DemoResponse, DemoStatusCountsResponse, DemoValidationResultResponse, DemoWithPlayersResponse,
 };
 pub use evidence::{
     AccessUrlResponse, DemoPlayerStatsResponse, DemoStatsResponse, DemoValidationResponse,

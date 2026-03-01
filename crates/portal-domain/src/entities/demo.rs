@@ -81,12 +81,10 @@ impl Demo {
     #[must_use]
     pub fn winner_team(&self) -> Option<&str> {
         self.metadata.as_ref().and_then(|m| {
-            if m.team1_score > m.team2_score {
-                Some(m.team1_name.as_str())
-            } else if m.team2_score > m.team1_score {
-                Some(m.team2_name.as_str())
-            } else {
-                None // Draw
+            match m.team1_score.cmp(&m.team2_score) {
+                std::cmp::Ordering::Greater => Some(m.team1_name.as_str()),
+                std::cmp::Ordering::Less => Some(m.team2_name.as_str()),
+                std::cmp::Ordering::Equal => None, // Draw
             }
         })
     }
@@ -176,9 +174,9 @@ impl DemoPlayerStats {
     #[must_use]
     pub fn kd_ratio(&self) -> f64 {
         if self.deaths == 0 {
-            self.kills as f64
+            f64::from(self.kills)
         } else {
-            self.kills as f64 / self.deaths as f64
+            f64::from(self.kills) / f64::from(self.deaths)
         }
     }
 }

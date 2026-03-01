@@ -416,3 +416,491 @@ async fn test_set_map_pool_validation_empty() {
 
     response.assert_status(StatusCode::BAD_REQUEST);
 }
+
+// ============================================================================
+// MAP CATALOG TESTS
+// ============================================================================
+
+#[tokio::test]
+async fn test_add_map() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_workshop_map",
+                "display_name": "Workshop Map",
+                "game_modes": ["competitive"],
+                "external_id": "123456789",
+                "external_url": "https://steamcommunity.com/sharedfiles/filedetails/?id=123456789"
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    let maps = body["data"].as_array().unwrap();
+    // Should now include the custom map + the original 7
+    assert!(maps.len() > 7);
+    let custom = maps.iter().find(|m| m["id"] == "de_workshop_map").unwrap();
+    assert_eq!(custom["display_name"], "Workshop Map");
+    assert_eq!(custom["external_id"], "123456789");
+}
+
+#[tokio::test]
+async fn test_add_duplicate_map() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Add a map first
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_custom",
+                "display_name": "Custom",
+                "game_modes": ["competitive"]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Try to add the same map again
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_custom",
+                "display_name": "Custom 2",
+                "game_modes": ["competitive"]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn test_add_map_existing_plugin_map_conflict() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Try to add a map that already exists as a plugin default
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_dust2",
+                "display_name": "Dust II Again",
+                "game_modes": ["competitive"]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn test_update_map() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // First add a custom map
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_updatable",
+                "display_name": "Original Name",
+                "game_modes": ["competitive"]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Update it
+    let response = app
+        .patch_json(
+            "/v1/games/cs2/maps/catalog/de_updatable",
+            &json!({
+                "display_name": "Updated Name",
+                "external_id": "99999"
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"], "de_updatable");
+    assert_eq!(body["data"]["display_name"], "Updated Name");
+    assert_eq!(body["data"]["external_id"], "99999");
+}
+
+#[tokio::test]
+async fn test_update_map_not_found() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app
+        .patch_json(
+            "/v1/games/cs2/maps/catalog/de_nonexistent",
+            &json!({
+                "display_name": "Will not work"
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_remove_map() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Add a map
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_removable",
+                "display_name": "Removable Map",
+                "game_modes": ["competitive"]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Remove it
+    let response = app.delete_auth("/v1/games/cs2/maps/catalog/de_removable").await;
+    response.assert_status(StatusCode::NO_CONTENT);
+
+    // Verify it's gone by checking maps
+    let response = app.get("/v1/games/cs2/maps").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let maps = body["data"].as_array().unwrap();
+    assert!(!maps.iter().any(|m| m["id"] == "de_removable"));
+}
+
+#[tokio::test]
+async fn test_remove_map_not_found() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app
+        .delete_auth("/v1/games/cs2/maps/catalog/de_nonexistent")
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
+}
+
+// ============================================================================
+// RANK TIERS TESTS
+// ============================================================================
+
+#[tokio::test]
+async fn test_set_rank_tiers() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app
+        .put_json(
+            "/v1/games/cs2/rank-tiers",
+            &json!({
+                "rank_tiers": [
+                    {
+                        "id": "bronze",
+                        "display_name": "Bronze",
+                        "min_rating": 0,
+                        "max_rating": 999,
+                        "color": "#CD7F32",
+                        "order": 1
+                    },
+                    {
+                        "id": "silver",
+                        "display_name": "Silver",
+                        "min_rating": 1000,
+                        "max_rating": 1999,
+                        "color": "#C0C0C0",
+                        "order": 2
+                    },
+                    {
+                        "id": "gold",
+                        "display_name": "Gold",
+                        "min_rating": 2000,
+                        "color": "#FFD700",
+                        "order": 3
+                    }
+                ]
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    let tiers = body["data"].as_array().unwrap();
+    assert_eq!(tiers.len(), 3);
+    assert_eq!(tiers[0]["id"], "bronze");
+    assert_eq!(tiers[2]["id"], "gold");
+
+    // Verify via GET endpoint
+    let response = app.get("/v1/games/cs2/rank-tiers").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let tiers = body["data"].as_array().unwrap();
+    assert_eq!(tiers.len(), 3);
+    assert_eq!(tiers[0]["id"], "bronze");
+}
+
+#[tokio::test]
+async fn test_set_rank_tiers_invalid_overlap() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app
+        .put_json(
+            "/v1/games/cs2/rank-tiers",
+            &json!({
+                "rank_tiers": [
+                    {
+                        "id": "bronze",
+                        "display_name": "Bronze",
+                        "min_rating": 0,
+                        "max_rating": 1000,
+                        "order": 1
+                    },
+                    {
+                        "id": "silver",
+                        "display_name": "Silver",
+                        "min_rating": 500,
+                        "max_rating": 2000,
+                        "order": 2
+                    }
+                ]
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+// ============================================================================
+// TEAM SIZE TESTS
+// ============================================================================
+
+#[tokio::test]
+async fn test_update_team_size() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app
+        .patch_json(
+            "/v1/games/cs2/team-size",
+            &json!({
+                "min": 3,
+                "max": 7,
+                "default": 5
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["min"], 3);
+    assert_eq!(body["data"]["max"], 7);
+    assert_eq!(body["data"]["default"], 5);
+
+    // Verify via GET game detail
+    let response = app.get("/v1/games/cs2").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["team_size"]["min"], 3);
+    assert_eq!(body["data"]["team_size"]["max"], 7);
+    assert_eq!(body["data"]["team_size"]["default"], 5);
+}
+
+#[tokio::test]
+async fn test_update_team_size_partial() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Only update max (CS2 default is min=5, max=5, default=5)
+    let response = app
+        .patch_json(
+            "/v1/games/cs2/team-size",
+            &json!({
+                "max": 10
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["min"], 5);
+    assert_eq!(body["data"]["max"], 10);
+    assert_eq!(body["data"]["default"], 5);
+}
+
+#[tokio::test]
+async fn test_update_team_size_invalid_min_gt_max() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app
+        .patch_json(
+            "/v1/games/cs2/team-size",
+            &json!({
+                "min": 10,
+                "max": 3,
+                "default": 5
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_update_team_size_invalid_default_gt_max() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app
+        .patch_json(
+            "/v1/games/cs2/team-size",
+            &json!({
+                "min": 1,
+                "max": 3,
+                "default": 5
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+// ============================================================================
+// CUSTOM MAP + MAP POOL INTEGRATION
+// ============================================================================
+
+#[tokio::test]
+async fn test_set_map_pool_with_custom_map() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Add a custom map
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_workshop",
+                "display_name": "Workshop",
+                "game_modes": ["competitive"]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Now set map pool including the custom map
+    let response = app
+        .put_json(
+            "/v1/games/cs2/maps",
+            &json!({
+                "map_ids": ["de_dust2", "de_mirage", "de_workshop"]
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    let maps = body["data"].as_array().unwrap();
+    assert_eq!(maps.len(), 3);
+    assert!(maps.iter().any(|m| m["id"] == "de_workshop"));
+}
+
+// ============================================================================
+// AUTHORIZATION TESTS FOR NEW ENDPOINTS
+// ============================================================================
+
+#[tokio::test]
+async fn test_add_map_requires_admin() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_test",
+                "display_name": "Test",
+                "game_modes": ["competitive"]
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_update_map_requires_admin() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .patch_json(
+            "/v1/games/cs2/maps/catalog/de_dust2",
+            &json!({
+                "display_name": "Test"
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_remove_map_requires_admin() {
+    let app = TestApp::new().await;
+
+    let response = app.delete_auth("/v1/games/cs2/maps/catalog/de_dust2").await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_set_rank_tiers_requires_admin() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .put_json(
+            "/v1/games/cs2/rank-tiers",
+            &json!({
+                "rank_tiers": [{
+                    "id": "test",
+                    "display_name": "Test",
+                    "min_rating": 0,
+                    "order": 1
+                }]
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_update_team_size_requires_admin() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .patch_json(
+            "/v1/games/cs2/team-size",
+            &json!({ "min": 1 }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+}

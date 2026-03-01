@@ -48,7 +48,7 @@ pub async fn get_game_id(pool: &DbPool, slug: &str) -> Uuid {
     repo.find_by_slug(slug)
         .await
         .expect("Database query failed")
-        .unwrap_or_else(|| panic!("Game '{}' not found in database", slug))
+        .unwrap_or_else(|| panic!("Game '{slug}' not found in database"))
         .id
 }
 
@@ -77,7 +77,7 @@ pub async fn assign_role_to_user(pool: &DbPool, user_id: Uuid, role_name: &str) 
         .find_by_name(role_name)
         .await
         .expect("Database query failed")
-        .unwrap_or_else(|| panic!("Role '{}' not found in database", role_name));
+        .unwrap_or_else(|| panic!("Role '{role_name}' not found in database"));
 
     // Assign the role globally (no scope)
     let assignment = portal_db::entities::NewUserRole {

@@ -11,5 +11,8 @@ pub mod player;
 pub mod role;
 pub mod user;
 
+#[cfg(feature = "scanner")]
+pub mod scan;
+
 // TODO: Add these command modules as they are implemented:
 // pub mod tournament;

@@ -610,9 +610,7 @@ async fn get_member(pool: &PgPool, member_id: Uuid, format: OutputFormat) -> Res
         println!(
             "  Jersey #:      {}",
             member
-                .jersey_number
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "-".to_string())
+                .jersey_number.map_or_else(|| "-".to_string(), |n| n.to_string())
         );
         println!("  Status:        {}", member.status);
         println!("  Joined:        {}", format_timestamp(&member.joined_at));
@@ -930,9 +928,7 @@ async fn list_team_seasons(pool: &PgPool, team_id: Uuid, format: OutputFormat) -
             losses: r.matches_lost,
             draws: r.matches_drawn,
             registered_at: r
-                .registered_at
-                .map(|t| format_timestamp(&t))
-                .unwrap_or_else(|| "-".to_string()),
+                .registered_at.map_or_else(|| "-".to_string(), |t| format_timestamp(&t)),
         })
         .collect();
 
@@ -981,9 +977,7 @@ async fn get_team_season(pool: &PgPool, team_season_id: Uuid, format: OutputForm
         println!("  Status:        {}", ts.status);
         println!(
             "  Registered:    {}",
-            ts.registered_at
-                .map(|t| format_timestamp(&t))
-                .unwrap_or_else(|| "-".to_string())
+            ts.registered_at.map_or_else(|| "-".to_string(), |t| format_timestamp(&t))
         );
         println!("  Notes:         {}", format_optional(&ts.registration_notes));
         println!();
@@ -995,15 +989,11 @@ async fn get_team_season(pool: &PgPool, team_season_id: Uuid, format: OutputForm
         println!();
         println!(
             "  Seed:          {}",
-            ts.seed
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "-".to_string())
+            ts.seed.map_or_else(|| "-".to_string(), |n| n.to_string())
         );
         println!(
             "  Rating:        {}",
-            ts.rating
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "-".to_string())
+            ts.rating.map_or_else(|| "-".to_string(), |n| n.to_string())
         );
     }
 

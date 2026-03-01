@@ -237,6 +237,14 @@ pub trait GamePlugin: Send + Sync {
     fn lobby_state_machine(&self) -> Option<Box<dyn LobbyStateMachine>> {
         None
     }
+
+    /// Get the evidence plugin extension if this game supports it.
+    ///
+    /// Override this method to return `Some(self)` in plugins that implement
+    /// the `EvidencePlugin` trait.
+    fn as_evidence_plugin(&self) -> Option<&dyn EvidencePlugin> {
+        None
+    }
 }
 
 // ============================================================================
@@ -250,6 +258,12 @@ pub struct MapInfo {
     pub display_name: String,
     pub image_url: Option<String>,
     pub game_modes: Vec<String>,
+    /// External identifier (e.g., Steam Workshop ID).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+    /// External URL (e.g., full Steam Workshop URL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_url: Option<String>,
 }
 
 /// Rank tier definition.

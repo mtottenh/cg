@@ -1,6 +1,7 @@
 //! Demo catalog request DTOs.
 
 use serde::Deserialize;
+use serde_json::Value;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 use validator::Validate;
@@ -121,4 +122,90 @@ pub struct GetDemosForMatchQuery {
     pub include_stats: bool,
     /// Filter by game number within the match series.
     pub game_number: Option<i32>,
+}
+
+// =============================================================================
+// BATCH + STATS INGESTION DTOs
+// =============================================================================
+
+/// Request to batch-catalog demos from S3.
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct BatchCatalogDemosRequest {
+    /// Game ID for all demos in this batch.
+    pub game_id: Uuid,
+    /// Demo entries to catalog (max 500).
+    #[validate(length(min = 1, max = 500))]
+    pub demos: Vec<BatchCatalogDemoEntry>,
+}
+
+/// A single demo entry in a batch catalog request.
+#[derive(Debug, Clone, serde::Serialize, Deserialize, ToSchema)]
+pub struct BatchCatalogDemoEntry {
+    /// Demo file name.
+    pub file_name: String,
+    /// S3 bucket name.
+    pub s3_bucket: String,
+    /// S3 object key.
+    pub s3_key: String,
+    /// File size in bytes.
+    pub file_size_bytes: Option<i64>,
+}
+
+/// Stats submission for a demo — game-agnostic.
+///
+/// Common metadata is typed (all optional for flexibility across games).
+/// Game-specific data is opaque JSON interpreted by the plugin layer.
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct SubmitDemoStatsRequest {
+    // --- Common metadata (typed, all optional) ---
+    /// Map name (e.g., de_dust2).
+    pub map_name: Option<String>,
+    /// Match date/time (ISO 8601).
+    pub match_date: Option<String>,
+    /// Duration in seconds.
+    pub duration_seconds: Option<i64>,
+    /// Team 1 name.
+    pub team1_name: Option<String>,
+    /// Team 2 name.
+    pub team2_name: Option<String>,
+    /// Team 1 score.
+    pub team1_score: Option<i32>,
+    /// Team 2 score.
+    pub team2_score: Option<i32>,
+    /// Total rounds played.
+    pub total_rounds: Option<i32>,
+
+    // --- Game-specific metadata (opaque JSON) ---
+    /// Game-specific metadata (tick rate, demo version, etc.).
+    pub game_metadata: Option<Value>,
+
+    /// Full raw stats dump (stored as demos.stats_json).
+    pub raw_stats: Value,
+
+    /// Players found in the demo.
+    pub players: Vec<DemoPlayerInputDto>,
+}
+
+/// Player entry in stats submission — identity is typed, stats are game-specific JSON.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct DemoPlayerInputDto {
+    /// Platform ID (Steam ID, Epic ID, etc.).
+    pub steam_id: String,
+    /// In-game player name.
+    pub player_name: String,
+    /// Team name if available.
+    pub team_name: Option<String>,
+    /// Game-specific stats as JSON.
+    ///
+    /// For CS2: `{"kills":20,"deaths":15,"assists":5,...}`
+    /// For Rocket League: `{"goals":3,"saves":5,...}`
+    pub stats: Value,
+}
+
+/// Request to mark a demo's stats processing as failed.
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct MarkDemoFailedRequest {
+    /// Error description.
+    #[validate(length(min = 1, max = 2000))]
+    pub error: String,
 }

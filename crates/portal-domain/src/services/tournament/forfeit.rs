@@ -60,8 +60,7 @@ where
         // Check if already forfeited
         if self.forfeit_repo.exists_for_match(match_id).await? {
             return Err(DomainError::InvalidState(format!(
-                "Match {} has already been forfeited",
-                match_id
+                "Match {match_id} has already been forfeited"
             )));
         }
 
@@ -142,8 +141,7 @@ where
         // Check if already forfeited
         if self.forfeit_repo.exists_for_match(match_id).await? {
             return Err(DomainError::InvalidState(format!(
-                "Match {} has already been forfeited",
-                match_id
+                "Match {match_id} has already been forfeited"
             )));
         }
 

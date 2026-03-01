@@ -244,7 +244,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {} not found", evidence_id)))?;
+            .ok_or_else(|| DomainError::Internal(format!("Evidence {evidence_id} not found")))?;
 
         // Verify the file was actually uploaded
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
@@ -279,8 +279,7 @@ where
         // Validate evidence type allows URL storage
         if !matches!(evidence_type, EvidenceType::Video | EvidenceType::Link) {
             return Err(DomainError::InvalidState(format!(
-                "Evidence type {:?} cannot be a URL",
-                evidence_type
+                "Evidence type {evidence_type:?} cannot be a URL"
             )));
         }
 
@@ -361,7 +360,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {} not found", evidence_id)))?;
+            .ok_or_else(|| DomainError::Internal(format!("Evidence {evidence_id} not found")))?;
 
         // Check if evidence is accessible
         if !evidence.is_accessible() {
@@ -374,8 +373,7 @@ where
         // Check expiration
         if evidence.is_expired() {
             return Err(DomainError::InvalidState(format!(
-                "Evidence {} has expired",
-                evidence_id
+                "Evidence {evidence_id} has expired"
             )));
         }
 
@@ -432,7 +430,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {} not found", evidence_id)))?;
+            .ok_or_else(|| DomainError::Internal(format!("Evidence {evidence_id} not found")))?;
 
         // Delete from storage if S3
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
@@ -533,30 +531,25 @@ where
     S3C: EvidenceS3Client,
 {
     /// Discover available evidence for a match using a plugin.
+    ///
+    /// The caller is responsible for building the [`MatchEvidenceContext`] with
+    /// the correct `game_id` and participant data (the handler layer has access
+    /// to the game repository and registration services needed for this).
     #[instrument(skip(self, plugin))]
     pub async fn discover_available<P: EvidencePluginClient>(
         &self,
         match_id: TournamentMatchId,
+        context: &MatchEvidenceContext,
         plugin: &P,
     ) -> Result<Vec<DiscoveredEvidence>, DomainError> {
-        let match_ = self
+        // Verify match exists
+        let _match = self
             .match_repo
             .find_by_id(match_id)
             .await?
             .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
 
-        // Build context
-        let context = MatchEvidenceContext {
-            tournament_id: match_.tournament_id,
-            match_id,
-            game_id: portal_core::GameId::new(), // TODO: Get from tournament
-            participants: Vec::new(),             // TODO: Build participant context
-            scheduled_at: match_.scheduled_at,
-            started_at: match_.started_at,
-            completed_at: match_.completed_at,
-        };
-
-        plugin.discover_evidence(&context).await
+        plugin.discover_evidence(context).await
     }
 
     /// Link discovered evidence to a match.
@@ -624,7 +617,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {} not found", evidence_id)))?;
+            .ok_or_else(|| DomainError::Internal(format!("Evidence {evidence_id} not found")))?;
 
         let validation = plugin.validate_evidence(&evidence, result).await?;
 

@@ -79,9 +79,9 @@ where
         let winner_update = UpdateTournamentStanding {
             bracket_id,
             registration_id: winner_id,
-            matches_won_delta: if is_draw { 0 } else { 1 },
+            matches_won_delta: i32::from(!is_draw),
             matches_lost_delta: 0,
-            matches_drawn_delta: if is_draw { 1 } else { 0 },
+            matches_drawn_delta: i32::from(is_draw),
             game_wins_delta: winner_games,
             game_losses_delta: loser_games,
             points_delta: if is_draw { 1 } else { 3 },
@@ -93,11 +93,11 @@ where
             bracket_id,
             registration_id: loser_id,
             matches_won_delta: 0,
-            matches_lost_delta: if is_draw { 0 } else { 1 },
-            matches_drawn_delta: if is_draw { 1 } else { 0 },
+            matches_lost_delta: i32::from(!is_draw),
+            matches_drawn_delta: i32::from(is_draw),
             game_wins_delta: loser_games,
             game_losses_delta: winner_games,
-            points_delta: if is_draw { 1 } else { 0 },
+            points_delta: i32::from(is_draw),
         };
         self.standing_repo.update_after_match(loser_update).await?;
 

@@ -91,6 +91,15 @@ impl PluginManager {
         }
     }
 
+    /// Get a plugin that supports evidence, by game ID.
+    ///
+    /// Returns `Some` only if the plugin is registered and supports
+    /// the `EvidencePlugin` extension (i.e. `as_evidence_plugin()` returns `Some`).
+    pub fn get_evidence_plugin(&self, game_id: &str) -> Option<Arc<dyn GamePlugin>> {
+        self.get(game_id)
+            .filter(|p| p.as_evidence_plugin().is_some())
+    }
+
     /// Clear all registered plugins.
     pub fn clear(&mut self) {
         debug!("Clearing all game plugins");

@@ -92,8 +92,7 @@ impl DemoRepository for PgDemoRepository {
         }
         if filter.team_name_contains.is_some() {
             conditions.push(format!(
-                "(metadata->>'team1_name' ILIKE ${p} OR metadata->>'team2_name' ILIKE ${p})",
-                p = param_index
+                "(metadata->>'team1_name' ILIKE ${param_index} OR metadata->>'team2_name' ILIKE ${param_index})"
             ));
             param_index += 1;
         }
@@ -408,6 +407,50 @@ impl DemoRepository for PgDemoRepository {
 
         Ok(())
     }
+
+    async fn find_matching_for_context(
+        &self,
+        game_id: GameId,
+        steam_ids: &[String],
+        time_from: Option<chrono::DateTime<chrono::Utc>>,
+        time_to: Option<chrono::DateTime<chrono::Utc>>,
+        exclude_match_id: Option<TournamentMatchId>,
+        limit: i64,
+    ) -> Result<Vec<portal_domain::entities::demo::Demo>, DomainError> {
+        if steam_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query_as::<_, DemoRow>(
+            r"
+            SELECT DISTINCT d.*
+            FROM demos d
+            JOIN demo_players dp ON dp.demo_id = d.id
+            WHERE d.game_id = $1
+              AND d.status = 'ready'
+              AND d.is_hidden = false
+              AND dp.steam_id = ANY($2)
+              AND ($3::timestamptz IS NULL OR (d.metadata->>'match_date')::timestamptz >= $3)
+              AND ($4::timestamptz IS NULL OR (d.metadata->>'match_date')::timestamptz <= $4)
+              AND ($5::uuid IS NULL OR NOT EXISTS (
+                  SELECT 1 FROM demo_match_links dml WHERE dml.demo_id = d.id AND dml.match_id = $5
+              ))
+            ORDER BY d.discovered_at DESC
+            LIMIT $6
+            ",
+        )
+        .bind(game_id.as_uuid())
+        .bind(steam_ids)
+        .bind(time_from)
+        .bind(time_to)
+        .bind(exclude_match_id.map(|id| id.as_uuid()))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("Failed to find matching demos: {e}")))?;
+
+        rows.into_iter().map(demo_row_to_domain).collect()
+    }
 }
 
 // =============================================================================
@@ -447,7 +490,7 @@ impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
             return Ok(Vec::new());
         }
 
-        let uuids: Vec<uuid::Uuid> = ids.iter().map(|id| id.as_uuid()).collect();
+        let uuids: Vec<uuid::Uuid> = ids.iter().map(portal_core::DemoMatchLinkId::as_uuid).collect();
         let rows = sqlx::query_as::<_, DemoMatchLinkRow>(
             r"SELECT * FROM demo_match_links WHERE id = ANY($1)",
         )
@@ -534,9 +577,8 @@ impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
             std::collections::HashMap::new();
         for row in player_rows {
             let demo_id = row.demo_id;
-            if let Ok(player) = player_row_to_domain(row) {
-                players_map.entry(demo_id).or_default().push(player);
-            }
+            let player = player_row_to_domain(row);
+            players_map.entry(demo_id).or_default().push(player);
         }
 
         // Build result
@@ -675,7 +717,7 @@ impl DemoPlayerRepository for PgDemoPlayerRepository {
         .await
         .map_err(|e| DomainError::internal(format!("Failed to find demo player: {e}")))?;
 
-        row.map(player_row_to_domain).transpose()
+        Ok(row.map(player_row_to_domain))
     }
 
     async fn find_by_demo(&self, demo_id: DemoId) -> Result<Vec<DemoPlayer>, DomainError> {
@@ -687,7 +729,7 @@ impl DemoPlayerRepository for PgDemoPlayerRepository {
         .await
         .map_err(|e| DomainError::internal(format!("Failed to find demo players: {e}")))?;
 
-        rows.into_iter().map(player_row_to_domain).collect()
+        Ok(rows.into_iter().map(player_row_to_domain).collect())
     }
 
     async fn find_demos_by_steam_id(&self, steam_id: &str) -> Result<Vec<DemoId>, DomainError> {
@@ -711,7 +753,7 @@ impl DemoPlayerRepository for PgDemoPlayerRepository {
         .await
         .map_err(|e| DomainError::internal(format!("Failed to find players by steam_id: {e}")))?;
 
-        rows.into_iter().map(player_row_to_domain).collect()
+        Ok(rows.into_iter().map(player_row_to_domain).collect())
     }
 
     async fn create_batch(
@@ -771,7 +813,7 @@ impl DemoPlayerRepository for PgDemoPlayerRepository {
             .await
             .map_err(|e| DomainError::internal(format!("Failed to create demo player: {e}")))?;
 
-            results.push(player_row_to_domain(row)?);
+            results.push(player_row_to_domain(row));
         }
 
         Ok(results)
@@ -791,7 +833,7 @@ impl DemoPlayerRepository for PgDemoPlayerRepository {
         .await
         .map_err(|e| DomainError::internal(format!("Failed to link demo player: {e}")))?;
 
-        player_row_to_domain(row)
+        Ok(player_row_to_domain(row))
     }
 
     async fn delete_by_demo(&self, demo_id: DemoId) -> Result<(), DomainError> {
@@ -823,7 +865,7 @@ fn demo_row_to_domain(row: DemoRow) -> Result<Demo, DomainError> {
 
     let metadata: Option<ParsedDemoMetadata> = row
         .metadata
-        .map(|m| serde_json::from_value(m))
+        .map(serde_json::from_value)
         .transpose()
         .map_err(|e| DomainError::internal(format!("Failed to parse metadata: {e}")))?;
 
@@ -878,8 +920,8 @@ fn link_row_to_domain(row: DemoMatchLinkRow) -> Result<DemoMatchLink, DomainErro
 }
 
 /// Convert a DemoPlayerRow to a domain DemoPlayer.
-fn player_row_to_domain(row: DemoPlayerRow) -> Result<DemoPlayer, DomainError> {
-    Ok(DemoPlayer {
+fn player_row_to_domain(row: DemoPlayerRow) -> DemoPlayer {
+    DemoPlayer {
         id: DemoPlayerId::from_uuid(row.id),
         demo_id: DemoId::from_uuid(row.demo_id),
         steam_id: row.steam_id,
@@ -896,5 +938,5 @@ fn player_row_to_domain(row: DemoPlayerRow) -> Result<DemoPlayer, DomainError> {
             hs_percentage: row.hs_percentage,
         },
         created_at: row.created_at,
-    })
+    }
 }

@@ -89,8 +89,8 @@ impl ResultClaimRepository for PgResultClaimRepository {
         let game_results_json = serde_json::to_value(&claim.game_results)
             .map_err(|e| DomainError::Internal(format!("Failed to serialize game results: {e}")))?;
 
-        let evidence_uuids: Vec<_> = claim.evidence_ids.iter().map(|id| id.as_uuid()).collect();
-        let demo_link_uuids: Vec<_> = claim.demo_link_ids.iter().map(|id| id.as_uuid()).collect();
+        let evidence_uuids: Vec<_> = claim.evidence_ids.iter().map(portal_core::EvidenceId::as_uuid).collect();
+        let demo_link_uuids: Vec<_> = claim.demo_link_ids.iter().map(portal_core::DemoMatchLinkId::as_uuid).collect();
 
         let new_claim = NewResultClaim {
             match_id: claim.match_id.as_uuid(),

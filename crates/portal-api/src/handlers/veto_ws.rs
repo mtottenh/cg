@@ -62,7 +62,7 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ap
         Ok(Err(err)) => {
             warn!(%match_id, %connection_id, error = %err, "Authentication failed");
             let msg = ServerMessage::AuthError {
-                error: err.to_string(),
+                error: err.clone(),
             };
             let _ = sender
                 .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
@@ -206,7 +206,7 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ap
                     ParticipantConnectionBroadcast {
                         registration_id: reg_id,
                         team_name: removed.team_name.clone().unwrap_or_default(),
-                        username: removed.username.clone(),
+                        username: removed.username,
                     },
                 ));
             }
@@ -277,7 +277,7 @@ async fn authenticate_user(
         .find_by_id(match_id)
         .await
         .map_err(|e| format!("Database error: {e}"))?
-        .ok_or_else(|| format!("Match {} not found", match_id))?;
+        .ok_or_else(|| format!("Match {match_id} not found"))?;
 
     use portal_domain::services::tournament::VetoAuthorizationRole;
 
@@ -341,8 +341,8 @@ async fn authenticate_user(
     }
 
     // Check if user is a tournament admin (fallback for users not on any team)
-    if connection.is_none() {
-        if state
+    if connection.is_none()
+        && state
             .permission_service
             .has_permission(user_id, "tournament.manage")
             .await
@@ -350,7 +350,6 @@ async fn authenticate_user(
         {
             connection = Some(VetoConnection::admin(user_id, player_id, claims.username.clone()));
         }
-    }
 
     // Default to spectator if not authorized for any role
     let connection = connection.unwrap_or_else(|| {
@@ -546,12 +545,12 @@ async fn handle_veto_action(
                     // Broadcast to lobby (the REST handlers do this, so we mirror the behavior)
                     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
                         if action_result.veto_complete {
-                            let _ = lobby.broadcast(LobbyBroadcast::VetoComplete(VetoCompleteBroadcast {
+                            let () = lobby.broadcast(LobbyBroadcast::VetoComplete(VetoCompleteBroadcast {
                                 session: VetoSessionResponse::from(action_result.session.clone()),
                                 selected_maps: action_result.session.selected_maps.clone(),
                             }));
                         } else {
-                            let _ = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
+                            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
                                 session: VetoSessionResponse::from(action_result.session.clone()),
                                 action: VetoActionResponse::from(action_result.action.clone()),
                                 is_complete: false,
@@ -605,7 +604,7 @@ async fn handle_veto_action(
                     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
                         // Re-fetch session state to get the latest
                         if let Ok(new_session_state) = state.veto_service.get_session_state(match_id).await {
-                            let _ = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
+                            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
                                 session: VetoSessionResponse::from(new_session_state.session),
                                 action: VetoActionResponse::from(updated_action.clone()),
                                 is_complete: false,

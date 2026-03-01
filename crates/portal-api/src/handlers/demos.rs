@@ -2,12 +2,14 @@
 
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
-    AssociateDemoRequest, CatalogDemoRequest, CategorizeDemoRequest, GetDemosForMatchQuery,
-    LinkDemoToMatchRequest, ListDemosQuery, PendingDemosQuery, SetDemoVisibilityRequest,
+    AssociateDemoRequest, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
+    GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest,
+    PendingDemosQuery, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
 };
 use crate::dto::responses::{
-    DemoListResponse, DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoPlayerResponse,
-    DemoResponse, DemoStatusCountsResponse,
+    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoListResponse,
+    DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoPlayerResponse, DemoResponse,
+    DemoStatusCountsResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
@@ -17,7 +19,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use chrono::DateTime;
 use portal_core::{DemoCategory, DemoId, DemoLinkType, DemoStatus, GameId, LeagueId, TournamentId, TournamentMatchId};
-use portal_domain::entities::demo::DemoFilter;
+use portal_domain::entities::demo::{DemoFilter, DemoPlayerStats, ParsedDemoMetadata};
+use portal_domain::services::DemoPlayerInput;
 use validator::Validate;
 
 /// Extract request ID from headers.
@@ -188,7 +191,7 @@ pub async fn catalog_demo(
         return Err(ApiError::forbidden("Admin access required"));
     }
 
-    let demo = state
+    let result = state
         .demo_service
         .catalog_demo(
             GameId::from(request.game_id),
@@ -199,9 +202,15 @@ pub async fn catalog_demo(
         )
         .await?;
 
+    let status = if result.is_created() {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+
     Ok((
-        StatusCode::CREATED,
-        Json(DataResponse::new(DemoResponse::from(demo), request_id)),
+        status,
+        Json(DataResponse::new(DemoResponse::from(result.into_demo()), request_id)),
     ))
 }
 
@@ -486,11 +495,11 @@ pub async fn get_demo_stats(
     let counts = state.demo_service.get_status_counts().await?;
 
     let response = DemoStatusCountsResponse {
-        pending: counts.iter().find(|(s, _)| *s == DemoStatus::Pending).map(|(_, c)| *c).unwrap_or(0),
-        processing: counts.iter().find(|(s, _)| *s == DemoStatus::Processing).map(|(_, c)| *c).unwrap_or(0),
-        ready: counts.iter().find(|(s, _)| *s == DemoStatus::Ready).map(|(_, c)| *c).unwrap_or(0),
-        failed: counts.iter().find(|(s, _)| *s == DemoStatus::Failed).map(|(_, c)| *c).unwrap_or(0),
-        archived: counts.iter().find(|(s, _)| *s == DemoStatus::Archived).map(|(_, c)| *c).unwrap_or(0),
+        pending: counts.iter().find(|(s, _)| *s == DemoStatus::Pending).map_or(0, |(_, c)| *c),
+        processing: counts.iter().find(|(s, _)| *s == DemoStatus::Processing).map_or(0, |(_, c)| *c),
+        ready: counts.iter().find(|(s, _)| *s == DemoStatus::Ready).map_or(0, |(_, c)| *c),
+        failed: counts.iter().find(|(s, _)| *s == DemoStatus::Failed).map_or(0, |(_, c)| *c),
+        archived: counts.iter().find(|(s, _)| *s == DemoStatus::Archived).map_or(0, |(_, c)| *c),
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
@@ -635,4 +644,253 @@ pub async fn unlink_demo_from_match(
         .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// =============================================================================
+// BATCH INGESTION ENDPOINTS
+// =============================================================================
+
+/// Batch catalog demos from S3.
+///
+/// Catalogs up to 500 demos at once. Idempotent — re-cataloging returns existing demos.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/demos/batch",
+    request_body = BatchCatalogDemosRequest,
+    responses(
+        (status = 200, description = "Batch catalog result", body = DataResponse<BatchCatalogResultResponse>),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn batch_catalog_demos(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Json(request): Json<BatchCatalogDemosRequest>,
+) -> ApiResult<Json<DataResponse<BatchCatalogResultResponse>>> {
+    request.validate()?;
+    let request_id = get_request_id(&headers);
+
+    let is_admin = state
+        .permission_service
+        .is_admin(auth.user_id)
+        .await
+        .unwrap_or(false);
+
+    if !is_admin {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+
+    let game_id = GameId::from(request.game_id);
+    let mut created = Vec::new();
+    let mut existing = Vec::new();
+    let mut errors = Vec::new();
+
+    for entry in request.demos {
+        match state
+            .demo_service
+            .catalog_demo(
+                game_id,
+                entry.file_name,
+                entry.s3_bucket,
+                entry.s3_key.clone(),
+                entry.file_size_bytes,
+            )
+            .await
+        {
+            Ok(result) => {
+                if result.is_created() {
+                    created.push(DemoResponse::from(result.into_demo()));
+                } else {
+                    existing.push(DemoResponse::from(result.into_demo()));
+                }
+            }
+            Err(e) => {
+                errors.push(BatchCatalogErrorResponse {
+                    s3_key: entry.s3_key,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(DataResponse::new(
+        BatchCatalogResultResponse {
+            created,
+            existing,
+            errors,
+        },
+        request_id,
+    )))
+}
+
+/// Submit parsed stats for a demo.
+///
+/// Game-agnostic: common metadata is typed, game-specific stats live in JSON blobs.
+/// For CS2 demos, typed player stats (kills, deaths, etc.) are extracted from the
+/// per-player `stats` JSON. For other games, typed columns default to zero.
+///
+/// Idempotent: replaces existing player entries on re-submission.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/demos/{id}/stats",
+    params(
+        ("id" = String, Path, description = "Demo ID"),
+    ),
+    request_body = SubmitDemoStatsRequest,
+    responses(
+        (status = 200, description = "Demo stats saved", body = DataResponse<DemoResponse>),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Demo not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn submit_demo_stats(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<SubmitDemoStatsRequest>,
+) -> ApiResult<Json<DataResponse<DemoResponse>>> {
+    request.validate()?;
+    let request_id = get_request_id(&headers);
+    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
+
+    let is_admin = state
+        .permission_service
+        .is_admin(auth.user_id)
+        .await
+        .unwrap_or(false);
+
+    if !is_admin {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+
+    // Look up the demo to get its game_id
+    let demo = state.demo_service.get_demo(demo_id).await?;
+
+    // Check if this is a CS2 game (by looking up plugin_id)
+    let is_cs2 = state
+        .game_repo
+        .find_by_id(demo.game_id.as_uuid())
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|g| g.plugin_id == "cs2");
+
+    // Parse match_date
+    let match_date = request
+        .match_date
+        .as_ref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.to_utc());
+
+    // Build domain metadata
+    let metadata = ParsedDemoMetadata {
+        map_name: request.map_name.unwrap_or_default(),
+        match_date,
+        team1_name: request.team1_name.unwrap_or_default(),
+        team2_name: request.team2_name.unwrap_or_default(),
+        team1_score: request.team1_score.unwrap_or(0),
+        team2_score: request.team2_score.unwrap_or(0),
+        total_rounds: request.total_rounds.unwrap_or(0),
+        duration_seconds: request.duration_seconds,
+    };
+
+    // Convert players
+    let players: Vec<DemoPlayerInput> = request
+        .players
+        .into_iter()
+        .map(|p| {
+            let stats = if is_cs2 {
+                extract_cs2_player_stats(&p.stats)
+            } else {
+                DemoPlayerStats::default()
+            };
+            DemoPlayerInput {
+                steam_id: p.steam_id,
+                player_name: p.player_name,
+                team_name: p.team_name,
+                stats,
+            }
+        })
+        .collect();
+
+    let demo = state
+        .demo_service
+        .save_demo_stats(demo_id, metadata, request.raw_stats, players)
+        .await?;
+
+    Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
+}
+
+/// Mark a demo's stats processing as failed.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/demos/{id}/stats-failed",
+    params(
+        ("id" = String, Path, description = "Demo ID"),
+    ),
+    request_body = MarkDemoFailedRequest,
+    responses(
+        (status = 200, description = "Demo marked as failed", body = DataResponse<DemoResponse>),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Demo not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn mark_demo_stats_failed(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<MarkDemoFailedRequest>,
+) -> ApiResult<Json<DataResponse<DemoResponse>>> {
+    request.validate()?;
+    let request_id = get_request_id(&headers);
+    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
+
+    let is_admin = state
+        .permission_service
+        .is_admin(auth.user_id)
+        .await
+        .unwrap_or(false);
+
+    if !is_admin {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+
+    let demo = state
+        .demo_service
+        .mark_stats_failed(demo_id, &request.error)
+        .await?;
+
+    Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
+}
+
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+
+/// Extract typed CS2 player stats from a game-specific JSON blob.
+fn extract_cs2_player_stats(stats_json: &serde_json::Value) -> DemoPlayerStats {
+    DemoPlayerStats {
+        kills: stats_json["kills"].as_i64().unwrap_or(0) as i32,
+        deaths: stats_json["deaths"].as_i64().unwrap_or(0) as i32,
+        assists: stats_json["assists"].as_i64().unwrap_or(0) as i32,
+        damage: stats_json["damage"].as_i64().unwrap_or(0) as i32,
+        adr: stats_json["adr"].as_f64().unwrap_or(0.0),
+        headshot_kills: stats_json["headshot_kills"].as_i64().unwrap_or(0) as i32,
+        hs_percentage: stats_json["hs_percentage"].as_f64().unwrap_or(0.0),
+    }
 }

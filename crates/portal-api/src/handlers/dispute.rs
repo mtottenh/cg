@@ -241,7 +241,7 @@ pub async fn admin_list_disputes(
     let priority = query
         .priority
         .as_deref()
-        .map(|p| p.parse::<DisputePriority>())
+        .map(str::parse::<DisputePriority>)
         .transpose()
         .map_err(|_| ApiError::bad_request("Invalid priority value"))?;
 

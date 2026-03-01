@@ -15,6 +15,7 @@ use crate::entities::demo::{
     Demo, DemoFilter, DemoListResult, DemoMatchLink, DemoPlayer, DemoPlayerStats,
     ParsedDemoMetadata,
 };
+use crate::entities::evidence::{DiscoveredEvidence, EvidenceStorage, EvidenceType, MatchEvidenceContext};
 use crate::repositories::demo::{
     CreateDemo, CreateDemoMatchLink, CreateDemoPlayer, DemoMatchLinkRepository,
     DemoMatchLinkWithData, DemoPlayerRepository, DemoRepository,
@@ -68,6 +69,9 @@ where
     }
 
     /// Catalog a new demo discovered in S3.
+    ///
+    /// Returns [`CatalogResult::Created`] if the demo was newly cataloged,
+    /// or [`CatalogResult::AlreadyExists`] if it was already in the catalog.
     #[instrument(skip(self))]
     pub async fn catalog_demo(
         &self,
@@ -76,11 +80,11 @@ where
         s3_bucket: String,
         s3_key: String,
         file_size_bytes: Option<i64>,
-    ) -> Result<Demo, DomainError> {
+    ) -> Result<CatalogResult, DomainError> {
         // Check if demo already exists
         if let Some(existing) = self.demo_repo.find_by_s3_key(&s3_bucket, &s3_key).await? {
             info!(demo_id = %existing.id, "Demo already cataloged");
-            return Ok(existing);
+            return Ok(CatalogResult::AlreadyExists(existing));
         }
 
         let demo = self
@@ -96,7 +100,7 @@ where
             .await?;
 
         info!(demo_id = %demo.id, "Cataloged new demo");
-        Ok(demo)
+        Ok(CatalogResult::Created(demo))
     }
 
     /// Get demos pending stats processing.
@@ -112,6 +116,8 @@ where
     }
 
     /// Save parsed demo stats.
+    ///
+    /// Idempotent: deletes existing player entries before re-inserting.
     #[instrument(skip(self, metadata, stats_json, players))]
     pub async fn save_demo_stats(
         &self,
@@ -125,6 +131,9 @@ where
             .demo_repo
             .update_stats(id, metadata, stats_json)
             .await?;
+
+        // Delete existing players for idempotent re-submission
+        self.player_repo.delete_by_demo(id).await?;
 
         // Create player entries
         let player_creates: Vec<CreateDemoPlayer> = players
@@ -228,8 +237,7 @@ where
             .is_some()
         {
             return Err(DomainError::conflict(format!(
-                "Demo {} is already linked to match {}",
-                demo_id, match_id
+                "Demo {demo_id} is already linked to match {match_id}"
             )));
         }
 
@@ -263,7 +271,7 @@ where
             .ok_or_else(|| {
                 DomainError::not_found(
                     "demo match link",
-                    format!("demo={},match={}", demo_id, match_id),
+                    format!("demo={demo_id},match={match_id}"),
                 )
             })?;
 
@@ -341,6 +349,96 @@ where
     }
 
     // =========================================================================
+    // Evidence Discovery
+    // =========================================================================
+
+    /// Discover demos in the catalog that match a match's evidence context.
+    ///
+    /// Queries the catalog for ready demos with matching Steam IDs within
+    /// a time window around the match, then scores them by relevance.
+    #[instrument(skip(self, context))]
+    pub async fn discover_for_match(
+        &self,
+        context: &MatchEvidenceContext,
+    ) -> Result<Vec<DiscoveredEvidence>, DomainError> {
+        // Collect all steam_ids from participants
+        let steam_ids: Vec<String> = context
+            .participants
+            .iter()
+            .flat_map(|p| p.steam_ids.clone())
+            .collect();
+
+        if steam_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build time window: reference_time ± 6 hours
+        let reference_time = context
+            .started_at
+            .or(context.scheduled_at);
+
+        let (time_from, time_to) = match reference_time {
+            Some(t) => (
+                Some(t - chrono::Duration::hours(6)),
+                Some(t + chrono::Duration::hours(6)),
+            ),
+            None => (None, None),
+        };
+
+        // Query the catalog
+        let matching_demos = self
+            .demo_repo
+            .find_matching_for_context(
+                context.game_id,
+                &steam_ids,
+                time_from,
+                time_to,
+                Some(context.match_id),
+                50,
+            )
+            .await?;
+
+        // For each demo, fetch players and compute relevance
+        let mut results = Vec::with_capacity(matching_demos.len());
+        for demo in matching_demos {
+            let demo_players = self.player_repo.find_by_demo(demo.id).await?;
+            let relevance = compute_relevance(&demo, &demo_players, context, reference_time);
+
+            let metadata_json = serde_json::json!({
+                "map_name": demo.metadata.as_ref().map(|m| &m.map_name),
+                "team1_name": demo.metadata.as_ref().map(|m| &m.team1_name),
+                "team2_name": demo.metadata.as_ref().map(|m| &m.team2_name),
+                "team1_score": demo.metadata.as_ref().map(|m| m.team1_score),
+                "team2_score": demo.metadata.as_ref().map(|m| m.team2_score),
+                "total_rounds": demo.metadata.as_ref().map(|m| m.total_rounds),
+            });
+
+            results.push(DiscoveredEvidence {
+                external_id: format!("catalog:{}", demo.id),
+                evidence_type: EvidenceType::Demo,
+                name: demo.file_name.clone(),
+                storage: EvidenceStorage::S3 {
+                    bucket: demo.s3_bucket.clone(),
+                    key: demo.s3_key.clone(),
+                },
+                file_size_bytes: demo.file_size_bytes,
+                metadata: metadata_json,
+                discovered_at: Utc::now(),
+                relevance_score: relevance,
+            });
+        }
+
+        // Sort by relevance descending
+        results.sort_by(|a, b| {
+            b.relevance_score
+                .partial_cmp(&a.relevance_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(results)
+    }
+
+    // =========================================================================
     // Admin Operations
     // =========================================================================
 
@@ -367,6 +465,31 @@ where
     }
 }
 
+/// Result of cataloging a demo.
+#[derive(Debug, Clone)]
+pub enum CatalogResult {
+    /// The demo was newly created.
+    Created(Demo),
+    /// The demo already existed in the catalog.
+    AlreadyExists(Demo),
+}
+
+impl CatalogResult {
+    /// Get the demo, regardless of whether it was created or already existed.
+    #[must_use]
+    pub fn into_demo(self) -> Demo {
+        match self {
+            Self::Created(d) | Self::AlreadyExists(d) => d,
+        }
+    }
+
+    /// Check if this was a newly created demo.
+    #[must_use]
+    pub fn is_created(&self) -> bool {
+        matches!(self, Self::Created(_))
+    }
+}
+
 /// Input for creating demo player entries.
 #[derive(Debug, Clone)]
 pub struct DemoPlayerInput {
@@ -374,4 +497,61 @@ pub struct DemoPlayerInput {
     pub player_name: String,
     pub team_name: Option<String>,
     pub stats: DemoPlayerStats,
+}
+
+/// Compute relevance score for a demo against a match context.
+///
+/// | Factor               | Weight | Logic                                          |
+/// |----------------------|--------|------------------------------------------------|
+/// | Steam ID overlap     | 0.50   | matching_ids / total_context_ids               |
+/// | Time proximity       | 0.30   | (1 - hours_diff / 24).max(0)                   |
+/// | Both teams present   | 0.15   | Players from both participants found            |
+/// | Base                 | 0.05   | Always present (unlinked to this match)         |
+fn compute_relevance(
+    demo: &Demo,
+    demo_players: &[DemoPlayer],
+    context: &MatchEvidenceContext,
+    reference_time: Option<chrono::DateTime<Utc>>,
+) -> f32 {
+    let all_steam_ids: Vec<&str> = context
+        .participants
+        .iter()
+        .flat_map(|p| p.steam_ids.iter().map(String::as_str))
+        .collect();
+
+    if all_steam_ids.is_empty() {
+        return 0.05;
+    }
+
+    let demo_steam_ids: std::collections::HashSet<&str> =
+        demo_players.iter().map(|p| p.steam_id.as_str()).collect();
+
+    // Steam ID overlap
+    let matching_count = all_steam_ids
+        .iter()
+        .filter(|id| demo_steam_ids.contains(**id))
+        .count();
+    let steam_overlap = matching_count as f32 / all_steam_ids.len() as f32;
+
+    // Time proximity
+    let time_score = match (reference_time, demo.metadata.as_ref().and_then(|m| m.match_date)) {
+        (Some(ref_time), Some(demo_time)) => {
+            let hours_diff = (ref_time - demo_time).num_hours().unsigned_abs() as f32;
+            (1.0 - hours_diff / 24.0).max(0.0)
+        }
+        _ => 0.5, // Unknown — neutral score
+    };
+
+    // Both teams present
+    let both_teams_present = context.participants.len() >= 2
+        && context.participants.iter().all(|p| {
+            p.steam_ids
+                .iter()
+                .any(|sid| demo_steam_ids.contains(sid.as_str()))
+        });
+
+    let both_teams_score = if both_teams_present { 1.0 } else { 0.0 };
+
+    // Weighted sum
+    0.15f32.mul_add(both_teams_score, 0.50f32.mul_add(steam_overlap, 0.30 * time_score)) + 0.05
 }

@@ -247,17 +247,13 @@ async fn get_audit_entry(pool: &PgPool, id: Uuid, format: OutputFormat) -> Resul
                 "  Old Value:    {}",
                 entry
                     .old_value
-                    .as_ref()
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "-".to_string())
+                    .as_ref().map_or_else(|| "-".to_string(), std::string::ToString::to_string)
             );
             println!(
                 "  New Value:    {}",
                 entry
                     .new_value
-                    .as_ref()
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "-".to_string())
+                    .as_ref().map_or_else(|| "-".to_string(), std::string::ToString::to_string)
             );
             println!("  Changed By:   {}", entry.changed_by);
             println!("  Created At:   {}", format_timestamp(&entry.created_at));
@@ -269,9 +265,7 @@ async fn get_audit_entry(pool: &PgPool, id: Uuid, format: OutputFormat) -> Resul
                 println!(
                     "  Reverted By:  {}",
                     entry
-                        .reverted_by
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "-".to_string())
+                        .reverted_by.map_or_else(|| "-".to_string(), |id| id.to_string())
                 );
                 println!(
                     "  Revert Reason: {}",

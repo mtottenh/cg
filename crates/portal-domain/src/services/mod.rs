@@ -12,7 +12,7 @@ pub mod user;
 
 pub use audit::{AuditService, ChangeContext, ChangeDetector, FieldChange};
 pub use ban::BanService;
-pub use demo::{DemoPlayerInput, DemoService};
+pub use demo::{CatalogResult, DemoPlayerInput, DemoService};
 pub use league::LeagueService;
 pub use league_team::{
     LeagueSeasonParticipantService, LeagueSeasonService, LeagueTeamInvitationService,

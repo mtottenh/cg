@@ -251,8 +251,7 @@ where
         // Verify map is available
         if !session.is_map_available(map_id) {
             return Err(DomainError::InvalidMatchResult(format!(
-                "Map '{}' is not available for selection",
-                map_id
+                "Map '{map_id}' is not available for selection"
             )));
         }
 
@@ -474,7 +473,7 @@ where
         self.session_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Veto session {} not found", id)))
+            .ok_or_else(|| DomainError::Internal(format!("Veto session {id} not found")))
     }
 
     fn get_format(&self, format_id: &str) -> Result<VetoFormat, DomainError> {
@@ -485,8 +484,7 @@ where
             "bo3_veto" | "bo3_standard" => Ok(VetoFormat::bo3()),
             "bo5_veto" | "bo5_standard" => Ok(VetoFormat::bo5()),
             _ => Err(DomainError::InvalidMatchResult(format!(
-                "Unknown veto format: {}",
-                format_id
+                "Unknown veto format: {format_id}"
             ))),
         }
     }

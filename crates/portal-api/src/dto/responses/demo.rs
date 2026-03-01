@@ -352,12 +352,32 @@ pub struct DemoValidationResultResponse {
     pub errors: Vec<String>,
 }
 
+/// Response for batch demo cataloging.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BatchCatalogResultResponse {
+    /// Newly created demos.
+    pub created: Vec<DemoResponse>,
+    /// Demos that already existed.
+    pub existing: Vec<DemoResponse>,
+    /// Entries that failed to catalog.
+    pub errors: Vec<BatchCatalogErrorResponse>,
+}
+
+/// Error entry in batch catalog result.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BatchCatalogErrorResponse {
+    /// S3 key that failed.
+    pub s3_key: String,
+    /// Error description.
+    pub error: String,
+}
+
 impl From<portal_domain::entities::DemoValidationResult> for DemoValidationResultResponse {
     fn from(result: portal_domain::entities::DemoValidationResult) -> Self {
         Self {
             is_valid: result.is_valid,
             confidence: result.confidence,
-            extracted_score: result.extracted_score.map(|(a, b)| [a, b]),
+            extracted_score: result.extracted_score.map(Into::into),
             claimed_score: [result.claimed_score.0, result.claimed_score.1],
             map_match: result.map_match,
             warnings: result.warnings,

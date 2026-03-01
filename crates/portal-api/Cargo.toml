@@ -73,6 +73,7 @@ mime = "0.3"
 sqlx = { workspace = true }
 tokio-tungstenite = "0.26"
 futures-util = { workspace = true }
+image = { workspace = true }
 
 # Enable test-utils feature for integration tests
 [[test]]
@@ -129,6 +130,14 @@ required-features = ["test-utils"]
 
 [[test]]
 name = "veto_ws_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "players_test"
+required-features = ["test-utils"]
+
+[[test]]
+name = "roles_test"
 required-features = ["test-utils"]
 
 [lints]

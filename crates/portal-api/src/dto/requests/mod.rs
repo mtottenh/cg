@@ -26,16 +26,20 @@ pub use availability::{
 };
 pub use ban::{CreateBanRequest, LiftBanRequest, ListBansQuery};
 pub use demo::{
-    AssociateDemoRequest, CatalogDemoRequest, CategorizeDemoRequest, GetDemosForMatchQuery,
-    LinkDemoToMatchRequest, ListDemosQuery, PendingDemosQuery, SetDemoNotesRequest,
-    SetDemoVisibilityRequest, UnlinkDemoFromMatchRequest,
+    AssociateDemoRequest, BatchCatalogDemoEntry, BatchCatalogDemosRequest, CatalogDemoRequest,
+    CategorizeDemoRequest, DemoPlayerInputDto, GetDemosForMatchQuery, LinkDemoToMatchRequest,
+    ListDemosQuery, MarkDemoFailedRequest, PendingDemosQuery, SetDemoNotesRequest,
+    SetDemoVisibilityRequest, SubmitDemoStatsRequest, UnlinkDemoFromMatchRequest,
 };
 pub use evidence::{
     AddLinkEvidenceRequest, DiscoverEvidenceQuery, GetDemoStatsQuery, InitiateUploadRequest,
     LinkDemoRequest, LinkDiscoveredEvidenceRequest, ListEvidenceQuery, ValidateDemoRequest,
     ValidateEvidenceRequest,
 };
-pub use game::{SetMapPoolRequest, UpdateGameRequest};
+pub use game::{
+    AddMapRequest, RankTierInput, SetMapPoolRequest, SetRankTiersRequest, UpdateGameRequest,
+    UpdateMapRequest, UpdateTeamSizeRequest,
+};
 pub use league::{
     ApplyToLeagueRequest, CreateLeagueRequest, InviteToLeagueRequest, UpdateLeagueMemberRoleRequest,
     UpdateLeagueRequest,

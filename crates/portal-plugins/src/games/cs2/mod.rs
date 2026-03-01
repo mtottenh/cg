@@ -46,6 +46,10 @@ impl GamePlugin for Cs2Plugin {
         "cs2"
     }
 
+    fn as_evidence_plugin(&self) -> Option<&dyn EvidencePlugin> {
+        Some(self)
+    }
+
     fn display_name(&self) -> &'static str {
         "Counter-Strike 2"
     }
@@ -73,42 +77,56 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Dust II".to_string(),
                 image_url: None,
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_mirage".to_string(),
                 display_name: "Mirage".to_string(),
                 image_url: None,
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_inferno".to_string(),
                 display_name: "Inferno".to_string(),
                 image_url: None,
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_nuke".to_string(),
                 display_name: "Nuke".to_string(),
                 image_url: None,
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_ancient".to_string(),
                 display_name: "Ancient".to_string(),
                 image_url: None,
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_anubis".to_string(),
                 display_name: "Anubis".to_string(),
                 image_url: None,
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_vertigo".to_string(),
                 display_name: "Vertigo".to_string(),
                 image_url: None,
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
         ]
     }
@@ -923,6 +941,235 @@ impl Cs2PluginWithEvidence {
     pub fn get_stats_url(&self, demo_name: &str) -> String {
         self.demo_client.get_stats_url(demo_name)
     }
+}
+
+// ============================================================================
+// GamePlugin / TournamentPlugin / EvidencePlugin for Cs2PluginWithEvidence
+// ============================================================================
+
+impl GamePlugin for Cs2PluginWithEvidence {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn display_name(&self) -> &str {
+        self.inner.display_name()
+    }
+
+    fn short_name(&self) -> &str {
+        self.inner.short_name()
+    }
+
+    fn description(&self) -> Option<&str> {
+        self.inner.description()
+    }
+
+    fn icon_url(&self) -> Option<&str> {
+        self.inner.icon_url()
+    }
+
+    fn available_maps(&self) -> Vec<MapInfo> {
+        self.inner.available_maps()
+    }
+
+    fn default_map_pool(&self) -> Vec<String> {
+        self.inner.default_map_pool()
+    }
+
+    fn team_size_min(&self) -> u32 {
+        self.inner.team_size_min()
+    }
+
+    fn team_size_max(&self) -> u32 {
+        self.inner.team_size_max()
+    }
+
+    fn team_size_default(&self) -> u32 {
+        self.inner.team_size_default()
+    }
+
+    fn player_stats_schema(&self) -> serde_json::Value {
+        self.inner.player_stats_schema()
+    }
+
+    fn calculate_player_stats(
+        &self,
+        match_data: &MatchData,
+        player_id: Uuid,
+        existing_stats: &serde_json::Value,
+    ) -> Result<serde_json::Value, StatsError> {
+        self.inner
+            .calculate_player_stats(match_data, player_id, existing_stats)
+    }
+
+    fn format_player_stats(&self, stats: &serde_json::Value) -> Vec<DisplayStat> {
+        self.inner.format_player_stats(stats)
+    }
+
+    fn rank_tiers(&self) -> Vec<RankTier> {
+        self.inner.rank_tiers()
+    }
+
+    fn calculate_rating_change(
+        &self,
+        participants: &[RankedParticipant],
+    ) -> Result<Vec<RatingChange>, RatingError> {
+        self.inner.calculate_rating_change(participants)
+    }
+
+    fn matchmaking_criteria(&self) -> MatchmakingCriteria {
+        self.inner.matchmaking_criteria()
+    }
+
+    fn supported_tournament_formats(&self) -> Vec<TournamentFormatId> {
+        self.inner.supported_tournament_formats()
+    }
+
+    fn map_pick_ban_formats(&self) -> Vec<MapPickBanFormat> {
+        self.inner.map_pick_ban_formats()
+    }
+
+    fn default_match_format(&self) -> MatchFormat {
+        self.inner.default_match_format()
+    }
+
+    fn supported_match_formats(&self) -> Vec<MatchFormat> {
+        self.inner.supported_match_formats()
+    }
+
+    fn as_evidence_plugin(&self) -> Option<&dyn EvidencePlugin> {
+        Some(self)
+    }
+}
+
+impl TournamentPlugin for Cs2PluginWithEvidence {
+    fn veto_formats(&self) -> Vec<VetoFormat> {
+        self.inner.veto_formats()
+    }
+
+    fn default_veto_format(&self, match_format: MatchFormat) -> Option<String> {
+        self.inner.default_veto_format(match_format)
+    }
+
+    fn get_available_sides(&self, map_id: &str) -> Vec<SideOption> {
+        self.inner.get_available_sides(map_id)
+    }
+}
+
+#[async_trait::async_trait]
+impl EvidencePlugin for Cs2PluginWithEvidence {
+    async fn discover_evidence(
+        &self,
+        _match_context: &MatchContext,
+    ) -> Result<Vec<DiscoveredEvidence>, PluginError> {
+        // S3 scanning not yet implemented — requires bucket config, list permissions,
+        // and prefix conventions. Return empty until that infrastructure is available.
+        Ok(Vec::new())
+    }
+
+    async fn validate_evidence(
+        &self,
+        evidence_storage: &EvidenceStorage,
+        claimed_result: &GameResult,
+    ) -> Result<EvidenceValidation, PluginError> {
+        let demo_name = match evidence_storage {
+            EvidenceStorage::S3 { key, .. } => extract_demo_name(key),
+            EvidenceStorage::Url { url } => extract_demo_name(url),
+            EvidenceStorage::Inline { .. } => {
+                return Ok(EvidenceValidation {
+                    is_valid: false,
+                    confidence: 0.0,
+                    extracted_result: None,
+                    warnings: Vec::new(),
+                    errors: vec!["Demo files cannot be stored inline".to_string()],
+                });
+            }
+        };
+
+        let stats = self.demo_client.get_demo_stats(&demo_name).await?;
+
+        // Validate using the existing validator (Steam IDs unavailable at this layer)
+        let validation =
+            Cs2EvidenceValidator::validate(&stats, claimed_result, &[], &[]);
+
+        Ok(validation)
+    }
+
+    async fn get_demo_metadata(
+        &self,
+        storage: &EvidenceStorage,
+    ) -> Result<DemoMetadata, PluginError> {
+        let demo_name = match storage {
+            EvidenceStorage::S3 { key, .. } => extract_demo_name(key),
+            EvidenceStorage::Url { url } => extract_demo_name(url),
+            EvidenceStorage::Inline { .. } => {
+                return Err(PluginError::NotSupported(
+                    "Demo metadata cannot be extracted from inline storage".to_string(),
+                ));
+            }
+        };
+
+        let stats = self.demo_client.get_demo_stats(&demo_name).await?;
+
+        let team_names = stats.team_names();
+        let team1_score = team_names
+            .first()
+            .and_then(|n| stats.score_for_team(n))
+            .unwrap_or(0);
+        let team2_score = team_names
+            .get(1)
+            .and_then(|n| stats.score_for_team(n))
+            .unwrap_or(0);
+
+        let recorded_at = chrono::NaiveDateTime::parse_from_str(
+            &stats.match_date,
+            "%Y-%m-%d %H:%M:%S",
+        )
+        .map_or_else(|_| Utc::now(), |ndt| ndt.and_utc());
+
+        Ok(DemoMetadata {
+            map_name: stats.map.clone(),
+            duration_seconds: 0, // Not available from stats JSON
+            player_count: stats.all_steam_ids().len() as u32,
+            team1_score,
+            team2_score,
+            recorded_at,
+            server_name: None,
+            demo_version: "cs2".to_string(),
+        })
+    }
+
+    fn supports_evidence_discovery(&self) -> bool {
+        false
+    }
+
+    fn supports_evidence_validation(&self) -> bool {
+        true
+    }
+
+    fn supported_evidence_types(&self) -> Vec<EvidenceType> {
+        vec![
+            EvidenceType::Demo,
+            EvidenceType::Screenshot,
+            EvidenceType::Video,
+        ]
+    }
+
+    fn demo_file_extension(&self) -> Option<&str> {
+        Some("dem")
+    }
+
+    fn demo_storage_prefix(&self) -> Option<&str> {
+        Some("demos/cs2")
+    }
+}
+
+/// Extract demo filename from a path (S3 key or URL).
+fn extract_demo_name(path: &str) -> String {
+    path.rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .to_string()
 }
 
 #[cfg(test)]

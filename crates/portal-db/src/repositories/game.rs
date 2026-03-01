@@ -104,6 +104,9 @@ impl GameRepository {
                 status = COALESCE($12, status),
                 is_featured = COALESCE($13, is_featured),
                 sort_order = COALESCE($14, sort_order),
+                team_size_min = COALESCE($15, team_size_min),
+                team_size_max = COALESCE($16, team_size_max),
+                team_size_default = COALESCE($17, team_size_default),
                 updated_at = NOW()
             WHERE slug = $1
             RETURNING *
@@ -123,6 +126,9 @@ impl GameRepository {
         .bind(update.status)
         .bind(update.is_featured)
         .bind(update.sort_order)
+        .bind(update.team_size_min)
+        .bind(update.team_size_max)
+        .bind(update.team_size_default)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| RepositoryError::not_found("Game", slug.to_string()))?;

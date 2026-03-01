@@ -281,6 +281,57 @@ impl TestApp {
         .await
     }
 
+    /// Make a POST request with multipart form data (with dev-token auth).
+    pub async fn post_multipart_auth(
+        &self,
+        uri: &str,
+        field_name: &str,
+        file_name: &str,
+        content_type: &str,
+        data: &[u8],
+    ) -> TestResponse {
+        self.post_multipart_with_token(uri, field_name, file_name, content_type, data, "dev-token")
+            .await
+    }
+
+    /// Make a POST request with multipart form data and a specific token.
+    pub async fn post_multipart_with_token(
+        &self,
+        uri: &str,
+        field_name: &str,
+        file_name: &str,
+        content_type: &str,
+        data: &[u8],
+        token: &str,
+    ) -> TestResponse {
+        let boundary = "----TestBoundary7MA4YWxkTrZu0gW";
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"{field_name}\"; filename=\"{file_name}\"\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
+        body.extend_from_slice(data);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+        self.request(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(
+                    "Content-Type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+    }
+
     /// Make a raw request.
     async fn request(&self, request: Request<Body>) -> TestResponse {
         let response = self

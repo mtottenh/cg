@@ -187,7 +187,7 @@ where
             .find_by_id(winner_registration_id)
             .await?
             .ok_or_else(|| {
-                DomainError::Internal(format!("Registration {} not found", winner_registration_id))
+                DomainError::Internal(format!("Registration {winner_registration_id} not found"))
             })?;
 
         // Use assign_participant to update target match
@@ -256,7 +256,7 @@ where
             .find_by_id(loser_registration_id)
             .await?
             .ok_or_else(|| {
-                DomainError::Internal(format!("Registration {} not found", loser_registration_id))
+                DomainError::Internal(format!("Registration {loser_registration_id} not found"))
             })?;
 
         // Use assign_participant to update target match
@@ -491,7 +491,7 @@ where
         self.bracket_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Bracket {} not found", id)))
+            .ok_or_else(|| DomainError::Internal(format!("Bracket {id} not found")))
     }
 
     async fn determine_target_position(

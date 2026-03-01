@@ -2,6 +2,7 @@
 //!
 //! Handlers for managing match evidence (demos, screenshots, videos, links).
 
+use crate::adapters::EvidencePluginAdapter;
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AddLinkEvidenceRequest, DiscoverEvidenceQuery, InitiateUploadRequest,
@@ -18,6 +19,10 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::Json;
 use portal_core::{EvidenceId, TournamentMatchId};
+use portal_domain::entities::evidence::{MatchEvidenceContext, ParticipantContext};
+use portal_domain::entities::result_claim::GameResult as DomainGameResult;
+use portal_domain::repositories::TournamentMatchRepository;
+use std::sync::Arc;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -389,20 +394,61 @@ pub async fn delete_evidence(
     tag = "evidence"
 )]
 pub async fn discover_evidence(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     _auth: AuthenticatedUser,
+    headers: HeaderMap,
     Path(match_id): Path<String>,
-    Query(_query): Query<DiscoverEvidenceQuery>,
+    Query(query): Query<DiscoverEvidenceQuery>,
 ) -> ApiResult<Json<DataResponse<Vec<DiscoveredEvidenceResponse>>>> {
-    let _match_id: TournamentMatchId = match_id
+    let request_id = get_request_id(&headers);
+    let match_id: TournamentMatchId = match_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
-    // Evidence discovery requires game-specific plugin integration
-    // which is part of a future implementation phase
-    Err(ApiError::not_implemented(
-        "Evidence discovery requires plugin integration (coming soon)",
-    ))
+    let (match_, plugin) = resolve_evidence_plugin(&state, match_id).await?;
+    let context = build_evidence_context(&state, &match_).await?;
+    let adapter = EvidencePluginAdapter::new(plugin)
+        .ok_or_else(|| ApiError::bad_request("Game plugin does not support evidence"))?;
+
+    let mut discovered = state
+        .evidence_service
+        .discover_available(match_id, &context, &adapter)
+        .await?;
+
+    // Source 2: Catalog-based discovery
+    let catalog_results = state
+        .demo_service
+        .discover_for_match(&context)
+        .await
+        .unwrap_or_default();
+
+    // Merge, dedup by external_id
+    let existing_ids: std::collections::HashSet<String> =
+        discovered.iter().map(|d| d.external_id.clone()).collect();
+    for item in catalog_results {
+        if !existing_ids.contains(&item.external_id) {
+            discovered.push(item);
+        }
+    }
+    // Re-sort by relevance
+    discovered.sort_by(|a, b| {
+        b.relevance_score
+            .partial_cmp(&a.relevance_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Apply query filters
+    if let Some(min_relevance) = query.min_relevance {
+        discovered.retain(|d| d.relevance_score >= min_relevance);
+    }
+    if let Some(limit) = query.limit {
+        discovered.truncate(limit.max(0) as usize);
+    }
+
+    let responses: Vec<DiscoveredEvidenceResponse> =
+        discovered.into_iter().map(DiscoveredEvidenceResponse::from).collect();
+
+    Ok(Json(DataResponse::new(responses, request_id)))
 }
 
 /// Link discovered evidence to a match.
@@ -423,19 +469,108 @@ pub async fn discover_evidence(
     tag = "evidence"
 )]
 pub async fn link_discovered_evidence(
-    State(_state): State<AppState>,
-    _auth: AuthenticatedUser,
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
     Path(match_id): Path<String>,
-    ValidatedJson(_req): ValidatedJson<LinkDiscoveredEvidenceRequest>,
+    ValidatedJson(req): ValidatedJson<LinkDiscoveredEvidenceRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<EvidenceResponse>>)> {
-    let _match_id: TournamentMatchId = match_id
+    let request_id = get_request_id(&headers);
+    let match_id: TournamentMatchId = match_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
-    // Linking discovered evidence requires the discovery feature
-    // which uses game-specific plugin integration
-    Err(ApiError::not_implemented(
-        "Linking discovered evidence requires plugin integration (coming soon)",
+    // Check if this is a catalog-based discovery (external_id starts with "catalog:")
+    if let Some(demo_id_str) = req.external_id.strip_prefix("catalog:") {
+        let demo_id: portal_core::DemoId = demo_id_str
+            .parse()
+            .map_err(|_| ApiError::bad_request("Invalid catalog demo ID"))?;
+
+        // Get the demo from the catalog
+        let demo = state.demo_service.get_demo(demo_id).await?;
+
+        // Create a DemoMatchLink via demo_service
+        let _link = state
+            .demo_service
+            .link_to_match(
+                demo_id,
+                match_id,
+                req.game_number,
+                portal_core::DemoLinkType::Evidence,
+                Some(auth.user_id),
+            )
+            .await?;
+
+        // Build DiscoveredEvidence from the catalog demo
+        use portal_domain::entities::evidence::{
+            DiscoveredEvidence, EvidenceStorage, EvidenceType,
+        };
+        let discovered = DiscoveredEvidence {
+            external_id: req.external_id,
+            evidence_type: EvidenceType::Demo,
+            name: demo.file_name.clone(),
+            storage: EvidenceStorage::S3 {
+                bucket: demo.s3_bucket.clone(),
+                key: demo.s3_key.clone(),
+            },
+            file_size_bytes: demo.file_size_bytes,
+            metadata: serde_json::json!({
+                "catalog_demo_id": demo.id.to_string(),
+                "map_name": demo.metadata.as_ref().map(|m| &m.map_name),
+            }),
+            discovered_at: chrono::Utc::now(),
+            relevance_score: 1.0,
+        };
+
+        // Link via evidence service
+        let evidence = state
+            .evidence_service
+            .link_discovered(match_id, discovered, req.game_number, auth.user_id)
+            .await?;
+
+        return Ok((
+            StatusCode::CREATED,
+            Json(DataResponse::new(
+                EvidenceResponse::from(evidence),
+                request_id,
+            )),
+        ));
+    }
+
+    // Non-catalog: use plugin-based discovery flow
+    let (match_, plugin) = resolve_evidence_plugin(&state, match_id).await?;
+    let context = build_evidence_context(&state, &match_).await?;
+    let adapter = EvidencePluginAdapter::new(plugin)
+        .ok_or_else(|| ApiError::bad_request("Game plugin does not support evidence"))?;
+
+    // Discover evidence via plugin, then find the one with matching external_id
+    use portal_domain::services::tournament::EvidencePluginClient;
+    let discovered_list = adapter
+        .discover_evidence(&context)
+        .await
+        .map_err(|e| ApiError::internal(format!("Evidence discovery failed: {e}")))?;
+
+    let discovered = discovered_list
+        .into_iter()
+        .find(|d| d.external_id == req.external_id)
+        .ok_or_else(|| {
+            ApiError::not_found(format!(
+                "No discovered evidence with external_id '{}'",
+                req.external_id
+            ))
+        })?;
+
+    let evidence = state
+        .evidence_service
+        .link_discovered(match_id, discovered, req.game_number, auth.user_id)
+        .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            EvidenceResponse::from(evidence),
+            request_id,
+        )),
     ))
 }
 
@@ -460,20 +595,157 @@ pub async fn link_discovered_evidence(
     tag = "evidence"
 )]
 pub async fn validate_evidence(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     _auth: AuthenticatedUser,
+    headers: HeaderMap,
     Path(match_id): Path<String>,
-    ValidatedJson(_req): ValidatedJson<ValidateEvidenceRequest>,
+    ValidatedJson(req): ValidatedJson<ValidateEvidenceRequest>,
 ) -> ApiResult<Json<DataResponse<ValidationResultResponse>>> {
-    let _match_id: TournamentMatchId = match_id
+    let request_id = get_request_id(&headers);
+    let match_id: TournamentMatchId = match_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
-    // Evidence validation requires game-specific plugin integration
-    // to parse demos/replays and verify claimed results
-    Err(ApiError::not_implemented(
-        "Evidence validation requires plugin integration (coming soon)",
-    ))
+    let (_match, plugin) = resolve_evidence_plugin(&state, match_id).await?;
+    let adapter = EvidencePluginAdapter::new(plugin)
+        .ok_or_else(|| ApiError::bad_request("Game plugin does not support evidence"))?;
+
+    // Build a minimal GameResult from the request for validation
+    let result = DomainGameResult {
+        game_number: 1,
+        map_id: String::new(),
+        participant1_score: req.expected_participant1_score.unwrap_or(0),
+        participant2_score: req.expected_participant2_score.unwrap_or(0),
+        winner_registration_id: portal_core::TournamentRegistrationId::new(),
+        started_at: None,
+        completed_at: None,
+        duration_seconds: None,
+        evidence_ids: req
+            .evidence_ids
+            .iter()
+            .map(|id| portal_core::EvidenceId::from(*id))
+            .collect(),
+        demo_link_id: None,
+    };
+
+    // Validate the first evidence item
+    let evidence_id = req
+        .evidence_ids
+        .first()
+        .ok_or_else(|| ApiError::bad_request("At least one evidence ID is required"))?;
+
+    let evidence_id = portal_core::EvidenceId::from(*evidence_id);
+    let validation = state
+        .evidence_service
+        .validate_against_result(evidence_id, &result, &adapter)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        ValidationResultResponse::from(validation),
+        request_id,
+    )))
+}
+
+// =============================================================================
+// EVIDENCE PLUGIN RESOLUTION HELPERS
+// =============================================================================
+
+/// Resolve the evidence plugin for a given match.
+///
+/// Follows the chain: match → tournament → game → plugin.
+async fn resolve_evidence_plugin(
+    state: &AppState,
+    match_id: TournamentMatchId,
+) -> ApiResult<(
+    portal_domain::entities::TournamentMatch,
+    Arc<dyn portal_plugins::GamePlugin>,
+)> {
+    // 1. Get the match
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to load match: {e}")))?
+        .ok_or_else(|| ApiError::not_found("Match not found"))?;
+
+    // 2. Get the tournament for game_id
+    let tournament = state
+        .tournament_service
+        .get_tournament(match_.tournament_id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to load tournament: {e}")))?;
+
+    // 3. Get the game for plugin_id
+    let game = state
+        .game_repo
+        .find_by_id(tournament.game_id.as_uuid())
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to load game: {e}")))?
+        .ok_or_else(|| ApiError::not_found("Game not found"))?;
+
+    // 4. Get the plugin
+    let plugin = state
+        .plugin_manager
+        .get(&game.plugin_id)
+        .ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "No plugin registered for game '{}' (plugin_id: '{}')",
+                game.display_name, game.plugin_id
+            ))
+        })?;
+
+    Ok((match_, plugin))
+}
+
+/// Build a [`MatchEvidenceContext`] for a match.
+///
+/// Resolves participant registration IDs to build participant contexts
+/// (currently without Steam IDs since game profiles are not yet implemented).
+async fn build_evidence_context(
+    state: &AppState,
+    match_: &portal_domain::entities::TournamentMatch,
+) -> ApiResult<MatchEvidenceContext> {
+    let tournament = state
+        .tournament_service
+        .get_tournament(match_.tournament_id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to load tournament: {e}")))?;
+
+    let mut participants = Vec::new();
+
+    for reg_id in [
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let reg = state
+            .registration_service
+            .get_registration(reg_id)
+            .await
+            .map_err(|e| {
+                ApiError::internal(format!("Failed to load registration {reg_id}: {e}"))
+            })?;
+
+        // Build participant context (Steam IDs not available without game profiles)
+        participants.push(ParticipantContext {
+            registration_id: reg_id,
+            name: reg.participant_name,
+            player_ids: Vec::new(),
+            steam_ids: Vec::new(),
+        });
+    }
+
+    Ok(MatchEvidenceContext {
+        tournament_id: match_.tournament_id,
+        match_id: match_.id,
+        game_id: tournament.game_id,
+        participants,
+        scheduled_at: match_.scheduled_at,
+        started_at: match_.started_at,
+        completed_at: match_.completed_at,
+    })
 }
 
 // =============================================================================
@@ -510,7 +782,7 @@ use portal_plugins::{Cs2PluginWithEvidence, GameResult};
     tag = "evidence"
 )]
 pub async fn validate_demo(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(_match_id): Path<String>,
@@ -539,7 +811,7 @@ pub async fn validate_demo(
     };
 
     // Validate using CS2 plugin
-    let cs2_plugin = Cs2PluginWithEvidence::new();
+    let cs2_plugin = create_cs2_plugin(&state);
     let validation = cs2_plugin
         .validate_demo(
             &req.demo_name,
@@ -591,7 +863,7 @@ pub async fn validate_demo(
     tag = "evidence"
 )]
 pub async fn get_demo_stats(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_match_id, demo_name)): Path<(String, String)>,
@@ -599,7 +871,7 @@ pub async fn get_demo_stats(
 ) -> ApiResult<Json<DataResponse<DemoStatsResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let cs2_plugin = Cs2PluginWithEvidence::new();
+    let cs2_plugin = create_cs2_plugin(&state);
 
     let stats = cs2_plugin
         .get_demo_stats(&demo_name)
@@ -685,7 +957,7 @@ pub async fn link_demo(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
-    let cs2_plugin = Cs2PluginWithEvidence::new();
+    let cs2_plugin = create_cs2_plugin(&state);
 
     // Verify demo exists by fetching stats
     let stats = cs2_plugin
@@ -718,4 +990,12 @@ pub async fn link_demo(
             request_id,
         )),
     ))
+}
+
+/// Create a CS2 plugin with evidence support, using the configured demo service URL.
+fn create_cs2_plugin(state: &AppState) -> Cs2PluginWithEvidence {
+    match &state.cs2_demo_base_url {
+        Some(url) => Cs2PluginWithEvidence::with_demo_url(url.clone()),
+        None => Cs2PluginWithEvidence::new(),
+    }
 }

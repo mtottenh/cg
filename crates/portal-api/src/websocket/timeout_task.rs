@@ -98,13 +98,10 @@ async fn check_and_send_warnings(
         let session = &session_state.session;
 
         // Check if session is in progress with a deadline
-        let deadline = match session.action_deadline {
-            Some(d) => d,
-            None => {
-                // No deadline set, clear any tracked warnings
-                tracker.clear_match(&match_id);
-                continue;
-            }
+        let deadline = if let Some(d) = session.action_deadline { d } else {
+            // No deadline set, clear any tracked warnings
+            tracker.clear_match(&match_id);
+            continue;
         };
 
         // Calculate seconds remaining
@@ -139,7 +136,7 @@ async fn check_and_send_warnings(
                         threshold
                     );
 
-                    let _ = lobby.broadcast(LobbyBroadcast::TimeoutWarning(TimeoutWarningBroadcast {
+                    let () = lobby.broadcast(LobbyBroadcast::TimeoutWarning(TimeoutWarningBroadcast {
                         seconds_remaining: threshold,
                         current_team_registration_id: current_team_reg_id,
                         current_team_name: team_name,

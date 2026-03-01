@@ -3,7 +3,7 @@
 use crate::dto::common::{Meta, PaginationMeta, PaginationParams};
 use crate::dto::requests::{
     AcceptScheduleProposalRequest, AddDisputeMessageRequest, AddLeagueTeamMemberRequest,
-    AddLinkEvidenceRequest, AddPermissionToRoleRequest, AdminDisputeMessageRequest,
+    AddLinkEvidenceRequest, AddMapRequest, AddPermissionToRoleRequest, AdminDisputeMessageRequest,
     AdminDisqualifyRequest, AdminDoubleForfeitRequest, AdminForfeitMatchRequest,
     AdminMatchTransitionRequest, AdminScheduleRequest, ApplyToLeagueRequest, ApplyToLeagueTeamRequest,
     AssignRoleRequest, AutoSeedRequest, CounterProposeRequest, CreateAvailabilityOverrideRequest,
@@ -13,19 +13,21 @@ use crate::dto::requests::{
     GenerateSuggestionsRequest, GetAvailabilityQuery, InitiateUploadRequest, InviteToLeagueRequest,
     InviteToLeagueTeamRequest, LiftBanRequest, LinkDiscoveredEvidenceRequest, ListBansQuery,
     ListDisputesQuery, LoginRequest, ManualSeedRequest, MatchCheckInRequest, PerformVetoActionRequest,
-    ProcessProgressionRequest, ProposeScheduleRequest, RaiseDisputeRequest, ReapplyProgressionRequest,
-    RecordCoinFlipRequest, RegisterPlayerRequest, RegisterRequest, RegisterTeamForSeasonRequest,
-    RegisterTeamRequest, RejectRegistrationRequest, RejectScheduleProposalRequest,
-    RespondToInvitationRequest, ResolveAdjustedRequest, ResolveDoubleDqRequest, ResolveOverturnRequest,
-    ResolveRematchRequest, ResolveUpholdRequest, RevokeRoleRequest, ScheduleMatchRequest, SeedAssignment,
-    SelectSideRequest, SetMapPoolRequest, SocialLinksRequest, SubmitMatchResultRequest,
-    SubmitResultClaimRequest, TransferOwnershipRequest, UpdateAvailabilityWindowRequest,
-    UpdateGameRequest, UpdateLeagueMemberRoleRequest, UpdateLeagueRequest, UpdateLeagueSeasonRequest,
-    UpdateLeagueTeamMemberRequest, UpdateLeagueTeamRequest, UpdatePlayerProfileRequest, UpdateRoleRequest,
-    UpdateTournamentRequest, ValidateDemoRequest, ValidateEvidenceRequest,
-    WithdrawFromTournamentRequest, LinkDemoRequest,
-    AssociateDemoRequest, CatalogDemoRequest, CategorizeDemoRequest, GetDemosForMatchQuery,
-    LinkDemoToMatchRequest, SetDemoVisibilityRequest,
+    ProcessProgressionRequest, ProposeScheduleRequest, RaiseDisputeRequest, RankTierInput,
+    ReapplyProgressionRequest, RecordCoinFlipRequest, RegisterPlayerRequest, RegisterRequest,
+    RegisterTeamForSeasonRequest, RegisterTeamRequest, RejectRegistrationRequest,
+    RejectScheduleProposalRequest, RespondToInvitationRequest, ResolveAdjustedRequest,
+    ResolveDoubleDqRequest, ResolveOverturnRequest, ResolveRematchRequest, ResolveUpholdRequest,
+    RevokeRoleRequest, ScheduleMatchRequest, SeedAssignment, SelectSideRequest, SetMapPoolRequest,
+    SetRankTiersRequest, SocialLinksRequest, SubmitMatchResultRequest, SubmitResultClaimRequest,
+    TransferOwnershipRequest, UpdateAvailabilityWindowRequest, UpdateGameRequest,
+    UpdateLeagueMemberRoleRequest, UpdateLeagueRequest, UpdateLeagueSeasonRequest,
+    UpdateLeagueTeamMemberRequest, UpdateLeagueTeamRequest, UpdateMapRequest,
+    UpdatePlayerProfileRequest, UpdateRoleRequest, UpdateTeamSizeRequest, UpdateTournamentRequest,
+    ValidateDemoRequest, ValidateEvidenceRequest, WithdrawFromTournamentRequest, LinkDemoRequest,
+    AssociateDemoRequest, BatchCatalogDemoEntry, BatchCatalogDemosRequest, CatalogDemoRequest,
+    CategorizeDemoRequest, DemoPlayerInputDto, GetDemosForMatchQuery, LinkDemoToMatchRequest,
+    MarkDemoFailedRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
 };
 use crate::dto::responses::{
     AccessUrlResponse, AdvancementResponse, AvailabilityOverrideResponse,
@@ -54,7 +56,8 @@ use crate::dto::responses::{
     WithdrawalResponse,
 };
 use crate::dto::responses::demo::{
-    DemoListResponse, DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse,
+    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoListResponse,
+    DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse,
     DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse, DemoValidationResultResponse,
     DemoPlayerStatsResponse as DemoCatalogPlayerStatsResponse,
 };
@@ -119,6 +122,11 @@ use utoipa_swagger_ui::SwaggerUi;
         games::set_map_pool,
         games::enable_game,
         games::disable_game,
+        games::add_map,
+        games::update_map,
+        games::remove_map,
+        games::set_rank_tiers,
+        games::update_team_size,
         // Leagues
         leagues::create_league,
         leagues::get_league,
@@ -308,6 +316,9 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::get_pending_demos,
         demos::get_demos_for_match,
         demos::unlink_demo_from_match,
+        demos::batch_catalog_demos,
+        demos::submit_demo_stats,
+        demos::mark_demo_stats_failed,
         // Result reviews
         result_reviews::get_result_review,
         result_reviews::acknowledge_result_review,
@@ -336,6 +347,11 @@ use utoipa_swagger_ui::SwaggerUi;
             MapPickBanFormatResponse,
             UpdateGameRequest,
             SetMapPoolRequest,
+            AddMapRequest,
+            UpdateMapRequest,
+            SetRankTiersRequest,
+            RankTierInput,
+            UpdateTeamSizeRequest,
 
             // Players
             PlayerResponse,
@@ -550,6 +566,14 @@ use utoipa_swagger_ui::SwaggerUi;
             DemoStatusCountsResponse,
             DemoCatalogPlayerStatsResponse,
             DemoValidationResultResponse,
+            // Demo Ingestion
+            BatchCatalogDemosRequest,
+            BatchCatalogDemoEntry,
+            BatchCatalogResultResponse,
+            BatchCatalogErrorResponse,
+            SubmitDemoStatsRequest,
+            DemoPlayerInputDto,
+            MarkDemoFailedRequest,
             // Result Reviews
             crate::dto::requests::AdminReviewDecisionRequest,
             crate::dto::responses::ResultReviewResponse,

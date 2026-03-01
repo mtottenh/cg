@@ -14,6 +14,8 @@ mod output;
 mod repl;
 
 use commands::{audit, ban, bootstrap, db, demo, game, league_team, player, role, user};
+#[cfg(feature = "scanner")]
+use commands::scan;
 use config::CliConfig;
 use output::OutputFormat;
 
@@ -78,6 +80,10 @@ pub enum Commands {
 
     /// Demo catalog management
     Demo(demo::DemoCommand),
+
+    /// Scan S3 for new demos and ingest via API
+    #[cfg(feature = "scanner")]
+    Scan(scan::ScanCommand),
     // TODO: Add these commands as they are implemented:
     // Tournament(tournament::TournamentCommand),
 }
@@ -121,6 +127,8 @@ async fn main() -> Result<()> {
         Commands::Audit(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::LeagueTeam(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Demo(cmd) => cmd.execute(&pool, cli.format).await?,
+        #[cfg(feature = "scanner")]
+        Commands::Scan(cmd) => cmd.execute().await?,
     }
 
     Ok(())

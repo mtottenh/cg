@@ -140,13 +140,11 @@ pub enum ClaimStatus {
 impl ClaimStatus {
     /// Check if transition to target status is allowed.
     #[must_use]
-    pub const fn can_transition_to(&self, target: ClaimStatus) -> bool {
+    pub const fn can_transition_to(&self, target: Self) -> bool {
         matches!(
             (self, target),
-            (Self::Pending, Self::Confirmed)
-            | (Self::Pending, Self::Disputed)
-            | (Self::Pending, Self::Superseded)
-            | (Self::Pending, Self::Cancelled)
+            (Self::Pending,
+Self::Confirmed | Self::Disputed | Self::Superseded | Self::Cancelled)
         )
     }
 }

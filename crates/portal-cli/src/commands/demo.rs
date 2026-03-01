@@ -188,12 +188,12 @@ async fn list_demos(
 ) -> Result<()> {
     // Build and execute query
     let mut query = String::from(
-        r#"
+        r"
         SELECT d.id, d.file_name, d.category, d.status, d.is_hidden, d.created_at,
                d.map_name
         FROM demos d
         WHERE 1=1
-        "#,
+        ",
     );
 
     if game.is_some() {
@@ -267,12 +267,12 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
         bool,
         chrono::DateTime<chrono::Utc>,
     )> = sqlx::query_as(
-        r#"
+        r"
         SELECT id, file_name, s3_bucket, s3_key, file_size_bytes,
                category, status, is_hidden, created_at
         FROM demos
         WHERE id = $1
-        "#,
+        ",
     )
     .bind(demo_id)
     .fetch_optional(pool)
@@ -282,11 +282,11 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
     // Query match info separately
     let match_info: Option<(Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>)> =
         sqlx::query_as(
-            r#"
+            r"
             SELECT map_name, team1_name, team2_name, team1_score, team2_score
             FROM demos
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(demo_id)
         .fetch_optional(pool)
@@ -325,7 +325,7 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
             println!("  Status:     {}", d.6);
             println!("  Hidden:     {}", if d.7 { "Yes" } else { "No" });
             if let Some(map) = &mi.0 {
-                println!("  Map:        {}", map);
+                println!("  Map:        {map}");
             }
             if let (Some(t1), Some(t2)) = (&mi.1, &mi.2) {
                 println!(
@@ -349,12 +349,12 @@ async fn get_demo_players(pool: &PgPool, id: &str, format: OutputFormat) -> Resu
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
     let rows: Vec<(String, String, Option<String>, i32, i32, i32, f64, f64)> = sqlx::query_as(
-        r#"
+        r"
         SELECT steam_id, player_name, team_name, kills, deaths, assists, adr, hs_percentage
         FROM demo_players
         WHERE demo_id = $1
         ORDER BY kills DESC
-        "#,
+        ",
     )
     .bind(demo_id)
     .fetch_all(pool)
@@ -375,8 +375,8 @@ async fn get_demo_players(pool: &PgPool, id: &str, format: OutputFormat) -> Resu
             kills: k,
             deaths: d,
             assists: a,
-            adr: format!("{:.1}", adr),
-            hs_pct: format!("{:.1}%", hs),
+            adr: format!("{adr:.1}"),
+            hs_pct: format!("{hs:.1}%"),
         })
         .collect();
 
@@ -385,7 +385,7 @@ async fn get_demo_players(pool: &PgPool, id: &str, format: OutputFormat) -> Resu
 
 async fn show_stats(pool: &PgPool, format: OutputFormat) -> Result<()> {
     let rows: Vec<(String, i64)> = sqlx::query_as(
-        r#"
+        r"
         SELECT status, COUNT(*) as count
         FROM demos
         GROUP BY status
@@ -398,7 +398,7 @@ async fn show_stats(pool: &PgPool, format: OutputFormat) -> Result<()> {
                 WHEN 'archived' THEN 5
                 ELSE 6
             END
-        "#,
+        ",
     )
     .fetch_all(pool)
     .await
@@ -414,13 +414,13 @@ async fn show_stats(pool: &PgPool, format: OutputFormat) -> Result<()> {
 
 async fn list_pending(pool: &PgPool, limit: i64, format: OutputFormat) -> Result<()> {
     let rows: Vec<(uuid::Uuid, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        r#"
+        r"
         SELECT id, file_name, s3_key, created_at
         FROM demos
         WHERE status = 'pending'
         ORDER BY created_at ASC
         LIMIT $1
-        "#,
+        ",
     )
     .bind(limit)
     .fetch_all(pool)
@@ -456,11 +456,11 @@ async fn categorize_demo(pool: &PgPool, id: &str, category: &str) -> Result<()> 
         .map_err(|_| anyhow::anyhow!("Invalid category. Use: uncategorized, pug, league, scrim, ignored"))?;
 
     sqlx::query(
-        r#"
+        r"
         UPDATE demos
         SET category = $1, categorized_at = NOW(), updated_at = NOW()
         WHERE id = $2
-        "#,
+        ",
     )
     .bind(category)
     .bind(demo_id)
@@ -476,11 +476,11 @@ async fn hide_demo(pool: &PgPool, id: &str) -> Result<()> {
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
     sqlx::query(
-        r#"
+        r"
         UPDATE demos
         SET is_hidden = true, hidden_at = NOW(), updated_at = NOW()
         WHERE id = $1
-        "#,
+        ",
     )
     .bind(demo_id)
     .execute(pool)
@@ -495,11 +495,11 @@ async fn unhide_demo(pool: &PgPool, id: &str) -> Result<()> {
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
     sqlx::query(
-        r#"
+        r"
         UPDATE demos
         SET is_hidden = false, hidden_at = NULL, hidden_by_user_id = NULL, updated_at = NOW()
         WHERE id = $1
-        "#,
+        ",
     )
     .bind(demo_id)
     .execute(pool)

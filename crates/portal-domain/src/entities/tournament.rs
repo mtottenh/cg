@@ -886,17 +886,13 @@ impl TournamentStanding {
     /// Check if this standing beats another via head-to-head.
     #[must_use]
     pub fn beats_head_to_head(&self, other: &Self) -> Option<bool> {
-        if let Some(record) = self.head_to_head.get(&other.registration_id) {
-            if record.wins > record.losses {
-                Some(true)
-            } else if record.losses > record.wins {
-                Some(false)
-            } else {
-                None // Tied
-            }
-        } else {
-            None
-        }
+        self.head_to_head
+            .get(&other.registration_id)
+            .and_then(|record| match record.wins.cmp(&record.losses) {
+                std::cmp::Ordering::Greater => Some(true),
+                std::cmp::Ordering::Less => Some(false),
+                std::cmp::Ordering::Equal => None, // Tied
+            })
     }
 }
 

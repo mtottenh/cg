@@ -214,6 +214,8 @@ pub struct AppState {
     pub storage: Arc<dyn StorageBackend>,
     /// Plugin manager for game-specific logic.
     pub plugin_manager: Arc<PluginManager>,
+    /// CS2 demo service base URL (for CS2-specific handlers).
+    pub cs2_demo_base_url: Option<String>,
 }
 
 /// Storage configuration.
@@ -276,7 +278,10 @@ impl AppState {
         ));
 
         // Create plugin manager with built-in plugins
-        let plugin_manager = Arc::new(portal_plugins::create_default_plugin_manager());
+        let cs2_demo_base_url = std::env::var("CS2_DEMO_SERVICE_URL").ok();
+        let plugin_manager = Arc::new(portal_plugins::create_plugin_manager_with_config(
+            cs2_demo_base_url.clone(),
+        ));
 
         // Create league team repositories
         let league_season_repo = Arc::new(PgLeagueSeasonRepository::new(db_pool.clone()));
@@ -522,6 +527,7 @@ impl AppState {
             stats_repo,
             storage,
             plugin_manager,
+            cs2_demo_base_url,
         }
     }
 }

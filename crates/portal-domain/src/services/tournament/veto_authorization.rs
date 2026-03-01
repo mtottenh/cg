@@ -190,7 +190,7 @@ where
             .delegate_repo
             .find_by_id(delegate_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Delegation {} not found", delegate_id)))?;
+            .ok_or_else(|| DomainError::Internal(format!("Delegation {delegate_id} not found")))?;
 
         if !delegate.is_active() {
             return Err(DomainError::InvalidState(
@@ -323,7 +323,7 @@ where
             .find_by_id(team_season_id)
             .await?
             .ok_or_else(|| {
-                DomainError::Internal(format!("Team season {} not found", team_season_id))
+                DomainError::Internal(format!("Team season {team_season_id} not found"))
             })?;
 
         // Get the team to check ownership

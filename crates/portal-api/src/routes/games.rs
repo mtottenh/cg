@@ -19,4 +19,14 @@ pub fn routes() -> Router<AppState> {
         .route("/{game_id}/maps", put(games::set_map_pool))
         .route("/{game_id}/enable", post(games::enable_game))
         .route("/{game_id}/disable", post(games::disable_game))
+        // Map catalog management (admin)
+        .route("/{game_id}/maps/catalog", post(games::add_map))
+        .route(
+            "/{game_id}/maps/catalog/{map_id}",
+            patch(games::update_map).delete(games::remove_map),
+        )
+        // Rank tiers management (admin)
+        .route("/{game_id}/rank-tiers", put(games::set_rank_tiers))
+        // Team size management (admin)
+        .route("/{game_id}/team-size", patch(games::update_team_size))
 }

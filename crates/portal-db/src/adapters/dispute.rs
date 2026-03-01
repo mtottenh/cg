@@ -101,7 +101,7 @@ impl PgDisputeRepository {
 impl DisputeRepository for PgDisputeRepository {
     async fn create(&self, data: CreateDispute) -> Result<Dispute, DomainError> {
         let evidence_ids: Vec<uuid::Uuid> =
-            data.evidence_ids.iter().map(|id| id.as_uuid()).collect();
+            data.evidence_ids.iter().map(portal_core::EvidenceId::as_uuid).collect();
 
         let dispute = sqlx::query_as::<_, DisputeRow>(
             r"
@@ -412,7 +412,7 @@ impl PgDisputeMessageRepository {
 impl DisputeMessageRepository for PgDisputeMessageRepository {
     async fn create(&self, data: CreateDisputeMessage) -> Result<DisputeMessage, DomainError> {
         let evidence_ids: Vec<uuid::Uuid> =
-            data.evidence_ids.iter().map(|id| id.as_uuid()).collect();
+            data.evidence_ids.iter().map(portal_core::EvidenceId::as_uuid).collect();
 
         let message = sqlx::query_as::<_, DisputeMessageRow>(
             r"

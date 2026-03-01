@@ -79,7 +79,7 @@ impl DelegatedByRole {
     /// - Owners can revoke captain and owner delegations
     /// - Captains can only revoke captain delegations
     #[must_use]
-    pub const fn can_revoke(&self, other: DelegatedByRole) -> bool {
+    pub const fn can_revoke(&self, other: Self) -> bool {
         match self {
             Self::TournamentAdmin => true,
             Self::Owner => matches!(other, Self::Captain | Self::Owner),

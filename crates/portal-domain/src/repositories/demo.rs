@@ -87,6 +87,20 @@ pub trait DemoRepository: Send + Sync {
 
     /// Delete a demo (hard delete, use with caution).
     async fn delete(&self, id: DemoId) -> Result<(), DomainError>;
+
+    /// Find demos matching a match context (for evidence discovery).
+    ///
+    /// Searches for ready, visible demos where at least one player's steam_id
+    /// matches, optionally filtered by time window and excluding already-linked demos.
+    async fn find_matching_for_context(
+        &self,
+        game_id: GameId,
+        steam_ids: &[String],
+        time_from: Option<DateTime<Utc>>,
+        time_to: Option<DateTime<Utc>>,
+        exclude_match_id: Option<TournamentMatchId>,
+        limit: i64,
+    ) -> Result<Vec<Demo>, DomainError>;
 }
 
 /// Data for creating a demo catalog entry.

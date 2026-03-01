@@ -8,7 +8,7 @@ use crate::dto::responses::{
     VetoActionResponse, VetoActionResultResponse, VetoSessionResponse, VetoSessionStateResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::AppState;
 use crate::websocket::{LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast, VetoStateBroadcast};
 use axum::extract::{Path, State};
@@ -16,6 +16,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use portal_core::{TournamentMatchId, TournamentRegistrationId};
 use portal_domain::entities::veto::VetoFormat;
+use portal_domain::repositories::TournamentMatchRepository;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -61,7 +62,8 @@ fn parse_veto_format(format_id: &str) -> ApiResult<VetoFormat> {
 )]
 pub async fn create_veto_session(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<String>,
     ValidatedJson(req): ValidatedJson<CreateVetoSessionRequest>,
@@ -72,7 +74,36 @@ pub async fn create_veto_session(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
-    // TODO: Verify user has permission to create veto session for this match
+    // Verify user is a match participant (via veto authorization) or tournament admin
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("Match {match_id} not found")))?;
+
+    let is_participant = if let Some(p1) = match_.participant1_registration_id {
+        state
+            .veto_authorization_service
+            .can_perform_veto_action(p1, auth.user_id, auth.player_id)
+            .await
+            .is_ok()
+    } else {
+        false
+    } || if let Some(p2) = match_.participant2_registration_id {
+        state
+            .veto_authorization_service
+            .can_perform_veto_action(p2, auth.user_id, auth.player_id)
+            .await
+            .is_ok()
+    } else {
+        false
+    };
+
+    if !is_participant {
+        perm_checker
+            .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+            .await?;
+    }
 
     let veto_format = parse_veto_format(&req.veto_format_id)?;
 

@@ -7,7 +7,7 @@ use crate::dto::responses::{
     ResultReviewSummaryResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -165,14 +165,16 @@ pub struct AcknowledgeParams {
 )]
 pub async fn list_pending_reviews(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<DataResponse<ResultReviewListResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // TODO: Check admin permission
-    // For now, any authenticated user can access (should be restricted)
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
 
     let limit = params.limit();
     let offset = params.offset();
@@ -211,11 +213,16 @@ pub async fn list_pending_reviews(
 )]
 pub async fn get_result_review_by_id(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(review_id): Path<String>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
 
     let review_id: ResultReviewId = review_id
         .parse()
@@ -257,11 +264,16 @@ pub async fn get_result_review_by_id(
 pub async fn approve_result_review(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(review_id): Path<String>,
     ValidatedJson(req): ValidatedJson<AdminReviewDecisionRequest>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
 
     let review_id: ResultReviewId = review_id
         .parse()
@@ -302,11 +314,16 @@ pub async fn approve_result_review(
 pub async fn reject_result_review(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(review_id): Path<String>,
     ValidatedJson(req): ValidatedJson<AdminReviewDecisionRequest>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
 
     let review_id: ResultReviewId = review_id
         .parse()

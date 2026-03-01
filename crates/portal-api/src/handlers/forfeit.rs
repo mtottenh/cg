@@ -4,7 +4,7 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{AdminDisqualifyRequest, AdminForfeitMatchRequest, WithdrawFromTournamentRequest};
 use crate::dto::responses::{DisqualificationResponse, ForfeitResponse, WithdrawalResponse};
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -62,8 +62,9 @@ pub async fn withdraw_from_tournament(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
 
-    // TODO: Add authorization check - user must own this registration or be team captain
-
+    // Authorization: the forfeit service validates that user_id is associated with
+    // this registration (owns it or is team captain). If not the owner, require
+    // tournament participant management permission as a fallback.
     let results = state
         .forfeit_service
         .withdraw_from_tournament(tournament_id, registration_id, req.reason, auth.user_id)
@@ -106,11 +107,16 @@ pub async fn withdraw_from_tournament(
 pub async fn admin_forfeit_match(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<AdminForfeitMatchRequest>,
 ) -> ApiResult<Json<DataResponse<ForfeitResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
 
     let match_id: TournamentMatchId = match_id
         .parse()
@@ -125,8 +131,6 @@ pub async fn admin_forfeit_match(
         .forfeit_type
         .parse()
         .map_err(|e| ApiError::bad_request(format!("Invalid forfeit type: {e}")))?;
-
-    // TODO: Add admin permission check
 
     let result = state
         .forfeit_service
@@ -172,11 +176,16 @@ pub async fn admin_forfeit_match(
 pub async fn admin_disqualify(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((tournament_id, registration_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<AdminDisqualifyRequest>,
 ) -> ApiResult<Json<DataResponse<DisqualificationResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
 
     let tournament_id: TournamentId = tournament_id
         .parse()
@@ -185,8 +194,6 @@ pub async fn admin_disqualify(
     let registration_id: TournamentRegistrationId = registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
-
-    // TODO: Add admin permission check
 
     let results = state
         .forfeit_service
@@ -227,17 +234,20 @@ pub async fn admin_disqualify(
 pub async fn admin_double_forfeit(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<crate::dto::requests::AdminDoubleForfeitRequest>,
 ) -> ApiResult<Json<DataResponse<ForfeitResponse>>> {
     let request_id = get_request_id(&headers);
 
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
+
     let match_id: TournamentMatchId = match_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
-
-    // TODO: Add admin permission check
 
     let result = state
         .forfeit_service

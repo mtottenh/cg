@@ -19,7 +19,7 @@ use crate::dto::responses::{
     TournamentStageResponse, TournamentSummaryResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -1488,14 +1488,16 @@ pub async fn forfeit_match(
 pub async fn admin_match_transition(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<AdminMatchTransitionRequest>,
 ) -> ApiResult<Json<DataResponse<TournamentMatchResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // TODO: Add admin permission check
-    // state.permission_service.require_admin(&auth).await?;
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
 
     let match_id: TournamentMatchId = match_id
         .parse()
@@ -1838,14 +1840,16 @@ pub async fn get_proposal_history(
 pub async fn admin_schedule_match(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<AdminScheduleRequest>,
 ) -> ApiResult<Json<DataResponse<TournamentMatchResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // TODO: Add admin permission check
-    // state.permission_service.require_admin(&auth).await?;
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
 
     let match_id: TournamentMatchId = match_id
         .parse()

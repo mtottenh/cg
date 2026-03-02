@@ -6,6 +6,7 @@ pub mod availability;
 pub mod demos;
 pub mod disputes;
 pub mod games;
+pub mod internal;
 pub mod league_teams;
 pub mod leagues;
 pub mod matches;
@@ -54,6 +55,8 @@ pub fn api_routes() -> Router<AppState> {
         .nest("/disputes", disputes::routes())
         // Demo routes
         .nest("/demos", demos::routes())
+        // Internal bot/service routes
+        .nest("/internal", internal::routes())
         // WebSocket routes
         .nest("/ws", websocket::routes())
 }

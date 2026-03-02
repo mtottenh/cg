@@ -1,5 +1,6 @@
 //! CLI command modules.
 
+pub mod api_key;
 pub mod audit;
 pub mod ban;
 pub mod bootstrap;

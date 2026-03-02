@@ -82,6 +82,11 @@ pub struct PlayerResponse {
     /// Social media links.
     pub social_links: SocialLinksResponse,
 
+    /// The player's SteamID64 (null if not linked).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "76561198012345678")]
+    pub steam_id: Option<String>,
+
     /// Whether Steam account is linked.
     pub steam_linked: bool,
 
@@ -107,6 +112,7 @@ impl From<Player> for PlayerResponse {
             region: player.region,
             timezone: player.timezone,
             social_links: SocialLinksResponse::from(player.social_links),
+            steam_id: player.steam_id,
             steam_linked,
             created_at: player.created_at.to_rfc3339(),
             updated_at: player.updated_at.to_rfc3339(),

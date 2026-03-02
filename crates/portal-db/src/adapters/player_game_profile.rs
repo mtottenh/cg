@@ -166,6 +166,7 @@ impl PlayerGameProfileRepository for PgPlayerGameProfileRepository {
         rating: i32,
         rating_deviation: i32,
         volatility: f64,
+        rank_tier: Option<String>,
     ) -> Result<(), DomainError> {
         sqlx::query(
             r"
@@ -173,6 +174,7 @@ impl PlayerGameProfileRepository for PgPlayerGameProfileRepository {
                 rating = $3,
                 rating_deviation = $4,
                 volatility = $5,
+                rank_tier = COALESCE($6, rank_tier),
                 peak_rating = GREATEST(peak_rating, $3),
                 peak_rating_at = CASE WHEN $3 > peak_rating THEN NOW() ELSE peak_rating_at END,
                 updated_at = NOW()
@@ -184,6 +186,7 @@ impl PlayerGameProfileRepository for PgPlayerGameProfileRepository {
         .bind(rating)
         .bind(rating_deviation)
         .bind(volatility)
+        .bind(rank_tier)
         .execute(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;

@@ -6,6 +6,7 @@ use crate::routes::api_routes;
 use crate::state::AppState;
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 /// Create the Axum application.
@@ -22,6 +23,8 @@ pub fn create_app(state: AppState) -> Router {
         .nest("/v1", api_routes())
         // Swagger UI at /swagger-ui (also serves /api-docs/openapi.json)
         .merge(swagger_routes())
+        // Serve uploaded files (avatars, banners, etc.)
+        .nest_service("/uploads", ServeDir::new(&state.uploads_path))
         // Health check
         .route("/health", axum::routing::get(|| async { "OK" }))
         // Middleware

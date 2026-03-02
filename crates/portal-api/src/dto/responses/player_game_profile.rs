@@ -1,6 +1,6 @@
 //! Player game profile response DTOs.
 
-use portal_domain::entities::PlayerGameProfile;
+use portal_domain::entities::{PlayerGameProfile, PlayerRatingHistory};
 use portal_plugins::types::DisplayStat;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -128,6 +128,50 @@ impl PlayerGameProfileResponse {
             display_stats: display_stats.into_iter().map(DisplayStatResponse::from).collect(),
             first_match_at: profile.first_match_at.map(|t| t.to_rfc3339()),
             last_match_at: profile.last_match_at.map(|t| t.to_rfc3339()),
+        }
+    }
+}
+
+/// A single rating history entry.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PlayerRatingHistoryResponse {
+    /// Unique identifier.
+    #[schema(example = "550e8400-e29b-41d4-a716-446655440000")]
+    pub id: String,
+
+    /// Player ID.
+    #[schema(example = "550e8400-e29b-41d4-a716-446655440001")]
+    pub player_id: String,
+
+    /// Game ID.
+    #[schema(example = "550e8400-e29b-41d4-a716-446655440002")]
+    pub game_id: String,
+
+    /// The rating at this point in time.
+    #[schema(example = 15000)]
+    pub rating: i32,
+
+    /// Source of the rating update.
+    #[schema(example = "mm_demo")]
+    pub source: String,
+
+    /// When the rating was observed in-game.
+    pub recorded_at: String,
+
+    /// When this record was created.
+    pub created_at: String,
+}
+
+impl From<PlayerRatingHistory> for PlayerRatingHistoryResponse {
+    fn from(h: PlayerRatingHistory) -> Self {
+        Self {
+            id: h.id.to_string(),
+            player_id: h.player_id.to_string(),
+            game_id: h.game_id.to_string(),
+            rating: h.rating,
+            source: h.source,
+            recorded_at: h.recorded_at.to_rfc3339(),
+            created_at: h.created_at.to_rfc3339(),
         }
     }
 }

@@ -10,6 +10,8 @@ use utoipa::ToSchema;
 pub struct RegisterResponse {
     /// JWT access token for immediate use.
     pub access_token: String,
+    /// Refresh token for silent renewal.
+    pub refresh_token: String,
     /// The created user.
     pub user: UserResponse,
     /// The created player profile.
@@ -18,9 +20,10 @@ pub struct RegisterResponse {
 
 impl RegisterResponse {
     /// Create a new registration response.
-    pub fn new(user: User, player: Player, access_token: String) -> Self {
+    pub fn new(user: User, player: Player, access_token: String, refresh_token: String) -> Self {
         Self {
             access_token,
+            refresh_token,
             user: UserResponse::from(user),
             player: PlayerResponse::from(player),
         }
@@ -32,6 +35,8 @@ impl RegisterResponse {
 pub struct LoginResponse {
     /// JWT access token.
     pub access_token: String,
+    /// Refresh token for silent renewal.
+    pub refresh_token: String,
     /// User ID.
     #[schema(example = "550e8400-e29b-41d4-a716-446655440000")]
     pub user_id: String,

@@ -349,6 +349,13 @@ impl PlayerRepository for PgPlayerRepository {
         }
         if cmd.social_links.is_some() {
             set_clauses.push(format!("social_links = ${param_index}"));
+            param_index += 1;
+        }
+        if cmd.steam_id.is_some() {
+            set_clauses.push(format!("steam_id = ${param_index}"));
+            param_index += 1;
+            set_clauses.push(format!("steam_id_64 = ${param_index}"));
+            param_index += 1;
         }
 
         if set_clauses.is_empty() {
@@ -395,6 +402,11 @@ impl PlayerRepository for PgPlayerRepository {
             let json_value = serde_json::to_value(social_links)
                 .map_err(|e| DomainError::Internal(e.to_string()))?;
             query_builder = query_builder.bind(json_value);
+        }
+        if let Some(steam_id) = &cmd.steam_id {
+            query_builder = query_builder.bind(steam_id);
+            let steam_id_64: i64 = steam_id.parse().unwrap_or(0);
+            query_builder = query_builder.bind(steam_id_64);
         }
 
         let player = query_builder

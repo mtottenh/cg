@@ -66,6 +66,12 @@ pub struct UpdatePlayerProfileRequest {
     #[schema(example = "America/Los_Angeles")]
     pub timezone: Option<String>,
 
+    /// SteamID64 for linking Steam account (set once, cannot be changed).
+    /// Must be a valid SteamID64 numeric string (e.g., "76561198012345678").
+    #[validate(length(min = 17, max = 20, message = "Steam ID must be 17-20 characters"))]
+    #[schema(example = "76561198012345678")]
+    pub steam_id: Option<String>,
+
     /// Social media links.
     pub social_links: Option<SocialLinksRequest>,
 }
@@ -80,6 +86,8 @@ impl From<UpdatePlayerProfileRequest> for UpdatePlayer {
             country_code: req.country_code,
             region: req.region,
             timezone: req.timezone,
+            steam_id: req.steam_id,
+            steam_id_64: None, // Derived from steam_id in the adapter
             social_links: req.social_links.map(SocialLinks::from),
         }
     }

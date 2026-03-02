@@ -481,6 +481,27 @@ define_id!(
     VetoDelegateId
 );
 
+// Bot / Service IDs
+define_id!(
+    /// Unique identifier for an API key used by bots and services.
+    ApiKeyId
+);
+
+define_id!(
+    /// Unique identifier for a steam tracking entry.
+    SteamTrackingId
+);
+
+define_id!(
+    /// Unique identifier for a discovered match from Steam.
+    DiscoveredMatchId
+);
+
+define_id!(
+    /// Unique identifier for a player rating history entry.
+    PlayerRatingHistoryId
+);
+
 // =============================================================================
 // String-based Slugs
 // =============================================================================

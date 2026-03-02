@@ -54,7 +54,7 @@ pub use league_team::{
     LeagueTeamSummaryResponse, LeagueTeamWithSeasonResponse, PlayerLeagueTeamMembershipResponse,
 };
 pub use player::{PlayerResponse, PlayerSearchResponse, SocialLinksResponse};
-pub use player_game_profile::{DisplayStatResponse, PlayerGameProfileResponse};
+pub use player_game_profile::{DisplayStatResponse, PlayerGameProfileResponse, PlayerRatingHistoryResponse};
 pub use progression::{
     AdvancementResponse, LoserResultResponse, ProgressionLogResponse, ProgressionResponse,
 };

@@ -33,14 +33,16 @@ pub mod transaction;
 
 pub use adapters::{
     complete_match_in_transaction, LocalEvidenceStorage, MatchCompletionTxInput,
-    MatchCompletionTxOutput, PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository,
-    PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository, PgDemoRepository,
+    MatchCompletionTxOutput, PgApiKeyRepository, PgAvailabilityOverrideRepository,
+    PgAvailabilityWindowRepository, PgBanRepository, PgDemoMatchLinkRepository,
+    PgDemoPlayerRepository, PgDemoRepository,
     PgDisputeMessageRepository, PgDisputeRepository, PgEntityChangeRepository,
     PgEvidenceRepository, PgForfeitRecordRepository, PgLeagueInvitationRepository,
     PgLeagueMemberRepository, PgLeagueRepository, PgLeagueSeasonParticipantRepository,
     PgLeagueSeasonRepository, PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository,
     PgLeagueTeamRepository, PgLeagueTeamSeasonRepository, PgMatchStatusLogRepository,
-    PgPermissionRepository, PgPlayerGameProfileRepository, PgPlayerRepository,
+    PgPermissionRepository, PgPlayerGameProfileRepository, PgPlayerRatingHistoryRepository,
+    PgPlayerRepository,
     PgResultClaimRepository, PgResultReviewRepository,
     PgScheduleProposalRepository, PgSuggestedTimeRepository, PgTournamentBracketRepository,
     PgTournamentMapPoolRepository, PgTournamentMatchGameRepository, PgTournamentMatchRepository,
@@ -48,6 +50,8 @@ pub use adapters::{
     PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
     PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
     PgProgressionLogRepository, PgSagaExecutionRepository,
+    PgSteamTrackingRepository, PgDiscoveredMatchRepository,
+    PgRefreshTokenRepository,
 };
 pub use entities::NewUserRole;
 pub use error::RepositoryError;

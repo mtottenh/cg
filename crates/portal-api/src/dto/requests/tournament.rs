@@ -144,6 +144,70 @@ pub struct CreateTournamentRequest {
     /// Additional settings.
     #[serde(default)]
     pub settings: Option<serde_json::Value>,
+
+    /// Eligibility restrictions for tournament registration.
+    ///
+    /// Controls which players/teams are allowed to register based on
+    /// their in-game rating, peak rating, rank tier, etc.
+    #[serde(default)]
+    pub eligibility_restrictions: Option<EligibilityRestrictionsInput>,
+}
+
+/// Typed input for eligibility restrictions.
+///
+/// All fields are optional — only specified fields are enforced.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct EligibilityRestrictionsInput {
+    /// Max current rating for any individual player.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rating_per_player: Option<i32>,
+
+    /// Min current rating for any individual player.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_rating_per_player: Option<i32>,
+
+    /// Max peak (all-time high) rating for any player (anti-smurf).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_peak_rating_per_player: Option<i32>,
+
+    /// Max average rating for any player (computed from history).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_avg_rating_per_player: Option<i32>,
+
+    /// Max sum of all team members' current ratings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_team_total_rating: Option<i32>,
+
+    /// Max average of team members' current ratings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_team_average_rating: Option<i32>,
+
+    /// Only allow players in certain rank tiers (e.g., ["silver", "gold"]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_rank_tiers: Vec<String>,
+
+    /// Min matches played to be eligible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_matches_played: Option<i32>,
+}
+
+/// Merge an optional typed eligibility input into the settings JSON.
+fn merge_eligibility_into_settings(
+    settings: Option<serde_json::Value>,
+    eligibility: Option<EligibilityRestrictionsInput>,
+) -> Option<serde_json::Value> {
+    let eligibility = match eligibility {
+        Some(e) => e,
+        None => return settings,
+    };
+
+    let eligibility_json = serde_json::to_value(eligibility).unwrap_or_default();
+
+    let mut settings = settings.unwrap_or(serde_json::json!({}));
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert("eligibility".to_string(), eligibility_json);
+    }
+    Some(settings)
 }
 
 fn default_registration_type() -> String {
@@ -241,7 +305,10 @@ impl CreateTournamentRequest {
             default_map_veto_format: self.default_map_veto_format,
             withdrawal_policy,
             rules_url: self.rules_url,
-            settings: self.settings,
+            settings: merge_eligibility_into_settings(
+                self.settings,
+                self.eligibility_restrictions,
+            ),
         })
     }
 }
@@ -332,6 +399,10 @@ pub struct UpdateTournamentRequest {
     #[serde(default)]
     pub settings: Option<serde_json::Value>,
 
+    /// Updated eligibility restrictions for tournament registration.
+    #[serde(default)]
+    pub eligibility_restrictions: Option<EligibilityRestrictionsInput>,
+
     /// Updated withdrawal policy.
     #[serde(default)]
     pub withdrawal_policy: Option<String>,
@@ -378,7 +449,10 @@ impl TryFrom<UpdateTournamentRequest> for UpdateTournamentCommand {
             default_map_veto_format: req.default_map_veto_format,
             prize_pool: req.prize_pool,
             rules_url: req.rules_url,
-            settings: req.settings,
+            settings: merge_eligibility_into_settings(
+                req.settings,
+                req.eligibility_restrictions,
+            ),
             withdrawal_policy,
         })
     }

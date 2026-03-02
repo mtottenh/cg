@@ -13,7 +13,7 @@ use crate::dto::requests::{
     GenerateSuggestionsRequest, GetAvailabilityQuery, InitiateUploadRequest, InviteToLeagueRequest,
     InviteToLeagueTeamRequest, LiftBanRequest, LinkDiscoveredEvidenceRequest, ListBansQuery,
     ListDisputesQuery, LoginRequest, ManualSeedRequest, MatchCheckInRequest, PerformVetoActionRequest,
-    ProcessProgressionRequest, ProposeScheduleRequest, RaiseDisputeRequest, RankTierInput,
+    ProcessProgressionRequest, ProposeScheduleRequest, RaiseDisputeRequest, RankTierInput, RefreshTokenRequest,
     ReapplyProgressionRequest, RecordCoinFlipRequest, RegisterPlayerRequest, RegisterRequest,
     RegisterTeamForSeasonRequest, RegisterTeamRequest, RejectRegistrationRequest,
     RejectScheduleProposalRequest, RespondToInvitationRequest, ResolveAdjustedRequest,
@@ -64,8 +64,8 @@ use crate::dto::responses::demo::{
 use crate::error::{ApiError, FieldErrorDto};
 use crate::handlers::{
     admin, auth, availability, bans, demos, dispute, evidence, forfeit, games, league_teams, leagues,
-    player_game_profiles, players, progression, result_reviews, results, roles, tournaments, uploads,
-    users, veto, veto_delegates,
+    player_game_profiles, players, progression, result_reviews, results, roles, steam_tracking,
+    tournaments, uploads, users, veto, veto_delegates,
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -114,6 +114,7 @@ use utoipa_swagger_ui::SwaggerUi;
         // Auth
         auth::register,
         auth::login,
+        auth::refresh,
         // Games
         games::list_games,
         games::get_game,
@@ -157,6 +158,8 @@ use utoipa_swagger_ui::SwaggerUi;
         player_game_profiles::list_player_game_profiles,
         player_game_profiles::get_player_game_profile,
         player_game_profiles::get_my_game_profiles,
+        player_game_profiles::submit_player_rating,
+        player_game_profiles::get_player_rating_history,
         uploads::upload_player_avatar,
         uploads::upload_player_banner,
         // Users
@@ -306,6 +309,11 @@ use utoipa_swagger_ui::SwaggerUi;
         dispute::admin_resolve_rematch,
         dispute::admin_resolve_adjusted,
         dispute::admin_resolve_double_dq,
+        // Steam tracking
+        steam_tracking::register_tracking,
+        steam_tracking::get_tracking,
+        steam_tracking::update_tracking,
+        steam_tracking::delete_tracking,
         // Demo catalog
         demos::list_demos,
         demos::get_demo,
@@ -365,6 +373,9 @@ use utoipa_swagger_ui::SwaggerUi;
             UpdatePlayerProfileRequest,
             crate::dto::responses::PlayerGameProfileResponse,
             crate::dto::responses::DisplayStatResponse,
+            crate::dto::responses::PlayerRatingHistoryResponse,
+            crate::dto::requests::SubmitRatingRequest,
+            crate::handlers::player_game_profiles::RatingHistoryQuery,
 
             // Users
             UserResponse,
@@ -374,6 +385,7 @@ use utoipa_swagger_ui::SwaggerUi;
             RegisterResponse,
             LoginRequest,
             LoginResponse,
+            RefreshTokenRequest,
 
             // Leagues
             LeagueResponse,
@@ -441,6 +453,8 @@ use utoipa_swagger_ui::SwaggerUi;
             // Tournaments
             TournamentResponse,
             TournamentSummaryResponse,
+            crate::dto::responses::tournament::EligibilityRestrictionsResponse,
+            crate::dto::requests::tournament::EligibilityRestrictionsInput,
             TournamentStageResponse,
             TournamentBracketResponse,
             TournamentRegistrationResponse,
@@ -580,6 +594,10 @@ use utoipa_swagger_ui::SwaggerUi;
             SubmitDemoStatsRequest,
             DemoPlayerInputDto,
             MarkDemoFailedRequest,
+            // Steam Tracking
+            crate::handlers::steam_tracking::RegisterSteamTrackingRequest,
+            crate::handlers::steam_tracking::UpdateSteamTrackingRequest,
+            crate::handlers::steam_tracking::SteamTrackingResponse,
             // Result Reviews
             crate::dto::requests::AdminReviewDecisionRequest,
             crate::dto::responses::ResultReviewResponse,
@@ -614,7 +632,8 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "forfeits", description = "Forfeit handling (withdrawal, disqualification, no-show)"),
         (name = "disputes", description = "Dispute workflow and admin resolution"),
         (name = "demos", description = "Demo file catalog and browsing"),
-        (name = "result_reviews", description = "Result review and validation discrepancy handling")
+        (name = "result_reviews", description = "Result review and validation discrepancy handling"),
+        (name = "steam_tracking", description = "CS2 Steam match tracking registration")
     ),
     modifiers(&SecurityAddon)
 )]

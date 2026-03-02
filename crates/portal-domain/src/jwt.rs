@@ -149,6 +149,31 @@ pub fn generate_access_token_with_expiry(
     .map_err(|e| DomainError::Internal(format!("Failed to generate token: {e}")))
 }
 
+/// Generate an access token with admin flag and custom expiry.
+pub fn generate_access_token_with_admin_and_expiry(
+    user_id: Uuid,
+    player_id: Uuid,
+    username: &str,
+    secret: &str,
+    is_admin: bool,
+    expiry_minutes: i64,
+) -> Result<String, DomainError> {
+    let claims = Claims::with_admin(
+        user_id,
+        player_id,
+        username.to_string(),
+        expiry_minutes,
+        is_admin,
+    );
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|e| DomainError::Internal(format!("Failed to generate token: {e}")))
+}
+
 /// Validate a JWT token and extract claims.
 ///
 /// # Arguments

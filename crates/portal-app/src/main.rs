@@ -1,7 +1,7 @@
 //! Gaming Portal server entry point.
 
 use anyhow::Result;
-use portal_api::{create_app, spawn_timeout_warning_task, AppState};
+use portal_api::{create_app, spawn_timeout_warning_task, AppState, TokenConfig};
 use portal_db::{create_pool, PoolConfig};
 use std::net::SocketAddr;
 use tracing::info;
@@ -38,8 +38,26 @@ async fn main() -> Result<()> {
     let jwt_secret = std::env::var("JWT_SECRET")
         .unwrap_or_else(|_| "development-secret-change-in-production".to_string());
 
+    // Token expiry configuration
+    let token_config = TokenConfig {
+        access_token_expiry_minutes: std::env::var("ACCESS_TOKEN_EXPIRY_MINUTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15),
+        refresh_token_expiry_minutes: std::env::var("REFRESH_TOKEN_EXPIRY_MINUTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10080), // 7 days
+    };
+    info!(
+        "Token config: access={}min, refresh={}min",
+        token_config.access_token_expiry_minutes,
+        token_config.refresh_token_expiry_minutes
+    );
+
     // Create app state
-    let state = AppState::new(pool, jwt_secret);
+    let state = AppState::new(pool, jwt_secret)
+        .with_token_config(token_config);
 
     // Start background tasks
     spawn_timeout_warning_task(state.clone());

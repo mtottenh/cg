@@ -30,5 +30,5 @@ pub mod state;
 pub mod websocket;
 
 pub use app::create_app;
-pub use state::AppState;
+pub use state::{AppState, TokenConfig};
 pub use websocket::spawn_timeout_warning_task;

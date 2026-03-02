@@ -100,15 +100,63 @@ pub struct TournamentResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<DateTime<Utc>>,
 
+    // Eligibility restrictions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eligibility_restrictions: Option<EligibilityRestrictionsResponse>,
+
     // Computed fields
     pub is_registration_open: bool,
     pub is_check_in_open: bool,
+}
+
+/// Eligibility restrictions configured for a tournament.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EligibilityRestrictionsResponse {
+    /// Max current rating for any player.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_rating_per_player: Option<i32>,
+    /// Min current rating for any player.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_rating_per_player: Option<i32>,
+    /// Max peak (all-time high) rating for any player.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_peak_rating_per_player: Option<i32>,
+    /// Max average rating for any player (from history).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_avg_rating_per_player: Option<i32>,
+    /// Max sum of all team members' current ratings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_team_total_rating: Option<i32>,
+    /// Max average of team members' current ratings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_team_average_rating: Option<i32>,
+    /// Only allow players in certain rank tiers.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allowed_rank_tiers: Vec<String>,
+    /// Min matches played to be eligible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_matches_played: Option<i32>,
 }
 
 impl From<Tournament> for TournamentResponse {
     fn from(t: Tournament) -> Self {
         let is_registration_open = t.is_registration_open();
         let is_check_in_open = t.is_check_in_open();
+        let restrictions = t.eligibility_restrictions();
+        let eligibility_restrictions = if restrictions.has_restrictions() {
+            Some(EligibilityRestrictionsResponse {
+                max_rating_per_player: restrictions.max_rating_per_player,
+                min_rating_per_player: restrictions.min_rating_per_player,
+                max_peak_rating_per_player: restrictions.max_peak_rating_per_player,
+                max_avg_rating_per_player: restrictions.max_avg_rating_per_player,
+                max_team_total_rating: restrictions.max_team_total_rating,
+                max_team_average_rating: restrictions.max_team_average_rating,
+                allowed_rank_tiers: restrictions.allowed_rank_tiers,
+                min_matches_played: restrictions.min_matches_played,
+            })
+        } else {
+            None
+        };
 
         Self {
             id: t.id.to_string(),
@@ -148,6 +196,7 @@ impl From<Tournament> for TournamentResponse {
             published_at: t.published_at,
             started_at: t.started_at,
             completed_at: t.completed_at,
+            eligibility_restrictions,
             is_registration_open,
             is_check_in_open,
         }

@@ -17,13 +17,15 @@ pub mod validation;
 // Re-export commonly used types at crate root
 pub use errors::{DomainError, FieldError, ValidationError};
 pub use ids::{
-    AvailabilityExceptionId, AvailabilityWindowId, BanId, DemoId, DemoMatchLinkId, DemoPlayerId,
-    DisputeId, DisputeMessageId, EvidenceId, ForfeitRecordId, GameId, GameSlug, LeagueId,
-    LeagueInvitationId, LeagueMemberId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId,
-    LeagueTeamMemberId, LeagueTeamSeasonId, LobbyId, MatchId, MatchStatusLogId, PlayerGameProfileId, PlayerId,
-    ProgressionLogId, ResultClaimId, ResultReviewId, SagaId, ScheduleProposalId, SuggestedTimeId,
-    TournamentBracketId, TournamentId, TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId,
-    TournamentRegistrationId, TournamentStageId, UserId, VetoActionId, VetoDelegateId,
-    VetoLobbyMessageId, VetoSessionId,
+    ApiKeyId, AvailabilityExceptionId, AvailabilityWindowId, BanId, DemoId, DemoMatchLinkId,
+    DemoPlayerId, DiscoveredMatchId, DisputeId, DisputeMessageId, EvidenceId, ForfeitRecordId,
+    GameId, GameSlug, LeagueId, LeagueInvitationId, LeagueMemberId, LeagueSeasonId, LeagueTeamId,
+    LeagueTeamInvitationId, LeagueTeamMemberId, LeagueTeamSeasonId, LobbyId, MatchId,
+    MatchStatusLogId, PlayerGameProfileId, PlayerId, ProgressionLogId, ResultClaimId,
+    PlayerRatingHistoryId, ResultReviewId, SagaId, ScheduleProposalId, SteamTrackingId,
+    SuggestedTimeId,
+    TournamentBracketId, TournamentId, TournamentMapPoolId, TournamentMatchGameId,
+    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId, VetoActionId,
+    VetoDelegateId, VetoLobbyMessageId, VetoSessionId,
 };
 pub use types::{DemoCategory, DemoLinkType, DemoStatus, ParseScopeTypeError, PermissionScope, ScopeType};

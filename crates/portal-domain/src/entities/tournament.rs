@@ -129,6 +129,12 @@ impl Tournament {
         true
     }
 
+    /// Parse eligibility restrictions from tournament settings.
+    #[must_use]
+    pub fn eligibility_restrictions(&self) -> super::eligibility::EligibilityRestrictions {
+        super::eligibility::EligibilityRestrictions::from_settings(&self.settings)
+    }
+
     /// Check if check-in is currently open.
     #[must_use]
     pub fn is_check_in_open(&self) -> bool {

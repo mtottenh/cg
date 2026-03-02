@@ -145,6 +145,32 @@ pub mod match_ {
     pub const ALL: &[&str] = &[ADMIN, RESULTS_REPORT, PARTICIPANTS_MANAGE];
 }
 
+/// API key scopes for service-to-service authentication.
+///
+/// These scopes are assigned to API keys (not users) and checked via
+/// `AuthenticatedService::require_permission()` on internal endpoints.
+pub mod service {
+    /// Read active steam tracking entries.
+    pub const STEAM_TRACKING_READ: &str = "steam_tracking.read";
+
+    /// Update steam tracking poll results.
+    pub const STEAM_TRACKING_WRITE: &str = "steam_tracking.write";
+
+    /// Read pending discovered matches.
+    pub const DISCOVERED_MATCHES_READ: &str = "discovered_matches.read";
+
+    /// Submit, claim, and update discovered matches.
+    pub const DISCOVERED_MATCHES_WRITE: &str = "discovered_matches.write";
+
+    /// All service scopes for iteration/validation.
+    pub const ALL: &[&str] = &[
+        STEAM_TRACKING_READ,
+        STEAM_TRACKING_WRITE,
+        DISCOVERED_MATCHES_READ,
+        DISCOVERED_MATCHES_WRITE,
+    ];
+}
+
 /// Platform-wide admin permissions.
 ///
 /// These permissions are NOT scoped - they apply globally across the platform.
@@ -198,6 +224,7 @@ pub fn all_permissions() -> Vec<(&'static str, &'static str, &'static [&'static 
         ("tournament", "Tournament Permissions", tournament::ALL),
         ("match", "Match Permissions", match_::ALL),
         ("admin", "Admin Permissions", admin::ALL),
+        ("service", "Service API Key Scopes", service::ALL),
     ]
 }
 
@@ -216,8 +243,8 @@ mod tests {
                     "Permission '{}' should have at least 2 parts separated by dots",
                     perm
                 );
-                // First part should match the category (except for admin which uses 'admin.' prefix)
-                if category != "admin" {
+                // First part should match the category (except admin and service which use different conventions)
+                if category != "admin" && category != "service" {
                     assert!(
                         perm.starts_with(category),
                         "Permission '{}' should start with category '{}'",

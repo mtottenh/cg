@@ -38,7 +38,7 @@ pub trait PlayerGameProfileRepository: Send + Sync {
         is_draw: bool,
     ) -> Result<PlayerGameProfile, DomainError>;
 
-    /// Update a player's rating values.
+    /// Update a player's rating values and optionally their rank tier.
     async fn update_rating(
         &self,
         player_id: PlayerId,
@@ -46,5 +46,6 @@ pub trait PlayerGameProfileRepository: Send + Sync {
         rating: i32,
         rating_deviation: i32,
         volatility: f64,
+        rank_tier: Option<String>,
     ) -> Result<(), DomainError>;
 }

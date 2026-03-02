@@ -13,7 +13,7 @@ mod config;
 mod output;
 mod repl;
 
-use commands::{audit, ban, bootstrap, db, demo, game, league_team, player, role, user};
+use commands::{api_key, audit, ban, bootstrap, db, demo, game, league_team, player, role, user};
 #[cfg(feature = "scanner")]
 use commands::scan;
 use config::CliConfig;
@@ -51,6 +51,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// API key management
+    ApiKey(api_key::ApiKeyCommand),
+
     /// User management commands
     User(user::UserCommand),
 
@@ -117,6 +120,7 @@ async fn main() -> Result<()> {
 
     // Execute command
     match command {
+        Commands::ApiKey(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::User(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Role(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Player(cmd) => cmd.execute(&pool, cli.format).await?,

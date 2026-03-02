@@ -64,7 +64,7 @@ impl<PGPR: PlayerGameProfileRepository> PlayerGameProfileService<PGPR> {
             .await
     }
 
-    /// Update a player's rating for a game.
+    /// Update a player's rating and optionally rank tier for a game.
     #[instrument(skip(self))]
     pub async fn update_rating(
         &self,
@@ -73,9 +73,10 @@ impl<PGPR: PlayerGameProfileRepository> PlayerGameProfileService<PGPR> {
         rating: i32,
         rating_deviation: i32,
         volatility: f64,
+        rank_tier: Option<String>,
     ) -> Result<(), DomainError> {
         self.profile_repo
-            .update_rating(player_id, game_id, rating, rating_deviation, volatility)
+            .update_rating(player_id, game_id, rating, rating_deviation, volatility, rank_tier)
             .await
     }
 }

@@ -279,6 +279,10 @@ pub enum DomainError {
     #[error("tournament is at maximum capacity")]
     TournamentFull,
 
+    /// Registration violates eligibility restrictions.
+    #[error("eligibility violation: {0}")]
+    EligibilityViolation(String),
+
     /// Participant is already registered for this tournament.
     #[error("already registered for this tournament")]
     AlreadyRegisteredForTournament,
@@ -339,6 +343,14 @@ pub enum DomainError {
     /// The authentication token has expired.
     #[error("token has expired")]
     TokenExpired,
+
+    /// The refresh token has expired.
+    #[error("refresh token has expired")]
+    RefreshTokenExpired,
+
+    /// The refresh token has been revoked.
+    #[error("refresh token has been revoked")]
+    RefreshTokenRevoked,
 
     /// The provided credentials are invalid.
     #[error("invalid credentials")]

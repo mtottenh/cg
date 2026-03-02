@@ -1,7 +1,7 @@
 //! Authentication handlers.
 
 use crate::dto::common::DataResponse;
-use crate::dto::requests::{LoginRequest, RegisterRequest};
+use crate::dto::requests::{LoginRequest, RefreshTokenRequest, RegisterRequest};
 use crate::dto::responses::{LoginResponse, RegisterResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::ValidatedJson;
@@ -9,8 +9,11 @@ use crate::state::AppState;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
+use chrono::{Duration, Utc};
+use portal_core::DomainError;
 use portal_db::NewUserRole;
-use portal_domain::generate_access_token_with_admin;
+use portal_domain::repositories::refresh_token::RefreshTokenRepository;
+use portal_domain::{generate_access_token_with_admin_and_expiry, generate_refresh_token, hash_refresh_token};
 use portal_domain::services::{LoginCommand, RegisterUserCommand};
 
 /// Extract request ID from headers.
@@ -73,18 +76,29 @@ pub async fn register(
     }
 
     // Generate access token for the newly registered user (new users are never admin)
-    let access_token = generate_access_token_with_admin(
+    let access_token = generate_access_token_with_admin_and_expiry(
         user.id.as_uuid(),
         player.id.as_uuid(),
         &user.username,
         &state.jwt_secret,
         false, // new users are not admins
+        state.token_config.access_token_expiry_minutes,
     )?;
+
+    // Generate and store refresh token
+    let raw_refresh = generate_refresh_token();
+    let refresh_hash = hash_refresh_token(&raw_refresh);
+    let refresh_expires = Utc::now()
+        + Duration::minutes(state.token_config.refresh_token_expiry_minutes);
+    state
+        .refresh_token_repo
+        .create(user.id.as_uuid(), &refresh_hash, refresh_expires)
+        .await?;
 
     Ok((
         StatusCode::CREATED,
         Json(DataResponse::new(
-            RegisterResponse::new(user, player, access_token),
+            RegisterResponse::new(user, player, access_token, raw_refresh),
             request_id,
         )),
     ))
@@ -129,20 +143,121 @@ pub async fn login(
         .await
         .unwrap_or(false);
 
-    // Generate token with admin claim
-    let access_token = generate_access_token_with_admin(
+    // Generate token with admin claim and configurable expiry
+    let access_token = generate_access_token_with_admin_and_expiry(
         auth_result.user_id.as_uuid(),
         auth_result.player_id.as_uuid(),
         &auth_result.username,
         &state.jwt_secret,
         is_admin,
+        state.token_config.access_token_expiry_minutes,
     )?;
+
+    // Generate and store refresh token
+    let raw_refresh = generate_refresh_token();
+    let refresh_hash = hash_refresh_token(&raw_refresh);
+    let refresh_expires = Utc::now()
+        + Duration::minutes(state.token_config.refresh_token_expiry_minutes);
+    state
+        .refresh_token_repo
+        .create(auth_result.user_id.as_uuid(), &refresh_hash, refresh_expires)
+        .await?;
 
     let response = LoginResponse {
         access_token,
+        refresh_token: raw_refresh,
         user_id: auth_result.user_id.to_string(),
         player_id: auth_result.player_id.to_string(),
         username: auth_result.username,
+    };
+
+    Ok(Json(DataResponse::new(response, request_id)))
+}
+
+/// Refresh an access token using a refresh token.
+///
+/// Validates the refresh token, revokes it (rotation), and issues a new access + refresh token pair.
+/// Does NOT require an Authorization header — the refresh token itself is the credential.
+#[utoipa::path(
+    post,
+    path = "/v1/auth/refresh",
+    request_body = RefreshTokenRequest,
+    responses(
+        (status = 200, description = "Token refreshed successfully", body = DataResponse<LoginResponse>),
+        (status = 401, description = "Invalid or expired refresh token", body = ApiError),
+    ),
+    tag = "auth"
+)]
+pub async fn refresh(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ValidatedJson(req): ValidatedJson<RefreshTokenRequest>,
+) -> ApiResult<Json<DataResponse<LoginResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    // Hash incoming token and look up in DB
+    let token_hash = hash_refresh_token(&req.refresh_token);
+    let stored = state
+        .refresh_token_repo
+        .find_active_by_hash(&token_hash)
+        .await?
+        .ok_or(DomainError::RefreshTokenRevoked)?;
+
+    // Validate expiry
+    if stored.is_expired() {
+        // Revoke the expired token for hygiene
+        let _ = state.refresh_token_repo.revoke(stored.id).await;
+        return Err(DomainError::RefreshTokenExpired.into());
+    }
+
+    // Revoke old token (rotation — each refresh token can only be used once)
+    state.refresh_token_repo.revoke(stored.id).await?;
+
+    // Look up user to get current info for the new JWT
+    let user = state
+        .user_service
+        .get_user(stored.user_id.into())
+        .await?;
+
+    // Look up player for the user
+    let player = state
+        .player_service
+        .get_player_by_user_id(stored.user_id.into())
+        .await?;
+
+    // Check admin status
+    let is_admin = state
+        .permission_service
+        .is_admin(stored.user_id.into())
+        .await
+        .unwrap_or(false);
+
+    // Issue new access token
+    let access_token = generate_access_token_with_admin_and_expiry(
+        user.id.as_uuid(),
+        player.id.as_uuid(),
+        &user.username,
+        &state.jwt_secret,
+        is_admin,
+        state.token_config.access_token_expiry_minutes,
+    )?;
+
+    // Issue new refresh token (rotation)
+    let raw_refresh = generate_refresh_token();
+    let refresh_hash = hash_refresh_token(&raw_refresh);
+    let refresh_expires = Utc::now()
+        + Duration::minutes(state.token_config.refresh_token_expiry_minutes);
+    state
+        .refresh_token_repo
+        .create(user.id.as_uuid(), &refresh_hash, refresh_expires)
+        .await?;
+
+    let response = LoginResponse {
+        access_token,
+        refresh_token: raw_refresh,
+        user_id: user.id.to_string(),
+        player_id: player.id.to_string(),
+        username: user.username,
     };
 
     Ok(Json(DataResponse::new(response, request_id)))

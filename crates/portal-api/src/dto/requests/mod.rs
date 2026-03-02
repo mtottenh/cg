@@ -11,6 +11,7 @@ pub mod game;
 pub mod league;
 pub mod league_team;
 pub mod player;
+pub mod player_game_profile;
 pub mod progression;
 pub mod result;
 pub mod result_review;
@@ -19,7 +20,7 @@ pub mod tournament;
 pub mod veto;
 pub mod veto_delegate;
 
-pub use auth::{LoginRequest, RegisterRequest};
+pub use auth::{LoginRequest, RefreshTokenRequest, RegisterRequest};
 pub use availability::{
     CreateAvailabilityOverrideRequest, CreateAvailabilityWindowRequest, GenerateSuggestionsRequest,
     GetAvailabilityQuery, UpdateAvailabilityWindowRequest,
@@ -52,6 +53,7 @@ pub use league_team::{
     WithdrawParticipantRequest,
 };
 pub use player::{SocialLinksRequest, UpdatePlayerProfileRequest};
+pub use player_game_profile::SubmitRatingRequest;
 pub use progression::{ProcessProgressionRequest, ReapplyProgressionRequest};
 pub use result::{
     AdminResolveResultRequest, CancelResultClaimRequest, ConfirmResultClaimRequest,
@@ -65,8 +67,9 @@ pub use tournament::{
     AcceptScheduleProposalRequest, AdminMatchTransitionRequest, AdminScheduleRequest,
     AutoSeedRequest, CheckInRequest, CounterProposeRequest, CreateTournamentRequest,
     CreateTournamentStageRequest, DisputeMatchRequest, DisqualifyRequest, ForfeitMatchRequest,
-    ListTournamentsQuery, ManualSeedRequest, MatchCheckInRequest, ProposeScheduleRequest,
-    RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest, RejectScheduleProposalRequest,
+    EligibilityRestrictionsInput, ListTournamentsQuery, ManualSeedRequest, MatchCheckInRequest,
+    ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
+    RejectScheduleProposalRequest,
     ResolveDisputeRequest, ScheduleMatchRequest, SeedAssignment, SubmitMatchResultRequest,
     UpdateTournamentRequest, WithdrawRequest,
 };

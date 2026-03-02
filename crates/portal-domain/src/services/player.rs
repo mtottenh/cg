@@ -4,7 +4,7 @@ use crate::entities::league_team::PlayerLeagueTeamMembership;
 use crate::entities::Player;
 use crate::repositories::league_team::LeagueTeamMemberRepository;
 use crate::repositories::{PlayerRepository, UpdatePlayer};
-use portal_core::{DomainError, LeagueSeasonId, PlayerId, UserId};
+use portal_core::{DomainError, FieldError, LeagueSeasonId, PlayerId, UserId, ValidationError};
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -116,7 +116,32 @@ where
         cmd: UpdatePlayer,
     ) -> Result<Player, DomainError> {
         // Verify player exists
-        let _ = self.get_player(player_id).await?;
+        let player = self.get_player(player_id).await?;
+
+        // Validate steam_id if provided
+        if let Some(ref steam_id_str) = cmd.steam_id {
+            // Immutability: reject if already set
+            if player.steam_id.is_some() {
+                return Err(DomainError::Conflict(
+                    "Steam ID is already set and cannot be changed".into(),
+                ));
+            }
+            // Validate: must parse as i64 in SteamID64 range
+            let parsed: i64 = steam_id_str.parse().map_err(|_| {
+                DomainError::Validation(ValidationError::field(FieldError::format(
+                    "steam_id",
+                    "a valid SteamID64 (e.g. 76561198012345678)",
+                )))
+            })?;
+            if parsed < 76_561_197_960_265_728 {
+                return Err(DomainError::Validation(ValidationError::field(
+                    FieldError::format(
+                        "steam_id",
+                        "a valid SteamID64 (must be >= 76561197960265728)",
+                    ),
+                )));
+            }
+        }
 
         // Validate display name uniqueness if changing
         if let Some(ref new_name) = cmd.display_name {

@@ -9,6 +9,8 @@ pub mod dispute;
 pub mod evidence;
 pub mod forfeit;
 pub mod games;
+pub mod internal;
+pub mod steam_tracking;
 pub mod league_teams;
 pub mod leagues;
 pub mod player_game_profiles;

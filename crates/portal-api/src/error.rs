@@ -211,6 +211,8 @@ impl From<DomainError> for ApiError {
             // Authentication errors
             DomainError::InvalidToken => Self::unauthorized("Invalid or missing token"),
             DomainError::TokenExpired => Self::unauthorized("Token has expired"),
+            DomainError::RefreshTokenExpired => Self::unauthorized("Refresh token has expired"),
+            DomainError::RefreshTokenRevoked => Self::unauthorized("Refresh token has been revoked"),
             DomainError::InvalidCredentials => Self::unauthorized("Invalid credentials"),
 
             // Conflict errors
@@ -267,6 +269,7 @@ impl From<DomainError> for ApiError {
                 Self::bad_request("Tournament has already started")
             }
             DomainError::TournamentFull => Self::bad_request("Tournament is at maximum capacity"),
+            DomainError::EligibilityViolation(msg) => Self::bad_request(msg),
             DomainError::NotRegisteredForTournament => {
                 Self::bad_request("Not registered for this tournament")
             }

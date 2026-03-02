@@ -41,6 +41,14 @@ pub struct RegisterRequest {
     pub display_name: String,
 }
 
+/// Request body for refreshing an access token.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct RefreshTokenRequest {
+    /// The refresh token issued during login or previous refresh.
+    #[validate(length(min = 1, message = "Refresh token is required"))]
+    pub refresh_token: String,
+}
+
 /// Request body for user login.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct LoginRequest {

@@ -1,7 +1,8 @@
 //! Application state for dependency injection.
 
 use portal_db::{
-    DbPool, GameRepository, LocalEvidenceStorage, PermissionRepository,
+    DbPool, GameRepository, LocalEvidenceStorage, PgApiKeyRepository, PgDiscoveredMatchRepository,
+    PgPlayerRatingHistoryRepository, PgRefreshTokenRepository, PgSteamTrackingRepository, PermissionRepository,
     PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgBanRepository,
     PgDemoMatchLinkRepository, PgDemoPlayerRepository, PgDemoRepository,
     PgDisputeMessageRepository, PgDisputeRepository, PgEvidenceRepository,
@@ -26,9 +27,10 @@ use portal_domain::services::{
         SchedulingService, SeedingService, VetoAuthorizationService, VetoLobbyChatService,
         VetoService,
     },
-    BanService, DemoService, LeagueSeasonParticipantService, LeagueSeasonService, LeagueService,
-    LeagueTeamInvitationService, LeagueTeamService, PermissionService, PlayerGameProfileService,
-    PlayerService, TournamentService, UserService,
+    BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
+    LeagueSeasonService, LeagueService, LeagueTeamInvitationService, LeagueTeamService,
+    PermissionService, PlayerGameProfileService, PlayerService, SteamTrackingService,
+    TournamentService, UserService,
 };
 use crate::adapters::{DemoValidatorAdapter, ReviewCreatorAdapter, StatsUpdaterAdapter};
 use crate::websocket::VetoLobbyManager;
@@ -37,6 +39,9 @@ use portal_storage::{LocalStorage, StorageBackend};
 use std::sync::Arc;
 
 /// Type aliases for services with concrete repository implementations.
+pub type AppSteamTrackingService =
+    SteamTrackingService<PgSteamTrackingRepository, PgPlayerRepository>;
+pub type AppDiscoveredMatchService = DiscoveredMatchService<PgDiscoveredMatchRepository>;
 pub type AppUserService = UserService<PgUserRepository, PgPlayerRepository>;
 pub type AppPlayerService = PlayerService<PgPlayerRepository, PgLeagueTeamMemberRepository>;
 pub type AppPermissionService = PermissionService<PgPermissionRepository>;
@@ -243,6 +248,38 @@ pub struct AppState {
     pub match_completion_saga: AppMatchCompletionSaga,
     /// CS2 demo service base URL (for CS2-specific handlers).
     pub cs2_demo_base_url: Option<String>,
+    /// API key repository for service-to-service authentication.
+    pub api_key_repo: Arc<PgApiKeyRepository>,
+    /// Steam tracking service.
+    pub steam_tracking_service: AppSteamTrackingService,
+    /// Discovered match service.
+    pub discovered_match_service: AppDiscoveredMatchService,
+    /// Player rating history repository for rating submissions.
+    pub rating_history_repo: Arc<PgPlayerRatingHistoryRepository>,
+    /// Base path for local file uploads (used for static file serving).
+    pub uploads_path: String,
+    /// Refresh token repository.
+    pub refresh_token_repo: Arc<PgRefreshTokenRepository>,
+    /// Token expiry configuration.
+    pub token_config: TokenConfig,
+}
+
+/// Token expiry configuration.
+#[derive(Debug, Clone)]
+pub struct TokenConfig {
+    /// Access token expiry in minutes.
+    pub access_token_expiry_minutes: i64,
+    /// Refresh token expiry in minutes.
+    pub refresh_token_expiry_minutes: i64,
+}
+
+impl Default for TokenConfig {
+    fn default() -> Self {
+        Self {
+            access_token_expiry_minutes: 15,
+            refresh_token_expiry_minutes: 10080, // 7 days
+        }
+    }
 }
 
 /// Storage configuration.
@@ -284,6 +321,18 @@ impl AppState {
         let league_member_repo = Arc::new(PgLeagueMemberRepository::new(db_pool.clone()));
         let league_invitation_repo = Arc::new(PgLeagueInvitationRepository::new(db_pool.clone()));
 
+        // Create API key repository
+        let api_key_repo = Arc::new(PgApiKeyRepository::new(db_pool.clone()));
+
+        // Create refresh token repository
+        let refresh_token_repo = Arc::new(PgRefreshTokenRepository::new(db_pool.clone()));
+
+        // Create steam tracking repository
+        let steam_tracking_repo = Arc::new(PgSteamTrackingRepository::new(db_pool.clone()));
+
+        // Create discovered match repository
+        let discovered_match_repo = Arc::new(PgDiscoveredMatchRepository::new(db_pool.clone()));
+
         // Create RBAC repositories and services
         let pg_permission_repo = Arc::new(PgPermissionRepository::new(db_pool.clone()));
         let permission_service = PermissionService::new(Arc::clone(&pg_permission_repo));
@@ -297,7 +346,8 @@ impl AppState {
         let stats_repo = StatsRepository::new(db_pool.clone());
 
         // Create storage backend
-        // Save evidence base path before consuming storage_config
+        // Save paths before consuming storage_config
+        let uploads_path = storage_config.base_path.clone();
         let evidence_base_path = format!("{}/evidence", storage_config.base_path);
         let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(
             storage_config.base_path,
@@ -324,10 +374,18 @@ impl AppState {
         let user_service = UserService::new(Arc::clone(&user_repo), Arc::clone(&player_repo));
         let player_service =
             PlayerService::new(Arc::clone(&player_repo), Arc::clone(&league_team_member_repo));
+        let steam_tracking_service = SteamTrackingService::new(
+            Arc::clone(&steam_tracking_repo),
+            Arc::clone(&player_repo),
+        );
+        let discovered_match_service =
+            DiscoveredMatchService::new(Arc::clone(&discovered_match_repo));
         let player_game_profile_repo =
             Arc::new(PgPlayerGameProfileRepository::new(db_pool.clone()));
         let player_game_profile_service =
             PlayerGameProfileService::new(Arc::clone(&player_game_profile_repo));
+        let rating_history_repo =
+            Arc::new(PgPlayerRatingHistoryRepository::new(db_pool.clone()));
         let league_service = LeagueService::new(
             Arc::clone(&league_repo),
             Arc::clone(&league_member_repo),
@@ -592,6 +650,20 @@ impl AppState {
             plugin_manager,
             match_completion_saga,
             cs2_demo_base_url,
+            api_key_repo,
+            steam_tracking_service,
+            discovered_match_service,
+            rating_history_repo,
+            uploads_path,
+            refresh_token_repo,
+            token_config: TokenConfig::default(),
         }
+    }
+
+    /// Set custom token configuration (access + refresh token expiry).
+    #[must_use]
+    pub fn with_token_config(mut self, config: TokenConfig) -> Self {
+        self.token_config = config;
+        self
     }
 }

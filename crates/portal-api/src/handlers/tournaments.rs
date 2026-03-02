@@ -24,12 +24,13 @@ use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use portal_core::types::TournamentMatchStatus;
-use portal_core::{ScheduleProposalId, TournamentId, TournamentMatchId, TournamentRegistrationId};
+use portal_core::types::{TournamentMatchStatus, TournamentStatus};
+use portal_core::{PlayerId, ScheduleProposalId, TournamentId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::entities::schedule_proposal::{
     AcceptProposalCommand, CounterProposeCommand, RejectProposalCommand,
 };
 use portal_domain::repositories::tournament::TournamentFilters;
+use portal_domain::repositories::PlayerRatingHistoryRepository;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -37,6 +38,62 @@ fn get_request_id(headers: &HeaderMap) -> &str {
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
+}
+
+/// Check eligibility restrictions for a set of player IDs against a tournament.
+///
+/// Fetches each player's game profile and rating stats, then runs the
+/// eligibility checker. Returns Ok(()) if all checks pass, or an ApiError
+/// with details of all violations.
+async fn check_eligibility_for_players(
+    state: &AppState,
+    tournament: &portal_domain::entities::Tournament,
+    player_ids: &[PlayerId],
+) -> Result<(), ApiError> {
+    let restrictions = tournament.eligibility_restrictions();
+    if !restrictions.has_restrictions() {
+        return Ok(());
+    }
+
+    let game_id = tournament.game_id;
+
+    // Gather profile + rating stats for each player
+    let mut player_data = Vec::with_capacity(player_ids.len());
+    for &pid in player_ids {
+        let profile = state
+            .player_game_profile_service
+            .get_profile(pid, game_id)
+            .await?;
+        let stats = state
+            .rating_history_repo
+            .get_rating_stats(pid, game_id)
+            .await?;
+        player_data.push((pid, profile, stats));
+    }
+
+    let violations =
+        portal_domain::services::eligibility::check_eligibility(&restrictions, &player_data);
+
+    if violations.is_empty() {
+        return Ok(());
+    }
+
+    // Format violations into error message
+    let messages: Vec<String> = violations
+        .iter()
+        .map(|v| {
+            if v.player_id == PlayerId::from_uuid(uuid::Uuid::nil()) {
+                // Team-level violation
+                format!("[{}] {}", v.restriction, v.message)
+            } else {
+                format!("[{}] Player {}: {}", v.restriction, v.player_id, v.message)
+            }
+        })
+        .collect();
+    Err(ApiError::bad_request(format!(
+        "Eligibility check failed: {}",
+        messages.join("; ")
+    )))
 }
 
 // =============================================================================
@@ -266,6 +323,28 @@ pub async fn update_tournament(
     let tournament_id: TournamentId = tournament_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    // Guard: eligibility restrictions cannot be changed once registration has opened
+    let wants_eligibility_change = req.eligibility_restrictions.is_some()
+        || req
+            .settings
+            .as_ref()
+            .and_then(|s| s.get("eligibility"))
+            .is_some();
+
+    if wants_eligibility_change {
+        let current = state
+            .tournament_service
+            .get_tournament(tournament_id)
+            .await?;
+        if current.status != TournamentStatus::Draft
+            && current.status != TournamentStatus::Published
+        {
+            return Err(ApiError::bad_request(
+                "Eligibility restrictions cannot be changed after registration has opened",
+            ));
+        }
+    }
 
     let cmd = req.try_into()?;
 
@@ -514,6 +593,12 @@ pub async fn register_team(
 
     let team_season_id = req.parse_team_season_id()?;
 
+    // Eligibility check: fetch tournament and team members, run restrictions
+    let tournament = state.tournament_service.get_tournament(tournament_id).await?;
+    let members = state.league_team_service.get_members(team_season_id).await?;
+    let player_ids: Vec<PlayerId> = members.iter().map(|m| m.player_id).collect();
+    check_eligibility_for_players(&state, &tournament, &player_ids).await?;
+
     let registration = state
         .tournament_service
         .register_team(
@@ -566,6 +651,10 @@ pub async fn register_player(
         .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let player_id = auth.player_id;
+
+    // Eligibility check: fetch tournament and run restrictions for this player
+    let tournament = state.tournament_service.get_tournament(tournament_id).await?;
+    check_eligibility_for_players(&state, &tournament, &[player_id]).await?;
 
     let registration = state
         .tournament_service

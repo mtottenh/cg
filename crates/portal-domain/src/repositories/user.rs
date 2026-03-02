@@ -108,6 +108,10 @@ pub struct UpdatePlayer {
     pub timezone: Option<String>,
     /// Social media links.
     pub social_links: Option<SocialLinks>,
+    /// Steam ID (SteamID64 as string).
+    pub steam_id: Option<String>,
+    /// Steam ID as 64-bit integer (derived from steam_id).
+    pub steam_id_64: Option<i64>,
 }
 
 impl UpdatePlayer {
@@ -122,5 +126,6 @@ impl UpdatePlayer {
             || self.region.is_some()
             || self.timezone.is_some()
             || self.social_links.is_some()
+            || self.steam_id.is_some()
     }
 }

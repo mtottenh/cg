@@ -14,6 +14,7 @@ pub mod league;
 pub mod league_team;
 pub mod match_lifecycle;
 pub mod player;
+pub mod player_game_profile;
 pub mod result_claim;
 pub mod result_review;
 pub mod schedule_proposal;
@@ -55,6 +56,7 @@ pub use match_lifecycle::{
     CreateMatchStatusLogCommand, MatchStatusLog, TransitionTrigger,
 };
 pub use player::{Player, SocialLinks};
+pub use player_game_profile::PlayerGameProfile;
 pub use schedule_proposal::{
     AcceptProposalCommand, CounterProposeCommand, CreateScheduleProposalCommand,
     RejectProposalCommand, ScheduleProposal,

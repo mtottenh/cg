@@ -82,7 +82,7 @@ pub struct PlayerGameProfileRow {
 
     // Relationships
     pub player_id: Uuid,
-    pub game_id: String,
+    pub game_id: Uuid,
 
     // Rating System (Glicko-2)
     pub rating: i32,
@@ -127,7 +127,7 @@ pub struct PlayerGameProfileRow {
 #[derive(Debug, Clone)]
 pub struct NewPlayerGameProfile {
     pub player_id: Uuid,
-    pub game_id: String,
+    pub game_id: Uuid,
 }
 
 /// Data for updating rating after a match.

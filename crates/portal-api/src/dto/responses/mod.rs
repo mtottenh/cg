@@ -12,6 +12,7 @@ pub mod game;
 pub mod league;
 pub mod league_team;
 pub mod player;
+pub mod player_game_profile;
 pub mod progression;
 pub mod result;
 pub mod result_review;
@@ -53,6 +54,7 @@ pub use league_team::{
     LeagueTeamSummaryResponse, LeagueTeamWithSeasonResponse, PlayerLeagueTeamMembershipResponse,
 };
 pub use player::{PlayerResponse, PlayerSearchResponse, SocialLinksResponse};
+pub use player_game_profile::{DisplayStatResponse, PlayerGameProfileResponse};
 pub use progression::{
     AdvancementResponse, LoserResultResponse, ProgressionLogResponse, ProgressionResponse,
 };

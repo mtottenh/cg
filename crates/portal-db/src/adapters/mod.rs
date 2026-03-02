@@ -13,6 +13,7 @@ mod forfeit;
 mod league;
 mod league_team;
 mod permission;
+mod player_game_profile;
 mod result_review;
 mod saga;
 mod tournament;
@@ -41,6 +42,7 @@ pub use tournament::{
     PgTournamentStageRepository, PgTournamentStandingsRepository, PgVetoActionRepository,
     PgVetoSessionRepository,
 };
+pub use player_game_profile::PgPlayerGameProfileRepository;
 pub use user::{PgPlayerRepository, PgUserRepository};
 pub use forfeit::PgForfeitRecordRepository;
 pub use dispute::{PgDisputeMessageRepository, PgDisputeRepository};

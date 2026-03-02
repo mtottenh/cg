@@ -88,6 +88,25 @@ pub trait ReviewCreator: Send + Sync + 'static {
     ) -> Result<Option<ResultReview>, DomainError>;
 }
 
+/// Trait for updating player stats after match completion.
+///
+/// Used by the saga to update player game profiles without depending on the full service stack.
+#[async_trait]
+pub trait MatchStatsUpdater: Send + Sync + 'static {
+    /// Update player stats for all participants after a match completes.
+    ///
+    /// The implementation should look up the game_id from the match/tournament,
+    /// resolve player IDs from registrations, and call the appropriate plugin
+    /// and profile service methods.
+    async fn update_player_stats(
+        &self,
+        match_id: TournamentMatchId,
+        winner_registration_id: TournamentRegistrationId,
+        loser_registration_id: TournamentRegistrationId,
+        is_forfeit: bool,
+    ) -> Result<(), DomainError>;
+}
+
 // =============================================================================
 // INPUT/OUTPUT TYPES
 // =============================================================================
@@ -145,7 +164,7 @@ pub struct MatchCompletionOutput {
 /// - Winner advancement to next match
 /// - Loser routing (elimination or losers bracket)
 /// - Standings updates for round robin/swiss
-pub struct MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC> {
+pub struct MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU> {
     match_repo: Arc<TMR>,
     bracket_repo: Arc<TBR>,
     registration_repo: Arc<TRR>,
@@ -154,10 +173,11 @@ pub struct MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC> {
     progression_log_repo: Arc<PLR>,
     demo_validator: Arc<MDV>,
     review_creator: Arc<RC>,
+    stats_updater: Arc<MSU>,
 }
 
-impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC> Clone
-    for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC>
+impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU> Clone
+    for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU>
 {
     fn clone(&self) -> Self {
         Self {
@@ -169,12 +189,13 @@ impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC> Clone
             progression_log_repo: Arc::clone(&self.progression_log_repo),
             demo_validator: Arc::clone(&self.demo_validator),
             review_creator: Arc::clone(&self.review_creator),
+            stats_updater: Arc::clone(&self.stats_updater),
         }
     }
 }
 
-impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC>
-    MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC>
+impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU>
+    MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU>
 where
     TMR: TournamentMatchRepository,
     TBR: TournamentBracketRepository,
@@ -184,6 +205,7 @@ where
     PLR: ProgressionLogRepository,
     MDV: MatchDemoValidator,
     RC: ReviewCreator,
+    MSU: MatchStatsUpdater,
 {
     /// Create a new match completion saga.
     #[allow(clippy::too_many_arguments)]
@@ -196,6 +218,7 @@ where
         progression_log_repo: Arc<PLR>,
         demo_validator: Arc<MDV>,
         review_creator: Arc<RC>,
+        stats_updater: Arc<MSU>,
     ) -> Self {
         Self {
             match_repo,
@@ -206,6 +229,7 @@ where
             progression_log_repo,
             demo_validator,
             review_creator,
+            stats_updater,
         }
     }
 
@@ -424,6 +448,10 @@ where
         let standings_updated = self
             .step_update_standings(saga_coordinator, execution, match_, &bracket, &input)
             .await?;
+
+        // Step 8: Update player stats (best-effort, non-blocking)
+        self.step_update_player_stats(saga_coordinator, execution, &input)
+            .await;
 
         // Build summary
         let summary = self.build_summary(
@@ -1023,6 +1051,74 @@ where
         Ok(true)
     }
 
+    /// Step 8: Update player stats (best-effort).
+    ///
+    /// This step is non-critical — if it fails, we log and continue.
+    /// Stats can be recalculated later from match history.
+    async fn step_update_player_stats(
+        &self,
+        saga_coordinator: &SagaCoordinator<SR>,
+        execution: &mut SagaExecution,
+        input: &MatchCompletionInput,
+    ) {
+        const STEP_NAME: &str = "update_player_stats";
+
+        // Skip for forfeits (no meaningful stats to update)
+        if input.is_forfeit {
+            let _ = saga_coordinator
+                .complete_step(
+                    execution,
+                    STEP_NAME,
+                    Some(serde_json::json!({"action": "skipped_forfeit"})),
+                )
+                .await;
+            return;
+        }
+
+        match self
+            .stats_updater
+            .update_player_stats(
+                input.match_id,
+                input.winner_registration_id,
+                input.loser_registration_id,
+                input.is_forfeit,
+            )
+            .await
+        {
+            Ok(()) => {
+                let _ = saga_coordinator
+                    .complete_step(
+                        execution,
+                        STEP_NAME,
+                        Some(serde_json::json!({"action": "stats_updated"})),
+                    )
+                    .await;
+                info!(
+                    match_id = %input.match_id,
+                    "Player stats updated"
+                );
+            }
+            Err(e) => {
+                // Log but don't fail the saga — stats are non-critical
+                warn!(
+                    match_id = %input.match_id,
+                    error = %e,
+                    "Failed to update player stats (non-critical)"
+                );
+                let _ = saga_coordinator
+                    .complete_step(
+                        execution,
+                        STEP_NAME,
+                        Some(serde_json::json!({
+                            "action": "failed_non_critical",
+                            "error": e.to_string()
+                        })),
+                    )
+                    .await;
+            }
+        }
+    }
+
     // =========================================================================
     // COMPENSATION
     // =========================================================================
@@ -1174,8 +1270,8 @@ where
 }
 
 #[async_trait]
-impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC> Saga
-    for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC>
+impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU> Saga
+    for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU>
 where
     TMR: TournamentMatchRepository,
     TBR: TournamentBracketRepository,
@@ -1185,6 +1281,7 @@ where
     PLR: ProgressionLogRepository,
     MDV: MatchDemoValidator,
     RC: ReviewCreator,
+    MSU: MatchStatsUpdater,
 {
     type Input = MatchCompletionInput;
     type Output = MatchCompletionOutput;

@@ -440,6 +440,81 @@ impl GamePlugin for Cs2Plugin {
         ]
     }
 
+    fn build_match_data_from_demo(
+        &self,
+        demo: &crate::types::DemoData,
+    ) -> Result<MatchData, StatsError> {
+        use crate::traits::resolve_demo_team_id;
+        use crate::types::{MatchPlayerData, MatchTeamData};
+
+        let winner_team_id = match demo.team1_score.cmp(&demo.team2_score) {
+            std::cmp::Ordering::Greater => Some(1u32),
+            std::cmp::Ordering::Less => Some(2u32),
+            std::cmp::Ordering::Equal => None,
+        };
+
+        let teams = vec![
+            MatchTeamData {
+                team_id: 1,
+                score: demo.team1_score,
+                rounds_won: Some(demo.team1_score as u32),
+                side_scores: None,
+            },
+            MatchTeamData {
+                team_id: 2,
+                score: demo.team2_score,
+                rounds_won: Some(demo.team2_score as u32),
+                side_scores: None,
+            },
+        ];
+
+        let players: Vec<MatchPlayerData> = demo
+            .players
+            .iter()
+            .filter_map(|dp| {
+                let player_id = dp.player_id?;
+                let team_id = resolve_demo_team_id(dp, &demo.team1_name, &demo.team2_name)?;
+
+                // CS2-specific: remap raw demo stat keys to the keys that
+                // calculate_player_stats expects. The raw stats from demo parsing
+                // use "headshot_kills" and "damage", but the CS2 stats schema
+                // expects "headshots" and "total_damage".
+                let raw = &dp.stats;
+                let game_stats = json!({
+                    "kills": raw.get("kills").and_then(Value::as_i64).unwrap_or(0),
+                    "deaths": raw.get("deaths").and_then(Value::as_i64).unwrap_or(0),
+                    "assists": raw.get("assists").and_then(Value::as_i64).unwrap_or(0),
+                    "headshots": raw.get("headshot_kills").or_else(|| raw.get("headshots")).and_then(Value::as_i64).unwrap_or(0),
+                    "total_damage": raw.get("damage").or_else(|| raw.get("total_damage")).and_then(Value::as_i64).unwrap_or(0),
+                    "mvps": raw.get("mvps").and_then(Value::as_i64).unwrap_or(0),
+                    "clutches_won": raw.get("clutches_won").and_then(Value::as_i64).unwrap_or(0),
+                    "clutches_attempted": raw.get("clutches_attempted").and_then(Value::as_i64).unwrap_or(0),
+                    "opening_kills": raw.get("opening_kills").and_then(Value::as_i64).unwrap_or(0),
+                    "opening_deaths": raw.get("opening_deaths").and_then(Value::as_i64).unwrap_or(0),
+                    "flash_assists": raw.get("flash_assists").and_then(Value::as_i64).unwrap_or(0),
+                    "utility_damage": raw.get("utility_damage").and_then(Value::as_i64).unwrap_or(0),
+                });
+
+                Some(MatchPlayerData {
+                    player_id,
+                    team_id,
+                    game_specific_stats: game_stats,
+                })
+            })
+            .collect();
+
+        Ok(MatchData {
+            match_id: demo.match_id,
+            game_id: demo.game_id.clone(),
+            map_id: demo.map_name.clone(),
+            duration_seconds: demo.duration_seconds,
+            players,
+            teams,
+            winner_team_id,
+            game_specific_data: demo.raw_stats.clone(),
+        })
+    }
+
     // ========================================================================
     // Rating
     // ========================================================================
@@ -1004,6 +1079,13 @@ impl GamePlugin for Cs2PluginWithEvidence {
 
     fn format_player_stats(&self, stats: &serde_json::Value) -> Vec<DisplayStat> {
         self.inner.format_player_stats(stats)
+    }
+
+    fn build_match_data_from_demo(
+        &self,
+        demo: &crate::types::DemoData,
+    ) -> Result<MatchData, StatsError> {
+        self.inner.build_match_data_from_demo(demo)
     }
 
     fn rank_tiers(&self) -> Vec<RankTier> {

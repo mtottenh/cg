@@ -73,17 +73,17 @@ enum PlayerSubcommand {
     Stats {
         /// Player ID
         id: Uuid,
-        /// Game ID
+        /// Game ID (UUID)
         #[arg(long)]
-        game: Option<String>,
+        game: Option<Uuid>,
     },
 
     /// Reset player rating
     ResetRating {
         /// Player ID
         id: Uuid,
-        /// Game ID
-        game: String,
+        /// Game ID (UUID)
+        game: Uuid,
     },
 }
 
@@ -129,10 +129,10 @@ impl PlayerCommand {
                 .await
             }
             PlayerSubcommand::Stats { id, game } => {
-                show_stats(&profile_repo, *id, game.as_deref(), format).await
+                show_stats(&profile_repo, *id, *game, format).await
             }
             PlayerSubcommand::ResetRating { id, game } => {
-                reset_rating(&profile_repo, *id, game).await
+                reset_rating(&profile_repo, *id, *game).await
             }
         }
     }
@@ -253,7 +253,7 @@ async fn update_player(
 async fn show_stats(
     repo: &PlayerGameProfileRepository,
     id: Uuid,
-    game: Option<&str>,
+    game: Option<Uuid>,
     format: OutputFormat,
 ) -> Result<()> {
     let player_id = PlayerId::from_uuid(id);
@@ -330,7 +330,7 @@ async fn show_stats(
     Ok(())
 }
 
-async fn reset_rating(repo: &PlayerGameProfileRepository, id: Uuid, game: &str) -> Result<()> {
+async fn reset_rating(repo: &PlayerGameProfileRepository, id: Uuid, game: Uuid) -> Result<()> {
     let player_id = PlayerId::from_uuid(id);
 
     repo.reset_rating(player_id, game)

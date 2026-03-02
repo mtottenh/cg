@@ -64,7 +64,8 @@ use crate::dto::responses::demo::{
 use crate::error::{ApiError, FieldErrorDto};
 use crate::handlers::{
     admin, auth, availability, bans, demos, dispute, evidence, forfeit, games, league_teams, leagues,
-    players, progression, result_reviews, results, roles, tournaments, uploads, users, veto, veto_delegates,
+    player_game_profiles, players, progression, result_reviews, results, roles, tournaments, uploads,
+    users, veto, veto_delegates,
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -153,6 +154,9 @@ use utoipa_swagger_ui::SwaggerUi;
         players::get_player,
         players::get_my_profile,
         players::update_my_profile,
+        player_game_profiles::list_player_game_profiles,
+        player_game_profiles::get_player_game_profile,
+        player_game_profiles::get_my_game_profiles,
         uploads::upload_player_avatar,
         uploads::upload_player_banner,
         // Users
@@ -359,6 +363,8 @@ use utoipa_swagger_ui::SwaggerUi;
             SocialLinksRequest,
             SocialLinksResponse,
             UpdatePlayerProfileRequest,
+            crate::dto::responses::PlayerGameProfileResponse,
+            crate::dto::responses::DisplayStatResponse,
 
             // Users
             UserResponse,

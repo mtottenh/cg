@@ -11,6 +11,7 @@ pub mod forfeit;
 pub mod games;
 pub mod league_teams;
 pub mod leagues;
+pub mod player_game_profiles;
 pub mod players;
 pub mod progression;
 pub mod result_reviews;

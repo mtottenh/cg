@@ -6,9 +6,30 @@ use serde_json::Value;
 
 use crate::error::{RatingError, StatsError};
 use crate::types::{
-    DisplayStat, LobbyStateMachine, MapPickBanFormat, MatchConfig, MatchData, MatchFormat,
-    MatchmakingCriteria, PlayerInfo, RankedParticipant, RatingChange, TournamentFormatId,
+    DemoData, DemoPlayerData, DisplayStat, LobbyStateMachine, MapPickBanFormat, MatchConfig,
+    MatchData, MatchFormat, MatchPlayerData, MatchTeamData, MatchmakingCriteria, PlayerInfo,
+    RankedParticipant, RatingChange, TournamentFormatId,
 };
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/// Resolve a demo player's team_id (1 or 2) by matching their team_name
+/// against the demo's team1/team2 names.
+///
+/// Public so plugins can reuse this in their `build_match_data_from_demo` overrides.
+pub fn resolve_demo_team_id(
+    player: &DemoPlayerData,
+    team1_name: &str,
+    team2_name: &str,
+) -> Option<u32> {
+    match player.team_name.as_deref() {
+        Some(name) if name == team1_name => Some(1),
+        Some(name) if name == team2_name => Some(2),
+        _ => None,
+    }
+}
 
 // ============================================================================
 // Core Plugin Trait
@@ -112,6 +133,60 @@ pub trait GamePlugin: Send + Sync {
     /// Converts the raw stats JSON into a list of formatted display stats
     /// suitable for showing on player profiles.
     fn format_player_stats(&self, stats: &Value) -> Vec<DisplayStat>;
+
+    /// Build a `MatchData` from raw demo data.
+    ///
+    /// Plugins override this to control how game-specific demo fields (kills,
+    /// damage, clutches, etc.) are mapped into `MatchPlayerData.game_specific_stats`.
+    /// The default implementation maps the core stats (kills/deaths/assists/damage/headshots)
+    /// which may be sufficient for simple games.
+    fn build_match_data_from_demo(&self, demo: &DemoData) -> Result<MatchData, StatsError> {
+        let winner_team_id = match demo.team1_score.cmp(&demo.team2_score) {
+            std::cmp::Ordering::Greater => Some(1u32),
+            std::cmp::Ordering::Less => Some(2u32),
+            std::cmp::Ordering::Equal => None,
+        };
+
+        let teams = vec![
+            MatchTeamData {
+                team_id: 1,
+                score: demo.team1_score,
+                rounds_won: Some(demo.team1_score as u32),
+                side_scores: None,
+            },
+            MatchTeamData {
+                team_id: 2,
+                score: demo.team2_score,
+                rounds_won: Some(demo.team2_score as u32),
+                side_scores: None,
+            },
+        ];
+
+        let players: Vec<MatchPlayerData> = demo
+            .players
+            .iter()
+            .filter_map(|dp| {
+                let player_id = dp.player_id?;
+                let team_id = resolve_demo_team_id(dp, &demo.team1_name, &demo.team2_name)?;
+                Some(MatchPlayerData {
+                    player_id,
+                    team_id,
+                    game_specific_stats: dp.stats.clone(),
+                })
+            })
+            .collect();
+
+        Ok(MatchData {
+            match_id: demo.match_id,
+            game_id: demo.game_id.clone(),
+            map_id: demo.map_name.clone(),
+            duration_seconds: demo.duration_seconds,
+            players,
+            teams,
+            winner_team_id,
+            game_specific_data: demo.raw_stats.clone(),
+        })
+    }
 
     // ========================================================================
     // Ranking

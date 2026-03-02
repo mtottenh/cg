@@ -9,7 +9,8 @@ use portal_db::{
     PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
     PgLeagueTeamSeasonRepository, PgMatchStatusLogRepository, PgPermissionRepository,
-    PgPlayerRepository, PgProgressionLogRepository, PgResultClaimRepository,
+    PgPlayerGameProfileRepository, PgPlayerRepository, PgProgressionLogRepository,
+    PgResultClaimRepository,
     PgResultReviewRepository, PgSagaExecutionRepository, PgScheduleProposalRepository,
     PgSuggestedTimeRepository, PgTournamentBracketRepository, PgTournamentMatchRepository,
     PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
@@ -26,10 +27,10 @@ use portal_domain::services::{
         VetoService,
     },
     BanService, DemoService, LeagueSeasonParticipantService, LeagueSeasonService, LeagueService,
-    LeagueTeamInvitationService, LeagueTeamService, PermissionService, PlayerService,
-    TournamentService, UserService,
+    LeagueTeamInvitationService, LeagueTeamService, PermissionService, PlayerGameProfileService,
+    PlayerService, TournamentService, UserService,
 };
-use crate::adapters::{DemoValidatorAdapter, ReviewCreatorAdapter};
+use crate::adapters::{DemoValidatorAdapter, ReviewCreatorAdapter, StatsUpdaterAdapter};
 use crate::websocket::VetoLobbyManager;
 use portal_plugins::PluginManager;
 use portal_storage::{LocalStorage, StorageBackend};
@@ -57,6 +58,8 @@ pub type AppLeagueTeamInvitationService = LeagueTeamInvitationService<
 >;
 pub type AppLeagueSeasonParticipantService =
     LeagueSeasonParticipantService<PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository>;
+pub type AppPlayerGameProfileService =
+    PlayerGameProfileService<PgPlayerGameProfileRepository>;
 pub type AppBanService = BanService<PgBanRepository>;
 pub type AppTournamentService = TournamentService<
     PgTournamentRepository,
@@ -141,6 +144,12 @@ pub type AppVetoAuthorizationService = VetoAuthorizationService<
     PgLeagueTeamMemberRepository,
     PgPermissionRepository,
 >;
+pub type AppStatsUpdaterAdapter = StatsUpdaterAdapter<
+    PgTournamentMatchRepository,
+    PgTournamentRepository,
+    PgTournamentRegistrationRepository,
+    PgDemoMatchLinkRepository,
+>;
 pub type AppMatchCompletionSaga = MatchCompletionSaga<
     PgTournamentMatchRepository,
     PgTournamentBracketRepository,
@@ -150,6 +159,7 @@ pub type AppMatchCompletionSaga = MatchCompletionSaga<
     PgProgressionLogRepository,
     DemoValidatorAdapter,
     ReviewCreatorAdapter,
+    AppStatsUpdaterAdapter,
 >;
 
 /// Application state shared across handlers.
@@ -163,6 +173,8 @@ pub struct AppState {
     pub user_service: AppUserService,
     /// Player service.
     pub player_service: AppPlayerService,
+    /// Player game profile service.
+    pub player_game_profile_service: AppPlayerGameProfileService,
     /// League service.
     pub league_service: AppLeagueService,
     /// League season service.
@@ -312,6 +324,10 @@ impl AppState {
         let user_service = UserService::new(Arc::clone(&user_repo), Arc::clone(&player_repo));
         let player_service =
             PlayerService::new(Arc::clone(&player_repo), Arc::clone(&league_team_member_repo));
+        let player_game_profile_repo =
+            Arc::new(PgPlayerGameProfileRepository::new(db_pool.clone()));
+        let player_game_profile_service =
+            PlayerGameProfileService::new(Arc::clone(&player_game_profile_repo));
         let league_service = LeagueService::new(
             Arc::clone(&league_repo),
             Arc::clone(&league_member_repo),
@@ -515,6 +531,15 @@ impl AppState {
         let review_creator_adapter = Arc::new(ReviewCreatorAdapter::new(
             result_review_service.clone(),
         ));
+        let stats_updater_adapter = Arc::new(StatsUpdaterAdapter::new(
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&demo_match_link_repo),
+            game_repo.clone(),
+            player_game_profile_service.clone(),
+            Arc::clone(&plugin_manager),
+        ));
         let match_completion_saga = MatchCompletionSaga::new(
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_bracket_repo),
@@ -524,6 +549,7 @@ impl AppState {
             progression_log_repo,
             demo_validator_adapter,
             review_creator_adapter,
+            stats_updater_adapter,
         );
 
         Self {
@@ -531,6 +557,7 @@ impl AppState {
             jwt_secret: jwt_secret.into(),
             user_service,
             player_service,
+            player_game_profile_service,
             league_service,
             league_season_service,
             league_team_service,

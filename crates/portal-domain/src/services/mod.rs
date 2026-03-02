@@ -7,6 +7,7 @@ pub mod league;
 pub mod league_team;
 pub mod permission;
 pub mod player;
+pub mod player_game_profile;
 pub mod tournament;
 pub mod user;
 
@@ -20,5 +21,6 @@ pub use league_team::{
 };
 pub use permission::PermissionService;
 pub use player::{PlayerSearchResult, PlayerService};
+pub use player_game_profile::PlayerGameProfileService;
 pub use tournament::{BracketGenerator, GeneratedBracket, TournamentService};
 pub use user::{AuthResult, LoginCommand, RegisterUserCommand, UserService};

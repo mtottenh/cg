@@ -46,7 +46,7 @@ pub use checkin::{CheckInService, CheckInStatus};
 pub use evidence::{EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig};
 pub use match_completion::{
     DemoValidationOutcome, MatchCompletionInput, MatchCompletionOutput, MatchCompletionSaga,
-    MatchDemoValidator, ReviewCreator,
+    MatchDemoValidator, MatchStatsUpdater, ReviewCreator,
 };
 pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails};
 pub use progression::{Advancement, LoserResult, ProgressionResult, ProgressionService};

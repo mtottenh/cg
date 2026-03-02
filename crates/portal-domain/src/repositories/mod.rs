@@ -14,6 +14,7 @@ pub mod league;
 pub mod league_team;
 pub mod match_lifecycle;
 pub mod permission;
+pub mod player_game_profile;
 pub mod result_review;
 pub mod schedule_proposal;
 pub mod tournament;
@@ -54,6 +55,7 @@ pub use tournament::{
     UpdateTournamentStage, UpdateTournamentStanding, UpdateVetoSession, UpsertTournamentMapPool,
     VetoActionRepository, VetoSessionRepository,
 };
+pub use player_game_profile::PlayerGameProfileRepository;
 pub use user::{CreatePlayer, CreateUser, PlayerRepository, UpdatePlayer, UserRepository};
 pub use evidence::{
     CreateEvidence, CreateEvidenceAccessLog, CreateProgressionLog, CreateSagaExecution,

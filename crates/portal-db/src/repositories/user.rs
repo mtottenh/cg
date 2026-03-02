@@ -8,6 +8,7 @@ use crate::error::RepositoryError;
 use crate::DbPool;
 use portal_core::{PlayerId, UserId};
 use sqlx::Row;
+use uuid::Uuid;
 
 /// Repository for user operations.
 #[derive(Clone)]
@@ -451,7 +452,7 @@ impl PlayerGameProfileRepository {
     pub async fn find_by_player_and_game(
         &self,
         player_id: PlayerId,
-        game_id: &str,
+        game_id: Uuid,
     ) -> Result<Option<PlayerGameProfileRow>, RepositoryError> {
         let profile = sqlx::query_as::<_, PlayerGameProfileRow>(
             "SELECT * FROM player_game_profiles WHERE player_id = $1 AND game_id = $2",
@@ -504,7 +505,7 @@ impl PlayerGameProfileRepository {
     pub async fn reset_rating(
         &self,
         player_id: PlayerId,
-        game_id: &str,
+        game_id: Uuid,
     ) -> Result<PlayerGameProfileRow, RepositoryError> {
         let profile = sqlx::query_as::<_, PlayerGameProfileRow>(
             r"
@@ -912,22 +913,26 @@ mod tests {
         (user, player)
     }
 
-    async fn create_test_game(pool: &DbPool, game_id: &str) {
+    async fn create_test_game(pool: &DbPool, slug: &str) -> Uuid {
+        let game_id = Uuid::now_v7();
         sqlx::query(
             r#"
-            INSERT INTO games (id, display_name, short_name, plugin_id, plugin_version,
+            INSERT INTO games (id, slug, display_name, short_name, plugin_id, plugin_version,
                               team_size_min, team_size_max, team_size_default)
-            VALUES ($1, $2, $3, $4, '1.0.0', 1, 5, 5)
-            ON CONFLICT (id) DO NOTHING
+            VALUES ($1, $2, $3, $4, $5, '1.0.0', 1, 5, 5)
+            ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug
+            RETURNING id
             "#,
         )
         .bind(game_id)
-        .bind(format!("{} Game", game_id))
-        .bind(game_id)
-        .bind(format!("{}_plugin", game_id))
+        .bind(slug)
+        .bind(format!("{} Game", slug))
+        .bind(slug)
+        .bind(format!("{}_plugin", slug))
         .execute(pool)
         .await
         .unwrap();
+        game_id
     }
 
     #[tokio::test]
@@ -938,16 +943,16 @@ mod tests {
         let profile_repo = PlayerGameProfileRepository::new(db.pool.clone());
 
         let (_, player) = create_test_player(&user_repo, &player_repo, "profile").await;
-        create_test_game(&db.pool, "cs2").await;
+        let game_id = create_test_game(&db.pool, "cs2").await;
 
         let new_profile = NewPlayerGameProfile {
             player_id: player.id,
-            game_id: "cs2".to_string(),
+            game_id,
         };
 
         let profile = profile_repo.create(new_profile).await.unwrap();
         assert_eq!(profile.player_id, player.id);
-        assert_eq!(profile.game_id, "cs2");
+        assert_eq!(profile.game_id, game_id);
         assert_eq!(profile.rating, 1500); // Default Glicko-2 rating
         assert_eq!(profile.rating_deviation, 350);
         assert_eq!(profile.matches_played, 0);
@@ -961,11 +966,11 @@ mod tests {
         let profile_repo = PlayerGameProfileRepository::new(db.pool.clone());
 
         let (_, player) = create_test_player(&user_repo, &player_repo, "reset").await;
-        create_test_game(&db.pool, "aoe4").await;
+        let game_id = create_test_game(&db.pool, "aoe4").await;
 
         let new_profile = NewPlayerGameProfile {
             player_id: player.id,
-            game_id: "aoe4".to_string(),
+            game_id,
         };
         profile_repo.create(new_profile).await.unwrap();
 
@@ -977,7 +982,7 @@ mod tests {
             .unwrap();
 
         // Reset
-        let reset = profile_repo.reset_rating(PlayerId::from(player.id), "aoe4").await.unwrap();
+        let reset = profile_repo.reset_rating(PlayerId::from(player.id), game_id).await.unwrap();
         assert_eq!(reset.rating, 1500);
         assert_eq!(reset.rating_deviation, 350);
     }
@@ -990,11 +995,11 @@ mod tests {
         let profile_repo = PlayerGameProfileRepository::new(db.pool.clone());
 
         let (_, player) = create_test_player(&user_repo, &player_repo, "findprofile").await;
-        create_test_game(&db.pool, "rl").await;
+        let game_id = create_test_game(&db.pool, "rl").await;
 
         // Not found initially
         let not_found = profile_repo
-            .find_by_player_and_game(PlayerId::from(player.id), "rl")
+            .find_by_player_and_game(PlayerId::from(player.id), game_id)
             .await
             .unwrap();
         assert!(not_found.is_none());
@@ -1002,13 +1007,13 @@ mod tests {
         // Create profile
         let new_profile = NewPlayerGameProfile {
             player_id: player.id,
-            game_id: "rl".to_string(),
+            game_id,
         };
         profile_repo.create(new_profile).await.unwrap();
 
         // Now found
         let found = profile_repo
-            .find_by_player_and_game(PlayerId::from(player.id), "rl")
+            .find_by_player_and_game(PlayerId::from(player.id), game_id)
             .await
             .unwrap();
         assert!(found.is_some());
@@ -1022,13 +1027,13 @@ mod tests {
         let profile_repo = PlayerGameProfileRepository::new(db.pool.clone());
 
         let (_, player) = create_test_player(&user_repo, &player_repo, "listprofiles").await;
-        create_test_game(&db.pool, "game1").await;
-        create_test_game(&db.pool, "game2").await;
+        let game1_id = create_test_game(&db.pool, "game1").await;
+        let game2_id = create_test_game(&db.pool, "game2").await;
 
-        for game_id in ["game1", "game2"] {
+        for game_id in [game1_id, game2_id] {
             let new_profile = NewPlayerGameProfile {
                 player_id: player.id,
-                game_id: game_id.to_string(),
+                game_id,
             };
             profile_repo.create(new_profile).await.unwrap();
         }

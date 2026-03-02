@@ -152,6 +152,47 @@ pub struct DisplayStat {
 }
 
 // ============================================================================
+// Demo Data Types (input for plugin-based stats calculation)
+// ============================================================================
+
+/// Game-agnostic representation of demo data.
+///
+/// The adapter maps domain `Demo`/`DemoPlayer`/`ParsedDemoMetadata` entities
+/// into this struct, then calls `GamePlugin::build_match_data_from_demo` so
+/// the plugin can transform it into a `MatchData` with the right game-specific
+/// stats schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DemoData {
+    pub match_id: Uuid,
+    pub game_id: String,
+    pub map_name: String,
+    pub duration_seconds: u64,
+    pub team1_name: String,
+    pub team2_name: String,
+    pub team1_score: i32,
+    pub team2_score: i32,
+    pub players: Vec<DemoPlayerData>,
+    /// Full raw stats JSON from demo parsing (plugin interprets this).
+    pub raw_stats: Value,
+}
+
+/// A player's data extracted from a demo.
+///
+/// Stats are carried as raw JSON because different games have completely different
+/// stat schemas (e.g. CS2 has kills/deaths/ADR, AoE2 has villagers/relics,
+/// Rocket League has goals/saves/shots). The plugin knows how to interpret the JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DemoPlayerData {
+    /// Portal player UUID (if the demo player was linked to a portal account).
+    pub player_id: Option<Uuid>,
+    pub player_name: String,
+    pub team_name: Option<String>,
+    /// All player stats from the demo as raw JSON.
+    /// The structure is game-specific — each plugin defines what keys it reads.
+    pub stats: Value,
+}
+
+// ============================================================================
 // Ranking Types
 // ============================================================================
 

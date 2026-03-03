@@ -24,8 +24,8 @@ use portal_domain::services::{
         AvailabilityService, CheckInService, DisputeService, EvidenceService,
         EvidenceServiceConfig, ForfeitService, MatchCompletionSaga, MatchLifecycleService,
         ProgressionService, RegistrationService, ResultReviewService, ResultService,
-        SchedulingService, SeedingService, VetoAuthorizationService, VetoLobbyChatService,
-        VetoService,
+        SchedulingService, SeedingService, StandingsService, VetoAuthorizationService,
+        VetoLobbyChatService, VetoService,
     },
     BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
     LeagueSeasonService, LeagueService, LeagueTeamInvitationService, LeagueTeamService,
@@ -72,6 +72,7 @@ pub type AppTournamentService = TournamentService<
     PgTournamentBracketRepository,
     PgTournamentRegistrationRepository,
     PgTournamentMatchRepository,
+    PgTournamentStandingsRepository,
 >;
 pub type AppRegistrationService =
     RegistrationService<PgTournamentRepository, PgTournamentRegistrationRepository>;
@@ -136,6 +137,8 @@ pub type AppDemoService =
     DemoService<PgDemoRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository>;
 pub type AppResultReviewService =
     ResultReviewService<PgResultReviewRepository, PgTournamentMatchRepository>;
+pub type AppStandingsService =
+    StandingsService<PgTournamentStandingsRepository, PgTournamentMatchRepository>;
 pub type AppVetoLobbyChatService = VetoLobbyChatService<
     PgVetoLobbyMessageRepository,
     PgTournamentMatchRepository,
@@ -228,6 +231,8 @@ pub struct AppState {
     pub veto_authorization_service: AppVetoAuthorizationService,
     /// Veto lobby manager for WebSocket connections.
     pub veto_lobby_manager: Arc<VetoLobbyManager>,
+    /// Standings service for round robin/swiss standings.
+    pub standings_service: AppStandingsService,
     /// Tournament match repository for direct match access.
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
     /// Permission service for high-level authorization checks (`is_admin`, etc).
@@ -425,6 +430,9 @@ impl AppState {
             Arc::new(PgTournamentRegistrationRepository::new(db_pool.clone()));
         let tournament_match_repo = Arc::new(PgTournamentMatchRepository::new(db_pool.clone()));
 
+        // Create tournament standings repository (used by tournament service + standings service)
+        let tournament_standings_repo = Arc::new(PgTournamentStandingsRepository::new(db_pool.clone()));
+
         // Create tournament service
         let tournament_service = TournamentService::new(
             Arc::clone(&tournament_repo),
@@ -432,6 +440,7 @@ impl AppState {
             Arc::clone(&tournament_bracket_repo),
             Arc::clone(&tournament_registration_repo),
             Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_standings_repo),
         );
 
         // Create Phase 2 tournament services
@@ -501,13 +510,18 @@ impl AppState {
         );
 
         // Create progression service for bracket advancement
-        let tournament_standings_repo = Arc::new(PgTournamentStandingsRepository::new(db_pool.clone()));
         let progression_service = ProgressionService::new(
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_bracket_repo),
             Arc::clone(&tournament_stage_repo),
             Arc::clone(&tournament_registration_repo),
             Arc::clone(&tournament_standings_repo),
+        );
+
+        // Create standings service for RR/Swiss standings
+        let standings_service = StandingsService::new(
+            Arc::clone(&tournament_standings_repo),
+            Arc::clone(&tournament_match_repo),
         );
 
         // Create evidence service with local storage
@@ -640,6 +654,7 @@ impl AppState {
             veto_lobby_chat_service,
             veto_authorization_service,
             veto_lobby_manager,
+            standings_service,
             tournament_match_repo,
             permission_service,
             permission_repo,

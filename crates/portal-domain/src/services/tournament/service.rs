@@ -13,37 +13,41 @@ use crate::entities::tournament::{
     TournamentStage, UpdateTournamentCommand,
 };
 use crate::repositories::tournament::{
-    CreateTournament, CreateTournamentBracket, CreateTournamentRegistration, CreateTournamentStage,
-    ParticipantSlot, TournamentBracketRepository, TournamentFilters, TournamentMatchRepository,
+    CreateTournament, CreateTournamentBracket, CreateTournamentRegistration,
+    CreateTournamentStanding, CreateTournamentStage, ParticipantSlot,
+    TournamentBracketRepository, TournamentFilters, TournamentMatchRepository,
     TournamentRegistrationRepository, TournamentRepository, TournamentStageRepository,
-    UpdateTournament,
+    TournamentStandingsRepository, UpdateTournament, UpdateTournamentStanding,
 };
 
-use super::bracket_generator::{BracketGenerator, CrossLinkType, GeneratedBracket};
+use super::bracket_generator::{BracketGenerator, CrossLinkType};
 
 /// Service for tournament management.
-pub struct TournamentService<TR, TSR, TBR, TRR, TMR>
+pub struct TournamentService<TR, TSR, TBR, TRR, TMR, TSTR>
 where
     TR: TournamentRepository,
     TSR: TournamentStageRepository,
     TBR: TournamentBracketRepository,
     TRR: TournamentRegistrationRepository,
     TMR: TournamentMatchRepository,
+    TSTR: TournamentStandingsRepository,
 {
     tournament_repo: Arc<TR>,
     stage_repo: Arc<TSR>,
     bracket_repo: Arc<TBR>,
     registration_repo: Arc<TRR>,
     match_repo: Arc<TMR>,
+    standings_repo: Arc<TSTR>,
 }
 
-impl<TR, TSR, TBR, TRR, TMR> TournamentService<TR, TSR, TBR, TRR, TMR>
+impl<TR, TSR, TBR, TRR, TMR, TSTR> TournamentService<TR, TSR, TBR, TRR, TMR, TSTR>
 where
     TR: TournamentRepository,
     TSR: TournamentStageRepository,
     TBR: TournamentBracketRepository,
     TRR: TournamentRegistrationRepository,
     TMR: TournamentMatchRepository,
+    TSTR: TournamentStandingsRepository,
 {
     /// Create a new tournament service.
     pub const fn new(
@@ -52,6 +56,7 @@ where
         bracket_repo: Arc<TBR>,
         registration_repo: Arc<TRR>,
         match_repo: Arc<TMR>,
+        standings_repo: Arc<TSTR>,
     ) -> Self {
         Self {
             tournament_repo,
@@ -59,6 +64,7 @@ where
             bracket_repo,
             registration_repo,
             match_repo,
+            standings_repo,
         }
     }
 
@@ -427,6 +433,8 @@ where
         let stage_format = match tournament.format {
             TournamentFormat::SingleElimination => StageFormat::SingleElimination,
             TournamentFormat::DoubleElimination => StageFormat::DoubleElimination,
+            TournamentFormat::RoundRobin => StageFormat::RoundRobin,
+            TournamentFormat::Swiss => StageFormat::Swiss,
             _ => StageFormat::SingleElimination,
         };
 
@@ -460,6 +468,14 @@ where
             }
             TournamentFormat::DoubleElimination => {
                 self.start_double_elimination(id, &tournament, &stage, seeded_participants)
+                    .await?;
+            }
+            TournamentFormat::RoundRobin => {
+                self.start_round_robin(id, &tournament, &stage, seeded_participants)
+                    .await?;
+            }
+            TournamentFormat::Swiss => {
+                self.start_swiss(id, &tournament, &stage, seeded_participants)
                     .await?;
             }
             _ => {
@@ -763,6 +779,333 @@ where
         Ok(())
     }
 
+    /// Start a round robin tournament.
+    async fn start_round_robin(
+        &self,
+        id: TournamentId,
+        tournament: &Tournament,
+        stage: &TournamentStage,
+        seeded_participants: Vec<crate::entities::tournament::SeededParticipant>,
+    ) -> Result<(), DomainError> {
+        // Create bracket entry
+        let bracket = self
+            .bracket_repo
+            .create(CreateTournamentBracket {
+                stage_id: stage.id,
+                tournament_id: id,
+                name: "Round Robin".to_string(),
+                bracket_type: BracketType::RoundRobin,
+                total_rounds: 0,
+                group_number: None,
+            })
+            .await?;
+
+        // Generate all RR matches
+        let generated = BracketGenerator::round_robin(
+            id,
+            stage.id,
+            bracket.id,
+            seeded_participants.clone(),
+            tournament.default_match_format,
+        )?;
+
+        // Update bracket with total rounds
+        self.bracket_repo
+            .update(
+                bracket.id,
+                crate::repositories::tournament::UpdateTournamentBracket {
+                    name: None,
+                    total_rounds: Some(generated.total_rounds),
+                    current_round: Some(1),
+                },
+            )
+            .await?;
+
+        // Create matches
+        let matches = self.match_repo.bulk_create(generated.matches).await?;
+
+        // Create position → match ID mapping
+        let position_to_match = Self::build_position_map(&matches);
+
+        // Apply all initial assignments (every match gets both participants)
+        self.apply_initial_assignments(&generated.initial_assignments, &position_to_match)
+            .await?;
+
+        // Initialize standings for all participants
+        let standings: Vec<CreateTournamentStanding> = seeded_participants
+            .iter()
+            .enumerate()
+            .map(|(i, p)| CreateTournamentStanding {
+                bracket_id: bracket.id,
+                registration_id: p.registration_id,
+                position: (i + 1) as i32,
+            })
+            .collect();
+        self.standings_repo.bulk_create(standings).await?;
+
+        Ok(())
+    }
+
+    /// Start a Swiss system tournament.
+    async fn start_swiss(
+        &self,
+        id: TournamentId,
+        tournament: &Tournament,
+        stage: &TournamentStage,
+        seeded_participants: Vec<crate::entities::tournament::SeededParticipant>,
+    ) -> Result<(), DomainError> {
+        let n = seeded_participants.len();
+
+        // Determine max rounds from format_settings or default to ceil(log2(N))
+        let max_rounds = tournament
+            .format_settings
+            .get("max_rounds")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32)
+            .unwrap_or_else(|| (n as f64).log2().ceil() as i32);
+
+        // Create bracket entry
+        let bracket = self
+            .bracket_repo
+            .create(CreateTournamentBracket {
+                stage_id: stage.id,
+                tournament_id: id,
+                name: "Swiss".to_string(),
+                bracket_type: BracketType::Swiss,
+                total_rounds: 0,
+                group_number: None,
+            })
+            .await?;
+
+        // Generate R1 matches (top-half vs bottom-half)
+        let (generated, bye_participant) = BracketGenerator::swiss_initial_round(
+            id,
+            stage.id,
+            bracket.id,
+            seeded_participants.clone(),
+            tournament.default_match_format,
+        )?;
+
+        // Update bracket with total rounds and current round
+        self.bracket_repo
+            .update(
+                bracket.id,
+                crate::repositories::tournament::UpdateTournamentBracket {
+                    name: None,
+                    total_rounds: Some(max_rounds),
+                    current_round: Some(1),
+                },
+            )
+            .await?;
+
+        // Create R1 matches
+        let matches = self.match_repo.bulk_create(generated.matches).await?;
+        let position_to_match = Self::build_position_map(&matches);
+        self.apply_initial_assignments(&generated.initial_assignments, &position_to_match)
+            .await?;
+
+        // Initialize standings for all participants
+        let standings: Vec<CreateTournamentStanding> = seeded_participants
+            .iter()
+            .enumerate()
+            .map(|(i, p)| CreateTournamentStanding {
+                bracket_id: bracket.id,
+                registration_id: p.registration_id,
+                position: (i + 1) as i32,
+            })
+            .collect();
+        self.standings_repo.bulk_create(standings).await?;
+
+        // Give bye participant +3 points if odd count
+        if let Some(bye_id) = bye_participant {
+            self.standings_repo
+                .update_after_match(UpdateTournamentStanding {
+                    bracket_id: bracket.id,
+                    registration_id: bye_id,
+                    matches_won_delta: 1,
+                    matches_lost_delta: 0,
+                    matches_drawn_delta: 0,
+                    game_wins_delta: 0,
+                    game_losses_delta: 0,
+                    points_delta: 3,
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Generate the next Swiss round for a tournament.
+    ///
+    /// Validates that all current-round matches are complete, then generates
+    /// the next round of Swiss pairings based on current standings.
+    pub async fn generate_next_swiss_round(
+        &self,
+        tournament_id: TournamentId,
+    ) -> Result<Vec<TournamentMatch>, DomainError> {
+        let tournament = self.get_tournament(tournament_id).await?;
+
+        // Validate tournament is started and Swiss
+        if tournament.status != TournamentStatus::InProgress {
+            return Err(DomainError::InvalidState(
+                "Tournament must be in InProgress status".to_string(),
+            ));
+        }
+        if tournament.format != TournamentFormat::Swiss {
+            return Err(DomainError::InvalidState(
+                "Tournament is not Swiss format".to_string(),
+            ));
+        }
+
+        // Get brackets
+        let brackets = self.bracket_repo.list_by_tournament(tournament_id).await?;
+        let bracket = brackets
+            .into_iter()
+            .find(|b| b.bracket_type == BracketType::Swiss)
+            .ok_or_else(|| {
+                DomainError::InvalidState("No Swiss bracket found".to_string())
+            })?;
+
+        // Verify all current-round matches are complete
+        let all_matches = self.match_repo.list_by_bracket(bracket.id).await?;
+        let current_round_matches: Vec<&TournamentMatch> = all_matches
+            .iter()
+            .filter(|m| m.round == bracket.current_round)
+            .collect();
+
+        if current_round_matches.is_empty() {
+            return Err(DomainError::InvalidState(
+                "No matches found for current round".to_string(),
+            ));
+        }
+
+        let all_complete = current_round_matches.iter().all(|m| m.is_complete());
+        if !all_complete {
+            return Err(DomainError::InvalidState(
+                "Not all current-round matches are complete".to_string(),
+            ));
+        }
+
+        // Check max rounds
+        let next_round = bracket.current_round + 1;
+        if next_round > bracket.total_rounds {
+            return Err(DomainError::InvalidState(
+                "Maximum number of rounds reached".to_string(),
+            ));
+        }
+
+        // Get current standings
+        let standings = self.standings_repo.list_by_bracket(bracket.id).await?;
+
+        // Build completed pairings set from all matches
+        let completed_pairings: Vec<(
+            portal_core::TournamentRegistrationId,
+            portal_core::TournamentRegistrationId,
+        )> = all_matches
+            .iter()
+            .filter_map(|m| {
+                match (
+                    m.participant1_registration_id,
+                    m.participant2_registration_id,
+                ) {
+                    (Some(a), Some(b)) => Some((a, b)),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        // Get registrations to look up names/logos
+        let (registrations, _) = self
+            .registration_repo
+            .list_by_tournament(
+                tournament_id,
+                Some(TournamentRegistrationStatus::Approved),
+                1000,
+                0,
+            )
+            .await?;
+
+        let reg_map: std::collections::HashMap<
+            portal_core::TournamentRegistrationId,
+            &crate::entities::tournament::TournamentRegistration,
+        > = registrations.iter().map(|r| (r.id, r)).collect();
+
+        // Build SwissParticipantStanding list
+        let swiss_standings: Vec<super::bracket_generator::SwissParticipantStanding> = standings
+            .iter()
+            .filter_map(|s| {
+                let reg = reg_map.get(&s.registration_id)?;
+                // Count how many rounds this participant has been paired in
+                let matches_in = all_matches
+                    .iter()
+                    .filter(|m| {
+                        m.participant1_registration_id == Some(s.registration_id)
+                            || m.participant2_registration_id == Some(s.registration_id)
+                    })
+                    .count();
+                let total_rounds_so_far = bracket.current_round as usize;
+                let had_bye = matches_in < total_rounds_so_far;
+
+                Some(super::bracket_generator::SwissParticipantStanding {
+                    registration_id: s.registration_id,
+                    participant_name: reg.participant_name.clone(),
+                    participant_logo_url: reg.participant_logo_url.clone(),
+                    seed: reg.seed.unwrap_or(s.position),
+                    points: s.points,
+                    buchholz_score: s.buchholz_score.unwrap_or(0.0),
+                    had_bye,
+                })
+            })
+            .collect();
+
+        // Generate next round
+        let (generated, bye_participant) = BracketGenerator::swiss_next_round(
+            tournament_id,
+            bracket.stage_id,
+            bracket.id,
+            next_round,
+            swiss_standings,
+            &completed_pairings,
+            tournament.default_match_format,
+        )?;
+
+        // Create matches
+        let new_matches = self.match_repo.bulk_create(generated.matches).await?;
+        let position_to_match = Self::build_position_map(&new_matches);
+        self.apply_initial_assignments(&generated.initial_assignments, &position_to_match)
+            .await?;
+
+        // Give bye participant +3 points
+        if let Some(bye_id) = bye_participant {
+            self.standings_repo
+                .update_after_match(UpdateTournamentStanding {
+                    bracket_id: bracket.id,
+                    registration_id: bye_id,
+                    matches_won_delta: 1,
+                    matches_lost_delta: 0,
+                    matches_drawn_delta: 0,
+                    game_wins_delta: 0,
+                    game_losses_delta: 0,
+                    points_delta: 3,
+                })
+                .await?;
+        }
+
+        // Update bracket current_round
+        self.bracket_repo
+            .update(
+                bracket.id,
+                crate::repositories::tournament::UpdateTournamentBracket {
+                    name: None,
+                    total_rounds: None,
+                    current_round: Some(next_round),
+                },
+            )
+            .await?;
+
+        Ok(new_matches)
+    }
+
     // =========================================================================
     // HELPERS
     // =========================================================================
@@ -887,13 +1230,14 @@ where
 }
 
 // Manual Clone implementation since derive(Clone) doesn't work with generic bounds
-impl<TR, TSR, TBR, TRR, TMR> Clone for TournamentService<TR, TSR, TBR, TRR, TMR>
+impl<TR, TSR, TBR, TRR, TMR, TSTR> Clone for TournamentService<TR, TSR, TBR, TRR, TMR, TSTR>
 where
     TR: TournamentRepository,
     TSR: TournamentStageRepository,
     TBR: TournamentBracketRepository,
     TRR: TournamentRegistrationRepository,
     TMR: TournamentMatchRepository,
+    TSTR: TournamentStandingsRepository,
 {
     fn clone(&self) -> Self {
         Self {
@@ -902,6 +1246,7 @@ where
             bracket_repo: Arc::clone(&self.bracket_repo),
             registration_repo: Arc::clone(&self.registration_repo),
             match_repo: Arc::clone(&self.match_repo),
+            standings_repo: Arc::clone(&self.standings_repo),
         }
     }
 }

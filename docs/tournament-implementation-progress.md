@@ -13,7 +13,7 @@
 | Phase 2: Registration & Seeding | 🟢 Complete | 2025-11-30 | 2025-11-30 | Services + Handlers + Tests |
 | Phase 3: Match System | 🟢 Complete | 2025-11-30 | 2026-03-01 | All 9 sub-phases done (Batches 1-4) |
 | Phase 4: Plugin & Demo Integration | 🟢 Complete | 2025-12-01 | 2026-03-02 | 4.0-4.3 complete, 4.4 saga integration wired end-to-end |
-| Phase 5: Advanced Formats | 🟡 In Progress | 2026-03-02 | - | 5.1 Double Elimination complete |
+| Phase 5: Advanced Formats | 🟡 In Progress | 2026-03-02 | - | 5.1 DE, 5.2 RR, 5.3 Swiss complete; 5.4 Groups+Playoffs not started |
 | Phase 6: Polish & Performance | 🔴 Not Started | - | - | |
 
 **Legend**: 🔴 Not Started | 🟡 In Progress | 🟢 Complete | ⏸️ Blocked/Deferred
@@ -743,17 +743,17 @@ POST   /v1/admin/result-reviews/{id}/reject           # Admin reject
 | Sub-Phase | Status | Description |
 |-----------|--------|-------------|
 | 5.1: Double Elimination | 🟢 Complete | Generator, service dispatch, cross-bracket links, 12 unit + 3 integration tests |
-| 5.2: Round Robin | 🔴 Not Started | Round robin generator, standings |
-| 5.3: Swiss System | 🔴 Not Started | Swiss pairing generator |
+| 5.2: Round Robin | 🟢 Complete | Circle-method generator, service dispatch, standings init, 7 unit tests, API endpoint |
+| 5.3: Swiss System | 🟢 Complete | Initial + next-round generators, rematch avoidance, bye handling, 5 unit tests, admin API |
 | 5.4: Groups + Playoffs | 🔴 Not Started | Multi-stage hybrid |
 
 ### Goals
 - [x] Double elimination generator
-- [ ] Round robin generator
-- [ ] Swiss system generator
+- [x] Round robin generator
+- [x] Swiss system generator
 - [ ] Groups + playoffs hybrid
 - [ ] Multi-stage orchestration
-- [ ] Standings system
+- [x] Standings system
 
 ### Phase 5.1: Double Elimination (Complete)
 
@@ -802,21 +802,118 @@ crates/portal-api/tests/tournaments_test.rs
 - [x] All 3 integration tests passing
 - [x] `cargo check --workspace` clean
 
+### Phase 5.2: Round Robin (Complete)
+
+#### Files Created/Modified
+```
+# Generator (new file in refactored module)
+crates/portal-domain/src/services/tournament/bracket_generator/round_robin.rs
+  - BracketGenerator::round_robin() method (circle method algorithm)
+  - 7 unit tests
+
+# Service
+crates/portal-domain/src/services/tournament/service.rs
+  - start_round_robin() method
+  - start_tournament() dispatch for TournamentFormat::RoundRobin
+
+# API
+crates/portal-api/src/handlers/tournaments/tournament.rs
+  - get_bracket_standings() handler
+crates/portal-api/src/routes/tournaments.rs
+  - GET /v1/tournaments/{id}/brackets/{bracket_id}/standings
+crates/portal-api/src/openapi.rs
+  - Registered get_bracket_standings + TournamentStandingResponse
+```
+
+#### Key Design Decisions
+- Circle method for scheduling: fix index 0, rotate rest through positions
+- Odd participant count: BYE sentinel rotates, skipped in match generation
+- Bracket positions: `RR{round}M{match}` (e.g., `RR1M1`, `RR3M2`)
+- All matches pre-generated; all participants assigned immediately via initial_assignments
+- No progression links — standings determine final order
+- Standings initialized via TournamentStandingsRepository.bulk_create()
+
+#### Acceptance Criteria
+- [x] Round robin bracket generated correctly (3/4/5/6/8 teams)
+- [x] Odd team count handled (bye rotation, no duplicate pairings)
+- [x] All matches have both participants assigned
+- [x] Unique pairings verified (no duplicate matchups)
+- [x] Standings initialized at tournament start
+- [x] 7 unit tests passing
+- [x] `cargo check --workspace` clean
+
+### Phase 5.3: Swiss System (Complete)
+
+#### Files Created/Modified
+```
+# Generator (new file in refactored module)
+crates/portal-domain/src/services/tournament/bracket_generator/swiss.rs
+  - SwissParticipantStanding type
+  - BracketGenerator::swiss_initial_round() method
+  - BracketGenerator::swiss_next_round() method (standings-based pairing with rematch avoidance)
+  - 5 unit tests
+
+# Service
+crates/portal-domain/src/services/tournament/service.rs
+  - Added TSTR: TournamentStandingsRepository as 6th generic parameter
+  - start_swiss() method
+  - generate_next_swiss_round() pub method
+  - start_tournament() dispatch for TournamentFormat::Swiss
+
+# State
+crates/portal-api/src/state.rs
+  - Updated AppTournamentService type alias with PgTournamentStandingsRepository
+  - Added standings_service to AppState
+
+# API
+crates/portal-api/src/handlers/tournaments/tournament.rs
+  - admin_generate_next_swiss_round() handler
+crates/portal-api/src/routes/admin.rs
+  - POST /v1/admin/tournaments/{id}/generate-next-round
+crates/portal-api/src/openapi.rs
+  - Registered admin_generate_next_swiss_round
+```
+
+#### Key Design Decisions
+- Round 1: top-half vs bottom-half seeded pairing (seed 1 vs N/2+1, etc.)
+- Subsequent rounds: sort by points desc, Buchholz desc, seed asc; greedy pair with rematch avoidance
+- Odd participant: lowest-ranked who hasn't had bye gets +3 points (bye win)
+- Max rounds from format_settings `max_rounds` or default ceil(log2(N))
+- Next round triggered by admin API call (not automatic)
+- Bracket positions: `SW{round}M{match}` (e.g., `SW1M1`, `SW3M2`)
+- All current-round matches must be Completed before generating next round
+
+#### Acceptance Criteria
+- [x] Swiss initial round generated correctly (top-half vs bottom-half)
+- [x] Odd team count handled (bye for lowest seed)
+- [x] Next round avoids rematches
+- [x] Next round pairs by points (equal-point players paired together)
+- [x] Admin API for generating next round
+- [x] 5 unit tests passing
+- [x] `cargo check --workspace` clean
+
+### Bracket Generator Refactoring
+
+The bracket generator was refactored from a single file into a directory module:
+
+```
+crates/portal-domain/src/services/tournament/bracket_generator/
+  ├── mod.rs                  # Shared types, BracketGenerator struct, re-exports
+  ├── single_elimination.rs   # SE generator + helpers + tests
+  ├── double_elimination.rs   # DE generator + types + tests
+  ├── round_robin.rs          # RR generator + tests
+  └── swiss.rs                # Swiss generator + SwissParticipantStanding + tests
+```
+
 ### Future Phases
 
 #### Files Planned
 ```
-# Round Robin / Swiss / Groups
-crates/portal-domain/src/services/tournament/bracket_generator.rs  # Additional methods
-crates/portal-domain/src/services/tournament/standings.rs          # Already exists (stub)
-
-# Database (if needed)
-migrations/NNNN_tournament_standings.sql
+# Groups + Playoffs (5.4)
+crates/portal-domain/src/services/tournament/bracket_generator/groups_playoffs.rs
 ```
 
 ### Remaining Acceptance Criteria
-- [ ] Round robin with standings works
-- [ ] Swiss pairings work
 - [ ] Groups advance to playoffs
 - [ ] All tests passing
 

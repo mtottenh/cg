@@ -51,6 +51,11 @@ pub fn routes() -> Router<AppState> {
             "/tournaments/{tournament_id}/matches/{match_id}/schedule",
             post(tournaments::admin_schedule_match),
         )
+        // Swiss next round generation
+        .route(
+            "/tournaments/{tournament_id}/generate-next-round",
+            post(tournaments::admin_generate_next_swiss_round),
+        )
         // Progression admin routes
         .route(
             "/matches/{match_id}/progression/revert",

@@ -2319,3 +2319,347 @@ async fn test_double_elimination_with_byes() {
         "At least one WR2 match should have a bye-advanced participant"
     );
 }
+
+// ============================================================================
+// ROUND ROBIN TESTS
+// ============================================================================
+
+async fn create_rr_tournament(app: &TestApp, slug: &str, min_participants: i32) -> String {
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": format!("RR Test {}", slug),
+                "slug": slug,
+                "format": "round_robin",
+                "participant_type": "individual",
+                "min_participants": min_participants,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "self_scheduled",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let created: serde_json::Value = response.json();
+    let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    // Publish
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Open registration
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{}/open-registration",
+            tournament_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    tournament_id
+}
+
+#[tokio::test]
+async fn test_start_round_robin_tournament() {
+    let app = TestApp::new().await;
+    let tournament_id = create_rr_tournament(&app, "rr-start-test", 2).await;
+
+    // Register 4 players
+    let _reg_ids = register_n_players(&app, &tournament_id, 4, "rr-start").await;
+
+    // Auto-seed
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &json!({ "algorithm": "random" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Start tournament
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Verify tournament status
+    let response = app
+        .get(&format!("/v1/tournaments/{}", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "in_progress");
+    assert_eq!(body["data"]["format"], "round_robin");
+
+    // Get brackets - should have 1 (RoundRobin)
+    let response = app
+        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let brackets_body: serde_json::Value = response.json();
+    let brackets = brackets_body["data"].as_array().unwrap();
+    assert_eq!(brackets.len(), 1, "Should have 1 bracket (RoundRobin)");
+    assert_eq!(brackets[0]["bracket_type"], "round_robin");
+
+    // Get all matches
+    let response = app
+        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let matches_body: serde_json::Value = response.json();
+    let all_matches = matches_body["data"].as_array().unwrap();
+
+    // 4 teams: 3 rounds, 6 matches total (N*(N-1)/2 = 4*3/2 = 6)
+    assert_eq!(
+        all_matches.len(),
+        6,
+        "4-team RR should have 6 matches total"
+    );
+
+    // Verify all matches have both participants assigned
+    for m in all_matches {
+        assert!(
+            m["participant1_name"].is_string(),
+            "RR match {} should have participant 1 assigned",
+            m["bracket_position"]
+        );
+        assert!(
+            m["participant2_name"].is_string(),
+            "RR match {} should have participant 2 assigned",
+            m["bracket_position"]
+        );
+    }
+
+    // Verify bracket positions use RR prefix
+    for m in all_matches {
+        let pos = m["bracket_position"].as_str().unwrap();
+        assert!(
+            pos.starts_with("RR"),
+            "RR match position should start with 'RR', got: {pos}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_get_bracket_standings() {
+    let app = TestApp::new().await;
+    let tournament_id = create_rr_tournament(&app, "rr-standings-test", 2).await;
+
+    // Register 4 players
+    let _reg_ids = register_n_players(&app, &tournament_id, 4, "rr-standings").await;
+
+    // Auto-seed and start
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &json!({ "algorithm": "random" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Get bracket ID
+    let response = app
+        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let brackets_body: serde_json::Value = response.json();
+    let brackets = brackets_body["data"].as_array().unwrap();
+    let bracket_id = brackets[0]["id"].as_str().unwrap();
+
+    // Get standings
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{}/brackets/{}/standings",
+            tournament_id, bracket_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let standings_body: serde_json::Value = response.json();
+    let standings = standings_body["data"].as_array().unwrap();
+
+    // Should have standings for all 4 participants
+    assert_eq!(standings.len(), 4, "Should have 4 standings entries");
+
+    // All standings should start with 0 points (no matches played yet)
+    for s in standings {
+        assert_eq!(s["points"], 0);
+        assert_eq!(s["matches_played"], 0);
+        assert!(s["registration_id"].is_string());
+        assert!(s["participant_name"].is_string());
+    }
+}
+
+// ============================================================================
+// SWISS TESTS
+// ============================================================================
+
+async fn create_swiss_tournament(app: &TestApp, slug: &str, min_participants: i32) -> String {
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": format!("Swiss Test {}", slug),
+                "slug": slug,
+                "format": "swiss",
+                "participant_type": "individual",
+                "min_participants": min_participants,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "self_scheduled",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let created: serde_json::Value = response.json();
+    let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    // Publish
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Open registration
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{}/open-registration",
+            tournament_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    tournament_id
+}
+
+#[tokio::test]
+async fn test_start_swiss_tournament() {
+    let app = TestApp::new().await;
+    let tournament_id = create_swiss_tournament(&app, "swiss-start-test", 2).await;
+
+    // Register 8 players
+    let _reg_ids = register_n_players(&app, &tournament_id, 8, "swiss-start").await;
+
+    // Auto-seed
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &json!({ "algorithm": "random" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Start tournament
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Verify tournament status
+    let response = app
+        .get(&format!("/v1/tournaments/{}", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "in_progress");
+    assert_eq!(body["data"]["format"], "swiss");
+
+    // Get brackets - should have 1 (Swiss)
+    let response = app
+        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let brackets_body: serde_json::Value = response.json();
+    let brackets = brackets_body["data"].as_array().unwrap();
+    assert_eq!(brackets.len(), 1, "Should have 1 bracket (Swiss)");
+    assert_eq!(brackets[0]["bracket_type"], "swiss");
+
+    // Get all matches - should have 4 (round 1: 8 teams / 2 = 4 matches)
+    let response = app
+        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let matches_body: serde_json::Value = response.json();
+    let all_matches = matches_body["data"].as_array().unwrap();
+
+    assert_eq!(
+        all_matches.len(),
+        4,
+        "Swiss R1 with 8 teams should have 4 matches"
+    );
+
+    // Verify all R1 matches have participants assigned
+    for m in all_matches {
+        assert!(
+            m["participant1_name"].is_string(),
+            "Swiss R1 match should have participant 1"
+        );
+        assert!(
+            m["participant2_name"].is_string(),
+            "Swiss R1 match should have participant 2"
+        );
+        assert_eq!(m["round"], 1);
+    }
+
+    // Verify bracket positions use SW prefix
+    for m in all_matches {
+        let pos = m["bracket_position"].as_str().unwrap();
+        assert!(
+            pos.starts_with("SW1M"),
+            "Swiss R1 position should start with 'SW1M', got: {pos}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_swiss_generate_next_round_not_all_complete() {
+    let app = TestApp::new().await;
+    let tournament_id = create_swiss_tournament(&app, "swiss-early-gen-test", 2).await;
+
+    // Register 4 players
+    let _reg_ids = register_n_players(&app, &tournament_id, 4, "swiss-early").await;
+
+    // Auto-seed and start
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &json!({ "algorithm": "random" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Try to generate next round without completing R1 matches - should fail
+    let response = app
+        .post_auth(&format!(
+            "/v1/admin/tournaments/{}/generate-next-round",
+            tournament_id
+        ))
+        .await;
+    assert_ne!(
+        response.status(),
+        StatusCode::OK,
+        "Should not be able to generate next round when R1 matches are incomplete"
+    );
+}

@@ -58,8 +58,12 @@ pub fn routes() -> Router<AppState> {
         .route("/{tournament_id}/seeding", delete(tournaments::clear_seeding))
         .route("/{tournament_id}/seeding/auto", post(tournaments::auto_seed))
         .route("/{tournament_id}/seeding/manual", post(tournaments::manual_seed))
-        // Tournament brackets and matches
+        // Tournament brackets, matches, and standings
         .route("/{tournament_id}/brackets", get(tournaments::get_brackets))
+        .route(
+            "/{tournament_id}/brackets/{bracket_id}/standings",
+            get(tournaments::get_bracket_standings),
+        )
         .route("/{tournament_id}/matches", get(tournaments::get_matches))
         // Match lifecycle
         .route(

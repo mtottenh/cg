@@ -243,6 +243,10 @@ use utoipa_swagger_ui::SwaggerUi;
         tournaments::get_active_proposal,
         tournaments::get_proposal_history,
         tournaments::admin_schedule_match,
+        // Standings
+        tournaments::get_bracket_standings,
+        // Swiss next round
+        tournaments::admin_generate_next_swiss_round,
         // Availability
         availability::create_player_window,
         availability::get_player_windows,
@@ -460,6 +464,7 @@ use utoipa_swagger_ui::SwaggerUi;
             TournamentRegistrationResponse,
             TournamentMatchResponse,
             SeededParticipantResponse,
+            crate::dto::responses::TournamentStandingResponse,
             CheckInStatusResponse,
             CreateTournamentRequest,
             UpdateTournamentRequest,

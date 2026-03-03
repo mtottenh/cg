@@ -16,7 +16,7 @@ use crate::dto::responses::{
     CheckInStatusResponse, MatchStatusDetailsResponse, MatchStatusLogResponse,
     ScheduleProposalResponse, SeededParticipantResponse, TournamentBracketResponse,
     TournamentMatchResponse, TournamentRegistrationResponse, TournamentResponse,
-    TournamentStageResponse, TournamentSummaryResponse,
+    TournamentStageResponse, TournamentStandingResponse, TournamentSummaryResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
@@ -1953,4 +1953,82 @@ pub async fn admin_schedule_match(
         TournamentMatchResponse::from(match_),
         request_id,
     )))
+}
+
+/// Get standings for a tournament bracket.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/brackets/{bracket_id}/standings",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("bracket_id" = String, Path, description = "Bracket ID")
+    ),
+    responses(
+        (status = 200, description = "Bracket standings", body = DataResponse<Vec<TournamentStandingResponse>>),
+        (status = 404, description = "Bracket not found", body = ApiError),
+    ),
+    tag = "tournaments"
+)]
+pub async fn get_bracket_standings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((_tournament_id, bracket_id)): Path<(String, String)>,
+) -> ApiResult<Json<DataResponse<Vec<TournamentStandingResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    let bracket_id: portal_core::TournamentBracketId = bracket_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid bracket ID format"))?;
+
+    let standings = state.standings_service.get_standings(bracket_id).await?;
+
+    let response: Vec<TournamentStandingResponse> =
+        standings.into_iter().map(Into::into).collect();
+
+    Ok(Json(DataResponse::new(response, request_id)))
+}
+
+/// Generate the next Swiss round for a tournament.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/tournaments/{tournament_id}/generate-next-round",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    responses(
+        (status = 200, description = "Next round generated", body = DataResponse<Vec<TournamentMatchResponse>>),
+        (status = 400, description = "Not Swiss format or current round not complete", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn admin_generate_next_swiss_round(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(tournament_id): Path<String>,
+) -> ApiResult<Json<DataResponse<Vec<TournamentMatchResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
+
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    let new_matches = state
+        .tournament_service
+        .generate_next_swiss_round(tournament_id)
+        .await?;
+
+    let response: Vec<TournamentMatchResponse> =
+        new_matches.into_iter().map(Into::into).collect();
+
+    Ok(Json(DataResponse::new(response, request_id)))
 }

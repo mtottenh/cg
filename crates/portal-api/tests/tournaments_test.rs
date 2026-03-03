@@ -2007,3 +2007,315 @@ async fn test_availability_window_invalid_time_range() {
             || response.status == StatusCode::INTERNAL_SERVER_ERROR
     );
 }
+
+// ============================================================================
+// PHASE 5.1: DOUBLE ELIMINATION TESTS
+// ============================================================================
+
+/// Helper to create a double elimination tournament and open registration.
+async fn create_de_tournament(app: &TestApp, slug: &str, min_participants: i32) -> String {
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": format!("DE Test {}", slug),
+                "slug": slug,
+                "format": "double_elimination",
+                "participant_type": "individual",
+                "min_participants": min_participants,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "self_scheduled",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let created: serde_json::Value = response.json();
+    let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    // Publish
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Open registration
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{}/open-registration",
+            tournament_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    tournament_id
+}
+
+/// Helper to register N players for a tournament and return registration IDs.
+async fn register_n_players(
+    app: &TestApp,
+    tournament_id: &str,
+    count: usize,
+    slug: &str,
+) -> Vec<String> {
+    let mut reg_ids = Vec::new();
+
+    // First player uses the dev user
+    let reg1 = register_player(app, tournament_id, "Player1").await;
+    approve_registration(app, tournament_id, &reg1).await;
+    reg_ids.push(reg1);
+
+    // Remaining players use new users
+    for i in 2..=count {
+        let (user_id, player_id) =
+            create_test_player(app, &format!("de_player{}_{}", i, slug)).await;
+        let reg = insert_test_registration(
+            app,
+            tournament_id,
+            player_id,
+            user_id,
+            &format!("Player{}", i),
+        )
+        .await;
+        reg_ids.push(reg);
+    }
+
+    reg_ids
+}
+
+#[tokio::test]
+async fn test_start_double_elimination_tournament() {
+    let app = TestApp::new().await;
+    let tournament_id = create_de_tournament(&app, "de-start-test", 4).await;
+
+    // Register 8 players
+    let _reg_ids = register_n_players(&app, &tournament_id, 8, "de-start").await;
+
+    // Auto-seed
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &json!({ "algorithm": "random" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Start tournament
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Verify tournament status is "in_progress"
+    let response = app
+        .get(&format!("/v1/tournaments/{}", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "in_progress");
+    assert_eq!(body["data"]["format"], "double_elimination");
+
+    // Get brackets - should have 3 (Winners, Losers, Grand Final)
+    let response = app
+        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let brackets_body: serde_json::Value = response.json();
+    let brackets = brackets_body["data"].as_array().unwrap();
+    assert_eq!(brackets.len(), 3, "Should have 3 brackets (WB, LB, GF)");
+
+    // Verify bracket types
+    let bracket_types: Vec<&str> = brackets
+        .iter()
+        .map(|b| b["bracket_type"].as_str().unwrap())
+        .collect();
+    assert!(bracket_types.contains(&"winners"));
+    assert!(bracket_types.contains(&"losers"));
+    assert!(bracket_types.contains(&"grand_final"));
+
+    // Get all matches
+    let response = app
+        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let matches_body: serde_json::Value = response.json();
+    let all_matches = matches_body["data"].as_array().unwrap();
+
+    // 8 teams: WB=7, LB=6, GF=1 = 14 total
+    assert_eq!(
+        all_matches.len(),
+        14,
+        "8-team DE should have 14 matches total"
+    );
+
+    // Get matches per bracket
+    let wb_bracket = brackets
+        .iter()
+        .find(|b| b["bracket_type"] == "winners")
+        .unwrap();
+    let lb_bracket = brackets
+        .iter()
+        .find(|b| b["bracket_type"] == "losers")
+        .unwrap();
+    let gf_bracket = brackets
+        .iter()
+        .find(|b| b["bracket_type"] == "grand_final")
+        .unwrap();
+
+    let wb_id = wb_bracket["id"].as_str().unwrap();
+    let lb_id = lb_bracket["id"].as_str().unwrap();
+    let gf_id = gf_bracket["id"].as_str().unwrap();
+
+    let wb_matches: Vec<_> = all_matches
+        .iter()
+        .filter(|m| m["bracket_id"] == wb_id)
+        .collect();
+    let lb_matches: Vec<_> = all_matches
+        .iter()
+        .filter(|m| m["bracket_id"] == lb_id)
+        .collect();
+    let gf_matches: Vec<_> = all_matches
+        .iter()
+        .filter(|m| m["bracket_id"] == gf_id)
+        .collect();
+
+    assert_eq!(wb_matches.len(), 7, "WB should have 7 matches");
+    assert_eq!(lb_matches.len(), 6, "LB should have 6 matches");
+    assert_eq!(gf_matches.len(), 1, "GF should have 1 match");
+
+    // Verify WR1 matches have participants assigned
+    let wr1_matches: Vec<_> = wb_matches
+        .iter()
+        .filter(|m| m["round"].as_i64() == Some(1))
+        .collect();
+    assert_eq!(wr1_matches.len(), 4, "WR1 should have 4 matches");
+
+    for m in &wr1_matches {
+        assert!(
+            m["participant1_name"].is_string(),
+            "WR1 match should have participant 1 assigned"
+        );
+        assert!(
+            m["participant2_name"].is_string(),
+            "WR1 match should have participant 2 assigned"
+        );
+    }
+
+    // Verify GF match has no participants yet (they'll be filled after WB/LB finals)
+    let gf_match = &gf_matches[0];
+    assert!(
+        gf_match["participant1_name"].is_null(),
+        "GF should not have participants yet"
+    );
+}
+
+#[tokio::test]
+async fn test_start_double_elimination_4_teams() {
+    let app = TestApp::new().await;
+    let tournament_id = create_de_tournament(&app, "de-4teams-test", 2).await;
+
+    // Register 4 players
+    let _reg_ids = register_n_players(&app, &tournament_id, 4, "de-4teams").await;
+
+    // Auto-seed
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &json!({ "algorithm": "random" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Start tournament
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Get all matches
+    let response = app
+        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let matches_body: serde_json::Value = response.json();
+    let all_matches = matches_body["data"].as_array().unwrap();
+
+    // 4 teams: WB=3, LB=2, GF=1 = 6 total
+    assert_eq!(
+        all_matches.len(),
+        6,
+        "4-team DE should have 6 matches total"
+    );
+}
+
+#[tokio::test]
+async fn test_double_elimination_with_byes() {
+    let app = TestApp::new().await;
+    let tournament_id = create_de_tournament(&app, "de-byes-test", 2).await;
+
+    // Register 6 players (needs 8-bracket, 2 byes)
+    let _reg_ids = register_n_players(&app, &tournament_id, 6, "de-byes").await;
+
+    // Auto-seed
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &json!({ "algorithm": "random" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Start tournament
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Get all matches - bracket size is 8, so same match count as 8-team
+    let response = app
+        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let matches_body: serde_json::Value = response.json();
+    let all_matches = matches_body["data"].as_array().unwrap();
+
+    // 8-bracket: WB=7, LB=6, GF=1 = 14 total
+    assert_eq!(
+        all_matches.len(),
+        14,
+        "6-team DE (8-bracket) should have 14 matches total"
+    );
+
+    // Get brackets
+    let response = app
+        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let brackets_body: serde_json::Value = response.json();
+    let brackets = brackets_body["data"].as_array().unwrap();
+    let wb = brackets
+        .iter()
+        .find(|b| b["bracket_type"] == "winners")
+        .unwrap();
+    let wb_id = wb["id"].as_str().unwrap();
+
+    // Some WR2 matches should have participants from byes
+    let wr2_matches: Vec<_> = all_matches
+        .iter()
+        .filter(|m| m["bracket_id"] == wb_id && m["round"].as_i64() == Some(2))
+        .collect();
+
+    // At least one WR2 match should have a bye-advanced participant
+    let has_bye_advanced = wr2_matches
+        .iter()
+        .any(|m| m["participant1_name"].is_string() || m["participant2_name"].is_string());
+    assert!(
+        has_bye_advanced,
+        "At least one WR2 match should have a bye-advanced participant"
+    );
+}

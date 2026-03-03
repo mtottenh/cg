@@ -12,8 +12,8 @@
 | Phase 1: Core Foundation | 🟢 Complete | 2025-11-30 | 2025-11-30 | All tests passing |
 | Phase 2: Registration & Seeding | 🟢 Complete | 2025-11-30 | 2025-11-30 | Services + Handlers + Tests |
 | Phase 3: Match System | 🟢 Complete | 2025-11-30 | 2026-03-01 | All 9 sub-phases done (Batches 1-4) |
-| Phase 4: Plugin & Demo Integration | 🟡 In Progress | 2025-12-01 | - | 4.1-4.3 complete, 4.4 (saga integration) remaining |
-| Phase 5: Advanced Formats | 🔴 Not Started | - | - | |
+| Phase 4: Plugin & Demo Integration | 🟢 Complete | 2025-12-01 | 2026-03-02 | 4.0-4.3 complete, 4.4 saga integration wired end-to-end |
+| Phase 5: Advanced Formats | 🟡 In Progress | 2026-03-02 | - | 5.1 Double Elimination complete |
 | Phase 6: Polish & Performance | 🔴 Not Started | - | - | |
 
 **Legend**: 🔴 Not Started | 🟡 In Progress | 🟢 Complete | ⏸️ Blocked/Deferred
@@ -642,7 +642,7 @@ POST   /v1/games/{game_id}/disable                      # Disable game
 | 4.1: Demo Handlers & Validation | 🟢 Complete | Match demos endpoint, unlink, DemoValidationResult |
 | 4.2: Result Claim Demo Bridge | 🟢 Complete | demo_link_ids on result_claims, submit with demo refs |
 | 4.3: Result Review System | 🟢 Complete | ResultReviewService, captain acknowledgment, admin approve/reject (28 tests) |
-| 4.4: Review Workflow Integration | 🔴 Not Started | Saga demo validation step, pause/resume on review |
+| 4.4: Review Workflow Integration | 🟢 Complete | Saga demo validation step, pause/resume on review |
 
 ### Goals
 - [x] Extended `GamePlugin` trait for tournaments (TournamentPlugin)
@@ -655,7 +655,7 @@ POST   /v1/games/{game_id}/disable                      # Disable game
 - [x] Result claims with demo_link_ids (migration 0041)
 - [x] Result review system (migration 0042, service, handlers, 28 tests)
 - [ ] Plugin-provided seeding (optional, low priority)
-- [ ] Saga demo validation step (Phase 4.4)
+- [x] Saga demo validation step (Phase 4.4)
 
 ### Files Created/Modified
 ```
@@ -732,63 +732,89 @@ POST   /v1/admin/result-reviews/{id}/reject           # Admin reject
 - [x] Result claims support demo_link_ids
 - [x] Result review system with captain acknowledgment and admin resolution
 - [x] All result review tests passing (28 tests)
-- [ ] Saga demo validation step (Phase 4.4 — not started)
+- [x] Saga demo validation step (Phase 4.4)
 
 ---
 
 ## Phase 5: Advanced Formats
 
+### Sub-Phase Progress
+
+| Sub-Phase | Status | Description |
+|-----------|--------|-------------|
+| 5.1: Double Elimination | 🟢 Complete | Generator, service dispatch, cross-bracket links, 12 unit + 3 integration tests |
+| 5.2: Round Robin | 🔴 Not Started | Round robin generator, standings |
+| 5.3: Swiss System | 🔴 Not Started | Swiss pairing generator |
+| 5.4: Groups + Playoffs | 🔴 Not Started | Multi-stage hybrid |
+
 ### Goals
-- [ ] Double elimination generator
+- [x] Double elimination generator
 - [ ] Round robin generator
 - [ ] Swiss system generator
 - [ ] Groups + playoffs hybrid
 - [ ] Multi-stage orchestration
 - [ ] Standings system
 
-### Files Created/Modified
+### Phase 5.1: Double Elimination (Complete)
+
+#### Files Created/Modified
 ```
-# Services
-crates/portal-domain/src/services/tournament/generators/
-  - mod.rs
-  - single_elimination.rs
-  - double_elimination.rs
-  - round_robin.rs
-  - swiss.rs
-  - groups_playoffs.rs
+# Generator
+crates/portal-domain/src/services/tournament/bracket_generator.rs
+  - GeneratedDoubleElimination struct
+  - CrossBracketLink, CrossLinkType types
+  - BracketGenerator::double_elimination() method
+  - lb_matches_in_round(), lb_participant_sources(), cross_seed_wr1_to_lr1() helpers
+  - 12 unit tests
 
-crates/portal-domain/src/services/tournament/standings.rs
+# Service
+crates/portal-domain/src/services/tournament/service.rs
+  - start_tournament() dispatches on TournamentFormat
+  - start_single_elimination() (extracted from old start_tournament)
+  - start_double_elimination() (new: creates 3 brackets, links cross-bracket progression)
+  - apply_initial_assignments(), apply_byes(), build_position_map(), parse_round_match() helpers
 
-# Database
-migrations/NNNN_tournament_standings.sql
-
-# Repositories
-crates/portal-domain/src/repositories/tournament_standings.rs
-
-# Handlers
-crates/portal-api/src/handlers/tournaments/standings.rs
-```
-
-### Tests Required
-```
-# Unit tests (extensive!)
-crates/portal-domain/src/services/tournament/tests/
-  - double_elimination_tests.rs
-  - round_robin_tests.rs
-  - swiss_tests.rs
-  - groups_playoffs_tests.rs
-  - standings_tests.rs
+# Exports
+crates/portal-domain/src/services/tournament/mod.rs
+  - Export GeneratedDoubleElimination, CrossBracketLink, CrossLinkType
 
 # Integration tests
-crates/portal-api/tests/tournament_formats_test.rs
-  - test_double_elimination_lifecycle
-  - test_round_robin_lifecycle
-  - test_swiss_lifecycle
-  - test_groups_to_playoffs
+crates/portal-api/tests/tournaments_test.rs
+  - test_start_double_elimination_tournament (8 teams, 3 brackets, 14 matches)
+  - test_start_double_elimination_4_teams (4 teams, 6 matches)
+  - test_double_elimination_with_byes (6 teams in 8-bracket)
 ```
 
-### Acceptance Criteria
-- [ ] Double elimination brackets work
+#### Key Design Decisions
+- No grand final reset (single GF match) for simplicity
+- Cross-seeding: WR1 losers paired from opposite bracket halves to avoid rematches
+- LB alternates between survivor rounds (LB players only) and dropper rounds (WB losers enter)
+- Progression links collected into HashMap before writing to avoid partial overwrites
+- No new migrations needed — existing columns (bracket_type, loser_progresses_to, participant_source) suffice
+
+#### Acceptance Criteria
+- [x] Double elimination brackets generated correctly (4/8/16 teams)
+- [x] Byes handled in WB round 1
+- [x] Cross-bracket loser progression links set
+- [x] WB/LB final winners advance to grand final
+- [x] Cross-seeding avoids immediate rematches
+- [x] All 12 unit tests passing
+- [x] All 3 integration tests passing
+- [x] `cargo check --workspace` clean
+
+### Future Phases
+
+#### Files Planned
+```
+# Round Robin / Swiss / Groups
+crates/portal-domain/src/services/tournament/bracket_generator.rs  # Additional methods
+crates/portal-domain/src/services/tournament/standings.rs          # Already exists (stub)
+
+# Database (if needed)
+migrations/NNNN_tournament_standings.sql
+```
+
+### Remaining Acceptance Criteria
 - [ ] Round robin with standings works
 - [ ] Swiss pairings work
 - [ ] Groups advance to playoffs
@@ -835,7 +861,7 @@ crates/portal-api/src/handlers/tournaments/admin.rs
 | ~~Progression service not wired~~ | 3.9 | ~~ProgressionService needs to be added to AppState~~ | ✅ Resolved (Batch 4) |
 | ~~Demo parser needed~~ | 3.8 | ~~CS2 demo parsing requires external library~~ | ✅ Resolved — external stats service + scanner CLI |
 | ~~S3 client implementation~~ | 3.7 | ~~Need S3Client trait implementation for presigned URLs~~ | ✅ Resolved (Batch 4) |
-| Saga demo validation | 4.4 | MatchCompletionSaga needs step_validate_demos() | Not started |
+| ~~Saga demo validation~~ | 4.4 | ~~MatchCompletionSaga needs step_validate_demos()~~ | ✅ Resolved |
 
 ---
 

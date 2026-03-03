@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use portal_core::types::{
-    BracketType, MatchFormat, StageFormat, StageStatus, TournamentRegistrationStatus,
-    TournamentStatus,
+    BracketType, MatchFormat, StageFormat, StageStatus, TournamentFormat,
+    TournamentRegistrationStatus, TournamentStatus,
 };
-use portal_core::{DomainError, TournamentBracketId, TournamentId, UserId};
+use portal_core::{DomainError, TournamentBracketId, TournamentId, TournamentMatchId, UserId};
 
 use crate::entities::tournament::{
     CreateTournamentCommand, Tournament, TournamentBracket, TournamentMatch, TournamentRegistration,
@@ -19,7 +19,7 @@ use crate::repositories::tournament::{
     UpdateTournament,
 };
 
-use super::bracket_generator::BracketGenerator;
+use super::bracket_generator::{BracketGenerator, CrossLinkType, GeneratedBracket};
 
 /// Service for tournament management.
 pub struct TournamentService<TR, TSR, TBR, TRR, TMR>
@@ -424,15 +424,20 @@ where
         }
 
         // Get or create the main stage
+        let stage_format = match tournament.format {
+            TournamentFormat::SingleElimination => StageFormat::SingleElimination,
+            TournamentFormat::DoubleElimination => StageFormat::DoubleElimination,
+            _ => StageFormat::SingleElimination,
+        };
+
         let stages = self.stage_repo.list_by_tournament(id).await?;
         let stage = if stages.is_empty() {
-            // Create a default stage for simple tournaments
             self.stage_repo
                 .create(CreateTournamentStage {
                     tournament_id: id,
                     name: "Main Bracket".to_string(),
                     stage_order: 1,
-                    format: StageFormat::SingleElimination,
+                    format: stage_format,
                     format_settings: serde_json::json!({}),
                     advancement_count: None,
                     advancement_rule: portal_core::types::AdvancementRule::TopN,
@@ -446,9 +451,42 @@ where
             stages.into_iter().next().unwrap()
         };
 
-        // Generate bracket
         let seeded_participants = BracketGenerator::prepare_participants(participants);
 
+        match tournament.format {
+            TournamentFormat::SingleElimination => {
+                self.start_single_elimination(id, &tournament, &stage, seeded_participants)
+                    .await?;
+            }
+            TournamentFormat::DoubleElimination => {
+                self.start_double_elimination(id, &tournament, &stage, seeded_participants)
+                    .await?;
+            }
+            _ => {
+                return Err(DomainError::InvalidState(format!(
+                    "Tournament format {} is not yet supported",
+                    tournament.format
+                )));
+            }
+        }
+
+        // Update stage status
+        self.stage_repo
+            .update_status(stage.id, StageStatus::Active)
+            .await?;
+
+        // Mark tournament as started
+        self.tournament_repo.mark_started(id).await
+    }
+
+    /// Start a single elimination tournament.
+    async fn start_single_elimination(
+        &self,
+        id: TournamentId,
+        tournament: &Tournament,
+        stage: &TournamentStage,
+        seeded_participants: Vec<crate::entities::tournament::SeededParticipant>,
+    ) -> Result<(), DomainError> {
         // Create bracket entry
         let bracket = self
             .bracket_repo
@@ -457,7 +495,7 @@ where
                 tournament_id: id,
                 name: "Main Bracket".to_string(),
                 bracket_type: BracketType::SingleElim,
-                total_rounds: 0, // Will be updated after generation
+                total_rounds: 0,
                 group_number: None,
             })
             .await?;
@@ -467,7 +505,7 @@ where
             id,
             stage.id,
             bracket.id,
-            seeded_participants.clone(),
+            seeded_participants,
             tournament.default_match_format,
         )?;
 
@@ -487,14 +525,265 @@ where
         let matches = self.match_repo.bulk_create(generated.matches).await?;
 
         // Create a position -> match ID mapping
-        let position_to_match: std::collections::HashMap<String, portal_core::TournamentMatchId> =
-            matches
-                .iter()
-                .map(|m| (m.bracket_position.clone(), m.id))
-                .collect();
+        let position_to_match = Self::build_position_map(&matches);
 
-        // Apply initial assignments
-        for assignment in generated.initial_assignments {
+        // Apply initial assignments and byes
+        self.apply_initial_assignments(&generated.initial_assignments, &position_to_match)
+            .await?;
+        self.apply_byes(&generated.byes, &position_to_match).await?;
+
+        // Link matches: R{r}M{m} winner → R{r+1}M{ceil(m/2)}
+        for match_ in &matches {
+            let pos = &match_.bracket_position;
+            let parts: Vec<&str> = pos.split('M').collect();
+            if parts.len() != 2 {
+                continue;
+            }
+            let round: i32 = parts[0].trim_start_matches('R').parse().unwrap_or(0);
+            let match_in_round: i32 = parts[1].parse().unwrap_or(0);
+            if round == 0 || match_in_round == 0 {
+                continue;
+            }
+
+            let next_round = round + 1;
+            let next_match_in_round = (match_in_round + 1) / 2;
+            let next_pos = format!("R{next_round}M{next_match_in_round}");
+
+            if let Some(&next_match_id) = position_to_match.get(&next_pos) {
+                self.match_repo
+                    .set_progression_links(match_.id, Some(next_match_id), None)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Start a double elimination tournament.
+    async fn start_double_elimination(
+        &self,
+        id: TournamentId,
+        tournament: &Tournament,
+        stage: &TournamentStage,
+        seeded_participants: Vec<crate::entities::tournament::SeededParticipant>,
+    ) -> Result<(), DomainError> {
+        // Create 3 brackets: Winners, Losers, Grand Final
+        let wb = self
+            .bracket_repo
+            .create(CreateTournamentBracket {
+                stage_id: stage.id,
+                tournament_id: id,
+                name: "Winners Bracket".to_string(),
+                bracket_type: BracketType::Winners,
+                total_rounds: 0,
+                group_number: None,
+            })
+            .await?;
+
+        let lb = self
+            .bracket_repo
+            .create(CreateTournamentBracket {
+                stage_id: stage.id,
+                tournament_id: id,
+                name: "Losers Bracket".to_string(),
+                bracket_type: BracketType::Losers,
+                total_rounds: 0,
+                group_number: None,
+            })
+            .await?;
+
+        let gf = self
+            .bracket_repo
+            .create(CreateTournamentBracket {
+                stage_id: stage.id,
+                tournament_id: id,
+                name: "Grand Final".to_string(),
+                bracket_type: BracketType::GrandFinal,
+                total_rounds: 0,
+                group_number: None,
+            })
+            .await?;
+
+        // Generate the DE bracket structure
+        let generated = BracketGenerator::double_elimination(
+            id,
+            stage.id,
+            wb.id,
+            lb.id,
+            gf.id,
+            seeded_participants,
+            tournament.default_match_format,
+        )?;
+
+        // Update bracket round counts
+        self.bracket_repo
+            .update(
+                wb.id,
+                crate::repositories::tournament::UpdateTournamentBracket {
+                    name: None,
+                    total_rounds: Some(generated.winners_bracket.total_rounds),
+                    current_round: Some(1),
+                },
+            )
+            .await?;
+
+        if generated.losers_bracket.total_rounds > 0 {
+            self.bracket_repo
+                .update(
+                    lb.id,
+                    crate::repositories::tournament::UpdateTournamentBracket {
+                        name: None,
+                        total_rounds: Some(generated.losers_bracket.total_rounds),
+                        current_round: Some(1),
+                    },
+                )
+                .await?;
+        }
+
+        self.bracket_repo
+            .update(
+                gf.id,
+                crate::repositories::tournament::UpdateTournamentBracket {
+                    name: None,
+                    total_rounds: Some(1),
+                    current_round: Some(1),
+                },
+            )
+            .await?;
+
+        // Create matches for all 3 brackets
+        let wb_matches = self
+            .match_repo
+            .bulk_create(generated.winners_bracket.matches)
+            .await?;
+
+        let lb_matches = if generated.losers_bracket.matches.is_empty() {
+            Vec::new()
+        } else {
+            self.match_repo
+                .bulk_create(generated.losers_bracket.matches)
+                .await?
+        };
+
+        let gf_matches = self
+            .match_repo
+            .bulk_create(generated.grand_final.matches)
+            .await?;
+
+        // Build unified position → match ID map across all brackets
+        let mut position_to_match = Self::build_position_map(&wb_matches);
+        position_to_match.extend(Self::build_position_map(&lb_matches));
+        position_to_match.extend(Self::build_position_map(&gf_matches));
+
+        // Apply initial assignments and byes (WB only)
+        self.apply_initial_assignments(
+            &generated.winners_bracket.initial_assignments,
+            &position_to_match,
+        )
+        .await?;
+        self.apply_byes(&generated.winners_bracket.byes, &position_to_match)
+            .await?;
+
+        // =====================================================================
+        // Build progression links
+        // =====================================================================
+        // We need to collect (winner_to, loser_to) for each match before writing,
+        // because set_progression_links sets both fields atomically.
+
+        let mut progression: std::collections::HashMap<
+            TournamentMatchId,
+            (Option<TournamentMatchId>, Option<TournamentMatchId>),
+        > = std::collections::HashMap::new();
+
+        // WB intra-bracket: WR{r}M{m} winner → WR{r+1}M{ceil(m/2)}
+        for match_ in &wb_matches {
+            let (round, match_in_round) = Self::parse_round_match(&match_.bracket_position, "WR");
+            if round == 0 {
+                continue;
+            }
+            let next_pos = format!("WR{}M{}", round + 1, (match_in_round + 1) / 2);
+            if let Some(&next_id) = position_to_match.get(&next_pos) {
+                let entry = progression.entry(match_.id).or_insert((None, None));
+                entry.0 = Some(next_id);
+            }
+        }
+
+        // LB intra-bracket progression
+        for match_ in &lb_matches {
+            let (lb_round, match_in_round) =
+                Self::parse_round_match(&match_.bracket_position, "LR");
+            if lb_round == 0 {
+                continue;
+            }
+
+            // Determine next LB position
+            let next_pos = if lb_round % 2 == 1 && lb_round > 1 {
+                // Odd (survivor) round: feeds into next even (dropper) round, same index
+                format!("LR{}M{match_in_round}", lb_round + 1)
+            } else if lb_round == 1 {
+                // LR1 feeds into LR2 at the same match index
+                format!("LR2M{match_in_round}")
+            } else {
+                // Even (dropper) round: feeds into next odd (survivor) round
+                // Two matches feed into one: match_in_round ceil(m/2)
+                format!("LR{}M{}", lb_round + 1, (match_in_round + 1) / 2)
+            };
+
+            if let Some(&next_id) = position_to_match.get(&next_pos) {
+                let entry = progression.entry(match_.id).or_insert((None, None));
+                entry.0 = Some(next_id);
+            }
+        }
+
+        // Cross-bracket links
+        for link in &generated.cross_bracket_links {
+            let source_id = position_to_match.get(&link.source_bracket_position);
+            let target_id = position_to_match.get(&link.target_bracket_position);
+
+            if let (Some(&src), Some(&tgt)) = (source_id, target_id) {
+                let entry = progression.entry(src).or_insert((None, None));
+                match link.link_type {
+                    CrossLinkType::LoserDropsTo => {
+                        entry.1 = Some(tgt);
+                    }
+                    CrossLinkType::WinnerAdvancesTo => {
+                        entry.0 = Some(tgt);
+                    }
+                }
+            }
+        }
+
+        // Write all progression links
+        for (match_id, (winner_to, loser_to)) in &progression {
+            self.match_repo
+                .set_progression_links(*match_id, *winner_to, *loser_to)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // HELPERS
+    // =========================================================================
+
+    /// Build a position → match ID mapping from a list of matches.
+    fn build_position_map(
+        matches: &[TournamentMatch],
+    ) -> std::collections::HashMap<String, TournamentMatchId> {
+        matches
+            .iter()
+            .map(|m| (m.bracket_position.clone(), m.id))
+            .collect()
+    }
+
+    /// Apply initial participant assignments to matches.
+    async fn apply_initial_assignments(
+        &self,
+        assignments: &[super::bracket_generator::InitialAssignment],
+        position_to_match: &std::collections::HashMap<String, TournamentMatchId>,
+    ) -> Result<(), DomainError> {
+        for assignment in assignments {
             if let Some(&match_id) = position_to_match.get(&assignment.bracket_position) {
                 let slot = if assignment.slot == 1 {
                     ParticipantSlot::One
@@ -507,16 +796,23 @@ where
                         match_id,
                         slot,
                         assignment.participant.registration_id,
-                        assignment.participant.participant_name,
-                        assignment.participant.participant_logo_url,
+                        assignment.participant.participant_name.clone(),
+                        assignment.participant.participant_logo_url.clone(),
                         Some(assignment.participant.seed),
                     )
                     .await?;
             }
         }
+        Ok(())
+    }
 
-        // Apply byes (advance participants directly to next round)
-        for bye in generated.byes {
+    /// Apply bye advancements (participants who auto-advance).
+    async fn apply_byes(
+        &self,
+        byes: &[super::bracket_generator::ByeInfo],
+        position_to_match: &std::collections::HashMap<String, TournamentMatchId>,
+    ) -> Result<(), DomainError> {
+        for bye in byes {
             if let Some(&match_id) = position_to_match.get(&bye.advances_to_position) {
                 let slot = if bye.slot == 1 {
                     ParticipantSlot::One
@@ -529,49 +825,27 @@ where
                         match_id,
                         slot,
                         bye.participant.registration_id,
-                        bye.participant.participant_name,
-                        bye.participant.participant_logo_url,
+                        bye.participant.participant_name.clone(),
+                        bye.participant.participant_logo_url.clone(),
                         Some(bye.participant.seed),
                     )
                     .await?;
             }
         }
+        Ok(())
+    }
 
-        // Link matches: set winner_progresses_to for each match.
-        // For SE brackets: R{r}M{m} winner → R{r+1}M{ceil(m/2)}.
-        for match_ in &matches {
-            // Parse bracket_position "R{round}M{match_in_round}"
-            let pos = &match_.bracket_position;
-            let parts: Vec<&str> = pos.split('M').collect();
-            if parts.len() != 2 {
-                continue;
-            }
-            let round: i32 = parts[0].trim_start_matches('R').parse().unwrap_or(0);
-            let match_in_round: i32 = parts[1].parse().unwrap_or(0);
-            if round == 0 || match_in_round == 0 {
-                continue;
-            }
-
-            // Compute next round position
-            let next_round = round + 1;
-            let next_match_in_round = (match_in_round + 1) / 2;
-            let next_pos = format!("R{next_round}M{next_match_in_round}");
-
-            if let Some(&next_match_id) = position_to_match.get(&next_pos) {
-                self.match_repo
-                    .set_progression_links(match_.id, Some(next_match_id), None)
-                    .await?;
-            }
-            // No next match means this is the final — winner_progresses_to stays None.
+    /// Parse a bracket position like "WR2M3" or "LR1M2" into (round, match_in_round).
+    /// Returns (0, 0) if parsing fails.
+    fn parse_round_match(position: &str, prefix: &str) -> (i32, i32) {
+        let stripped = position.strip_prefix(prefix).unwrap_or("");
+        let parts: Vec<&str> = stripped.split('M').collect();
+        if parts.len() != 2 {
+            return (0, 0);
         }
-
-        // Update stage status
-        self.stage_repo
-            .update_status(stage.id, StageStatus::Active)
-            .await?;
-
-        // Mark tournament as started
-        self.tournament_repo.mark_started(id).await
+        let round: i32 = parts[0].parse().unwrap_or(0);
+        let match_in_round: i32 = parts[1].parse().unwrap_or(0);
+        (round, match_in_round)
     }
 
     /// Get bracket for a tournament.

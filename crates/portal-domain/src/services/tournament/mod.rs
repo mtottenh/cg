@@ -41,7 +41,10 @@ mod veto_authorization;
 mod veto_lobby_chat;
 
 pub use availability::AvailabilityService;
-pub use bracket_generator::{BracketGenerator, GeneratedBracket};
+pub use bracket_generator::{
+    BracketGenerator, CrossBracketLink, CrossLinkType, GeneratedBracket,
+    GeneratedDoubleElimination,
+};
 pub use checkin::{CheckInService, CheckInStatus};
 pub use evidence::{EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig};
 pub use match_completion::{

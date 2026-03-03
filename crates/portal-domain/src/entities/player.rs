@@ -52,6 +52,7 @@ pub struct Player {
     pub timezone: Option<String>,
     pub social_links: SocialLinks,
     pub steam_id: Option<String>,
+    pub looking_for_team: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

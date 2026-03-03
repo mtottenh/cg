@@ -74,6 +74,9 @@ pub struct UpdatePlayerProfileRequest {
 
     /// Social media links.
     pub social_links: Option<SocialLinksRequest>,
+
+    /// Whether the player is looking for a team.
+    pub looking_for_team: Option<bool>,
 }
 
 impl From<UpdatePlayerProfileRequest> for UpdatePlayer {
@@ -89,6 +92,7 @@ impl From<UpdatePlayerProfileRequest> for UpdatePlayer {
             steam_id: req.steam_id,
             steam_id_64: None, // Derived from steam_id in the adapter
             social_links: req.social_links.map(SocialLinks::from),
+            looking_for_team: req.looking_for_team,
         }
     }
 }

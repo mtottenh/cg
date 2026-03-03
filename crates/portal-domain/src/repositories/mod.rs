@@ -66,7 +66,7 @@ pub use player_game_profile::PlayerGameProfileRepository;
 pub use player_rating_history::{
     CreatePlayerRatingHistory, PlayerRatingHistoryRepository, RatingStats,
 };
-pub use user::{CreatePlayer, CreateUser, PlayerRepository, UpdatePlayer, UserRepository};
+pub use user::{CreatePlayer, CreateUser, PlayerRepository, PlayerSearchFilters, UpdatePlayer, UserRepository};
 pub use evidence::{
     CreateEvidence, CreateEvidenceAccessLog, CreateProgressionLog, CreateSagaExecution,
     EvidenceRepository, ProgressionLog, ProgressionLogRepository, ProgressionType,

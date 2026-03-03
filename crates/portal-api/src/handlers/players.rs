@@ -9,8 +9,8 @@ use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
-use portal_core::PlayerId;
-use portal_domain::repositories::UpdatePlayer;
+use portal_core::{GameId, PlayerId};
+use portal_domain::repositories::{PlayerSearchFilters, UpdatePlayer};
 use serde::Deserialize;
 use validator::Validate;
 
@@ -28,6 +28,15 @@ pub struct PlayerSearchParams {
     /// Search query for display name.
     #[serde(default)]
     pub q: String,
+
+    /// Filter by game ID (UUID string).
+    pub game_id: Option<String>,
+
+    /// Filter by team status: "has_team", "no_team", or "lft".
+    pub team_status: Option<String>,
+
+    /// Filter by ISO 3166-1 alpha-2 country code.
+    pub country_code: Option<String>,
 
     /// Page number (1-indexed).
     #[serde(default = "default_page")]
@@ -82,9 +91,26 @@ pub async fn search_players(
 ) -> ApiResult<Json<PaginatedResponse<PlayerSearchResponse>>> {
     let request_id = get_request_id(&headers);
 
+    let limit = params.limit();
+    let offset = params.offset();
+    let pagination = params.as_pagination();
+
+    let game_id = params
+        .game_id
+        .map(|s| s.parse::<GameId>())
+        .transpose()
+        .map_err(|_| ApiError::bad_request("Invalid game_id format — expected UUID"))?;
+
+    let filters = PlayerSearchFilters {
+        query: params.q,
+        game_id,
+        team_status: params.team_status,
+        country_code: params.country_code,
+    };
+
     let result = state
         .player_service
-        .search_players(&params.q, params.limit(), params.offset())
+        .search_players(&filters, limit, offset)
         .await?;
 
     let players: Vec<PlayerSearchResponse> = result
@@ -95,7 +121,7 @@ pub async fn search_players(
 
     Ok(Json(PaginatedResponse::new(
         players,
-        &params.as_pagination(),
+        &pagination,
         result.total as u64,
         request_id,
     )))

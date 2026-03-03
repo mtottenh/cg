@@ -40,6 +40,9 @@ pub struct PlayerRow {
     pub steam_id_64: Option<i64>,
     pub steam_profile: Option<serde_json::Value>,
 
+    // Looking for Team
+    pub looking_for_team: bool,
+
     // Metadata
     pub featured_badge_id: Option<Uuid>,
     pub title: Option<String>,

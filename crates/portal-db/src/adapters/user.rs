@@ -7,7 +7,7 @@ use portal_core::{DomainError, PlayerId, UserId};
 use portal_domain::entities::user::UserStatus as DomainUserStatus;
 use portal_domain::entities::{Player, SocialLinks, User, UserWithCredentials};
 use portal_domain::repositories::{
-    CreatePlayer, CreateUser, PlayerRepository, UpdatePlayer, UserRepository,
+    CreatePlayer, CreateUser, PlayerRepository, PlayerSearchFilters, UpdatePlayer, UserRepository,
 };
 use sqlx::Row;
 
@@ -63,6 +63,7 @@ impl From<PlayerRow> for Player {
             timezone: row.timezone,
             social_links,
             steam_id: row.steam_id,
+            looking_for_team: row.looking_for_team,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -280,19 +281,30 @@ impl PlayerRepository for PgPlayerRepository {
 
     async fn search(
         &self,
-        query: &str,
+        filters: &PlayerSearchFilters,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Player>, DomainError> {
         let players = sqlx::query_as::<_, PlayerRow>(
             r"
-            SELECT * FROM players
-            WHERE display_name_normalized LIKE $1 || '%'
-            ORDER BY display_name_normalized
-            LIMIT $2 OFFSET $3
+            SELECT DISTINCT p.* FROM players p
+            LEFT JOIN player_game_profiles pgp ON pgp.player_id = p.id
+            WHERE p.display_name_normalized LIKE $1 || '%'
+              AND ($2::uuid IS NULL OR pgp.game_id = $2)
+              AND ($3::text IS NULL OR (
+                ($3 = 'has_team' AND EXISTS (SELECT 1 FROM league_team_members ltm WHERE ltm.player_id = p.id))
+                OR ($3 = 'no_team' AND NOT EXISTS (SELECT 1 FROM league_team_members ltm WHERE ltm.player_id = p.id))
+                OR ($3 = 'lft' AND p.looking_for_team = true)
+              ))
+              AND ($4::text IS NULL OR p.country_code = $4)
+            ORDER BY p.display_name_normalized
+            LIMIT $5 OFFSET $6
             ",
         )
-        .bind(query.to_lowercase())
+        .bind(filters.query.to_lowercase())
+        .bind(filters.game_id.map(|g| g.as_uuid()))
+        .bind(&filters.team_status)
+        .bind(&filters.country_code)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -302,11 +314,25 @@ impl PlayerRepository for PgPlayerRepository {
         Ok(players.into_iter().map(Player::from).collect())
     }
 
-    async fn count_search(&self, query: &str) -> Result<i64, DomainError> {
+    async fn count_search(&self, filters: &PlayerSearchFilters) -> Result<i64, DomainError> {
         let row = sqlx::query(
-            "SELECT COUNT(*) as count FROM players WHERE display_name_normalized LIKE $1 || '%'",
+            r"
+            SELECT COUNT(DISTINCT p.id) as count FROM players p
+            LEFT JOIN player_game_profiles pgp ON pgp.player_id = p.id
+            WHERE p.display_name_normalized LIKE $1 || '%'
+              AND ($2::uuid IS NULL OR pgp.game_id = $2)
+              AND ($3::text IS NULL OR (
+                ($3 = 'has_team' AND EXISTS (SELECT 1 FROM league_team_members ltm WHERE ltm.player_id = p.id))
+                OR ($3 = 'no_team' AND NOT EXISTS (SELECT 1 FROM league_team_members ltm WHERE ltm.player_id = p.id))
+                OR ($3 = 'lft' AND p.looking_for_team = true)
+              ))
+              AND ($4::text IS NULL OR p.country_code = $4)
+            ",
         )
-        .bind(query.to_lowercase())
+        .bind(filters.query.to_lowercase())
+        .bind(filters.game_id.map(|g| g.as_uuid()))
+        .bind(&filters.team_status)
+        .bind(&filters.country_code)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
@@ -355,6 +381,10 @@ impl PlayerRepository for PgPlayerRepository {
             set_clauses.push(format!("steam_id = ${param_index}"));
             param_index += 1;
             set_clauses.push(format!("steam_id_64 = ${param_index}"));
+            param_index += 1;
+        }
+        if cmd.looking_for_team.is_some() {
+            set_clauses.push(format!("looking_for_team = ${param_index}"));
             param_index += 1;
         }
 
@@ -407,6 +437,9 @@ impl PlayerRepository for PgPlayerRepository {
             query_builder = query_builder.bind(steam_id);
             let steam_id_64: i64 = steam_id.parse().unwrap_or(0);
             query_builder = query_builder.bind(steam_id_64);
+        }
+        if let Some(looking_for_team) = cmd.looking_for_team {
+            query_builder = query_builder.bind(looking_for_team);
         }
 
         let player = query_builder

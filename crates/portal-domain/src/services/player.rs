@@ -3,7 +3,7 @@
 use crate::entities::league_team::PlayerLeagueTeamMembership;
 use crate::entities::Player;
 use crate::repositories::league_team::LeagueTeamMemberRepository;
-use crate::repositories::{PlayerRepository, UpdatePlayer};
+use crate::repositories::{PlayerRepository, PlayerSearchFilters, UpdatePlayer};
 use portal_core::{DomainError, FieldError, LeagueSeasonId, PlayerId, UserId, ValidationError};
 use std::sync::Arc;
 use tracing::instrument;
@@ -58,16 +58,16 @@ where
             .ok_or_else(|| DomainError::PlayerNotFound(format!("user:{user_id}")))
     }
 
-    /// Search players by display name.
+    /// Search players with filters.
     #[instrument(skip(self))]
     pub async fn search_players(
         &self,
-        query: &str,
+        filters: &PlayerSearchFilters,
         limit: i64,
         offset: i64,
     ) -> Result<PlayerSearchResult, DomainError> {
-        let players = self.player_repo.search(query, limit, offset).await?;
-        let total = self.player_repo.count_search(query).await?;
+        let players = self.player_repo.search(filters, limit, offset).await?;
+        let total = self.player_repo.count_search(filters).await?;
 
         Ok(PlayerSearchResult { players, total })
     }

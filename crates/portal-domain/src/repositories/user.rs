@@ -2,7 +2,7 @@
 
 use crate::entities::{Player, SocialLinks, User, UserWithCredentials};
 use async_trait::async_trait;
-use portal_core::{DomainError, PlayerId, UserId};
+use portal_core::{DomainError, GameId, PlayerId, UserId};
 
 /// Repository trait for user operations.
 #[async_trait]
@@ -47,6 +47,19 @@ pub struct CreateUser {
     pub password_hash: String,
 }
 
+/// Filters for player search queries.
+#[derive(Debug, Clone, Default)]
+pub struct PlayerSearchFilters {
+    /// Text query matching display name prefix.
+    pub query: String,
+    /// Filter by game ID (players who have a game profile for this game).
+    pub game_id: Option<GameId>,
+    /// Filter by team status: "has_team", "no_team", or "lft".
+    pub team_status: Option<String>,
+    /// Filter by ISO 3166-1 alpha-2 country code.
+    pub country_code: Option<String>,
+}
+
 /// Repository trait for player operations.
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
@@ -63,16 +76,16 @@ pub trait PlayerRepository: Send + Sync {
     /// Create a new player.
     async fn create(&self, cmd: CreatePlayer) -> Result<Player, DomainError>;
 
-    /// Search players by display name.
+    /// Search players with filters.
     async fn search(
         &self,
-        query: &str,
+        filters: &PlayerSearchFilters,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Player>, DomainError>;
 
-    /// Count total players matching a search query.
-    async fn count_search(&self, query: &str) -> Result<i64, DomainError>;
+    /// Count total players matching search filters.
+    async fn count_search(&self, filters: &PlayerSearchFilters) -> Result<i64, DomainError>;
 
     /// Update a player profile.
     async fn update(&self, id: PlayerId, cmd: UpdatePlayer) -> Result<Player, DomainError>;
@@ -112,6 +125,8 @@ pub struct UpdatePlayer {
     pub steam_id: Option<String>,
     /// Steam ID as 64-bit integer (derived from steam_id).
     pub steam_id_64: Option<i64>,
+    /// Whether the player is looking for a team.
+    pub looking_for_team: Option<bool>,
 }
 
 impl UpdatePlayer {
@@ -127,5 +142,6 @@ impl UpdatePlayer {
             || self.timezone.is_some()
             || self.social_links.is_some()
             || self.steam_id.is_some()
+            || self.looking_for_team.is_some()
     }
 }

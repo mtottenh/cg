@@ -90,6 +90,9 @@ pub struct PlayerResponse {
     /// Whether Steam account is linked.
     pub steam_linked: bool,
 
+    /// Whether the player is looking for a team.
+    pub looking_for_team: bool,
+
     /// When the player profile was created.
     #[schema(example = "2024-01-15T10:30:00Z")]
     pub created_at: String,
@@ -114,6 +117,7 @@ impl From<Player> for PlayerResponse {
             social_links: SocialLinksResponse::from(player.social_links),
             steam_id: player.steam_id,
             steam_linked,
+            looking_for_team: player.looking_for_team,
             created_at: player.created_at.to_rfc3339(),
             updated_at: player.updated_at.to_rfc3339(),
         }
@@ -137,6 +141,9 @@ pub struct PlayerSearchResponse {
     /// Country code.
     #[schema(example = "US")]
     pub country_code: Option<String>,
+
+    /// Whether the player is looking for a team.
+    pub looking_for_team: bool,
 }
 
 impl From<Player> for PlayerSearchResponse {
@@ -146,6 +153,7 @@ impl From<Player> for PlayerSearchResponse {
             display_name: player.display_name,
             avatar_url: player.avatar_url,
             country_code: player.country_code,
+            looking_for_team: player.looking_for_team,
         }
     }
 }

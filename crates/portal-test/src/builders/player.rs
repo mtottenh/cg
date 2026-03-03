@@ -126,6 +126,7 @@ impl PlayerBuilder {
             steam_id: self.steam_id,
             steam_id_64: None,
             steam_profile: None,
+            looking_for_team: false,
             featured_badge_id: None,
             title: None,
             created_at: now,

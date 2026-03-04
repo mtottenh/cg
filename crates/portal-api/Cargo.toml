@@ -79,6 +79,12 @@ tokio-tungstenite = "0.26"
 futures-util = { workspace = true }
 image = { workspace = true }
 tracing-subscriber = { workspace = true }
+portal-scanner = { path = "../portal-scanner" }
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+reqwest = { workspace = true }
+testcontainers = { workspace = true }
+anyhow = { workspace = true }
 
 # Single integration test binary (consolidates all test files)
 [[test]]

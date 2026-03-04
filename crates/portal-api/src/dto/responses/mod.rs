@@ -32,7 +32,8 @@ pub use auth::{LoginResponse, RegisterResponse};
 pub use demo::{
     BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoIdListResponse, DemoListResponse,
     DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse, DemoPlayerResponse,
-    DemoResponse, DemoStatusCountsResponse, DemoValidationResultResponse, DemoWithPlayersResponse,
+    DemoDownloadResponse, DemoResponse, DemoStatusCountsResponse, DemoValidationResultResponse,
+    DemoWithPlayersResponse,
 };
 pub use evidence::{
     AccessUrlResponse, DemoPlayerStatsResponse, DemoStatsResponse, DemoValidationResponse,

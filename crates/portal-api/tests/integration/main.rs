@@ -22,3 +22,5 @@ mod users;
 mod veto;
 mod veto_delegates;
 mod veto_ws;
+
+mod scanner_e2e;

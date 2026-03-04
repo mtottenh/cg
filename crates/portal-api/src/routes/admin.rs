@@ -1,6 +1,6 @@
 //! Admin routes.
 
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::Router;
 
 use crate::handlers::{admin, bans, demos, dispute, forfeit, progression, result_reviews, roles, tournaments};
@@ -113,6 +113,11 @@ pub fn routes() -> Router<AppState> {
             post(dispute::admin_resolve_double_dq),
         )
         // Demo admin routes
+        .route(
+            "/demos/{id}",
+            delete(demos::delete_demo),
+        )
+        .route("/demos/{id}/notes", patch(demos::set_demo_notes))
         .route("/demos", post(demos::catalog_demo))
         .route("/demos/batch", post(demos::batch_catalog_demos))
         .route("/demos/stats", get(demos::get_demo_stats))

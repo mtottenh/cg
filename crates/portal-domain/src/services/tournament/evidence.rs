@@ -244,7 +244,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {evidence_id} not found")))?;
+            .ok_or_else(|| DomainError::EvidenceNotFound(evidence_id.to_string()))?;
 
         // Verify the file was actually uploaded
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
@@ -326,6 +326,15 @@ where
         Ok(evidence)
     }
 
+    /// Get a single evidence record by ID.
+    #[instrument(skip(self))]
+    pub async fn get_evidence(&self, id: EvidenceId) -> Result<Evidence, DomainError> {
+        self.evidence_repo
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| DomainError::EvidenceNotFound(id.to_string()))
+    }
+
     /// Get all evidence for a match.
     #[instrument(skip(self))]
     pub async fn get_match_evidence(
@@ -360,7 +369,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {evidence_id} not found")))?;
+            .ok_or_else(|| DomainError::EvidenceNotFound(evidence_id.to_string()))?;
 
         // Check if evidence is accessible
         if !evidence.is_accessible() {
@@ -430,7 +439,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {evidence_id} not found")))?;
+            .ok_or_else(|| DomainError::EvidenceNotFound(evidence_id.to_string()))?;
 
         // Delete from storage if S3
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
@@ -617,7 +626,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {evidence_id} not found")))?;
+            .ok_or_else(|| DomainError::EvidenceNotFound(evidence_id.to_string()))?;
 
         let validation = plugin.validate_evidence(&evidence, result).await?;
 

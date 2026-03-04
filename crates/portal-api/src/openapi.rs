@@ -27,7 +27,7 @@ use crate::dto::requests::{
     ValidateDemoRequest, ValidateEvidenceRequest, WithdrawFromTournamentRequest, LinkDemoRequest,
     AssociateDemoRequest, BatchCatalogDemoEntry, BatchCatalogDemosRequest, CatalogDemoRequest,
     CategorizeDemoRequest, DemoPlayerInputDto, GetDemosForMatchQuery, LinkDemoToMatchRequest,
-    MarkDemoFailedRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
+    MarkDemoFailedRequest, SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
 };
 use crate::dto::responses::{
     AccessUrlResponse, AdvancementResponse, AvailabilityOverrideResponse,
@@ -56,7 +56,7 @@ use crate::dto::responses::{
     WithdrawalResponse,
 };
 use crate::dto::responses::demo::{
-    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoListResponse,
+    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoDownloadResponse, DemoListResponse,
     DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse,
     DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse, DemoValidationResultResponse,
     DemoPlayerStatsResponse as DemoCatalogPlayerStatsResponse,
@@ -323,6 +323,7 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::get_demo,
         demos::get_demo_players,
         demos::get_demo_links,
+        demos::get_demo_download,
         demos::catalog_demo,
         demos::categorize_demo,
         demos::set_demo_visibility,
@@ -335,6 +336,8 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::batch_catalog_demos,
         demos::submit_demo_stats,
         demos::mark_demo_stats_failed,
+        demos::delete_demo,
+        demos::set_demo_notes,
         // Result reviews
         result_reviews::get_result_review,
         result_reviews::acknowledge_result_review,
@@ -599,6 +602,8 @@ use utoipa_swagger_ui::SwaggerUi;
             SubmitDemoStatsRequest,
             DemoPlayerInputDto,
             MarkDemoFailedRequest,
+            SetDemoNotesRequest,
+            DemoDownloadResponse,
             // Steam Tracking
             crate::handlers::steam_tracking::RegisterSteamTrackingRequest,
             crate::handlers::steam_tracking::UpdateSteamTrackingRequest,

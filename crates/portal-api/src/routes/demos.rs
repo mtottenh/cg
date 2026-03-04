@@ -17,4 +17,6 @@ pub fn routes() -> Router<AppState> {
         .route("/{id}/players", get(demos::get_demo_players))
         // Demo match links
         .route("/{id}/links", get(demos::get_demo_links))
+        // Demo download
+        .route("/{id}/download", get(demos::get_demo_download))
 }

@@ -3594,7 +3594,10 @@ checksum = "f84267b20a16ea918e43c6a88433c2d54fa145c92a811b5b047ccbe153674483"
 name = "portal-api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
  "axum",
  "axum-extra",
  "bytes",
@@ -3611,13 +3614,16 @@ dependencies = [
  "portal-db",
  "portal-domain",
  "portal-plugins",
+ "portal-scanner",
  "portal-storage",
  "portal-test",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "sqlx",
+ "testcontainers",
  "thiserror 2.0.17",
  "tokio",
  "tokio-tungstenite 0.26.2",
@@ -3771,6 +3777,25 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "portal-scanner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-sdk-s3",
+ "chrono",
+ "dotenvy",
+ "portal-plugins",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

@@ -4,10 +4,10 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AssociateDemoRequest, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
     GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest,
-    PendingDemosQuery, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
+    PendingDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
 };
 use crate::dto::responses::{
-    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoListResponse,
+    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoDownloadResponse, DemoListResponse,
     DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoPlayerResponse, DemoResponse,
     DemoStatusCountsResponse,
 };
@@ -462,6 +462,50 @@ pub async fn get_demo_links(
     Ok(Json(DataResponse::new(responses, request_id)))
 }
 
+/// Get a download URL for a demo.
+#[utoipa::path(
+    get,
+    path = "/v1/demos/{id}/download",
+    params(
+        ("id" = String, Path, description = "Demo ID"),
+    ),
+    responses(
+        (status = 200, description = "Demo download info", body = DataResponse<DemoDownloadResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Demo not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "demos"
+)]
+pub async fn get_demo_download(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<DataResponse<DemoDownloadResponse>>> {
+    let request_id = get_request_id(&headers);
+    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
+
+    let demo = state.demo_service.get_demo(demo_id).await?;
+
+    // Build download URL using cs2_demo_base_url if available, otherwise construct from S3 coordinates
+    let download_url = match &state.cs2_demo_base_url {
+        Some(base_url) => demo.s3_url(base_url),
+        None => format!("s3://{}/{}", demo.s3_bucket, demo.s3_key),
+    };
+
+    Ok(Json(DataResponse::new(
+        DemoDownloadResponse {
+            id: demo.id.as_uuid(),
+            file_name: demo.file_name,
+            s3_bucket: demo.s3_bucket,
+            s3_key: demo.s3_key,
+            download_url,
+        },
+        request_id,
+    )))
+}
+
 /// Get demo status counts for admin dashboard.
 #[utoipa::path(
     get,
@@ -873,6 +917,91 @@ pub async fn mark_demo_stats_failed(
     let demo = state
         .demo_service
         .mark_stats_failed(demo_id, &request.error)
+        .await?;
+
+    Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
+}
+
+/// Delete a demo (admin only).
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/demos/{id}",
+    params(
+        ("id" = String, Path, description = "Demo ID"),
+    ),
+    responses(
+        (status = 204, description = "Demo deleted"),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Demo not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn delete_demo(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
+
+    let is_admin = state
+        .permission_service
+        .is_admin(auth.user_id)
+        .await
+        .unwrap_or(false);
+
+    if !is_admin {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+
+    state.demo_service.delete_demo(demo_id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Set admin notes on a demo (admin only).
+#[utoipa::path(
+    patch,
+    path = "/v1/admin/demos/{id}/notes",
+    params(
+        ("id" = String, Path, description = "Demo ID"),
+    ),
+    request_body = SetDemoNotesRequest,
+    responses(
+        (status = 200, description = "Notes updated", body = DataResponse<DemoResponse>),
+        (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Demo not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn set_demo_notes(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<SetDemoNotesRequest>,
+) -> ApiResult<Json<DataResponse<DemoResponse>>> {
+    request.validate()?;
+    let request_id = get_request_id(&headers);
+    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
+
+    let is_admin = state
+        .permission_service
+        .is_admin(auth.user_id)
+        .await
+        .unwrap_or(false);
+
+    if !is_admin {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+
+    let demo = state
+        .demo_service
+        .set_admin_notes(demo_id, request.notes)
         .await?;
 
     Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))

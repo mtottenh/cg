@@ -187,8 +187,8 @@ async fn test_complete_upload_invalid_evidence_id() {
         )
         .await;
 
-    // Should return internal error (evidence not found)
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // Should return 404 (evidence not found)
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 // ============================================================================
@@ -276,8 +276,8 @@ async fn test_get_access_url_not_found() {
         )
         .await;
 
-    // Should return internal error (evidence not found)
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // Should return 404 (evidence not found)
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -291,8 +291,8 @@ async fn test_delete_evidence_not_found() {
         )
         .await;
 
-    // Should return internal error (evidence not found)
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // Should return 404 (evidence not found)
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 // ============================================================================
@@ -481,8 +481,8 @@ async fn test_validate_evidence_nonexistent_evidence_id() {
         )
         .await;
 
-    // Evidence not found in DB → internal server error from domain layer
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // Evidence not found in DB → 404 from domain layer
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 // ============================================================================

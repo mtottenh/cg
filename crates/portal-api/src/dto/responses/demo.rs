@@ -385,3 +385,18 @@ impl From<portal_domain::entities::DemoValidationResult> for DemoValidationResul
         }
     }
 }
+
+/// Demo download URL response.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DemoDownloadResponse {
+    /// Demo ID.
+    pub id: uuid::Uuid,
+    /// Original file name.
+    pub file_name: String,
+    /// S3 bucket.
+    pub s3_bucket: String,
+    /// S3 key.
+    pub s3_key: String,
+    /// Download URL.
+    pub download_url: String,
+}

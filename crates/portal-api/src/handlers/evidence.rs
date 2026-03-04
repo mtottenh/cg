@@ -225,7 +225,7 @@ pub async fn list_evidence(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
-    let evidence = if let Some(game_number) = query.game_number {
+    let mut evidence = if let Some(game_number) = query.game_number {
         state
             .evidence_service
             .get_game_evidence(match_id, game_number)
@@ -233,6 +233,23 @@ pub async fn list_evidence(
     } else {
         state.evidence_service.get_match_evidence(match_id).await?
     };
+
+    // Apply filters
+    if let Some(ref et) = query.evidence_type {
+        if let Ok(parsed) = et.parse::<portal_domain::entities::evidence::EvidenceType>() {
+            evidence.retain(|e| e.evidence_type == parsed);
+        }
+    }
+    if let Some(ref st) = query.status {
+        if let Ok(parsed) = st.parse::<portal_domain::entities::evidence::EvidenceStatus>() {
+            evidence.retain(|e| e.status == parsed);
+        }
+    }
+    if !query.include_discovered {
+        evidence.retain(|e| {
+            e.evidence_source != portal_domain::entities::evidence::EvidenceSource::PluginDiscovery
+        });
+    }
 
     let summaries: Vec<EvidenceSummaryResponse> = evidence
         .into_iter()
@@ -269,12 +286,12 @@ pub async fn get_evidence(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid evidence ID format"))?;
 
-    // Get all evidence for the match and find the specific one
-    let evidence_list = state.evidence_service.get_match_evidence(match_id).await?;
-    let evidence = evidence_list
-        .into_iter()
-        .find(|e| e.id == evidence_id)
-        .ok_or_else(|| ApiError::not_found("Evidence not found"))?;
+    let evidence = state.evidence_service.get_evidence(evidence_id).await?;
+
+    // Verify the evidence belongs to this match
+    if evidence.match_id != match_id {
+        return Err(ApiError::not_found("Evidence not found for this match"));
+    }
 
     Ok(Json(DataResponse::new(
         EvidenceResponse::from(evidence),
@@ -728,12 +745,24 @@ async fn build_evidence_context(
                 ApiError::internal(format!("Failed to load registration {reg_id}: {e}"))
             })?;
 
-        // Build participant context (Steam IDs not available without game profiles)
+        // Build participant context with Steam IDs from player profiles
+        let mut player_ids = Vec::new();
+        let mut steam_ids = Vec::new();
+
+        if let Some(pid) = reg.player_id {
+            player_ids.push(pid);
+            if let Ok(player) = state.player_service.get_player(pid).await {
+                if let Some(sid) = &player.steam_id {
+                    steam_ids.push(sid.clone());
+                }
+            }
+        }
+
         participants.push(ParticipantContext {
             registration_id: reg_id,
             name: reg.participant_name,
-            player_ids: Vec::new(),
-            steam_ids: Vec::new(),
+            player_ids,
+            steam_ids,
         });
     }
 
@@ -965,22 +994,30 @@ pub async fn link_demo(
         .await
         .map_err(|_| ApiError::not_found(format!("Demo not found: {}", req.demo_name)))?;
 
-    let evidence_type: portal_domain::entities::evidence::EvidenceType = "video"
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid evidence type"))?;
+    // Build DiscoveredEvidence with proper Demo type
+    use portal_domain::entities::evidence::{
+        DiscoveredEvidence, EvidenceStorage, EvidenceType,
+    };
+    let discovered = DiscoveredEvidence {
+        external_id: format!("demo:{}", req.demo_name),
+        evidence_type: EvidenceType::Demo,
+        name: format!("CS2 Demo: {}", stats.map),
+        storage: EvidenceStorage::Url {
+            url: cs2_plugin.get_demo_url(&req.demo_name),
+        },
+        file_size_bytes: None,
+        metadata: serde_json::json!({
+            "demo_name": req.demo_name,
+            "map": stats.map,
+            "description": req.description,
+        }),
+        discovered_at: chrono::Utc::now(),
+        relevance_score: 1.0,
+    };
 
-    // Create evidence record using add_link (demo URL as external link)
     let evidence = state
         .evidence_service
-        .add_link(
-            match_id,
-            req.game_number,
-            evidence_type,
-            cs2_plugin.get_demo_url(&req.demo_name),
-            format!("CS2 Demo: {}", stats.map),
-            req.description,
-            auth.user_id,
-        )
+        .link_discovered(match_id, discovered, req.game_number, auth.user_id)
         .await?;
 
     Ok((

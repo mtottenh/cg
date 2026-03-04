@@ -850,6 +850,9 @@ pub struct TournamentStanding {
     pub bracket_id: TournamentBracketId,
     pub registration_id: TournamentRegistrationId,
 
+    // Denormalized participant info
+    pub participant_name: Option<String>,
+
     // Position
     pub position: i32,
 

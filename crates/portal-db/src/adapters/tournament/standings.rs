@@ -152,9 +152,11 @@ impl TournamentStandingsRepository for PgTournamentStandingsRepository {
     ) -> Result<Vec<TournamentStanding>, DomainError> {
         let rows = sqlx::query_as::<_, TournamentStandingRow>(
             r"
-            SELECT * FROM tournament_standings
-            WHERE bracket_id = $1
-            ORDER BY position ASC
+            SELECT ts.*, tr.participant_name
+            FROM tournament_standings ts
+            JOIN tournament_registrations tr ON tr.id = ts.registration_id
+            WHERE ts.bracket_id = $1
+            ORDER BY ts.position ASC
             ",
         )
         .bind(bracket_id.as_uuid())
@@ -263,9 +265,11 @@ impl PgTournamentStandingsRepository {
     ) -> Result<Vec<TournamentStanding>, DomainError> {
         let rows = sqlx::query_as::<_, TournamentStandingRow>(
             r"
-            SELECT * FROM tournament_standings
-            WHERE bracket_id = $1
-            ORDER BY position ASC
+            SELECT ts.*, tr.participant_name
+            FROM tournament_standings ts
+            JOIN tournament_registrations tr ON tr.id = ts.registration_id
+            WHERE ts.bracket_id = $1
+            ORDER BY ts.position ASC
             ",
         )
         .bind(bracket_id.as_uuid())

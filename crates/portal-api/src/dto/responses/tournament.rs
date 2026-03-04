@@ -566,6 +566,8 @@ pub struct TournamentStandingResponse {
     pub id: String,
     pub bracket_id: String,
     pub registration_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant_name: Option<String>,
     pub position: i32,
     pub matches_played: i32,
     pub matches_won: i32,
@@ -592,6 +594,7 @@ impl From<TournamentStanding> for TournamentStandingResponse {
             id: s.id.to_string(),
             bracket_id: s.bracket_id.to_string(),
             registration_id: s.registration_id.to_string(),
+            participant_name: s.participant_name,
             position: s.position,
             matches_played: s.matches_played,
             matches_won: s.matches_won,

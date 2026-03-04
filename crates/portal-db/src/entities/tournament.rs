@@ -451,6 +451,9 @@ pub struct TournamentStandingRow {
     pub is_tied: bool,
     pub points: i32,
     pub updated_at: DateTime<Utc>,
+    /// Denormalized participant name from tournament_registrations (NULL when using SELECT *)
+    #[sqlx(default)]
+    pub participant_name: Option<String>,
 }
 
 // =============================================================================

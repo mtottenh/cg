@@ -5,11 +5,10 @@
 //! - Internal bot endpoints (API key auth)
 //! - Full poller → enricher flow
 
-mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{TestApp, TestResponse};
+use crate::common::{TestApp, TestResponse};
 use http_body_util::BodyExt;
 use portal_api::extractors::api_key::hash_api_key;
 use portal_db::DbPool;

@@ -1,9 +1,8 @@
 //! WebSocket veto lobby integration tests.
 
-mod common;
 
-use common::ws::{connect_veto_ws, ws_authenticate, ws_ban_map, ws_next_message, ServerMessage, WsStream};
-use common::TestApp;
+use crate::common::ws::{connect_veto_ws, ws_authenticate, ws_ban_map, ws_next_message, ServerMessage, WsStream};
+use crate::common::TestApp;
 use portal_test::prelude::*;
 use uuid::Uuid;
 

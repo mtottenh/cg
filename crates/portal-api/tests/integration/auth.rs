@@ -1,9 +1,8 @@
 //! Auth API integration tests.
 
-mod common;
 
 use axum::http::StatusCode;
-use common::TestApp;
+use crate::common::TestApp;
 use portal_core::UserId;
 use portal_db::RoleRepository;
 use portal_domain::{generate_access_token_with_expiry, validate_token};

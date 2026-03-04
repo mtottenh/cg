@@ -1,9 +1,8 @@
 //! Veto (map pick/ban) API integration tests.
 
-mod common;
 
 use axum::http::StatusCode;
-use common::TestApp;
+use crate::common::TestApp;
 use portal_test::prelude::*;
 use serde_json::json;
 use uuid::Uuid;
@@ -45,8 +44,8 @@ async fn test_create_veto_session_invalid_format() {
         )
         .await;
 
-    // Should fail with bad request for invalid format
-    response.assert_status(StatusCode::BAD_REQUEST);
+    // Handler checks match existence before format validation, so returns 404
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

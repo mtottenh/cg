@@ -3,7 +3,7 @@
 //! Uses testcontainers to spin up a single `PostgreSQL` instance
 //! that is shared across all tests in the process.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
@@ -19,6 +19,31 @@ const POSTGRES_PORT: u16 = 5432;
 /// Using `OnceCell` ensures the container is initialized exactly once,
 /// even when multiple tests attempt to access it concurrently.
 static SHARED_CONTAINER: OnceCell<Arc<SharedPostgresContainer>> = OnceCell::const_new();
+
+/// Docker container ID for cleanup on process exit.
+static CONTAINER_ID: OnceLock<String> = OnceLock::new();
+
+/// Cleanup function called by the C runtime on normal process exit.
+/// Removes the Docker container to prevent orphaned containers.
+extern "C" fn cleanup_container() {
+    if let Some(id) = CONTAINER_ID.get() {
+        let _ = std::process::Command::new("docker")
+            .args(["rm", "-f", id])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// Register the cleanup function via `libc::atexit`.
+#[allow(unsafe_code)]
+fn register_cleanup() {
+    // SAFETY: cleanup_container is an extern "C" fn that accesses only a
+    // global OnceLock read-only, does not panic, and handles errors gracefully.
+    unsafe {
+        libc::atexit(cleanup_container);
+    }
+}
 
 /// Wrapper holding the container and connection details.
 pub struct SharedPostgresContainer {
@@ -71,6 +96,11 @@ async fn start_container() -> Result<Arc<SharedPostgresContainer>, ContainerErro
         .start()
         .await
         .map_err(ContainerError::StartFailed)?;
+
+    // Store container ID and register atexit cleanup so the container is
+    // removed when the test process exits normally.
+    CONTAINER_ID.set(container.id().to_string()).ok();
+    register_cleanup();
 
     let host = container
         .get_host()

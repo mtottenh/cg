@@ -99,7 +99,7 @@ image = "0.25"
 infer = "0.16"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 missing_docs = "warn"
 
 [workspace.lints.clippy]

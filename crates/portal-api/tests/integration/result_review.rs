@@ -1,9 +1,8 @@
 //! Result review API integration tests.
 
-mod common;
 
 use axum::http::StatusCode;
-use common::TestApp;
+use crate::common::TestApp;
 use serde_json::json;
 
 // ============================================================================

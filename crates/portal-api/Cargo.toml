@@ -80,77 +80,10 @@ futures-util = { workspace = true }
 image = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# Enable test-utils feature for integration tests
+# Single integration test binary (consolidates all test files)
 [[test]]
-name = "users_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "auth_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "games_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "leagues_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "league_teams_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "bans_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "tournaments_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "veto_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "results_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "evidence_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "forfeit_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "dispute_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "veto_delegates_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "veto_ws_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "players_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "roles_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "match_completion_saga_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "steam_tracking_test"
+name = "integration"
+path = "tests/integration/main.rs"
 required-features = ["test-utils"]
 
 [lints]

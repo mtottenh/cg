@@ -1,9 +1,8 @@
 //! Veto delegate API integration tests.
 
-mod common;
 
 use axum::http::StatusCode;
-use common::TestApp;
+use crate::common::TestApp;
 use portal_db::{NewUserRole, PermissionRepository, RoleRepository};
 use portal_test::prelude::*;
 use serde_json::json;

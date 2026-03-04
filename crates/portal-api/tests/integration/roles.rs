@@ -1,9 +1,8 @@
 //! Roles, Permissions, User Role Assignments, and Admin Stats integration tests.
 
-mod common;
 
 use axum::http::StatusCode;
-use common::TestApp;
+use crate::common::TestApp;
 use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;

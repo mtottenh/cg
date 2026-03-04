@@ -5,10 +5,9 @@
 //! - Category B: Demo-match linking operations
 //! - Category C: Batch catalog and stats ingestion API
 
-mod common;
 
 use axum::http::StatusCode;
-use common::TestApp;
+use crate::common::TestApp;
 use portal_test::prelude::*;
 use serde_json::json;
 

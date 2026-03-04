@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use portal_core::types::{
-    BracketType, MatchFormat, StageFormat, StageStatus, TournamentFormat,
+    AdvancementRule, BracketType, MatchFormat, StageFormat, StageStatus, TournamentFormat,
     TournamentRegistrationStatus, TournamentStatus,
 };
 use portal_core::{DomainError, TournamentBracketId, TournamentId, TournamentMatchId, UserId};
@@ -14,8 +14,8 @@ use crate::entities::tournament::{
 };
 use crate::repositories::tournament::{
     CreateTournament, CreateTournamentBracket, CreateTournamentRegistration,
-    CreateTournamentStanding, CreateTournamentStage, ParticipantSlot,
-    TournamentBracketRepository, TournamentFilters, TournamentMatchRepository,
+    CreateTournamentStanding, CreateTournamentStage, TournamentBracketRepository,
+    TournamentFilters, TournamentMatchRepository,
     TournamentRegistrationRepository, TournamentRepository, TournamentStageRepository,
     TournamentStandingsRepository, UpdateTournament, UpdateTournamentStanding,
 };
@@ -429,7 +429,16 @@ where
             return Err(DomainError::InsufficientParticipants);
         }
 
-        // Get or create the main stage
+        let seeded_participants = BracketGenerator::prepare_participants(participants);
+
+        // Groups + Playoffs creates its own stages, so handle separately
+        if tournament.format == TournamentFormat::GroupsAndPlayoffs {
+            self.start_groups_and_playoffs(id, &tournament, seeded_participants)
+                .await?;
+            return self.tournament_repo.mark_started(id).await;
+        }
+
+        // Get or create the main stage (for non-Groups+Playoffs formats)
         let stage_format = match tournament.format {
             TournamentFormat::SingleElimination => StageFormat::SingleElimination,
             TournamentFormat::DoubleElimination => StageFormat::DoubleElimination,
@@ -459,8 +468,6 @@ where
             stages.into_iter().next().unwrap()
         };
 
-        let seeded_participants = BracketGenerator::prepare_participants(participants);
-
         match tournament.format {
             TournamentFormat::SingleElimination => {
                 self.start_single_elimination(id, &tournament, &stage, seeded_participants)
@@ -478,12 +485,7 @@ where
                 self.start_swiss(id, &tournament, &stage, seeded_participants)
                     .await?;
             }
-            _ => {
-                return Err(DomainError::InvalidState(format!(
-                    "Tournament format {} is not yet supported",
-                    tournament.format
-                )));
-            }
+            TournamentFormat::GroupsAndPlayoffs => unreachable!("handled above"),
         }
 
         // Update stage status
@@ -935,6 +937,221 @@ where
         Ok(())
     }
 
+    /// Start a Groups + Playoffs tournament.
+    ///
+    /// Creates two stages:
+    /// 1. Group Stage (active): K groups, each a RR or Swiss bracket
+    /// 2. Playoff Stage (pending): SE or DE bracket, generated when groups complete
+    async fn start_groups_and_playoffs(
+        &self,
+        id: TournamentId,
+        tournament: &Tournament,
+        seeded_participants: Vec<crate::entities::tournament::SeededParticipant>,
+    ) -> Result<(), DomainError> {
+        use super::bracket_generator::groups::{
+            self, GroupStageFormat, GroupsConfig, PlayoffFormat,
+        };
+
+        let config =
+            GroupsConfig::from_format_settings(&tournament.format_settings, seeded_participants.len())?;
+
+        // Validate minimum group sizes
+        let min_per_group = seeded_participants.len() / config.group_count;
+        if min_per_group < 2 {
+            return Err(DomainError::InvalidState(format!(
+                "Not enough participants ({}) for {} groups (need at least 2 per group)",
+                seeded_participants.len(),
+                config.group_count
+            )));
+        }
+
+        if config.advance_per_group > min_per_group {
+            return Err(DomainError::InvalidState(format!(
+                "advance_per_group ({}) exceeds minimum group size ({})",
+                config.advance_per_group, min_per_group
+            )));
+        }
+
+        // Distribute into groups via snake-draft
+        let group_participants =
+            groups::distribute_into_groups(seeded_participants, config.group_count)?;
+
+        // Determine group stage format
+        let group_stage_format = match config.group_format {
+            GroupStageFormat::RoundRobin => StageFormat::GroupStage,
+            GroupStageFormat::Swiss => StageFormat::GroupStage,
+        };
+
+        // Create Group Stage (stage_order=1)
+        let group_stage = self
+            .stage_repo
+            .create(CreateTournamentStage {
+                tournament_id: id,
+                name: "Group Stage".to_string(),
+                stage_order: 1,
+                format: group_stage_format,
+                format_settings: serde_json::json!({
+                    "group_format": match config.group_format {
+                        GroupStageFormat::RoundRobin => "round_robin",
+                        GroupStageFormat::Swiss => "swiss",
+                    }
+                }),
+                advancement_count: Some(config.advance_per_group as i32),
+                advancement_rule: AdvancementRule::TopNPerGroup,
+                match_format: Some(tournament.default_match_format),
+                map_veto_format: tournament.default_map_veto_format.clone(),
+                starts_at: tournament.starts_at,
+                ends_at: None,
+            })
+            .await?;
+
+        // Determine playoff stage format
+        let playoff_stage_format = match config.playoff_format {
+            PlayoffFormat::SingleElimination => StageFormat::SingleElimination,
+            PlayoffFormat::DoubleElimination => StageFormat::DoubleElimination,
+        };
+
+        // Create Playoff Stage (stage_order=2, pending)
+        let _playoff_stage = self
+            .stage_repo
+            .create(CreateTournamentStage {
+                tournament_id: id,
+                name: "Playoffs".to_string(),
+                stage_order: 2,
+                format: playoff_stage_format,
+                format_settings: serde_json::json!({}),
+                advancement_count: None,
+                advancement_rule: AdvancementRule::TopN,
+                match_format: Some(tournament.default_match_format),
+                map_veto_format: tournament.default_map_veto_format.clone(),
+                starts_at: None,
+                ends_at: None,
+            })
+            .await?;
+
+        // Create a bracket for each group
+        for (group_idx, group) in group_participants.into_iter().enumerate() {
+            let group_num = (group_idx + 1) as i32;
+            let label = groups::group_label(group_idx);
+
+            let bracket_type = match config.group_format {
+                GroupStageFormat::RoundRobin => BracketType::RoundRobin,
+                GroupStageFormat::Swiss => BracketType::Swiss,
+            };
+
+            let bracket = self
+                .bracket_repo
+                .create(CreateTournamentBracket {
+                    stage_id: group_stage.id,
+                    tournament_id: id,
+                    name: format!("Group {label}"),
+                    bracket_type,
+                    total_rounds: 0,
+                    group_number: Some(group_num),
+                })
+                .await?;
+
+            match config.group_format {
+                GroupStageFormat::RoundRobin => {
+                    // Generate all RR matches for this group
+                    let generated = BracketGenerator::round_robin(
+                        id,
+                        group_stage.id,
+                        bracket.id,
+                        group.clone(),
+                        tournament.default_match_format,
+                    )?;
+
+                    self.bracket_repo
+                        .update(
+                            bracket.id,
+                            crate::repositories::tournament::UpdateTournamentBracket {
+                                name: None,
+                                total_rounds: Some(generated.total_rounds),
+                                current_round: Some(1),
+                            },
+                        )
+                        .await?;
+
+                    let matches = self.match_repo.bulk_create(generated.matches).await?;
+                    let position_to_match = Self::build_position_map(&matches);
+                    self.apply_initial_assignments(
+                        &generated.initial_assignments,
+                        &position_to_match,
+                    )
+                    .await?;
+                }
+                GroupStageFormat::Swiss => {
+                    // Generate only R1 for Swiss groups
+                    let n = group.len();
+                    let max_rounds = (n as f64).log2().ceil() as i32;
+
+                    let (generated, bye_participant) = BracketGenerator::swiss_initial_round(
+                        id,
+                        group_stage.id,
+                        bracket.id,
+                        group.clone(),
+                        tournament.default_match_format,
+                    )?;
+
+                    self.bracket_repo
+                        .update(
+                            bracket.id,
+                            crate::repositories::tournament::UpdateTournamentBracket {
+                                name: None,
+                                total_rounds: Some(max_rounds),
+                                current_round: Some(1),
+                            },
+                        )
+                        .await?;
+
+                    let matches = self.match_repo.bulk_create(generated.matches).await?;
+                    let position_to_match = Self::build_position_map(&matches);
+                    self.apply_initial_assignments(
+                        &generated.initial_assignments,
+                        &position_to_match,
+                    )
+                    .await?;
+
+                    // Give bye participant +3 points
+                    if let Some(bye_id) = bye_participant {
+                        self.standings_repo
+                            .update_after_match(UpdateTournamentStanding {
+                                bracket_id: bracket.id,
+                                registration_id: bye_id,
+                                matches_won_delta: 1,
+                                matches_lost_delta: 0,
+                                matches_drawn_delta: 0,
+                                game_wins_delta: 0,
+                                game_losses_delta: 0,
+                                points_delta: 3,
+                            })
+                            .await?;
+                    }
+                }
+            }
+
+            // Initialize standings for group participants
+            let standings: Vec<CreateTournamentStanding> = group
+                .iter()
+                .enumerate()
+                .map(|(i, p)| CreateTournamentStanding {
+                    bracket_id: bracket.id,
+                    registration_id: p.registration_id,
+                    position: (i + 1) as i32,
+                })
+                .collect();
+            self.standings_repo.bulk_create(standings).await?;
+        }
+
+        // Activate group stage (playoff stage stays Pending)
+        self.stage_repo
+            .update_status(group_stage.id, StageStatus::Active)
+            .await?;
+
+        Ok(())
+    }
+
     /// Generate the next Swiss round for a tournament.
     ///
     /// Validates that all current-round matches are complete, then generates
@@ -951,7 +1168,9 @@ where
                 "Tournament must be in InProgress status".to_string(),
             ));
         }
-        if tournament.format != TournamentFormat::Swiss {
+        if tournament.format != TournamentFormat::Swiss
+            && tournament.format != TournamentFormat::GroupsAndPlayoffs
+        {
             return Err(DomainError::InvalidState(
                 "Tournament is not Swiss format".to_string(),
             ));
@@ -1107,17 +1326,14 @@ where
     }
 
     // =========================================================================
-    // HELPERS
+    // HELPERS (delegate to shared free functions in helpers module)
     // =========================================================================
 
     /// Build a position → match ID mapping from a list of matches.
     fn build_position_map(
         matches: &[TournamentMatch],
     ) -> std::collections::HashMap<String, TournamentMatchId> {
-        matches
-            .iter()
-            .map(|m| (m.bracket_position.clone(), m.id))
-            .collect()
+        super::helpers::build_position_map(matches)
     }
 
     /// Apply initial participant assignments to matches.
@@ -1126,27 +1342,12 @@ where
         assignments: &[super::bracket_generator::InitialAssignment],
         position_to_match: &std::collections::HashMap<String, TournamentMatchId>,
     ) -> Result<(), DomainError> {
-        for assignment in assignments {
-            if let Some(&match_id) = position_to_match.get(&assignment.bracket_position) {
-                let slot = if assignment.slot == 1 {
-                    ParticipantSlot::One
-                } else {
-                    ParticipantSlot::Two
-                };
-
-                self.match_repo
-                    .assign_participant(
-                        match_id,
-                        slot,
-                        assignment.participant.registration_id,
-                        assignment.participant.participant_name.clone(),
-                        assignment.participant.participant_logo_url.clone(),
-                        Some(assignment.participant.seed),
-                    )
-                    .await?;
-            }
-        }
-        Ok(())
+        super::helpers::apply_initial_assignments(
+            self.match_repo.as_ref(),
+            assignments,
+            position_to_match,
+        )
+        .await
     }
 
     /// Apply bye advancements (participants who auto-advance).
@@ -1155,40 +1356,13 @@ where
         byes: &[super::bracket_generator::ByeInfo],
         position_to_match: &std::collections::HashMap<String, TournamentMatchId>,
     ) -> Result<(), DomainError> {
-        for bye in byes {
-            if let Some(&match_id) = position_to_match.get(&bye.advances_to_position) {
-                let slot = if bye.slot == 1 {
-                    ParticipantSlot::One
-                } else {
-                    ParticipantSlot::Two
-                };
-
-                self.match_repo
-                    .assign_participant(
-                        match_id,
-                        slot,
-                        bye.participant.registration_id,
-                        bye.participant.participant_name.clone(),
-                        bye.participant.participant_logo_url.clone(),
-                        Some(bye.participant.seed),
-                    )
-                    .await?;
-            }
-        }
-        Ok(())
+        super::helpers::apply_byes(self.match_repo.as_ref(), byes, position_to_match).await
     }
 
     /// Parse a bracket position like "WR2M3" or "LR1M2" into (round, match_in_round).
     /// Returns (0, 0) if parsing fails.
     fn parse_round_match(position: &str, prefix: &str) -> (i32, i32) {
-        let stripped = position.strip_prefix(prefix).unwrap_or("");
-        let parts: Vec<&str> = stripped.split('M').collect();
-        if parts.len() != 2 {
-            return (0, 0);
-        }
-        let round: i32 = parts[0].parse().unwrap_or(0);
-        let match_in_round: i32 = parts[1].parse().unwrap_or(0);
-        (round, match_in_round)
+        super::helpers::parse_round_match(position, prefix)
     }
 
     /// Get bracket for a tournament.

@@ -13,7 +13,7 @@
 | Phase 2: Registration & Seeding | 🟢 Complete | 2025-11-30 | 2025-11-30 | Services + Handlers + Tests |
 | Phase 3: Match System | 🟢 Complete | 2025-11-30 | 2026-03-01 | All 9 sub-phases done (Batches 1-4) |
 | Phase 4: Plugin & Demo Integration | 🟢 Complete | 2025-12-01 | 2026-03-02 | 4.0-4.3 complete, 4.4 saga integration wired end-to-end |
-| Phase 5: Advanced Formats | 🟡 In Progress | 2026-03-02 | - | 5.1 DE, 5.2 RR, 5.3 Swiss complete; 5.4 Groups+Playoffs not started |
+| Phase 5: Advanced Formats | 🟢 Complete | 2026-03-02 | 2026-03-03 | 5.1 DE, 5.2 RR, 5.3 Swiss, 5.4 Groups+Playoffs all complete |
 | Phase 6: Polish & Performance | 🔴 Not Started | - | - | |
 
 **Legend**: 🔴 Not Started | 🟡 In Progress | 🟢 Complete | ⏸️ Blocked/Deferred
@@ -745,14 +745,14 @@ POST   /v1/admin/result-reviews/{id}/reject           # Admin reject
 | 5.1: Double Elimination | 🟢 Complete | Generator, service dispatch, cross-bracket links, 12 unit + 3 integration tests |
 | 5.2: Round Robin | 🟢 Complete | Circle-method generator, service dispatch, standings init, 7 unit tests, API endpoint |
 | 5.3: Swiss System | 🟢 Complete | Initial + next-round generators, rematch avoidance, bye handling, 5 unit tests, admin API |
-| 5.4: Groups + Playoffs | 🔴 Not Started | Multi-stage hybrid |
+| 5.4: Groups + Playoffs | 🟢 Complete | Snake-draft groups, cross-seeded playoffs, stage advancement, RR/Swiss groups, SE/DE playoffs |
 
 ### Goals
 - [x] Double elimination generator
 - [x] Round robin generator
 - [x] Swiss system generator
-- [ ] Groups + playoffs hybrid
-- [ ] Multi-stage orchestration
+- [x] Groups + playoffs hybrid
+- [x] Multi-stage orchestration
 - [x] Standings system
 
 ### Phase 5.1: Double Elimination (Complete)
@@ -905,17 +905,44 @@ crates/portal-domain/src/services/tournament/bracket_generator/
   └── swiss.rs                # Swiss generator + SwissParticipantStanding + tests
 ```
 
-### Future Phases
+### Phase 5.4: Groups + Playoffs (Complete)
 
-#### Files Planned
-```
-# Groups + Playoffs (5.4)
-crates/portal-domain/src/services/tournament/bracket_generator/groups_playoffs.rs
-```
+**Approach**: Multi-stage tournament with group stage (RR or Swiss) followed by playoff stage (SE or DE). Snake-draft seeding distributes participants evenly. Cross-seeding ensures same-group participants don't meet early in playoffs. Stage advancement is triggered automatically when all group brackets complete.
 
-### Remaining Acceptance Criteria
-- [ ] Groups advance to playoffs
-- [ ] All tests passing
+**Implementation**:
+- `GroupsConfig` parses `format_settings` JSONB (group_count, advance_per_group, group_format, playoff_format)
+- `distribute_into_groups()` uses snake-draft (1→A, 2→B, ..., K→D, K+1→D, K+2→C, ...)
+- `cross_seed_for_playoffs()` interleaves group positions (A1, B1, C1, D1, A2, B2, ...)
+- `start_groups_and_playoffs()` creates two stages and K group brackets
+- `advance_to_next_stage()` in ProgressionService auto-generates playoff brackets when all groups complete
+- Supports both RR and Swiss groups, and both SE and DE playoffs
+
+**Unit Tests**: 11 tests in `bracket_generator/groups.rs`
+- Snake-draft distribution (8→4, 16→4, odd counts)
+- Cross-seeding (4 groups top-2, 2 groups top-2)
+- Config parsing with defaults and all format options
+
+**Integration Tests**: 4 tests in `tournaments_test.rs`
+- `test_start_groups_and_playoffs_tournament` — 8 players, 2 RR groups, verify stages/brackets/matches/standings
+- `test_groups_and_playoffs_with_6_players` — uneven groups (3+3)
+- `test_groups_with_swiss_groups` — Swiss group format
+- `test_groups_with_de_playoffs` — DE playoff format
+
+#### Files Created/Modified
+```
+# New files
+crates/portal-domain/src/services/tournament/bracket_generator/groups.rs  # GroupsConfig, distribute, cross-seed, 11 unit tests
+crates/portal-domain/src/services/tournament/helpers.rs                    # Extracted shared helpers
+
+# Modified files
+crates/portal-domain/src/services/tournament/bracket_generator/mod.rs     # Add mod groups, exports
+crates/portal-domain/src/services/tournament/mod.rs                       # Add mod helpers, exports
+crates/portal-domain/src/services/tournament/service.rs                   # start_groups_and_playoffs(), dispatch, refactor helpers
+crates/portal-domain/src/services/tournament/progression.rs               # stage_advanced, check_stage_completion, advance_to_next_stage, generate_se/de_playoff
+crates/portal-core/src/types/tournament.rs                                # uses_standings() includes GroupsAndPlayoffs
+crates/portal-api/src/dto/responses/progression.rs                        # stage_advanced field
+crates/portal-api/tests/tournaments_test.rs                               # 4 integration tests
+```
 
 ---
 

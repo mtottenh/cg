@@ -5,11 +5,10 @@
 //! - Double Elimination (Phase 5.1)
 //! - Round Robin (Phase 5.2)
 //! - Swiss System (Phase 5.3)
-//!
-//! Future formats (planned):
-//! - Groups + Playoffs
+//! - Groups + Playoffs (Phase 5.4)
 
 mod double_elimination;
+pub mod groups;
 mod round_robin;
 mod single_elimination;
 mod swiss;
@@ -19,6 +18,7 @@ use crate::repositories::tournament::CreateTournamentMatch;
 
 // Re-export from submodules
 pub use double_elimination::{CrossBracketLink, CrossLinkType, GeneratedDoubleElimination};
+pub use groups::{GroupsConfig, GroupStageFormat, PlayoffFormat};
 pub use swiss::SwissParticipantStanding;
 
 /// Generated bracket structure ready for database insertion.

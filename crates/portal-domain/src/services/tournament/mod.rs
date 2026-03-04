@@ -25,6 +25,7 @@ mod checkin;
 mod dispute;
 mod evidence;
 mod forfeit;
+pub(crate) mod helpers;
 mod match_completion;
 mod match_lifecycle;
 mod progression;
@@ -43,7 +44,8 @@ mod veto_lobby_chat;
 pub use availability::AvailabilityService;
 pub use bracket_generator::{
     BracketGenerator, CrossBracketLink, CrossLinkType, GeneratedBracket,
-    GeneratedDoubleElimination, SwissParticipantStanding,
+    GeneratedDoubleElimination, GroupStageFormat, GroupsConfig, PlayoffFormat,
+    SwissParticipantStanding,
 };
 pub use checkin::{CheckInService, CheckInStatus};
 pub use evidence::{EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig};

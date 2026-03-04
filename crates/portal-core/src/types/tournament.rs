@@ -65,7 +65,7 @@ impl TournamentFormat {
     /// Check if the format uses standings (not bracket position).
     #[must_use]
     pub const fn uses_standings(&self) -> bool {
-        matches!(self, Self::RoundRobin | Self::Swiss)
+        matches!(self, Self::RoundRobin | Self::Swiss | Self::GroupsAndPlayoffs)
     }
 
     /// Check if the format supports bye allocation.

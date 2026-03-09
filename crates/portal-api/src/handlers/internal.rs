@@ -3,17 +3,28 @@
 //! These endpoints are authenticated with API keys (`AuthenticatedService`)
 //! instead of JWT tokens.
 
+use crate::dto::common::DataResponse;
+use crate::dto::requests::{
+    BatchCatalogDemosRequest, MarkDemoFailedRequest, PendingDemosQuery, SubmitDemoStatsRequest,
+};
+use crate::dto::responses::{
+    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoResponse,
+};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedService;
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use chrono::DateTime;
 use portal_core::permissions::service;
-use portal_core::{GameId, SteamTrackingId};
+use portal_core::{DemoId, GameId, SteamTrackingId};
+use portal_domain::entities::demo::{DemoPlayerStats, ParsedDemoMetadata};
 use portal_domain::entities::steam_tracking::UpdatePollResultCommand;
+use portal_domain::services::DemoPlayerInput;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use validator::Validate;
 
 // =============================================================================
 // Steam Tracking (internal)
@@ -253,6 +264,83 @@ pub async fn get_pending_matches(
     Ok(Json(response))
 }
 
+/// Query params for fetching recent enriched matches with demo URLs.
+#[derive(Debug, Deserialize)]
+pub struct RecentDemoMatchesQuery {
+    pub game: String,
+    /// Optional: filter by SteamID64 (finds tracking entry, then matches).
+    pub steam_id_64: Option<i64>,
+    #[serde(default = "default_demo_limit")]
+    pub limit: i64,
+}
+
+fn default_demo_limit() -> i64 {
+    5
+}
+
+/// Enriched match with demo URL.
+#[derive(Debug, Serialize)]
+pub struct EnrichedMatchWithDemoResponse {
+    pub id: String,
+    pub share_code: String,
+    pub demo_url: String,
+    pub enriched_at: Option<String>,
+}
+
+/// Get recent enriched matches that have a demo URL.
+pub async fn get_recent_demo_matches(
+    State(state): State<AppState>,
+    service: AuthenticatedService,
+    Query(query): Query<RecentDemoMatchesQuery>,
+) -> ApiResult<Json<Vec<EnrichedMatchWithDemoResponse>>> {
+    service.require_permission(service::DISCOVERED_MATCHES_READ)?;
+
+    let game = state
+        .game_repo
+        .find_by_slug(&query.game)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .ok_or_else(|| ApiError::not_found(format!("Game not found: {}", query.game)))?;
+
+    let game_id = GameId::from(game.id);
+
+    // If steam_id_64 is provided, find the tracking entry to get its ID
+    let tracking_id = if let Some(steam_id_64) = query.steam_id_64 {
+        let entries = state
+            .steam_tracking_service
+            .get_active_for_game(game_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        entries
+            .into_iter()
+            .find(|t| t.steam_id_64 == steam_id_64)
+            .map(|t| t.id)
+    } else {
+        None
+    };
+
+    let matches = state
+        .discovered_match_service
+        .get_recent_with_demo_url(game_id, tracking_id, query.limit)
+        .await
+        .map_err(ApiError::from)?;
+
+    let response: Vec<EnrichedMatchWithDemoResponse> = matches
+        .into_iter()
+        .filter_map(|m| {
+            m.demo_url.map(|url| EnrichedMatchWithDemoResponse {
+                id: m.id.to_string(),
+                share_code: m.share_code,
+                demo_url: url,
+                enriched_at: m.enriched_at.map(|dt| dt.to_rfc3339()),
+            })
+        })
+        .collect();
+
+    Ok(Json(response))
+}
+
 /// Claim a match for enrichment (atomic, prevents double-processing).
 pub async fn claim_match(
     State(state): State<AppState>,
@@ -278,11 +366,32 @@ pub async fn claim_match(
     }
 }
 
+/// Per-player rank data extracted from the demo file.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DemoPlayerRating {
+    /// Steam account ID (Steam32).
+    pub account_id: u32,
+    /// New rank value (CS Rating for Premier, 1-18 for Comp/Wingman).
+    pub rank_id: i32,
+    /// Rank type: 6=Competitive, 7=Wingman, 11=Premier.
+    pub rank_type_id: u32,
+    /// Number of competitive wins.
+    pub wins: u32,
+    /// Rating change from this match.
+    pub rank_change: f32,
+}
+
 /// Request body for submitting enriched match data.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct EnrichedMatchRequest {
     pub gc_data: serde_json::Value,
     pub demo_url: Option<String>,
+    /// Per-player rank data extracted from the demo (optional, backward-compatible).
+    #[serde(default)]
+    pub player_ratings: Option<Vec<DemoPlayerRating>>,
+    /// Map name extracted from the demo file (GC often doesn't provide it).
+    #[serde(default)]
+    pub map_name: Option<String>,
 }
 
 /// Submit enriched match data from GC.
@@ -298,13 +407,298 @@ pub async fn submit_enriched(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID"))?;
 
-    state
+    let discovered = state
         .discovered_match_service
         .mark_enriched(match_id, req.gc_data, req.demo_url)
         .await
         .map_err(ApiError::from)?;
 
+    // Process demo rank ratings (non-fatal — log and continue on error)
+    if let Some(ratings) = req.player_ratings {
+        if let Err(e) = process_demo_ratings(&state, &discovered, &ratings).await {
+            tracing::warn!(
+                match_id = %discovered.id,
+                error = %e,
+                "Failed to process demo ratings (non-fatal)"
+            );
+        }
+    }
+
+    // Process per-player match stats from GC data (non-fatal)
+    if let Err(e) = process_match_stats(&state, &discovered, req.map_name.as_deref()).await {
+        tracing::warn!(
+            match_id = %discovered.id,
+            error = %e,
+            "Failed to process match stats (non-fatal)"
+        );
+    }
+
     Ok(StatusCode::OK)
+}
+
+/// Process per-player rank data from demo extraction.
+///
+/// For each Premier rating (rank_type_id == 11):
+/// 1. Convert Steam32 account_id → SteamID64
+/// 2. Look up registered player by steam_id_64
+/// 3. Find or create PlayerGameProfile
+/// 4. Update current rating + insert history entry
+async fn process_demo_ratings(
+    state: &AppState,
+    discovered: &portal_domain::entities::discovered_match::DiscoveredMatch,
+    ratings: &[DemoPlayerRating],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use portal_domain::repositories::player_rating_history::CreatePlayerRatingHistory;
+    use portal_domain::repositories::PlayerRatingHistoryRepository;
+
+    // Only process Premier ratings (rank_type_id == 11) with non-zero rank
+    let premier_ratings: Vec<&DemoPlayerRating> = ratings
+        .iter()
+        .filter(|r| r.rank_type_id == 11 && r.rank_id > 0)
+        .collect();
+
+    if premier_ratings.is_empty() {
+        return Ok(());
+    }
+
+    let game_id = discovered.game_id;
+
+    // Use the actual match time from GC data, falling back to enriched_at/now
+    let recorded_at = discovered
+        .gc_data
+        .as_ref()
+        .and_then(|gc| gc.get(0))
+        .and_then(|m| m.get("match_time"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.to_utc())
+        .or(discovered.enriched_at)
+        .unwrap_or_else(chrono::Utc::now);
+
+    for rating in &premier_ratings {
+        // Convert Steam32 → SteamID64
+        let steam_id_64 = i64::from(rating.account_id) + 76561197960265728;
+
+        // Look up player by steam_id_64
+        let player = state
+            .player_service
+            .find_by_steam_id_64(steam_id_64)
+            .await?;
+
+        let player_id = match player {
+            Some(p) => p.id,
+            None => continue, // Not a registered player, skip
+        };
+
+        // Ensure profile exists (needed for league/tournament card)
+        state
+            .player_game_profile_service
+            .ensure_profile_exists(player_id, game_id)
+            .await?;
+
+        // Insert rating history entry — current/peak rating are derived from
+        // this table at query time, so no need to update player_game_profiles
+        state
+            .rating_history_repo
+            .create(CreatePlayerRatingHistory {
+                player_id,
+                game_id,
+                rating: rating.rank_id,
+                source: "demo_rank_update".to_string(),
+                recorded_at,
+                rank_type_id: 11,
+            })
+            .await?;
+
+        tracing::info!(
+            player_id = %player_id,
+            rating = rating.rank_id,
+            rank_change = rating.rank_change,
+            "Updated player rating from demo rank data"
+        );
+    }
+
+    Ok(())
+}
+
+/// Process per-player match stats from GC data.
+///
+/// Extracts player stats from `gc_data[0].players`, determines win/loss
+/// per player based on team position, and stores match history + aggregate stats.
+async fn process_match_stats(
+    state: &AppState,
+    discovered: &portal_domain::entities::discovered_match::DiscoveredMatch,
+    map_name: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use portal_domain::repositories::player_match_history::CreatePlayerMatchHistory;
+    use portal_domain::repositories::player_mm_stats::AccumulateMatchStats;
+    use portal_domain::repositories::PlayerMatchHistoryRepository;
+    use portal_domain::repositories::PlayerMmStatsRepository;
+
+    let gc_data = match &discovered.gc_data {
+        Some(data) => data,
+        None => return Ok(()),
+    };
+
+    // gc_data is a JSON array of MatchInfo; we want the first entry
+    let match_info = match gc_data.get(0) {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+
+    let players = match match_info.get("players").and_then(|p| p.as_array()) {
+        Some(p) if !p.is_empty() => p,
+        _ => return Ok(()),
+    };
+
+    let team_scores: Vec<i64> = match_info
+        .get("team_scores")
+        .and_then(|ts| ts.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+        .unwrap_or_default();
+
+    let match_result_val = match_info
+        .get("match_result")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let match_time = match_info
+        .get("match_time")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.to_utc());
+
+    let duration = match_info
+        .get("match_duration_secs")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+
+    // Map: prefer demo-extracted map_name, fall back to gc_data
+    let gc_map = match_info.get("map").and_then(|v| v.as_str()).unwrap_or("");
+    let map = map_name
+        .filter(|m| !m.is_empty())
+        .unwrap_or(gc_map)
+        .to_string();
+
+    let game_id = discovered.game_id;
+
+    // Process each player in the GC data.
+    // Each player carries a `team` field (1 or 2) set by the enricher from
+    // the original protobuf position (indices 0–4 → team 1, 5–9 → team 2).
+    for player_val in players {
+        let account_id = match player_val.get("account_id").and_then(|v| v.as_u64()) {
+            Some(id) if id > 0 => id as u32,
+            _ => continue,
+        };
+
+        let steam_id_64 = i64::from(account_id) + 76561197960265728;
+
+        let player = state
+            .player_service
+            .find_by_steam_id_64(steam_id_64)
+            .await?;
+
+        let player_id = match player {
+            Some(p) => p.id,
+            None => continue,
+        };
+
+        // Determine team from the explicit `team` field set during GC extraction.
+        let team = player_val
+            .get("team")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1) as u8;
+        let is_team1 = team == 1;
+
+        let (player_team_score, opponent_score) = if team_scores.len() >= 2 {
+            if is_team1 {
+                (team_scores[0], team_scores[1])
+            } else {
+                (team_scores[1], team_scores[0])
+            }
+        } else {
+            (0, 0)
+        };
+
+        let match_result_str = if player_team_score > opponent_score {
+            "win"
+        } else if player_team_score < opponent_score {
+            "loss"
+        } else {
+            "draw"
+        };
+
+        let kills = player_val.get("kills").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let deaths = player_val.get("deaths").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let assists = player_val.get("assists").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let score = player_val.get("score").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let headshots = player_val.get("headshots").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let mvps = player_val.get("mvps").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let entry_3k = player_val.get("entry_3k").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let entry_4k = player_val.get("entry_4k").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let entry_5k = player_val.get("entry_5k").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+
+        // Insert match history (idempotent via UNIQUE)
+        state
+            .match_history_repo
+            .create(CreatePlayerMatchHistory {
+                player_id,
+                game_id,
+                discovered_match_id: discovered.id,
+                map: map.clone(),
+                match_time,
+                team_scores: team_scores.iter().map(|&s| s as i32).collect(),
+                match_duration_secs: duration,
+                match_result: match_result_str.to_string(),
+                kills,
+                deaths,
+                assists,
+                score,
+                headshots,
+                mvps,
+                entry_3k,
+                entry_4k,
+                entry_5k,
+            })
+            .await?;
+
+        // Accumulate aggregate stats (upsert)
+        state
+            .mm_stats_repo
+            .accumulate_match_stats(
+                player_id,
+                game_id,
+                &AccumulateMatchStats {
+                    is_win: match_result_str == "win",
+                    is_loss: match_result_str == "loss",
+                    is_draw: match_result_str == "draw",
+                    kills,
+                    deaths,
+                    assists,
+                    headshots,
+                    mvps,
+                    score,
+                    entry_3k,
+                    entry_4k,
+                    entry_5k,
+                    duration_secs: duration,
+                    match_time,
+                },
+            )
+            .await?;
+
+        tracing::info!(
+            player_id = %player_id,
+            team,
+            result = match_result_str,
+            kills,
+            deaths,
+            assists,
+            "Recorded public MM match stats"
+        );
+    }
+
+    Ok(())
 }
 
 /// Request body for marking a match as failed.
@@ -333,4 +727,166 @@ pub async fn mark_failed(
         .map_err(ApiError::from)?;
 
     Ok(StatusCode::OK)
+}
+
+// =============================================================================
+// Demo endpoints (internal) — for portal-scanner
+// =============================================================================
+
+/// Batch catalog demos (service auth).
+pub async fn internal_batch_catalog_demos(
+    State(state): State<AppState>,
+    service_auth: AuthenticatedService,
+    Json(request): Json<BatchCatalogDemosRequest>,
+) -> ApiResult<Json<DataResponse<BatchCatalogResultResponse>>> {
+    service_auth.require_permission(service::DEMOS_CATALOG)?;
+    request.validate()?;
+
+    let game_id = GameId::from(request.game_id);
+    let mut created = Vec::new();
+    let mut existing = Vec::new();
+    let mut errors = Vec::new();
+
+    for entry in request.demos {
+        match state
+            .demo_service
+            .catalog_demo(
+                game_id,
+                entry.file_name,
+                entry.s3_bucket,
+                entry.s3_key.clone(),
+                entry.file_size_bytes,
+            )
+            .await
+        {
+            Ok(result) => {
+                if result.is_created() {
+                    created.push(DemoResponse::from(result.into_demo()));
+                } else {
+                    existing.push(DemoResponse::from(result.into_demo()));
+                }
+            }
+            Err(e) => {
+                errors.push(BatchCatalogErrorResponse {
+                    s3_key: entry.s3_key,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(DataResponse::new(
+        BatchCatalogResultResponse {
+            created,
+            existing,
+            errors,
+        },
+        "internal",
+    )))
+}
+
+/// Get pending demos (service auth).
+pub async fn internal_get_pending_demos(
+    State(state): State<AppState>,
+    service_auth: AuthenticatedService,
+    Query(query): Query<PendingDemosQuery>,
+) -> ApiResult<Json<DataResponse<Vec<DemoResponse>>>> {
+    service_auth.require_permission(service::DEMOS_READ)?;
+
+    let demos = state
+        .demo_service
+        .get_pending_demos(query.limit.unwrap_or(50))
+        .await?;
+
+    let responses: Vec<DemoResponse> = demos.into_iter().map(DemoResponse::from).collect();
+
+    Ok(Json(DataResponse::new(responses, "internal")))
+}
+
+/// Submit parsed stats for a demo (service auth).
+pub async fn internal_submit_demo_stats(
+    State(state): State<AppState>,
+    service_auth: AuthenticatedService,
+    Path(id): Path<String>,
+    Json(request): Json<SubmitDemoStatsRequest>,
+) -> ApiResult<Json<DataResponse<DemoResponse>>> {
+    service_auth.require_permission(service::DEMOS_STATS)?;
+    request.validate()?;
+    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
+
+    // Look up the demo to get its game_id
+    let demo = state.demo_service.get_demo(demo_id).await?;
+
+    // Check if this is a CS2 game (by looking up plugin_id)
+    let is_cs2 = state
+        .game_repo
+        .find_by_id(demo.game_id.as_uuid())
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|g| g.plugin_id == "cs2");
+
+    // Parse match_date
+    let match_date = request
+        .match_date
+        .as_ref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.to_utc());
+
+    // Build domain metadata
+    let metadata = ParsedDemoMetadata {
+        map_name: request.map_name.unwrap_or_default(),
+        match_date,
+        team1_name: request.team1_name.unwrap_or_default(),
+        team2_name: request.team2_name.unwrap_or_default(),
+        team1_score: request.team1_score.unwrap_or(0),
+        team2_score: request.team2_score.unwrap_or(0),
+        total_rounds: request.total_rounds.unwrap_or(0),
+        duration_seconds: request.duration_seconds,
+    };
+
+    // Convert players
+    let players: Vec<DemoPlayerInput> = request
+        .players
+        .into_iter()
+        .map(|p| {
+            let stats = if is_cs2 {
+                super::demos::extract_cs2_player_stats(&p.stats)
+            } else {
+                DemoPlayerStats::default()
+            };
+            DemoPlayerInput {
+                steam_id: p.steam_id,
+                player_name: p.player_name,
+                team_name: p.team_name,
+                stats,
+            }
+        })
+        .collect();
+
+    let demo = state
+        .demo_service
+        .save_demo_stats(demo_id, metadata, request.raw_stats, players)
+        .await?;
+
+    Ok(Json(DataResponse::new(DemoResponse::from(demo), "internal")))
+}
+
+/// Mark a demo's stats processing as failed (service auth).
+pub async fn internal_mark_demo_stats_failed(
+    State(state): State<AppState>,
+    service_auth: AuthenticatedService,
+    Path(id): Path<String>,
+    Json(request): Json<MarkDemoFailedRequest>,
+) -> ApiResult<Json<DataResponse<DemoResponse>>> {
+    service_auth.require_permission(service::DEMOS_STATS)?;
+    request.validate()?;
+    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
+
+    let demo = state
+        .demo_service
+        .mark_stats_failed(demo_id, &request.error)
+        .await?;
+
+    Ok(Json(DataResponse::new(DemoResponse::from(demo), "internal")))
 }

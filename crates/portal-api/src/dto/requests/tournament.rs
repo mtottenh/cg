@@ -805,3 +805,37 @@ pub struct AdminScheduleRequest {
     #[serde(default)]
     pub notes: Option<String>,
 }
+
+/// Query parameters for listing the current user's tournament matches.
+#[derive(Debug, Clone, Deserialize, ToSchema, utoipa::IntoParams)]
+pub struct MyMatchesQuery {
+    /// Filter by match status (e.g., "in_progress", "scheduled", "completed").
+    pub status: Option<String>,
+
+    /// Filter by tournament ID.
+    pub tournament_id: Option<String>,
+
+    /// Maximum number of results to return (default: 50, max: 100).
+    #[serde(default = "default_my_matches_limit")]
+    pub limit: Option<i64>,
+
+    /// Offset for pagination (default: 0).
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+fn default_my_matches_limit() -> Option<i64> {
+    Some(50)
+}
+
+// =============================================================================
+// TOURNAMENT MAP POOL REQUESTS
+// =============================================================================
+
+/// Request to set a tournament-specific map pool.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct SetTournamentMapPoolRequest {
+    /// Map IDs for the tournament pool (must exist in the game's map catalog).
+    #[validate(length(min = 1, max = 20))]
+    pub map_ids: Vec<String>,
+}

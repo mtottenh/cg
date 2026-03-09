@@ -1,5 +1,6 @@
 //! Application builder.
 
+use crate::handlers::evidence::local_evidence_upload;
 use crate::middleware::request_id_layer;
 use crate::openapi::swagger_routes;
 use crate::routes::api_routes;
@@ -18,13 +19,18 @@ pub fn create_app(state: AppState) -> Router {
         .allow_headers(Any)
         .expose_headers(Any);
 
+    // Uploads sub-router: PUT writes files, everything else served by ServeDir
+    let uploads_router = Router::new()
+        .route("/{*path}", axum::routing::put(local_evidence_upload))
+        .fallback_service(ServeDir::new(&state.uploads_path));
+
     Router::new()
         // API routes under /v1
         .nest("/v1", api_routes())
         // Swagger UI at /swagger-ui (also serves /api-docs/openapi.json)
         .merge(swagger_routes())
-        // Serve uploaded files (avatars, banners, etc.)
-        .nest_service("/uploads", ServeDir::new(&state.uploads_path))
+        // Uploads: PUT for evidence, GET served statically
+        .nest("/uploads", uploads_router)
         // Health check
         .route("/health", axum::routing::get(|| async { "OK" }))
         // Middleware

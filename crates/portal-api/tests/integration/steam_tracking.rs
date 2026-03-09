@@ -26,6 +26,9 @@ const TEST_STEAM_ID: &str = "76561198012345678";
 const TEST_AUTH_CODE: &str = "ABCD-EFGHI-JKLM";
 
 /// Create an API key in the database and return the raw key.
+///
+/// Permissions are linked via the `api_key_permissions` join table, referencing
+/// rows in the shared `permissions` table (seeded by migration 0054).
 async fn create_test_api_key(pool: &DbPool, service_name: &str, permissions: &[&str]) -> String {
     let raw_key = format!(
         "cgp_test{}",
@@ -34,17 +37,26 @@ async fn create_test_api_key(pool: &DbPool, service_name: &str, permissions: &[&
     let key_hash = hash_api_key(&raw_key);
     let key_prefix = &raw_key[..8];
 
-    sqlx::query(
-        "INSERT INTO api_keys (service_name, key_hash, key_prefix, permissions) \
-         VALUES ($1, $2, $3, $4)",
+    let (key_id,): (Uuid,) = sqlx::query_as(
+        "INSERT INTO api_keys (service_name, key_hash, key_prefix) \
+         VALUES ($1, $2, $3) RETURNING id",
     )
     .bind(service_name)
     .bind(&key_hash)
     .bind(key_prefix)
+    .fetch_one(pool)
+    .await
+    .expect("Failed to create test API key");
+
+    sqlx::query(
+        "INSERT INTO api_key_permissions (api_key_id, permission_id) \
+         SELECT $1, p.id FROM permissions p WHERE p.name = ANY($2)",
+    )
+    .bind(key_id)
     .bind(permissions)
     .execute(pool)
     .await
-    .expect("Failed to create test API key");
+    .expect("Failed to link test API key permissions");
 
     raw_key
 }
@@ -1182,4 +1194,368 @@ async fn test_full_poller_to_enricher_flow() {
         "The failed match should be the one still pending"
     );
     assert_eq!(final_pending_list[0]["retry_count"], 1);
+}
+
+// =============================================================================
+// Demo rank extraction (enriched with player_ratings)
+// =============================================================================
+
+/// Helper: set steam_id + steam_id_64 on a player and ensure the CS2 game exists.
+async fn setup_player_with_steam_id_64(
+    pool: &DbPool,
+) -> (Uuid, Uuid, String, i64) {
+    let steam_id_64: i64 = 76561198012345678;
+    let user = UserBuilder::new().build_persisted(pool).await;
+    let player_id = user.id;
+
+    sqlx::query("UPDATE players SET steam_id = $1, steam_id_64 = $2 WHERE id = $3")
+        .bind(steam_id_64.to_string())
+        .bind(steam_id_64)
+        .bind(player_id)
+        .execute(pool)
+        .await
+        .expect("Failed to set steam_id_64");
+
+    let token = create_test_token(user.id, player_id, &user.username, TEST_JWT_SECRET);
+    (user.id, player_id, token, steam_id_64)
+}
+
+/// Convert a SteamID64 to Steam32 account_id.
+fn steam_id_64_to_account_id(steam_id_64: i64) -> u32 {
+    (steam_id_64 - 76561197960265728) as u32
+}
+
+/// Submit a discovered match through the full flow and return its ID.
+async fn submit_and_claim_match(
+    app: &TestApp,
+    tracking_id: &str,
+    enricher_key: &str,
+    share_code: &str,
+) -> String {
+    let submit_response = api_key_post_json(
+        app,
+        "/v1/internal/discovered-matches",
+        &json!({
+            "tracking_id": tracking_id,
+            "game": "cs2",
+            "matches": [{
+                "share_code": share_code,
+                "match_id": 999888777,
+                "outcome_id": 111222333,
+                "token": 42
+            }]
+        }),
+        enricher_key,
+    )
+    .await;
+    submit_response.assert_status(StatusCode::CREATED);
+    let match_id = submit_response.json::<Vec<serde_json::Value>>()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    api_key_post_json(
+        app,
+        &format!("/v1/internal/discovered-matches/{match_id}/claim"),
+        &json!({}),
+        enricher_key,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    match_id
+}
+
+#[tokio::test]
+async fn test_enriched_with_player_ratings_updates_profile() {
+    let app = TestApp::new().await;
+
+    // Setup: player with steam_id_64
+    let (_user_id, player_id, token, steam_id_64) =
+        setup_player_with_steam_id_64(app.pool()).await;
+    let account_id = steam_id_64_to_account_id(steam_id_64);
+
+    // Register steam tracking
+    app.post_json_with_token(
+        "/v1/players/me/steam-tracking",
+        &json!({
+            "game_auth_code": TEST_AUTH_CODE,
+            "game_slug": "cs2"
+        }),
+        &token,
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let enricher_key = create_test_api_key(
+        app.pool(),
+        "cs2-enricher",
+        &["discovered_matches.read", "discovered_matches.write"],
+    )
+    .await;
+
+    let match_id = submit_and_claim_match(
+        &app,
+        &tracking_id,
+        &enricher_key,
+        "CSGO-rank1-rank1-rank1-rank1-rank1",
+    )
+    .await;
+
+    // Submit enriched data WITH player_ratings (Premier rank_type_id = 11)
+    let enriched_response = api_key_post_json(
+        &app,
+        &format!("/v1/internal/discovered-matches/{match_id}/enriched"),
+        &json!({
+            "gc_data": { "match_id": 999888777, "map": "de_dust2" },
+            "demo_url": "http://replay.valve.net/730/test.dem.bz2",
+            "player_ratings": [
+                {
+                    "account_id": account_id,
+                    "rank_id": 15250,
+                    "rank_type_id": 11,
+                    "wins": 42,
+                    "rank_change": 250.0
+                }
+            ]
+        }),
+        &enricher_key,
+    )
+    .await;
+    enriched_response.assert_status(StatusCode::OK);
+
+    // Verify: player game profile was created and rating set
+    let profile: Option<(i32, Option<String>)> = sqlx::query_as(
+        "SELECT rating, rank_tier FROM player_game_profiles WHERE player_id = $1",
+    )
+    .bind(player_id)
+    .fetch_optional(app.pool())
+    .await
+    .expect("query failed");
+
+    let (rating, _rank_tier) = profile.expect("Player game profile should exist");
+    assert_eq!(rating, 15250, "Rating should be updated to 15250");
+
+    // Verify: rating history entry was created
+    let history_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM player_rating_history WHERE player_id = $1 AND source = 'demo_rank_update'",
+    )
+    .bind(player_id)
+    .fetch_one(app.pool())
+    .await
+    .expect("query failed");
+
+    assert_eq!(history_count.0, 1, "Should have one rating history entry");
+}
+
+#[tokio::test]
+async fn test_enriched_without_player_ratings_backward_compatible() {
+    let app = TestApp::new().await;
+
+    // Setup
+    let (_user_id, _player_id, token, _steam_id_64) =
+        setup_player_with_steam_id_64(app.pool()).await;
+
+    app.post_json_with_token(
+        "/v1/players/me/steam-tracking",
+        &json!({
+            "game_auth_code": TEST_AUTH_CODE,
+            "game_slug": "cs2"
+        }),
+        &token,
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let enricher_key = create_test_api_key(
+        app.pool(),
+        "cs2-enricher",
+        &["discovered_matches.read", "discovered_matches.write"],
+    )
+    .await;
+
+    let match_id = submit_and_claim_match(
+        &app,
+        &tracking_id,
+        &enricher_key,
+        "CSGO-back1-back1-back1-back1-back1",
+    )
+    .await;
+
+    // Submit enriched data WITHOUT player_ratings (old enricher format)
+    let enriched_response = api_key_post_json(
+        &app,
+        &format!("/v1/internal/discovered-matches/{match_id}/enriched"),
+        &json!({
+            "gc_data": { "match_id": 999888777, "map": "de_dust2" },
+            "demo_url": "http://replay.valve.net/730/test.dem.bz2"
+        }),
+        &enricher_key,
+    )
+    .await;
+
+    // Should succeed without error (backward compatible)
+    enriched_response.assert_status(StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_enriched_unknown_account_id_silently_skipped() {
+    let app = TestApp::new().await;
+
+    // Setup with a different player
+    let (_user_id, player_id, token, _steam_id_64) =
+        setup_player_with_steam_id_64(app.pool()).await;
+
+    app.post_json_with_token(
+        "/v1/players/me/steam-tracking",
+        &json!({
+            "game_auth_code": TEST_AUTH_CODE,
+            "game_slug": "cs2"
+        }),
+        &token,
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let enricher_key = create_test_api_key(
+        app.pool(),
+        "cs2-enricher",
+        &["discovered_matches.read", "discovered_matches.write"],
+    )
+    .await;
+
+    let match_id = submit_and_claim_match(
+        &app,
+        &tracking_id,
+        &enricher_key,
+        "CSGO-unkn1-unkn1-unkn1-unkn1-unkn1",
+    )
+    .await;
+
+    // Submit with an account_id that doesn't correspond to any registered player
+    let enriched_response = api_key_post_json(
+        &app,
+        &format!("/v1/internal/discovered-matches/{match_id}/enriched"),
+        &json!({
+            "gc_data": { "match_id": 999888777, "map": "de_dust2" },
+            "player_ratings": [
+                {
+                    "account_id": 99999999,
+                    "rank_id": 10000,
+                    "rank_type_id": 11,
+                    "wins": 10,
+                    "rank_change": 100.0
+                }
+            ]
+        }),
+        &enricher_key,
+    )
+    .await;
+
+    // Should succeed — unknown players are silently skipped
+    enriched_response.assert_status(StatusCode::OK);
+
+    // No profile should be created for our registered player (different account_id)
+    let profile_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM player_game_profiles WHERE player_id = $1",
+    )
+    .bind(player_id)
+    .fetch_one(app.pool())
+    .await
+    .expect("query failed");
+
+    assert_eq!(profile_count.0, 0, "No profile should be created for unrelated player");
+}
+
+#[tokio::test]
+async fn test_enriched_non_premier_ratings_ignored() {
+    let app = TestApp::new().await;
+
+    // Setup
+    let (_user_id, player_id, token, steam_id_64) =
+        setup_player_with_steam_id_64(app.pool()).await;
+    let account_id = steam_id_64_to_account_id(steam_id_64);
+
+    app.post_json_with_token(
+        "/v1/players/me/steam-tracking",
+        &json!({
+            "game_auth_code": TEST_AUTH_CODE,
+            "game_slug": "cs2"
+        }),
+        &token,
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let enricher_key = create_test_api_key(
+        app.pool(),
+        "cs2-enricher",
+        &["discovered_matches.read", "discovered_matches.write"],
+    )
+    .await;
+
+    let match_id = submit_and_claim_match(
+        &app,
+        &tracking_id,
+        &enricher_key,
+        "CSGO-comp1-comp1-comp1-comp1-comp1",
+    )
+    .await;
+
+    // Submit with Competitive rank_type_id = 6 (not Premier)
+    let enriched_response = api_key_post_json(
+        &app,
+        &format!("/v1/internal/discovered-matches/{match_id}/enriched"),
+        &json!({
+            "gc_data": { "match_id": 999888777, "map": "de_dust2" },
+            "player_ratings": [
+                {
+                    "account_id": account_id,
+                    "rank_id": 12,
+                    "rank_type_id": 6,
+                    "wins": 100,
+                    "rank_change": 0.0
+                }
+            ]
+        }),
+        &enricher_key,
+    )
+    .await;
+
+    enriched_response.assert_status(StatusCode::OK);
+
+    // No profile should be created — only Premier (11) is processed
+    let profile_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM player_game_profiles WHERE player_id = $1",
+    )
+    .bind(player_id)
+    .fetch_one(app.pool())
+    .await
+    .expect("query failed");
+
+    assert_eq!(profile_count.0, 0, "Non-Premier ratings should be ignored");
 }

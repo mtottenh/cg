@@ -5,6 +5,7 @@ use crate::dto::requests::UpdatePlayerProfileRequest;
 use crate::dto::responses::{PlayerResponse, PlayerSearchResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
+use crate::handlers::player_game_profiles::build_stats_context;
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -12,6 +13,7 @@ use axum::Json;
 use portal_core::{GameId, PlayerId};
 use portal_domain::repositories::{PlayerSearchFilters, UpdatePlayer};
 use serde::Deserialize;
+use std::collections::HashMap;
 use validator::Validate;
 
 /// Extract request ID from headers.
@@ -113,11 +115,53 @@ pub async fn search_players(
         .search_players(&filters, limit, offset)
         .await?;
 
-    let players: Vec<PlayerSearchResponse> = result
-        .players
-        .into_iter()
-        .map(PlayerSearchResponse::from)
-        .collect();
+    // Enrich with display stats when game_id filter is provided
+    let players: Vec<PlayerSearchResponse> = if let Some(game_id) = game_id {
+        // Resolve game to get plugin_id
+        let game = state
+            .game_repo
+            .find_by_id(game_id.as_uuid())
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        if let Some(game) = game {
+            let plugin = state.plugin_manager.get(&game.plugin_id);
+
+            // Batch-fetch profiles for all players in the result set
+            let player_ids: Vec<PlayerId> = result.players.iter().map(|p| p.id).collect();
+            let profiles = state
+                .player_game_profile_service
+                .find_by_players_and_game(&player_ids, game_id)
+                .await
+                .unwrap_or_default();
+
+            // Build a lookup map: player_id -> profile
+            let mut profile_map: HashMap<PlayerId, _> = profiles
+                .into_iter()
+                .map(|p| (p.player_id, p))
+                .collect();
+
+            // Build responses with display stats
+            let mut responses = Vec::with_capacity(result.players.len());
+            for player in result.players {
+                if let Some(profile) = profile_map.remove(&player.id) {
+                    let context = build_stats_context(&state, &profile).await;
+                    let display_stats = plugin
+                        .as_ref()
+                        .map(|p| p.format_player_stats(&profile.game_specific_stats, &context))
+                        .unwrap_or_default();
+                    responses.push(PlayerSearchResponse::with_display_stats(player, display_stats));
+                } else {
+                    responses.push(PlayerSearchResponse::from(player));
+                }
+            }
+            responses
+        } else {
+            result.players.into_iter().map(PlayerSearchResponse::from).collect()
+        }
+    } else {
+        result.players.into_iter().map(PlayerSearchResponse::from).collect()
+    };
 
     Ok(Json(PaginatedResponse::new(
         players,

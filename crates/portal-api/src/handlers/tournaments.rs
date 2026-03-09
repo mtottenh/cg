@@ -10,13 +10,14 @@ use crate::dto::requests::{
     DisqualifyRequest, ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest,
     MatchCheckInRequest, ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest,
     RejectRegistrationRequest, RejectScheduleProposalRequest, ScheduleMatchRequest,
-    UpdateTournamentRequest,
+    SetTournamentMapPoolRequest, UpdateTournamentRequest,
 };
 use crate::dto::responses::{
     CheckInStatusResponse, MatchStatusDetailsResponse, MatchStatusLogResponse,
     ScheduleProposalResponse, SeededParticipantResponse, TournamentBracketResponse,
-    TournamentMatchResponse, TournamentRegistrationResponse, TournamentResponse,
-    TournamentStageResponse, TournamentStandingResponse, TournamentSummaryResponse,
+    TournamentMapPoolResponse, TournamentMatchResponse, TournamentRegistrationResponse,
+    TournamentResponse, TournamentStageResponse, TournamentStandingResponse,
+    TournamentSummaryResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
@@ -24,13 +25,15 @@ use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use portal_core::types::{TournamentMatchStatus, TournamentStatus};
+use portal_core::types::{MatchFormat, TournamentMatchStatus, TournamentStatus};
 use portal_core::{PlayerId, ScheduleProposalId, TournamentId, TournamentMatchId, TournamentRegistrationId};
+use portal_core::VetoFormatConfig;
 use portal_domain::entities::schedule_proposal::{
     AcceptProposalCommand, CounterProposeCommand, RejectProposalCommand,
 };
-use portal_domain::repositories::tournament::TournamentFilters;
-use portal_domain::repositories::PlayerRatingHistoryRepository;
+use portal_domain::repositories::tournament::{
+    TournamentFilters, TournamentMapPoolRepository, UpsertTournamentMapPool,
+};
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -42,48 +45,27 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 
 /// Check eligibility restrictions for a set of player IDs against a tournament.
 ///
-/// Fetches each player's game profile and rating stats, then runs the
-/// eligibility checker. Returns Ok(()) if all checks pass, or an ApiError
-/// with details of all violations.
+/// Delegates to the `EligibilityService` which fetches each player's game
+/// profile and rating stats for the tournament's game, then runs the checker.
 async fn check_eligibility_for_players(
     state: &AppState,
     tournament: &portal_domain::entities::Tournament,
     player_ids: &[PlayerId],
 ) -> Result<(), ApiError> {
     let restrictions = tournament.eligibility_restrictions();
-    if !restrictions.has_restrictions() {
-        return Ok(());
-    }
-
-    let game_id = tournament.game_id;
-
-    // Gather profile + rating stats for each player
-    let mut player_data = Vec::with_capacity(player_ids.len());
-    for &pid in player_ids {
-        let profile = state
-            .player_game_profile_service
-            .get_profile(pid, game_id)
-            .await?;
-        let stats = state
-            .rating_history_repo
-            .get_rating_stats(pid, game_id)
-            .await?;
-        player_data.push((pid, profile, stats));
-    }
-
-    let violations =
-        portal_domain::services::eligibility::check_eligibility(&restrictions, &player_data);
+    let violations = state
+        .eligibility_service
+        .check_players(&restrictions, tournament.game_id, player_ids)
+        .await?;
 
     if violations.is_empty() {
         return Ok(());
     }
 
-    // Format violations into error message
     let messages: Vec<String> = violations
         .iter()
         .map(|v| {
             if v.player_id == PlayerId::from_uuid(uuid::Uuid::nil()) {
-                // Team-level violation
                 format!("[{}] {}", v.restriction, v.message)
             } else {
                 format!("[{}] Player {}: {}", v.restriction, v.player_id, v.message)
@@ -122,7 +104,16 @@ pub async fn create_tournament(
 ) -> ApiResult<(StatusCode, Json<DataResponse<TournamentResponse>>)> {
     let request_id = get_request_id(&headers);
 
-    let cmd = req.into_command()?;
+    let mut cmd = req.into_command()?;
+
+    // Default season_id to the league's current season when not specified
+    if cmd.league_id.is_some() && cmd.season_id.is_none() {
+        if let Some(league_id) = cmd.league_id {
+            if let Ok(league) = state.league_service.get_league(league_id).await {
+                cmd.season_id = league.current_season_id;
+            }
+        }
+    }
 
     let tournament = state
         .tournament_service
@@ -463,6 +454,201 @@ pub async fn start_tournament(
         .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state.tournament_service.start_tournament(tournament_id).await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentResponse::from(tournament),
+        request_id,
+    )))
+}
+
+/// Close registration for a tournament.
+#[utoipa::path(
+    post,
+    path = "/v1/tournaments/{tournament_id}/close-registration",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    responses(
+        (status = 200, description = "Registration closed", body = DataResponse<TournamentResponse>),
+        (status = 400, description = "Cannot close registration", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn close_registration(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(tournament_id): Path<String>,
+) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    let tournament = state
+        .tournament_service
+        .close_registration(tournament_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentResponse::from(tournament),
+        request_id,
+    )))
+}
+
+/// Reopen registration for a tournament.
+#[utoipa::path(
+    post,
+    path = "/v1/tournaments/{tournament_id}/reopen-registration",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    responses(
+        (status = 200, description = "Registration reopened", body = DataResponse<TournamentResponse>),
+        (status = 400, description = "Cannot reopen registration", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn reopen_registration(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(tournament_id): Path<String>,
+) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    let tournament = state
+        .tournament_service
+        .reopen_registration(tournament_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentResponse::from(tournament),
+        request_id,
+    )))
+}
+
+/// Cancel a tournament.
+#[utoipa::path(
+    post,
+    path = "/v1/tournaments/{tournament_id}/cancel",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    responses(
+        (status = 200, description = "Tournament cancelled", body = DataResponse<TournamentResponse>),
+        (status = 400, description = "Cannot cancel tournament", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn cancel_tournament(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(tournament_id): Path<String>,
+) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    let tournament = state
+        .tournament_service
+        .cancel_tournament(tournament_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentResponse::from(tournament),
+        request_id,
+    )))
+}
+
+/// Complete a tournament.
+#[utoipa::path(
+    post,
+    path = "/v1/tournaments/{tournament_id}/complete",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    responses(
+        (status = 200, description = "Tournament completed", body = DataResponse<TournamentResponse>),
+        (status = 400, description = "Cannot complete tournament", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn complete_tournament(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(tournament_id): Path<String>,
+) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    let tournament = state
+        .tournament_service
+        .complete_tournament(tournament_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentResponse::from(tournament),
+        request_id,
+    )))
+}
+
+/// Finalize a tournament.
+#[utoipa::path(
+    post,
+    path = "/v1/tournaments/{tournament_id}/finalize",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    responses(
+        (status = 200, description = "Tournament finalized", body = DataResponse<TournamentResponse>),
+        (status = 400, description = "Cannot finalize tournament", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn finalize_tournament(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(tournament_id): Path<String>,
+) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    let tournament = state
+        .tournament_service
+        .finalize_tournament(tournament_id)
+        .await?;
 
     Ok(Json(DataResponse::new(
         TournamentResponse::from(tournament),
@@ -839,6 +1025,43 @@ pub async fn get_matches(
     let data: Vec<TournamentMatchResponse> = matches.into_iter().map(Into::into).collect();
 
     Ok(Json(DataResponse::new(data, request_id)))
+}
+
+/// Get a single match by ID.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/matches/{match_id}",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("match_id" = String, Path, description = "Match ID"),
+    ),
+    responses(
+        (status = 200, description = "Match details", body = DataResponse<TournamentMatchResponse>),
+        (status = 404, description = "Match not found", body = ApiError),
+    ),
+    tag = "tournaments"
+)]
+pub async fn get_match(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((tournament_id, match_id)): Path<(String, String)>,
+) -> ApiResult<Json<DataResponse<TournamentMatchResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    let match_ = state
+        .tournament_service
+        .get_tournament_match(tournament_id, match_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(match_.into(), request_id)))
 }
 
 // =============================================================================
@@ -1460,6 +1683,17 @@ pub async fn match_check_in(
         .check_in(match_id, registration_id, auth.user_id)
         .await?;
 
+    // Auto-create veto session when match transitions to PickBan
+    if match_.status == TournamentMatchStatus::PickBan && match_.veto_required {
+        if let Err(e) = auto_create_veto_session(&state, &match_).await {
+            tracing::warn!(
+                match_id = %match_id,
+                error = ?e,
+                "Failed to auto-create veto session on pick_ban transition"
+            );
+        }
+    }
+
     Ok(Json(DataResponse::new(
         TournamentMatchResponse::from(match_),
         request_id,
@@ -1601,6 +1835,17 @@ pub async fn admin_match_transition(
         .match_lifecycle_service
         .admin_transition(match_id, to_status, auth.user_id, req.override_reason)
         .await?;
+
+    // Auto-create veto session when admin transitions to PickBan
+    if match_.status == TournamentMatchStatus::PickBan && match_.veto_required {
+        if let Err(e) = auto_create_veto_session(&state, &match_).await {
+            tracing::warn!(
+                match_id = %match_id,
+                error = ?e,
+                "Failed to auto-create veto session on admin pick_ban transition"
+            );
+        }
+    }
 
     Ok(Json(DataResponse::new(
         TournamentMatchResponse::from(match_),
@@ -2031,4 +2276,275 @@ pub async fn admin_generate_next_swiss_round(
         new_matches.into_iter().map(Into::into).collect();
 
     Ok(Json(DataResponse::new(response, request_id)))
+}
+
+// =============================================================================
+// TOURNAMENT MAP POOL ENDPOINTS
+// =============================================================================
+
+/// Get effective map pool for a tournament (tournament override → game default fallback).
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/map-pool",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    responses(
+        (status = 200, description = "Effective map pool", body = DataResponse<TournamentMapPoolResponse>),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    tag = "tournaments"
+)]
+pub async fn get_tournament_map_pool(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(tournament_id): Path<String>,
+) -> ApiResult<Json<DataResponse<TournamentMapPoolResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    let tournament = state
+        .tournament_service
+        .get_tournament(tournament_id)
+        .await?;
+
+    // Try tournament-specific pool first
+    if let Some(pool) = state
+        .tournament_map_pool_repo
+        .find_by_tournament(tournament_id)
+        .await?
+    {
+        return Ok(Json(DataResponse::new(
+            TournamentMapPoolResponse {
+                maps: pool.maps,
+                source: "tournament".to_string(),
+            },
+            request_id,
+        )));
+    }
+
+    // Fall back to game's default pool
+    let game = state
+        .game_repo
+        .find_by_id(tournament.game_id.as_uuid())
+        .await?
+        .ok_or_else(|| ApiError::not_found("Game not found"))?;
+
+    let maps: Vec<String> = crate::handlers::games::extract_map_pool(&game);
+
+    Ok(Json(DataResponse::new(
+        TournamentMapPoolResponse {
+            maps,
+            source: "game".to_string(),
+        },
+        request_id,
+    )))
+}
+
+/// Set a tournament-specific map pool (admin only).
+#[utoipa::path(
+    put,
+    path = "/v1/tournaments/{tournament_id}/map-pool",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    request_body = SetTournamentMapPoolRequest,
+    responses(
+        (status = 200, description = "Map pool updated", body = DataResponse<TournamentMapPoolResponse>),
+        (status = 400, description = "Invalid map IDs", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn set_tournament_map_pool(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(tournament_id): Path<String>,
+    ValidatedJson(req): ValidatedJson<SetTournamentMapPoolRequest>,
+) -> ApiResult<Json<DataResponse<TournamentMapPoolResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    // Check admin permission
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
+
+    let tournament = state
+        .tournament_service
+        .get_tournament(tournament_id)
+        .await?;
+
+    // Validate all map IDs exist in the game's catalog
+    let game = state
+        .game_repo
+        .find_by_id(tournament.game_id.as_uuid())
+        .await?
+        .ok_or_else(|| ApiError::not_found("Game not found"))?;
+
+    let plugin = state.plugin_manager.get(&game.plugin_id);
+    let catalog = crate::handlers::games::load_available_maps(&game, &plugin);
+
+    for map_id in &req.map_ids {
+        if !catalog.iter().any(|m| m.id == *map_id) {
+            return Err(ApiError::bad_request(format!("Unknown map: {map_id}")));
+        }
+    }
+
+    let pool = state
+        .tournament_map_pool_repo
+        .upsert(UpsertTournamentMapPool {
+            tournament_id,
+            stage_id: None,
+            maps: req.map_ids,
+            veto_format_id: None,
+        })
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentMapPoolResponse {
+            maps: pool.maps,
+            source: "tournament".to_string(),
+        },
+        request_id,
+    )))
+}
+
+/// Remove a tournament-specific map pool override (reverts to game default).
+#[utoipa::path(
+    delete,
+    path = "/v1/tournaments/{tournament_id}/map-pool",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    responses(
+        (status = 204, description = "Map pool override removed"),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
+        (status = 404, description = "Tournament or map pool not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn delete_tournament_map_pool(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    Path(tournament_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
+
+    // Find and delete the tournament-level pool
+    let pool = state
+        .tournament_map_pool_repo
+        .find_by_tournament(tournament_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("No tournament map pool override found"))?;
+
+    state.tournament_map_pool_repo.delete(pool.id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// =============================================================================
+// INTERNAL HELPERS
+// =============================================================================
+
+/// Auto-create and start a veto session when a match transitions to PickBan.
+///
+/// Called after both participants check in for a veto-required match. Derives the
+/// veto format from the match format and loads the map pool from tournament config.
+async fn auto_create_veto_session(
+    state: &AppState,
+    match_: &portal_domain::entities::tournament::TournamentMatch,
+) -> Result<(), ApiError> {
+    // Derive veto format from match format
+    let veto_format = match match_.match_format {
+        MatchFormat::Bo1 => VetoFormatConfig::bo1(),
+        MatchFormat::Bo3 => VetoFormatConfig::bo3(),
+        MatchFormat::Bo5 | MatchFormat::Bo7 => VetoFormatConfig::bo5(),
+    };
+
+    // Resolve map pool and side selection mode
+    let tournament = state
+        .tournament_service
+        .get_tournament(match_.tournament_id)
+        .await?;
+
+    let map_pool = if let Ok(Some(pool)) = state
+        .tournament_map_pool_repo
+        .get_effective(match_.tournament_id, Some(match_.stage_id))
+        .await
+    {
+        pool.maps
+    } else {
+        // Fall back to game's default pool
+        if let Ok(Some(game)) = state
+            .game_repo
+            .find_by_id(tournament.game_id.as_uuid())
+            .await
+        {
+            crate::handlers::games::extract_map_pool(&game)
+        } else {
+            vec![]
+        }
+    };
+
+    // Resolve side selection mode: tournament settings → plugin default
+    // No conversion needed — both plugin and domain use portal_core::SideSelectionMode
+    let side_selection_mode = {
+        use portal_core::SideSelectionMode;
+
+        if let Some(mode) = tournament.settings
+            .get("side_selection_mode")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<SideSelectionMode>().ok())
+        {
+            mode
+        } else if let Some(plugin) = state.plugin_manager.get(&tournament.game_id.to_string()) {
+            plugin.as_tournament_plugin()
+                .map(|tp| tp.default_side_selection_mode())
+                .unwrap_or(SideSelectionMode::Knife)
+        } else {
+            SideSelectionMode::Knife
+        }
+    };
+
+    // Create the session
+    let session = state
+        .veto_service
+        .create_session(match_.id, &veto_format, map_pool, None, side_selection_mode)
+        .await?;
+
+    // Auto-start the session (begins coin flip phase)
+    state
+        .veto_service
+        .start_session(session.id)
+        .await?;
+
+    tracing::info!(
+        match_id = %match_.id,
+        session_id = %session.id,
+        format = %veto_format.id,
+        "Auto-created and started veto session on pick_ban transition"
+    );
+
+    Ok(())
 }

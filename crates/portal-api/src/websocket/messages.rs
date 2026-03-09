@@ -171,6 +171,17 @@ pub enum ServerMessage {
         /// Error message.
         message: String,
     },
+    /// Coin flip result (auto-randomized when both teams connect).
+    CoinFlipResult {
+        /// Registration ID of the coin flip winner.
+        winner_registration_id: String,
+        /// Name of the winner.
+        winner_name: String,
+        /// Registration ID of the team with first action.
+        first_action_registration_id: String,
+        /// Name of the team with first action.
+        first_action_name: String,
+    },
     /// Pong response to ping.
     Pong,
     /// Veto action acknowledgment (sent only to the client who performed the action).
@@ -262,6 +273,8 @@ pub enum LobbyBroadcast {
     VetoComplete(VetoCompleteBroadcast),
     /// Timeout warning broadcast.
     TimeoutWarning(TimeoutWarningBroadcast),
+    /// Coin flip result broadcast.
+    CoinFlipResult(CoinFlipResultBroadcast),
     /// Participant connected broadcast.
     ParticipantConnected(ParticipantConnectionBroadcast),
     /// Participant disconnected broadcast.
@@ -306,6 +319,19 @@ pub struct VetoCompleteBroadcast {
     pub selected_maps: Vec<String>,
     /// Final session response.
     pub session: VetoSessionResponse,
+}
+
+/// Coin flip result broadcast.
+#[derive(Debug, Clone)]
+pub struct CoinFlipResultBroadcast {
+    /// Registration ID of the coin flip winner.
+    pub winner_registration_id: TournamentRegistrationId,
+    /// Name of the winner.
+    pub winner_name: String,
+    /// Registration ID of the team with first action.
+    pub first_action_registration_id: TournamentRegistrationId,
+    /// Name of the team with first action.
+    pub first_action_name: String,
 }
 
 /// Timeout warning broadcast.

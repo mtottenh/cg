@@ -110,6 +110,9 @@ pub struct GameDetailResponse {
     /// Available map pick/ban formats.
     pub map_pick_ban_formats: Vec<MapPickBanFormatResponse>,
 
+    /// Map IDs in the active default pool.
+    pub map_pool: Vec<String>,
+
     /// Game status.
     #[schema(example = "active")]
     pub status: String,

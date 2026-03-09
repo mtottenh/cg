@@ -23,6 +23,11 @@ pub struct CreateVetoSessionRequest {
     #[validate(range(min = 10, max = 300))]
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u32,
+
+    /// Side selection mode (picker_choice, coin_flip, knife).
+    /// If not provided, defaults from tournament settings or plugin default.
+    #[validate(length(max = 32))]
+    pub side_selection_mode: Option<String>,
 }
 
 fn default_timeout_seconds() -> u32 {

@@ -18,6 +18,11 @@ pub fn routes() -> Router<AppState> {
         .route("/{tournament_id}/publish", post(tournaments::publish_tournament))
         .route("/{tournament_id}/open-registration", post(tournaments::open_registration))
         .route("/{tournament_id}/start", post(tournaments::start_tournament))
+        .route("/{tournament_id}/close-registration", post(tournaments::close_registration))
+        .route("/{tournament_id}/reopen-registration", post(tournaments::reopen_registration))
+        .route("/{tournament_id}/cancel", post(tournaments::cancel_tournament))
+        .route("/{tournament_id}/complete", post(tournaments::complete_tournament))
+        .route("/{tournament_id}/finalize", post(tournaments::finalize_tournament))
         // Tournament stages
         .route("/{tournament_id}/stages", post(tournaments::create_stage))
         .route("/{tournament_id}/stages", get(tournaments::get_stages))
@@ -65,6 +70,7 @@ pub fn routes() -> Router<AppState> {
             get(tournaments::get_bracket_standings),
         )
         .route("/{tournament_id}/matches", get(tournaments::get_matches))
+        .route("/{tournament_id}/matches/{match_id}", get(tournaments::get_match))
         // Match lifecycle
         .route(
             "/{tournament_id}/matches/{match_id}/status",
@@ -128,6 +134,13 @@ pub fn routes() -> Router<AppState> {
         // Dispute routes (participant)
         .route(
             "/{tournament_id}/matches/{match_id}/dispute",
-            post(dispute::raise_dispute),
+            get(dispute::get_match_dispute).post(dispute::raise_dispute),
+        )
+        // Map pool routes
+        .route(
+            "/{tournament_id}/map-pool",
+            get(tournaments::get_tournament_map_pool)
+                .put(tournaments::set_tournament_map_pool)
+                .delete(tournaments::delete_tournament_map_pool),
         )
 }

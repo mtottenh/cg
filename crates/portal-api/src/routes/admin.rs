@@ -120,7 +120,7 @@ pub fn routes() -> Router<AppState> {
         .route("/demos/{id}/notes", patch(demos::set_demo_notes))
         .route("/demos", post(demos::catalog_demo))
         .route("/demos/batch", post(demos::batch_catalog_demos))
-        .route("/demos/stats", get(demos::get_demo_stats))
+        .route("/demos/stats", get(demos::get_demo_status_counts))
         .route("/demos/pending", get(demos::get_pending_demos))
         .route("/demos/{id}/stats", post(demos::submit_demo_stats))
         .route("/demos/{id}/stats-failed", post(demos::mark_demo_stats_failed))

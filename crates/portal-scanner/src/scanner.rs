@@ -1,7 +1,7 @@
 //! Orchestration: scan S3 → catalog → fetch and submit stats.
 
 use anyhow::Result;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::api_client::{BatchCatalogRequest, CatalogDemoEntry, PortalApiClient};
 use crate::config::ScannerConfig;
@@ -123,6 +123,9 @@ async fn fetch_and_submit_stats(
     let stats_name = file_name
         .trim_end_matches(".bz2")
         .trim_end_matches(".dem");
+
+    let stats_url = demo_client.get_stats_url(stats_name);
+    debug!(demo_id, file_name, url = %stats_url, "Fetching demo stats");
 
     match demo_client.get_demo_stats(stats_name).await {
         Ok(stats) => {

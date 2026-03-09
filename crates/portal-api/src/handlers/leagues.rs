@@ -18,6 +18,33 @@ use axum::Json;
 use portal_core::{permissions, GameId, LeagueId, ScopeType, UserId};
 use portal_domain::entities::league::LeagueMembershipType;
 
+/// Check league entry requirements using the eligibility service.
+///
+/// Delegates to `EligibilityService::check_players_from_settings` which
+/// parses restrictions from the league's settings JSONB, fetches the
+/// player's game profile and rating stats for the correct game, and
+/// runs the standard eligibility check.
+async fn check_league_entry_requirements(
+    state: &AppState,
+    league: &portal_domain::entities::league::League,
+    player_id: portal_core::PlayerId,
+) -> Result<(), ApiError> {
+    let violations = state
+        .eligibility_service
+        .check_players_from_settings(&league.settings, league.game_id, &[player_id])
+        .await?;
+
+    if violations.is_empty() {
+        return Ok(());
+    }
+
+    let messages: Vec<String> = violations.iter().map(|v| v.message.clone()).collect();
+    Err(ApiError::bad_request(&format!(
+        "You do not meet the entry requirements: {}",
+        messages.join("; ")
+    )))
+}
+
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
     headers
@@ -329,6 +356,10 @@ pub async fn join_league(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
+    // Check entry requirements via game plugin before joining
+    let league = state.league_service.get_league(league_id).await?;
+    check_league_entry_requirements(&state, &league, auth.player_id).await?;
+
     let member = state
         .league_service
         .join_league(league_id, auth.user_id)
@@ -496,6 +527,10 @@ pub async fn apply_to_league(
     let league_id: LeagueId = league_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
+
+    // Check entry requirements via game plugin before applying
+    let league = state.league_service.get_league(league_id).await?;
+    check_league_entry_requirements(&state, &league, auth.player_id).await?;
 
     let application = state
         .league_service

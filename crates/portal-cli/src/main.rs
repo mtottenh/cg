@@ -13,7 +13,7 @@ mod config;
 mod output;
 mod repl;
 
-use commands::{api_key, audit, ban, bootstrap, db, demo, game, league_team, player, role, user};
+use commands::{api_key, audit, ban, bootstrap, db, demo, game, league_team, player, role, seed, user};
 #[cfg(feature = "scanner")]
 use commands::scan;
 use config::CliConfig;
@@ -84,6 +84,9 @@ pub enum Commands {
     /// Demo catalog management
     Demo(demo::DemoCommand),
 
+    /// Seed database with development test data
+    Seed(seed::SeedCommand),
+
     /// Scan S3 for new demos and ingest via API
     #[cfg(feature = "scanner")]
     Scan(scan::ScanCommand),
@@ -131,6 +134,7 @@ async fn main() -> Result<()> {
         Commands::Audit(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::LeagueTeam(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Demo(cmd) => cmd.execute(&pool, cli.format).await?,
+        Commands::Seed(cmd) => cmd.execute(&pool, cli.format).await?,
         #[cfg(feature = "scanner")]
         Commands::Scan(cmd) => cmd.execute().await?,
     }

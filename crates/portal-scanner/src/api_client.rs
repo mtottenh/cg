@@ -4,12 +4,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-/// Client for calling portal admin API endpoints.
+/// Client for calling portal internal API endpoints.
 #[derive(Clone)]
 pub struct PortalApiClient {
     client: reqwest::Client,
     base_url: String,
-    token: String,
+    api_key: String,
 }
 
 /// A single demo entry for batch cataloging.
@@ -105,21 +105,21 @@ pub struct MarkFailedRequest {
 
 impl PortalApiClient {
     /// Create a new API client.
-    pub fn new(base_url: String, token: String) -> Self {
+    pub fn new(base_url: String, api_key: String) -> Self {
         Self {
             client: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
-            token,
+            api_key,
         }
     }
 
     /// Batch catalog demos.
     pub async fn batch_catalog(&self, request: &BatchCatalogRequest) -> Result<BatchCatalogData> {
-        let url = format!("{}/v1/admin/demos/batch", self.base_url);
+        let url = format!("{}/v1/internal/demos/batch", self.base_url);
         let resp = self
             .client
             .post(&url)
-            .bearer_auth(&self.token)
+            .header("X-API-Key", &self.api_key)
             .json(request)
             .send()
             .await
@@ -137,11 +137,11 @@ impl PortalApiClient {
 
     /// Get pending demos.
     pub async fn get_pending_demos(&self, limit: i64) -> Result<Vec<PendingDemoResponse>> {
-        let url = format!("{}/v1/admin/demos/pending?limit={limit}", self.base_url);
+        let url = format!("{}/v1/internal/demos/pending?limit={limit}", self.base_url);
         let resp = self
             .client
             .get(&url)
-            .bearer_auth(&self.token)
+            .header("X-API-Key", &self.api_key)
             .send()
             .await
             .context("get pending demos request failed")?;
@@ -159,11 +159,11 @@ impl PortalApiClient {
 
     /// Submit parsed stats for a demo.
     pub async fn submit_stats(&self, demo_id: &str, request: &SubmitStatsRequest) -> Result<()> {
-        let url = format!("{}/v1/admin/demos/{demo_id}/stats", self.base_url);
+        let url = format!("{}/v1/internal/demos/{demo_id}/stats", self.base_url);
         let resp = self
             .client
             .post(&url)
-            .bearer_auth(&self.token)
+            .header("X-API-Key", &self.api_key)
             .json(request)
             .send()
             .await
@@ -181,11 +181,11 @@ impl PortalApiClient {
 
     /// Mark a demo's stats processing as failed.
     pub async fn mark_stats_failed(&self, demo_id: &str, error: &str) -> Result<()> {
-        let url = format!("{}/v1/admin/demos/{demo_id}/stats-failed", self.base_url);
+        let url = format!("{}/v1/internal/demos/{demo_id}/stats-failed", self.base_url);
         let resp = self
             .client
             .post(&url)
-            .bearer_auth(&self.token)
+            .header("X-API-Key", &self.api_key)
             .json(&MarkFailedRequest {
                 error: error.to_string(),
             })

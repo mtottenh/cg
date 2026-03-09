@@ -18,7 +18,7 @@ use crate::dto::requests::{
     RegisterTeamForSeasonRequest, RegisterTeamRequest, RejectRegistrationRequest,
     RejectScheduleProposalRequest, RespondToInvitationRequest, ResolveAdjustedRequest,
     ResolveDoubleDqRequest, ResolveOverturnRequest, ResolveRematchRequest, ResolveUpholdRequest,
-    RevokeRoleRequest, ScheduleMatchRequest, SeedAssignment, SelectSideRequest, SetMapPoolRequest,
+    RevokeRoleRequest, ScheduleMatchRequest, SeedAssignment, SelectSideRequest, SetMapPoolRequest, SetTournamentMapPoolRequest,
     SetRankTiersRequest, SocialLinksRequest, SubmitMatchResultRequest, SubmitResultClaimRequest,
     TransferOwnershipRequest, UpdateAvailabilityWindowRequest, UpdateGameRequest,
     UpdateLeagueMemberRoleRequest, UpdateLeagueRequest, UpdateLeagueSeasonRequest,
@@ -48,7 +48,7 @@ use crate::dto::responses::{
     ResultClaimResponse, ResultClaimSubmissionResponse, ResultConfirmationResponse,
     ResultDisputeResponse, RoleResponse, RoleWithPermissionsResponse, ScheduleProposalResponse,
     SeededParticipantResponse, SocialLinksResponse, SuggestedTimeResponse, TeamSizeConfig,
-    TimeSlotResponse, TournamentBracketResponse, TournamentMatchResponse,
+    TimeSlotResponse, TournamentBracketResponse, TournamentMapPoolResponse, TournamentMatchResponse,
     TournamentRegistrationResponse, TournamentResponse, TournamentStageResponse,
     TournamentSummaryResponse, UploadInfoResponse, UserLeagueMembershipResponse, UserResponse,
     UserRoleAssignmentResponse, ValidationResultResponse, VetoActionResponse,
@@ -160,10 +160,14 @@ use utoipa_swagger_ui::SwaggerUi;
         player_game_profiles::get_my_game_profiles,
         player_game_profiles::submit_player_rating,
         player_game_profiles::get_player_rating_history,
+        player_game_profiles::get_player_mm_stats,
+        player_game_profiles::get_player_match_history,
         uploads::upload_player_avatar,
         uploads::upload_player_banner,
         // Users
         users::get_current_user,
+        users::get_my_roles,
+        users::get_my_matches,
         // League Seasons
         league_teams::season::create_season,
         league_teams::season::get_season,
@@ -206,6 +210,11 @@ use utoipa_swagger_ui::SwaggerUi;
         tournaments::publish_tournament,
         tournaments::open_registration,
         tournaments::start_tournament,
+        tournaments::close_registration,
+        tournaments::reopen_registration,
+        tournaments::cancel_tournament,
+        tournaments::complete_tournament,
+        tournaments::finalize_tournament,
         tournaments::create_stage,
         tournaments::get_stages,
         tournaments::register_team,
@@ -228,6 +237,7 @@ use utoipa_swagger_ui::SwaggerUi;
         // Brackets and matches
         tournaments::get_brackets,
         tournaments::get_matches,
+        tournaments::get_match,
         // Match lifecycle
         tournaments::get_match_status,
         tournaments::get_match_status_history,
@@ -247,6 +257,10 @@ use utoipa_swagger_ui::SwaggerUi;
         tournaments::get_bracket_standings,
         // Swiss next round
         tournaments::admin_generate_next_swiss_round,
+        // Tournament map pool
+        tournaments::get_tournament_map_pool,
+        tournaments::set_tournament_map_pool,
+        tournaments::delete_tournament_map_pool,
         // Availability
         availability::create_player_window,
         availability::get_player_windows,
@@ -303,6 +317,7 @@ use utoipa_swagger_ui::SwaggerUi;
         forfeit::admin_double_forfeit,
         // Disputes
         dispute::raise_dispute,
+        dispute::get_match_dispute,
         dispute::add_dispute_message,
         dispute::get_dispute,
         dispute::admin_list_disputes,
@@ -329,7 +344,7 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::set_demo_visibility,
         demos::associate_demo,
         demos::link_demo_to_match,
-        demos::get_demo_stats,
+        demos::get_demo_status_counts,
         demos::get_pending_demos,
         demos::get_demos_for_match,
         demos::unlink_demo_from_match,
@@ -381,11 +396,15 @@ use utoipa_swagger_ui::SwaggerUi;
             crate::dto::responses::PlayerGameProfileResponse,
             crate::dto::responses::DisplayStatResponse,
             crate::dto::responses::PlayerRatingHistoryResponse,
+            crate::dto::responses::PublicMmStatsResponse,
+            crate::dto::responses::MatchHistoryEntryResponse,
             crate::dto::requests::SubmitRatingRequest,
             crate::handlers::player_game_profiles::RatingHistoryQuery,
+            crate::handlers::player_game_profiles::MatchHistoryQuery,
 
             // Users
             UserResponse,
+            crate::dto::requests::tournament::MyMatchesQuery,
 
             // Auth
             RegisterRequest,
@@ -469,6 +488,8 @@ use utoipa_swagger_ui::SwaggerUi;
             SeededParticipantResponse,
             crate::dto::responses::TournamentStandingResponse,
             CheckInStatusResponse,
+            TournamentMapPoolResponse,
+            SetTournamentMapPoolRequest,
             CreateTournamentRequest,
             UpdateTournamentRequest,
             CreateTournamentStageRequest,
@@ -608,6 +629,8 @@ use utoipa_swagger_ui::SwaggerUi;
             crate::handlers::steam_tracking::RegisterSteamTrackingRequest,
             crate::handlers::steam_tracking::UpdateSteamTrackingRequest,
             crate::handlers::steam_tracking::SteamTrackingResponse,
+            // Internal (enricher)
+            crate::handlers::internal::DemoPlayerRating,
             // Result Reviews
             crate::dto::requests::AdminReviewDecisionRequest,
             crate::dto::responses::ResultReviewResponse,

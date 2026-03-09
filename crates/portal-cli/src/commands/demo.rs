@@ -190,7 +190,7 @@ async fn list_demos(
     let mut query = String::from(
         r"
         SELECT d.id, d.file_name, d.category, d.status, d.is_hidden, d.created_at,
-               d.map_name
+               d.metadata->>'map_name' AS map_name
         FROM demos d
         WHERE 1=1
         ",
@@ -206,7 +206,7 @@ async fn list_demos(
         query.push_str(&format!(" AND d.status = '{s}'"));
     }
     if let Some(m) = map {
-        query.push_str(&format!(" AND d.map_name ILIKE '%{m}%'"));
+        query.push_str(&format!(" AND d.metadata->>'map_name' ILIKE '%{m}%'"));
     }
     if let Some(sid) = steam_id {
         query.push_str(&format!(
@@ -283,7 +283,11 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
     let match_info: Option<(Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>)> =
         sqlx::query_as(
             r"
-            SELECT map_name, team1_name, team2_name, team1_score, team2_score
+            SELECT metadata->>'map_name',
+                   metadata->>'team1_name',
+                   metadata->>'team2_name',
+                   (metadata->>'team1_score')::int,
+                   (metadata->>'team2_score')::int
             FROM demos
             WHERE id = $1
             ",

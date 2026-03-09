@@ -70,8 +70,8 @@ pub use tournament::{
     EligibilityRestrictionsInput, ListTournamentsQuery, ManualSeedRequest, MatchCheckInRequest,
     ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
     RejectScheduleProposalRequest,
-    ResolveDisputeRequest, ScheduleMatchRequest, SeedAssignment, SubmitMatchResultRequest,
-    UpdateTournamentRequest, WithdrawRequest,
+    ResolveDisputeRequest, ScheduleMatchRequest, SeedAssignment, SetTournamentMapPoolRequest,
+    SubmitMatchResultRequest, UpdateTournamentRequest, WithdrawRequest,
 };
 pub use veto::{
     CreateVetoSessionRequest, GetVetoStateQuery, PerformVetoActionRequest, RecordCoinFlipRequest,

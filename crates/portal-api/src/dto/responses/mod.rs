@@ -1,5 +1,6 @@
 //! Response DTOs for API endpoints.
 
+pub mod action_item;
 pub mod admin;
 pub mod auth;
 pub mod availability;
@@ -22,6 +23,7 @@ pub mod user;
 pub mod veto;
 pub mod veto_delegate;
 
+pub use action_item::ActionItemResponse;
 pub use admin::PlatformStatsResponse;
 pub use availability::{
     AvailabilityOverrideResponse, AvailabilityWindowResponse, DateAvailabilityResponse,
@@ -55,7 +57,10 @@ pub use league_team::{
     LeagueTeamSummaryResponse, LeagueTeamWithSeasonResponse, PlayerLeagueTeamMembershipResponse,
 };
 pub use player::{PlayerResponse, PlayerSearchResponse, SocialLinksResponse};
-pub use player_game_profile::{DisplayStatResponse, PlayerGameProfileResponse, PlayerRatingHistoryResponse};
+pub use player_game_profile::{
+    DisplayStatResponse, MatchHistoryEntryResponse, PlayerGameProfileResponse,
+    PlayerRatingHistoryResponse, PublicMmStatsResponse,
+};
 pub use progression::{
     AdvancementResponse, LoserResultResponse, ProgressionLogResponse, ProgressionResponse,
 };
@@ -68,8 +73,8 @@ pub use tournament::{
     CheckInStatusResponse, MatchStatusDetailsResponse, MatchStatusLogResponse,
     ScheduleProposalResponse, SeededParticipantResponse, TournamentBracketResponse,
     TournamentMatchGameResponse, TournamentMatchResponse, TournamentRegistrationResponse,
-    TournamentResponse, TournamentStageResponse, TournamentStandingResponse,
-    TournamentSummaryResponse,
+    TournamentMapPoolResponse, TournamentResponse, TournamentStageResponse,
+    TournamentStandingResponse, TournamentSummaryResponse,
 };
 pub use user::UserResponse;
 pub use veto::{

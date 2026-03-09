@@ -19,9 +19,9 @@ use tracing::{error, info, warn};
 
 use crate::state::AppState;
 use crate::websocket::{
-    ChatBroadcast, ClientChatType, ClientMessage, ClientVetoAction, ConnectionId,
-    LobbyBroadcast, ParticipantConnectionBroadcast, ServerMessage, VetoActionBroadcast,
-    VetoCompleteBroadcast, VetoConnection, VetoLobby,
+    ChatBroadcast, ClientChatType, ClientMessage, ClientVetoAction, CoinFlipResultBroadcast,
+    ConnectionId, LobbyBroadcast, ParticipantConnectionBroadcast, ServerMessage,
+    VetoActionBroadcast, VetoCompleteBroadcast, VetoConnection, VetoLobby, VetoStateBroadcast,
 };
 
 /// Authentication timeout in seconds.
@@ -119,6 +119,9 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ap
                     username: connection.username.clone(),
                 },
             ));
+
+            // Auto coin flip if both teams present and session is in CoinFlip status
+            try_auto_coin_flip(&state, match_id, &lobby).await;
         }
     } else if connection.is_spectator() {
         lobby.broadcast(LobbyBroadcast::SpectatorCountUpdate(lobby.spectator_count()));
@@ -636,6 +639,101 @@ async fn handle_veto_action(
     Ok(())
 }
 
+/// Auto-perform coin flip when both participants are connected and session is in CoinFlip status.
+async fn try_auto_coin_flip(
+    state: &AppState,
+    match_id: TournamentMatchId,
+    lobby: &Arc<VetoLobby>,
+) {
+    use portal_domain::repositories::TournamentMatchRepository;
+    use rand::Rng;
+
+    // Look up the match to get participant registration IDs
+    let match_ = match state.tournament_match_repo.find_by_id(match_id).await {
+        Ok(Some(m)) => m,
+        _ => return,
+    };
+
+    let (p1_reg, p2_reg) = match (
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ) {
+        (Some(p1), Some(p2)) => (p1, p2),
+        _ => return,
+    };
+
+    // Verify both DISTINCT participants are connected (not same user in two tabs)
+    let connected = lobby.connected_participant_ids();
+    let p1_str = p1_reg.to_string();
+    let p2_str = p2_reg.to_string();
+    if !connected.contains(&p1_str) || !connected.contains(&p2_str) {
+        return;
+    }
+
+    // Get veto session — must be in CoinFlip status
+    let session_state = match state.veto_service.get_session_state(match_id).await {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    if session_state.session.status != portal_domain::entities::VetoStatus::CoinFlip {
+        return;
+    }
+
+    // Randomly pick winner
+    let winner = if rand::rng().random_bool(0.5) {
+        p1_reg
+    } else {
+        p2_reg
+    };
+
+    // Record coin flip (winner goes first by default)
+    let updated_session = match state
+        .veto_service
+        .record_coin_flip(session_state.session.id, winner, true)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(%match_id, error = %e, "Auto coin flip failed");
+            return;
+        }
+    };
+
+    let first_action = updated_session
+        .first_action_registration_id
+        .unwrap_or(winner);
+
+    let winner_name = if winner == p1_reg {
+        match_.participant1_name.clone().unwrap_or_default()
+    } else {
+        match_.participant2_name.clone().unwrap_or_default()
+    };
+
+    let first_action_name = if first_action == p1_reg {
+        match_.participant1_name.unwrap_or_default()
+    } else {
+        match_.participant2_name.unwrap_or_default()
+    };
+
+    // Broadcast coin flip result
+    lobby.broadcast(LobbyBroadcast::CoinFlipResult(CoinFlipResultBroadcast {
+        winner_registration_id: winner,
+        winner_name,
+        first_action_registration_id: first_action,
+        first_action_name,
+    }));
+
+    // Broadcast updated session state
+    let session_response =
+        crate::dto::responses::VetoSessionResponse::from(updated_session);
+    lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
+        session: session_response,
+    }));
+
+    info!(%match_id, %winner, "Auto coin flip completed");
+}
+
 /// Get chat history for a connection.
 async fn get_chat_history(
     state: &AppState,
@@ -655,21 +753,53 @@ async fn get_chat_history(
     }
     .map_err(|e| e.to_string())?;
 
-    // Convert to payload format
-    // TODO: Look up usernames for each message author
+    // Look up match for team name resolution
+    use portal_domain::repositories::TournamentMatchRepository;
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await
+        .ok()
+        .flatten();
+
+    // Collect unique user IDs and batch-resolve usernames
+    let unique_ids: std::collections::HashSet<_> =
+        messages.iter().map(|m| m.author_user_id).collect();
+    let mut usernames = std::collections::HashMap::new();
+    for uid in unique_ids {
+        if let Ok(user) = state.user_service.get_user(uid).await {
+            usernames.insert(uid, user.username);
+        }
+    }
+
     let payloads = messages
         .into_iter()
-        .map(|msg| crate::websocket::messages::ChatMessagePayload {
-            id: msg.id.to_string(),
-            chat_type: msg.message_type.to_string(),
-            author: crate::websocket::messages::ChatAuthorPayload {
-                user_id: msg.author_user_id.to_string(),
-                username: "Unknown".to_string(), // TODO: Look up username
-                registration_id: msg.author_registration_id.map(|id| id.to_string()),
-                team_name: None, // TODO: Look up team name
-            },
-            content: msg.content,
-            timestamp: msg.created_at,
+        .map(|msg| {
+            let username = usernames
+                .get(&msg.author_user_id)
+                .cloned()
+                .unwrap_or_else(|| "Unknown".to_string());
+            let team_name = match_.as_ref().and_then(|m| {
+                if msg.author_registration_id == m.participant1_registration_id {
+                    m.participant1_name.clone()
+                } else if msg.author_registration_id == m.participant2_registration_id {
+                    m.participant2_name.clone()
+                } else {
+                    None
+                }
+            });
+            crate::websocket::messages::ChatMessagePayload {
+                id: msg.id.to_string(),
+                chat_type: msg.message_type.to_string(),
+                author: crate::websocket::messages::ChatAuthorPayload {
+                    user_id: msg.author_user_id.to_string(),
+                    username,
+                    registration_id: msg.author_registration_id.map(|id| id.to_string()),
+                    team_name,
+                },
+                content: msg.content,
+                timestamp: msg.created_at,
+            }
         })
         .collect();
 
@@ -708,6 +838,12 @@ fn filter_broadcast_for_connection(
                 }
             }
         }
+        LobbyBroadcast::CoinFlipResult(result) => Some(ServerMessage::CoinFlipResult {
+            winner_registration_id: result.winner_registration_id.to_string(),
+            winner_name: result.winner_name.clone(),
+            first_action_registration_id: result.first_action_registration_id.to_string(),
+            first_action_name: result.first_action_name.clone(),
+        }),
         LobbyBroadcast::VetoStateUpdate(update) => Some(ServerMessage::VetoStateUpdate {
             session: update.session.clone(),
         }),

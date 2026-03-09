@@ -208,6 +208,10 @@ impl From<Tournament> for TournamentResponse {
 pub struct TournamentSummaryResponse {
     pub id: String,
     pub game_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub league_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season_id: Option<String>,
     pub name: String,
     pub slug: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -228,6 +232,8 @@ impl From<Tournament> for TournamentSummaryResponse {
         Self {
             id: t.id.to_string(),
             game_id: t.game_id.to_string(),
+            league_id: t.league_id.map(|id| id.to_string()),
+            season_id: t.season_id.map(|id| id.to_string()),
             name: t.name,
             slug: t.slug,
             logo_url: t.logo_url,
@@ -465,6 +471,14 @@ pub struct TournamentMatchResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vod_url: Option<String>,
 
+    // Check-in
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant1_checked_in_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant2_checked_in_at: Option<DateTime<Utc>>,
+    pub check_in_required: bool,
+    pub veto_required: bool,
+
     // Timestamps
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -501,6 +515,10 @@ impl From<TournamentMatch> for TournamentMatchResponse {
             disputed: m.disputed,
             stream_url: m.stream_url,
             vod_url: m.vod_url,
+            participant1_checked_in_at: m.participant1_checked_in_at,
+            participant2_checked_in_at: m.participant2_checked_in_at,
+            check_in_required: m.check_in_required,
+            veto_required: m.veto_required,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -781,6 +799,20 @@ pub struct ScheduleProposalResponse {
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
     pub updated_at: DateTime<Utc>,
+}
+
+// =============================================================================
+// TOURNAMENT MAP POOL RESPONSES
+// =============================================================================
+
+/// Response DTO for a tournament's effective map pool.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentMapPoolResponse {
+    /// Map IDs in the pool.
+    pub maps: Vec<String>,
+    /// Source of the pool: "tournament" (custom override) or "game" (default from game config).
+    #[schema(example = "game")]
+    pub source: String,
 }
 
 impl From<ScheduleProposal> for ScheduleProposalResponse {

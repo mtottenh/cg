@@ -110,6 +110,47 @@ pub async fn raise_dispute(
     ))
 }
 
+/// Get the active dispute for a match.
+///
+/// Returns the current (non-resolved) dispute for the given match,
+/// or 404 if no active dispute exists.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/matches/{match_id}/dispute",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("match_id" = String, Path, description = "Match ID")
+    ),
+    responses(
+        (status = 200, description = "Active dispute for this match", body = DataResponse<DisputeResponse>),
+        (status = 404, description = "No active dispute found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "disputes"
+)]
+pub async fn get_match_dispute(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((_tournament_id, match_id)): Path<(String, String)>,
+) -> ApiResult<Json<DataResponse<DisputeResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    let dispute = state
+        .dispute_service
+        .get_match_dispute(match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("No active dispute found for this match"))?;
+
+    Ok(Json(DataResponse::new(
+        DisputeResponse::from(dispute),
+        request_id,
+    )))
+}
+
 /// Add a message to a dispute.
 ///
 /// Adds a message to the dispute thread as a participant.

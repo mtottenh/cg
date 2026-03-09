@@ -157,6 +157,8 @@ pub async fn get_game(
         )
     };
 
+    let map_pool = extract_map_pool(&game);
+
     let response = GameDetailResponse {
         id: game.id.to_string(),
         slug: game.slug.clone(),
@@ -176,6 +178,7 @@ pub async fn get_game(
         supported_match_formats,
         default_match_format,
         map_pick_ban_formats,
+        map_pool,
         status: game.status,
         is_featured: game.is_featured,
     };
@@ -390,6 +393,8 @@ pub async fn update_game(
         )
     };
 
+    let map_pool = extract_map_pool(&game);
+
     let response = GameDetailResponse {
         id: game.id.to_string(),
         slug: game.slug.clone(),
@@ -409,6 +414,7 @@ pub async fn update_game(
         supported_match_formats,
         default_match_format,
         map_pick_ban_formats,
+        map_pool,
         status: game.status,
         is_featured: game.is_featured,
     };
@@ -490,12 +496,10 @@ pub async fn set_map_pool(
         .filter(|m| req.map_ids.contains(&m.id))
         .collect();
 
-    let pool_json = serde_json::to_value(&pool_maps).unwrap_or_default();
     let pool_ids_json = serde_json::to_value(&req.map_ids).unwrap_or_default();
 
-    // Update database
+    // Update database — only set the pool, preserve the full catalog
     let update = UpdateGame {
-        available_maps: Some(pool_json),
         default_map_pool: Some(pool_ids_json),
         ..Default::default()
     };
@@ -617,8 +621,20 @@ pub async fn disable_game(
 // HELPERS
 // ============================================================================
 
+/// Extract default map pool IDs from a game row's `default_map_pool` JSON field.
+pub(crate) fn extract_map_pool(game: &GameRow) -> Vec<String> {
+    game.default_map_pool
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Load available maps from DB (if non-empty) or fall back to plugin defaults.
-fn load_available_maps(
+pub(crate) fn load_available_maps(
     game: &GameRow,
     plugin: &Option<std::sync::Arc<dyn portal_plugins::GamePlugin>>,
 ) -> Vec<MapInfoResponse> {

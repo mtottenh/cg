@@ -518,7 +518,7 @@ pub async fn get_demo_download(
     security(("bearer_auth" = [])),
     tag = "admin"
 )]
-pub async fn get_demo_stats(
+pub async fn get_demo_status_counts(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
@@ -1012,7 +1012,7 @@ pub async fn set_demo_notes(
 // =============================================================================
 
 /// Extract typed CS2 player stats from a game-specific JSON blob.
-fn extract_cs2_player_stats(stats_json: &serde_json::Value) -> DemoPlayerStats {
+pub fn extract_cs2_player_stats(stats_json: &serde_json::Value) -> DemoPlayerStats {
     DemoPlayerStats {
         kills: stats_json["kills"].as_i64().unwrap_or(0) as i32,
         deaths: stats_json["deaths"].as_i64().unwrap_or(0) as i32,

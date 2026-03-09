@@ -26,4 +26,6 @@ pub fn routes() -> Router<AppState> {
         .route("/{player_id}/games/{game_id}", get(player_game_profiles::get_player_game_profile))
         .route("/{player_id}/games/{game_id}/rating", post(player_game_profiles::submit_player_rating))
         .route("/{player_id}/games/{game_id}/rating-history", get(player_game_profiles::get_player_rating_history))
+        .route("/{player_id}/games/{game_id}/mm-stats", get(player_game_profiles::get_player_mm_stats))
+        .route("/{player_id}/games/{game_id}/match-history", get(player_game_profiles::get_player_match_history))
 }

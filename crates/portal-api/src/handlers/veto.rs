@@ -5,7 +5,8 @@ use crate::dto::requests::{
     CreateVetoSessionRequest, PerformVetoActionRequest, RecordCoinFlipRequest, SelectSideRequest,
 };
 use crate::dto::responses::{
-    VetoActionResponse, VetoActionResultResponse, VetoSessionResponse, VetoSessionStateResponse,
+    MapStatusResponse, VetoActionResponse, VetoActionResultResponse, VetoSessionResponse,
+    VetoSessionStateResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
@@ -14,8 +15,7 @@ use crate::websocket::{LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcas
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use portal_core::{TournamentMatchId, TournamentRegistrationId};
-use portal_domain::entities::veto::VetoFormat;
+use portal_core::{TournamentMatchId, TournamentRegistrationId, VetoFormatConfig};
 use portal_domain::repositories::TournamentMatchRepository;
 
 /// Extract request ID from headers.
@@ -26,14 +26,27 @@ fn get_request_id(headers: &HeaderMap) -> &str {
         .unwrap_or("unknown")
 }
 
-/// Parse a veto format ID string into a VetoFormat.
-fn parse_veto_format(format_id: &str) -> ApiResult<VetoFormat> {
+/// Resolve a veto format ID to a format config.
+///
+/// Tries the plugin manager first (game-specific formats), then falls back
+/// to the built-in standard formats.
+fn resolve_veto_format(format_id: &str, state: &AppState) -> ApiResult<VetoFormatConfig> {
+    // Try plugin-provided formats
+    for plugin in state.plugin_manager.list_plugins() {
+        if let Some(tp) = plugin.as_tournament_plugin() {
+            if let Some(f) = tp.veto_formats().into_iter().find(|f| f.id == format_id) {
+                return Ok(f);
+            }
+        }
+    }
+
+    // Fall back to built-in formats
     match format_id {
-        "bo1_veto" | "bo1_standard" => Ok(VetoFormat::bo1()),
-        "bo3_veto" | "bo3_standard" => Ok(VetoFormat::bo3()),
-        "bo5_veto" | "bo5_standard" => Ok(VetoFormat::bo5()),
+        "bo1_veto" | "bo1_standard" => Ok(VetoFormatConfig::bo1()),
+        "bo3_veto" | "bo3_standard" => Ok(VetoFormatConfig::bo3()),
+        "bo5_veto" | "bo5_standard" => Ok(VetoFormatConfig::bo5()),
         _ => Err(ApiError::bad_request(format!(
-            "Unknown veto format: {format_id}. Valid formats: bo1_veto, bo3_veto, bo5_veto"
+            "Unknown veto format: {format_id}. Valid formats: bo1_standard, bo3_standard, bo5_standard"
         ))),
     }
 }
@@ -105,15 +118,59 @@ pub async fn create_veto_session(
             .await?;
     }
 
-    let veto_format = parse_veto_format(&req.veto_format_id)?;
+    let veto_format = resolve_veto_format(&req.veto_format_id, &state)?;
+
+    // Resolve side selection mode: request → tournament settings → plugin default
+    let side_selection_mode = if let Some(ref mode_str) = req.side_selection_mode {
+        mode_str.parse::<portal_core::SideSelectionMode>().map_err(|_| {
+            ApiError::bad_request(format!(
+                "Invalid side selection mode: {mode_str}. Valid modes: picker_choice, coin_flip, knife"
+            ))
+        })?
+    } else {
+        let tournament = state
+            .tournament_service
+            .get_tournament(match_.tournament_id)
+            .await?;
+        resolve_side_selection_mode(&tournament, &state.plugin_manager)
+    };
+
+    // Resolve map pool: explicit request → tournament pool → game default
+    let map_pool = if let Some(pool) = req.map_pool {
+        pool
+    } else {
+        use portal_domain::repositories::tournament::TournamentMapPoolRepository as _;
+        // Try tournament-specific pool, then game default
+        let tournament = state
+            .tournament_service
+            .get_tournament(match_.tournament_id)
+            .await?;
+
+        if let Ok(Some(pool)) = state
+            .tournament_map_pool_repo
+            .get_effective(match_.tournament_id, Some(match_.stage_id))
+            .await
+        {
+            pool.maps
+        } else if let Ok(Some(game)) = state
+            .game_repo
+            .find_by_id(tournament.game_id.as_uuid())
+            .await
+        {
+            crate::handlers::games::extract_map_pool(&game)
+        } else {
+            vec![]
+        }
+    };
 
     let session = state
         .veto_service
         .create_session(
             match_id,
             &veto_format,
-            req.map_pool.unwrap_or_default(),
+            map_pool,
             Some(req.timeout_seconds),
+            side_selection_mode,
         )
         .await?;
 
@@ -156,10 +213,10 @@ pub async fn get_veto_session(
 
     let session_state = state.veto_service.get_session_state(match_id).await?;
 
-    Ok(Json(DataResponse::new(
-        VetoSessionStateResponse::from(session_state),
-        request_id,
-    )))
+    let mut response = VetoSessionStateResponse::from(session_state);
+    enrich_map_metadata(&state, match_id, &mut response.maps).await;
+
+    Ok(Json(DataResponse::new(response, request_id)))
 }
 
 /// Record coin flip result to determine first action.
@@ -452,4 +509,85 @@ pub async fn select_side(
         VetoActionResponse::from(updated),
         request_id,
     )))
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/// Best-effort enrichment of map display names and image URLs from the game's map catalog.
+async fn enrich_map_metadata(
+    state: &AppState,
+    match_id: TournamentMatchId,
+    maps: &mut [MapStatusResponse],
+) {
+    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+        // match -> tournament -> game
+        let match_ = state
+            .tournament_match_repo
+            .find_by_id(match_id)
+            .await?
+            .ok_or("match not found")?;
+
+        let tournament = state
+            .tournament_service
+            .get_tournament(match_.tournament_id)
+            .await?;
+
+        let game = state
+            .game_repo
+            .find_by_id(tournament.game_id.as_uuid())
+            .await?
+            .ok_or("game not found")?;
+
+        let plugin = state.plugin_manager.get(&game.plugin_id);
+        let catalog = crate::handlers::games::load_available_maps(&game, &plugin);
+
+        // Build lookup by map ID
+        let lookup: std::collections::HashMap<&str, _> = catalog
+            .iter()
+            .map(|m| (m.id.as_str(), m))
+            .collect();
+
+        for map in maps.iter_mut() {
+            if let Some(info) = lookup.get(map.map_id.as_str()) {
+                map.map_name = info.display_name.clone();
+                map.image_url = info.image_url.clone();
+            }
+        }
+
+        Ok(())
+    }
+    .await;
+
+    // Best-effort: silently ignore errors — maps keep raw IDs
+    if let Err(e) = result {
+        tracing::warn!("Failed to enrich map metadata for match {match_id}: {e}");
+    }
+}
+
+/// Resolve side selection mode from tournament settings or plugin default.
+///
+/// Now that both plugin and domain share the same `SideSelectionMode` from portal-core,
+/// no manual conversion is needed.
+fn resolve_side_selection_mode(
+    tournament: &portal_domain::entities::tournament::Tournament,
+    plugin_manager: &portal_plugins::PluginManager,
+) -> portal_core::SideSelectionMode {
+    use portal_core::SideSelectionMode;
+
+    // Try tournament settings first
+    if let Some(mode_str) = tournament.settings.get("side_selection_mode").and_then(|v| v.as_str()) {
+        if let Ok(mode) = mode_str.parse::<SideSelectionMode>() {
+            return mode;
+        }
+    }
+
+    // Fall back to plugin default — no conversion needed, same type
+    if let Some(plugin) = plugin_manager.get(&tournament.game_id.to_string()) {
+        if let Some(tp) = plugin.as_tournament_plugin() {
+            return tp.default_side_selection_mode();
+        }
+    }
+    SideSelectionMode::Knife
 }

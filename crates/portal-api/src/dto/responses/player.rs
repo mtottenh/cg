@@ -1,8 +1,11 @@
 //! Player response DTOs.
 
 use portal_domain::entities::{Player, SocialLinks};
+use portal_plugins::types::DisplayStat;
 use serde::Serialize;
 use utoipa::ToSchema;
+
+use super::DisplayStatResponse;
 
 /// Social links response DTO.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -144,6 +147,24 @@ pub struct PlayerSearchResponse {
 
     /// Whether the player is looking for a team.
     pub looking_for_team: bool,
+
+    /// Game-specific display stats (populated when game_id filter is used).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display_stats: Vec<DisplayStatResponse>,
+}
+
+impl PlayerSearchResponse {
+    /// Create a search response enriched with plugin-formatted display stats.
+    pub fn with_display_stats(player: Player, display_stats: Vec<DisplayStat>) -> Self {
+        Self {
+            id: player.id.to_string(),
+            display_name: player.display_name,
+            avatar_url: player.avatar_url,
+            country_code: player.country_code,
+            looking_for_team: player.looking_for_team,
+            display_stats: display_stats.into_iter().map(DisplayStatResponse::from).collect(),
+        }
+    }
 }
 
 impl From<Player> for PlayerSearchResponse {
@@ -154,6 +175,7 @@ impl From<Player> for PlayerSearchResponse {
             avatar_url: player.avatar_url,
             country_code: player.country_code,
             looking_for_team: player.looking_for_team,
+            display_stats: Vec::new(),
         }
     }
 }

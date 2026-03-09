@@ -10,6 +10,7 @@ pub mod game;
 pub mod league_team;
 pub mod player;
 pub mod role;
+pub mod seed;
 pub mod user;
 
 #[cfg(feature = "scanner")]

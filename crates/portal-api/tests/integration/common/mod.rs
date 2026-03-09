@@ -1,11 +1,13 @@
 //! Test helpers for API integration tests.
 
+pub mod minio;
 pub mod ws;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
+use portal_api::adapters::{EvidenceStorageBackend, S3EvidenceStorageAdapter};
 use portal_api::app::create_app;
 use portal_api::state::AppState;
 use portal_db::DbPool;
@@ -23,8 +25,8 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    /// Create a new test application with an isolated database.
-    pub async fn new() -> Self {
+    /// Initialize tracing (once per process).
+    fn init_tracing() {
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
             tracing_subscriber::fmt()
@@ -35,9 +37,53 @@ impl TestApp {
                 .with_test_writer()
                 .init();
         });
+    }
+
+    /// Create a new test application with an isolated database.
+    pub async fn new() -> Self {
+        Self::init_tracing();
 
         let db = TestDb::new().await;
-        let state = AppState::new(db.pool.clone(), "test-jwt-secret");
+        let state = AppState::new(db.pool.clone(), "test-jwt-secret").await;
+        let app = create_app(state);
+
+        Self { app, db, server_addr: None }
+    }
+
+    /// Create a new test application with S3 evidence storage backed by MinIO.
+    ///
+    /// `minio_endpoint` — e.g. `http://127.0.0.1:32768`
+    /// `bucket` — the S3 bucket name for evidence (must be pre-created)
+    pub async fn new_with_s3(minio_endpoint: &str, bucket: &str) -> Self {
+        Self::init_tracing();
+
+        // Build S3 SDK config with static credentials for MinIO
+        let creds = aws_sdk_s3::config::Credentials::new(
+            "minioadmin",
+            "minioadmin",
+            None,
+            None,
+            "test",
+        );
+        let sdk_config = aws_config::from_env()
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .endpoint_url(minio_endpoint)
+            .credentials_provider(creds)
+            .load()
+            .await;
+
+        let adapter = S3EvidenceStorageAdapter::from_sdk_config(
+            &sdk_config,
+            bucket,
+            format!("{}/{}", minio_endpoint, bucket),
+            true, // force_path_style for MinIO
+        );
+        let storage = EvidenceStorageBackend::S3(adapter);
+
+        let db = TestDb::new().await;
+        let state = AppState::new(db.pool.clone(), "test-jwt-secret")
+            .await
+            .with_evidence_storage(storage, bucket.to_string());
         let app = create_app(state);
 
         Self { app, db, server_addr: None }

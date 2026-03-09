@@ -15,10 +15,9 @@ use portal_scanner::api_client::PortalApiClient;
 use portal_scanner::config::ScannerConfig;
 use portal_scanner::{scanner, stats_converter};
 use portal_test::prelude::*;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use tokio::sync::RwLock;
 
+use crate::common::minio::{create_bucket_and_upload, create_s3_client, start_minio};
 use crate::common::TestApp;
 
 // ============================================================================
@@ -32,79 +31,6 @@ const BUCKET_NAME: &str = "portal-demos";
 /// Load the trimmed fixture JSON.
 fn load_fixture() -> String {
     include_str!("../fixtures/demo_stats.json").to_string()
-}
-
-/// Start a MinIO container and return (container handle, endpoint URL).
-async fn start_minio() -> (ContainerAsync<GenericImage>, String) {
-    let container = GenericImage::new("minio/minio", "latest")
-        .with_exposed_port(9000.into())
-        .with_env_var("MINIO_ROOT_USER", "minioadmin")
-        .with_env_var("MINIO_ROOT_PASSWORD", "minioadmin")
-        .with_cmd(vec!["server", "/data"])
-        .start()
-        .await
-        .expect("Failed to start MinIO container");
-
-    let host = container
-        .get_host()
-        .await
-        .expect("Failed to get MinIO host")
-        .to_string();
-    let port = container
-        .get_host_port_ipv4(9000)
-        .await
-        .expect("Failed to get MinIO port");
-
-    let endpoint = format!("http://{host}:{port}");
-    (container, endpoint)
-}
-
-/// Build an S3 client pointing at MinIO with static credentials.
-async fn create_s3_client(endpoint: &str) -> aws_sdk_s3::Client {
-    let creds = aws_sdk_s3::config::Credentials::new(
-        "minioadmin",
-        "minioadmin",
-        None,
-        None,
-        "test",
-    );
-    let config = aws_config::from_env()
-        .region(aws_sdk_s3::config::Region::new("us-east-1"))
-        .endpoint_url(endpoint)
-        .credentials_provider(creds)
-        .load()
-        .await;
-
-    aws_sdk_s3::Client::from_conf(
-        aws_sdk_s3::config::Builder::from(&config)
-            .force_path_style(true)
-            .build(),
-    )
-}
-
-/// Create a bucket and upload a stub `.dem.bz2` file (1 byte — never actually downloaded).
-async fn create_bucket_and_upload(
-    s3_client: &aws_sdk_s3::Client,
-    bucket: &str,
-    key: &str,
-) {
-    // Create bucket
-    s3_client
-        .create_bucket()
-        .bucket(bucket)
-        .send()
-        .await
-        .expect("Failed to create S3 bucket");
-
-    // Upload 1-byte stub
-    s3_client
-        .put_object()
-        .bucket(bucket)
-        .key(key)
-        .body(aws_sdk_s3::primitives::ByteStream::from_static(b"x"))
-        .send()
-        .await
-        .expect("Failed to upload stub demo");
 }
 
 /// Start a mock stats HTTP server that serves fixture JSON.
@@ -160,11 +86,55 @@ async fn make_dev_user_admin(app: &TestApp) {
     assign_role_to_user(app.pool(), dev_user_id, "platform_admin").await;
 }
 
+/// Create an API key in the database and return the raw key string.
+///
+/// The scanner endpoints use `X-API-Key` header + SHA-256 hash lookup,
+/// so we need a real API key in the `api_keys` table with permissions
+/// granted via the `api_key_permissions` join table.
+async fn create_test_api_key(pool: &portal_db::DbPool) -> String {
+    use portal_api::extractors::api_key::hash_api_key;
+
+    let raw_key = format!("test-scanner-key-{}", uuid::Uuid::now_v7());
+    let key_hash = hash_api_key(&raw_key);
+    let key_prefix = &raw_key[..8.min(raw_key.len())];
+
+    // Insert the API key
+    let row: (uuid::Uuid,) = sqlx::query_as(
+        r"INSERT INTO api_keys (service_name, key_hash, key_prefix, is_active)
+          VALUES ($1, $2, $3, true)
+          RETURNING id"
+    )
+    .bind("test-scanner")
+    .bind(&key_hash)
+    .bind(key_prefix)
+    .fetch_one(pool)
+    .await
+    .expect("Failed to create test API key");
+
+    let api_key_id = row.0;
+
+    // Grant permissions via the join table
+    for perm in &["demos.catalog", "demos.read", "demos.stats"] {
+        sqlx::query(
+            r"INSERT INTO api_key_permissions (api_key_id, permission_id)
+              SELECT $1, id FROM permissions WHERE name = $2"
+        )
+        .bind(api_key_id)
+        .bind(perm)
+        .execute(pool)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to grant permission {perm}: {e}"));
+    }
+
+    raw_key
+}
+
 /// Build a `ScannerConfig` for tests.
 fn build_scanner_config(
     api_url: &str,
     s3_bucket: &str,
     game_id: &str,
+    api_key: &str,
 ) -> ScannerConfig {
     ScannerConfig {
         s3_bucket: s3_bucket.to_string(),
@@ -172,10 +142,11 @@ fn build_scanner_config(
         s3_region: "us-east-1".to_string(),
         s3_endpoint: None, // Not used — we pass the S3 client directly
         api_url: api_url.to_string(),
-        api_token: "dev-token".to_string(),
+        api_key: api_key.to_string(),
         demo_service_url: String::new(), // Not used — we pass the client directly
         game_id: game_id.to_string(),
         interval_secs: 60,
+        processing_interval_secs: 60,
     }
 }
 
@@ -189,6 +160,7 @@ async fn test_scanner_e2e_full_flow() {
     let mut app = TestApp::new().await;
     make_dev_user_admin(&app).await;
     let game_id = get_game_id(app.pool(), "cs2").await;
+    let api_key = create_test_api_key(app.pool()).await;
 
     // Start MinIO
     let (_minio, minio_endpoint) = start_minio().await;
@@ -204,9 +176,9 @@ async fn test_scanner_e2e_full_flow() {
     // Start real HTTP server for the scanner API client
     let api_addr = app.start_server().await;
     let api_url = format!("http://{api_addr}");
-    let api_client = PortalApiClient::new(api_url.clone(), "dev-token".to_string());
+    let api_client = PortalApiClient::new(api_url.clone(), api_key.clone());
 
-    let config = build_scanner_config(&api_url, BUCKET_NAME, &game_id.to_string());
+    let config = build_scanner_config(&api_url, BUCKET_NAME, &game_id.to_string(), &api_key);
 
     // Run scanner
     scanner::scan_and_process(&s3_client, &api_client, &demo_client, &config)
@@ -267,6 +239,7 @@ async fn test_scanner_e2e_idempotent() {
     let mut app = TestApp::new().await;
     make_dev_user_admin(&app).await;
     let game_id = get_game_id(app.pool(), "cs2").await;
+    let api_key = create_test_api_key(app.pool()).await;
 
     let (_minio, minio_endpoint) = start_minio().await;
     let s3_client = create_s3_client(&minio_endpoint).await;
@@ -279,8 +252,8 @@ async fn test_scanner_e2e_idempotent() {
 
     let api_addr = app.start_server().await;
     let api_url = format!("http://{api_addr}");
-    let api_client = PortalApiClient::new(api_url.clone(), "dev-token".to_string());
-    let config = build_scanner_config(&api_url, BUCKET_NAME, &game_id.to_string());
+    let api_client = PortalApiClient::new(api_url.clone(), api_key.clone());
+    let config = build_scanner_config(&api_url, BUCKET_NAME, &game_id.to_string(), &api_key);
 
     // Run twice
     scanner::scan_and_process(&s3_client, &api_client, &demo_client, &config)
@@ -304,6 +277,7 @@ async fn test_scanner_e2e_process_pending_retries() {
     let mut app = TestApp::new().await;
     make_dev_user_admin(&app).await;
     let game_id = get_game_id(app.pool(), "cs2").await;
+    let api_key = create_test_api_key(app.pool()).await;
 
     let (_minio, minio_endpoint) = start_minio().await;
     let s3_client = create_s3_client(&minio_endpoint).await;
@@ -316,8 +290,8 @@ async fn test_scanner_e2e_process_pending_retries() {
 
     let api_addr = app.start_server().await;
     let api_url = format!("http://{api_addr}");
-    let api_client = PortalApiClient::new(api_url.clone(), "dev-token".to_string());
-    let config = build_scanner_config(&api_url, BUCKET_NAME, &game_id.to_string());
+    let api_client = PortalApiClient::new(api_url.clone(), api_key.clone());
+    let config = build_scanner_config(&api_url, BUCKET_NAME, &game_id.to_string(), &api_key);
 
     // First scan — stats not available, demo gets cataloged but stays pending/failed
     scanner::scan_and_process(&s3_client, &api_client, &demo_client, &config)
@@ -410,6 +384,7 @@ async fn test_scanner_e2e_multiple_demos() {
     let mut app = TestApp::new().await;
     make_dev_user_admin(&app).await;
     let game_id = get_game_id(app.pool(), "cs2").await;
+    let api_key = create_test_api_key(app.pool()).await;
 
     let (_minio, minio_endpoint) = start_minio().await;
     let s3_client = create_s3_client(&minio_endpoint).await;
@@ -445,8 +420,8 @@ async fn test_scanner_e2e_multiple_demos() {
 
     let api_addr = app.start_server().await;
     let api_url = format!("http://{api_addr}");
-    let api_client = PortalApiClient::new(api_url.clone(), "dev-token".to_string());
-    let config = build_scanner_config(&api_url, BUCKET_NAME, &game_id.to_string());
+    let api_client = PortalApiClient::new(api_url.clone(), api_key.clone());
+    let config = build_scanner_config(&api_url, BUCKET_NAME, &game_id.to_string(), &api_key);
 
     scanner::scan_and_process(&s3_client, &api_client, &demo_client, &config)
         .await

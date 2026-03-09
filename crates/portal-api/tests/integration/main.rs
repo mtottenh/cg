@@ -23,4 +23,5 @@ mod veto;
 mod veto_delegates;
 mod veto_ws;
 
+mod evidence_s3;
 mod scanner_e2e;

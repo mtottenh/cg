@@ -60,6 +60,7 @@ pub struct CreateLeague {
     pub description: Option<String>,
     pub logo_url: Option<String>,
     pub access_type: String,
+    pub settings: Option<serde_json::Value>,
     pub created_by: UserId,
 }
 

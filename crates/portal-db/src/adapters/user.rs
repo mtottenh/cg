@@ -249,6 +249,17 @@ impl PlayerRepository for PgPlayerRepository {
         Ok(player.map(Player::from))
     }
 
+    async fn find_by_steam_id_64(&self, steam_id_64: i64) -> Result<Option<Player>, DomainError> {
+        let player =
+            sqlx::query_as::<_, PlayerRow>("SELECT * FROM players WHERE steam_id_64 = $1")
+                .bind(steam_id_64)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(player.map(Player::from))
+    }
+
     async fn find_by_display_name(&self, name: &str) -> Result<Option<Player>, DomainError> {
         let player = sqlx::query_as::<_, PlayerRow>(
             "SELECT * FROM players WHERE display_name_normalized = lower($1)",

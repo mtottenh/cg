@@ -7,17 +7,36 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use portal_core::{DomainError, TournamentMatchId, TournamentRegistrationId, UserId, VetoSessionId};
+use rand::Rng;
 use rand::seq::IndexedRandom;
 use tracing::{info, instrument, warn};
 
 use crate::entities::veto::{
-    MapStatus, MapVetoStatus, VetoAction, VetoActionResult, VetoActionType, VetoFormat,
-    VetoFormatAction, VetoSession, VetoSessionState, VetoStatus,
+    MapStatus, MapVetoStatus, VetoAction, VetoActionResult,
+    VetoFormat, VetoFormatAction, VetoSession, VetoSessionState, VetoStatus,
 };
+use portal_core::{SideSelectionMode, VetoActionType, VetoFormatConfig};
 use crate::repositories::tournament::{
     CreateVetoAction, CreateVetoSession, TournamentMatchRepository, TournamentRegistrationRepository,
     UpdateVetoSession, VetoActionRepository, VetoSessionRepository,
 };
+
+// =============================================================================
+// PROVIDER TRAITS
+// =============================================================================
+
+/// Provides veto format resolution — implemented by the API layer's plugin adapter.
+pub trait VetoFormatProvider: Send + Sync {
+    /// Look up a veto format by its ID (e.g., "bo1_standard", "bo3_standard").
+    fn get_format(&self, format_id: &str) -> Option<VetoFormatConfig>;
+}
+
+/// Provides game-specific side selection behavior.
+pub trait SideSelectionProvider: Send + Sync {
+    /// Pick a random side for auto-assignment (CoinFlip mode).
+    /// Returns None if the game has no sides.
+    fn random_side(&self, game_id: &str) -> Option<String>;
+}
 
 /// Service for managing map veto sessions.
 #[derive(Clone)]
@@ -32,6 +51,8 @@ where
     action_repo: Arc<VAR>,
     match_repo: Arc<TMR>,
     registration_repo: Arc<TRR>,
+    format_provider: Option<Arc<dyn VetoFormatProvider>>,
+    side_provider: Option<Arc<dyn SideSelectionProvider>>,
     default_timeout_seconds: u32,
 }
 
@@ -54,6 +75,8 @@ where
             action_repo,
             match_repo,
             registration_repo,
+            format_provider: None,
+            side_provider: None,
             default_timeout_seconds: 30,
         }
     }
@@ -61,6 +84,18 @@ where
     /// Create a new veto service with custom timeout.
     pub fn with_timeout(mut self, timeout_seconds: u32) -> Self {
         self.default_timeout_seconds = timeout_seconds;
+        self
+    }
+
+    /// Inject a veto format provider (plugin-backed format resolution).
+    pub fn with_format_provider(mut self, provider: Arc<dyn VetoFormatProvider>) -> Self {
+        self.format_provider = Some(provider);
+        self
+    }
+
+    /// Inject a side selection provider (plugin-backed random side picks).
+    pub fn with_side_provider(mut self, provider: Arc<dyn SideSelectionProvider>) -> Self {
+        self.side_provider = Some(provider);
         self
     }
 
@@ -72,6 +107,7 @@ where
         veto_format: &VetoFormat,
         map_pool: Vec<String>,
         timeout_seconds: Option<u32>,
+        side_selection_mode: SideSelectionMode,
     ) -> Result<VetoSession, DomainError> {
         // Verify the match exists
         let match_ = self.match_repo.find_by_id(match_id).await?.ok_or_else(|| {
@@ -107,6 +143,7 @@ where
                 veto_format_id: veto_format.id.clone(),
                 map_pool: map_pool.clone(),
                 timeout_seconds: timeout_seconds.unwrap_or(self.default_timeout_seconds),
+                side_selection_mode,
             })
             .await?;
 
@@ -275,7 +312,7 @@ where
         })?;
 
         // Record the action
-        let result = self
+        let mut result = self
             .record_action_internal(
                 &session,
                 &format,
@@ -287,6 +324,43 @@ where
                 None,
             )
             .await?;
+
+        // Auto-chain decider actions (team 0 = automatic, last remaining map)
+        while !result.veto_complete {
+            if let Some(next_type) = result.next_action_type {
+                if !matches!(next_type, VetoActionType::Decider) {
+                    break;
+                }
+            } else {
+                break;
+            }
+
+            let updated_session = self.get_session(session_id).await?;
+            let next_index = (updated_session.current_action_number as usize).saturating_sub(1);
+            let next_format_action = format.get_action(next_index).ok_or_else(|| {
+                DomainError::InvalidState("Decider action index out of bounds".to_string())
+            })?;
+
+            // Pick the last remaining map as the decider
+            let decider_map = updated_session
+                .remaining_maps
+                .first()
+                .cloned()
+                .ok_or_else(|| DomainError::InvalidState("No maps remaining for decider".to_string()))?;
+
+            result = self
+                .record_action_internal(
+                    &updated_session,
+                    &format,
+                    next_format_action,
+                    &decider_map,
+                    None,
+                    None,
+                    true,
+                    Some("decider_auto"),
+                )
+                .await?;
+        }
 
         Ok(result)
     }
@@ -386,33 +460,43 @@ where
             ));
         }
 
-        // Side selection is by the opponent of who picked
-        let match_ = self.match_repo.find_by_id(session.match_id).await?.ok_or_else(|| {
-            DomainError::TournamentMatchNotFound(session.match_id.to_string())
-        })?;
+        // Validate side selection is allowed for this mode
+        match session.side_selection_mode {
+            SideSelectionMode::Knife => {
+                return Err(DomainError::InvalidState(
+                    "Side selection is not available in knife mode".to_string(),
+                ));
+            }
+            SideSelectionMode::CoinFlip => {
+                return Err(DomainError::InvalidState(
+                    "Side selection is automatic in coin flip mode".to_string(),
+                ));
+            }
+            SideSelectionMode::PickerChoice => {
+                // Picker chooses side — reject for decider maps
+                if action.is_decider() {
+                    return Err(DomainError::InvalidState(
+                        "Side selection is not available for decider maps".to_string(),
+                    ));
+                }
+            }
+        }
 
         let picker = action.performed_by_registration_id.ok_or_else(|| {
             DomainError::InvalidState("Action has no performer".to_string())
         })?;
 
-        let opponent = if match_.participant1_registration_id == Some(picker) {
-            match_.participant2_registration_id
-        } else {
-            match_.participant1_registration_id
-        }
-        .ok_or_else(|| DomainError::InvalidState("Opponent not found".to_string()))?;
-
-        // Verify the acting registration is the opponent (who should select side)
-        if acting_for_registration != opponent {
+        // In picker_choice mode, the picker selects the side
+        if acting_for_registration != picker {
             return Err(DomainError::NotAuthorized(
-                "Only the opponent of the picker can select the side".to_string(),
+                "Only the picker can select the side".to_string(),
             ));
         }
 
         // Record side selection
         let action = self
             .action_repo
-            .update_side_selection(action.id, side.to_string(), opponent)
+            .update_side_selection(action.id, side.to_string(), picker)
             .await?;
 
         info!(
@@ -477,8 +561,14 @@ where
     }
 
     fn get_format(&self, format_id: &str) -> Result<VetoFormat, DomainError> {
-        // For now, return built-in formats
-        // In the future, this will query the plugin system
+        // Try injected provider first (plugin-backed)
+        if let Some(provider) = &self.format_provider {
+            if let Some(fmt) = provider.get_format(format_id) {
+                return Ok(fmt);
+            }
+        }
+
+        // Fall back to built-in formats
         match format_id {
             "bo1_veto" | "bo1_standard" => Ok(VetoFormat::bo1()),
             "bo3_veto" | "bo3_standard" => Ok(VetoFormat::bo3()),
@@ -501,7 +591,7 @@ where
         auto_reason: Option<&str>,
     ) -> Result<VetoActionResult, DomainError> {
         // Create the action
-        let action = self
+        let mut action = self
             .action_repo
             .create(CreateVetoAction {
                 session_id: session.id,
@@ -514,6 +604,26 @@ where
                 auto_action_reason: auto_reason.map(String::from),
             })
             .await?;
+
+        // Auto-assign random side in CoinFlip mode for pick actions
+        if session.side_selection_mode == SideSelectionMode::CoinFlip
+            && matches!(format_action.action_type, VetoActionType::Pick)
+        {
+            // Use injected side provider for game-agnostic random side,
+            // falling back to coin-flip between "ct" and "t".
+            let side = self.side_provider.as_ref()
+                .and_then(|sp| sp.random_side(&session.veto_format_id))
+                .unwrap_or_else(|| {
+                    if rand::rng().random_bool(0.5) { "ct".to_string() } else { "t".to_string() }
+                });
+            let selector = performed_by.unwrap_or_else(|| {
+                session.first_action_registration_id.unwrap_or_default()
+            });
+            action = self
+                .action_repo
+                .update_side_selection(action.id, side, selector)
+                .await?;
+        }
 
         // Update session state
         let mut remaining = session.remaining_maps.clone();

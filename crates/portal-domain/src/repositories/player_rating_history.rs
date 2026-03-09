@@ -30,6 +30,8 @@ pub struct CreatePlayerRatingHistory {
     pub rating: i32,
     pub source: String,
     pub recorded_at: DateTime<Utc>,
+    /// Rank type: 6=Competitive, 7=Wingman, 11=Premier.
+    pub rank_type_id: i32,
 }
 
 /// Repository trait for player rating history operations.

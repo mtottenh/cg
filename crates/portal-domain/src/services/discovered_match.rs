@@ -84,6 +84,19 @@ where
         Ok(result)
     }
 
+    /// Get recent enriched matches that have a demo URL.
+    #[instrument(skip(self))]
+    pub async fn get_recent_with_demo_url(
+        &self,
+        game_id: GameId,
+        tracking_id: Option<SteamTrackingId>,
+        limit: i64,
+    ) -> Result<Vec<DiscoveredMatch>, DomainError> {
+        self.repo
+            .find_recent_with_demo_url(game_id, tracking_id, limit)
+            .await
+    }
+
     /// Mark a match enrichment as failed.
     #[instrument(skip(self))]
     pub async fn mark_failed(

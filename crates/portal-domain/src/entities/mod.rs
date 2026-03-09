@@ -18,6 +18,8 @@ pub mod league_team;
 pub mod match_lifecycle;
 pub mod player;
 pub mod player_game_profile;
+pub mod player_match_history;
+pub mod player_mm_stats;
 pub mod refresh_token;
 pub mod player_rating_history;
 pub mod result_claim;
@@ -66,6 +68,8 @@ pub use match_lifecycle::{
 };
 pub use player::{Player, SocialLinks};
 pub use player_game_profile::PlayerGameProfile;
+pub use player_match_history::PlayerMatchHistory;
+pub use player_mm_stats::PlayerMmStats;
 pub use player_rating_history::PlayerRatingHistory;
 pub use schedule_proposal::{
     AcceptProposalCommand, CounterProposeCommand, CreateScheduleProposalCommand,

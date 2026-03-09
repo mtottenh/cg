@@ -49,7 +49,7 @@ impl EvidenceRepository for PgEvidenceRepository {
 
     async fn find_by_match(&self, match_id: TournamentMatchId) -> Result<Vec<Evidence>, DomainError> {
         let rows = sqlx::query_as::<_, EvidenceRow>(
-            r"SELECT * FROM match_evidence WHERE match_id = $1 AND status = 'active' ORDER BY created_at DESC",
+            r"SELECT * FROM match_evidence WHERE match_id = $1 AND status NOT IN ('pending', 'deleted') ORDER BY created_at DESC",
         )
         .bind(match_id.as_uuid())
         .fetch_all(&self.pool)
@@ -65,7 +65,7 @@ impl EvidenceRepository for PgEvidenceRepository {
         game_number: i32,
     ) -> Result<Vec<Evidence>, DomainError> {
         let rows = sqlx::query_as::<_, EvidenceRow>(
-            r"SELECT * FROM match_evidence WHERE match_id = $1 AND game_number = $2 AND status = 'active' ORDER BY created_at DESC",
+            r"SELECT * FROM match_evidence WHERE match_id = $1 AND game_number = $2 AND status NOT IN ('pending', 'deleted') ORDER BY created_at DESC",
         )
         .bind(match_id.as_uuid())
         .bind(game_number)
@@ -78,6 +78,7 @@ impl EvidenceRepository for PgEvidenceRepository {
 
     async fn create(&self, evidence: CreateEvidence) -> Result<Evidence, DomainError> {
         let (storage_type, storage_path, storage_bucket) = storage_to_db(&evidence.storage);
+        let status = evidence.status.unwrap_or(EvidenceStatus::Active).to_string();
 
         let new_evidence = NewEvidence {
             match_id: evidence.match_id.as_uuid(),
@@ -105,9 +106,9 @@ impl EvidenceRepository for PgEvidenceRepository {
                 match_id, game_number, evidence_type, evidence_source, name, description,
                 file_size_bytes, mime_type, storage_type, storage_path, storage_bucket,
                 plugin_metadata, uploaded_by_registration_id, uploaded_by_user_id,
-                discovered_by_plugin, discovered_at, expires_at
+                discovered_by_plugin, discovered_at, expires_at, status
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             RETURNING *
             ",
         )
@@ -128,6 +129,7 @@ impl EvidenceRepository for PgEvidenceRepository {
         .bind(&new_evidence.discovered_by_plugin)
         .bind(new_evidence.discovered_at)
         .bind(new_evidence.expires_at)
+        .bind(&status)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(format!("Failed to create evidence: {e}")))?;
@@ -313,6 +315,18 @@ impl EvidenceRepository for PgEvidenceRepository {
 
         rows.into_iter().map(access_log_row_to_domain).collect()
     }
+
+    async fn find_stale_pending(&self, created_before: DateTime<Utc>) -> Result<Vec<Evidence>, DomainError> {
+        let rows = sqlx::query_as::<_, EvidenceRow>(
+            r"SELECT * FROM match_evidence WHERE status = 'pending' AND created_at < $1",
+        )
+        .bind(created_before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to find stale pending evidence: {e}")))?;
+
+        rows.into_iter().map(evidence_row_to_domain).collect()
+    }
 }
 
 // =============================================================================
@@ -432,91 +446,6 @@ fn db_to_storage(
         _ => Err(DomainError::Internal(format!(
             "Unknown storage type: {storage_type}"
         ))),
-    }
-}
-
-// =============================================================================
-// LOCAL EVIDENCE STORAGE
-// =============================================================================
-
-use std::path::PathBuf;
-use std::time::Duration;
-use tokio::fs;
-
-/// Local filesystem storage adapter for evidence.
-/// Implements EvidenceS3Client trait using local filesystem.
-#[derive(Debug, Clone)]
-pub struct LocalEvidenceStorage {
-    base_path: PathBuf,
-}
-
-impl LocalEvidenceStorage {
-    /// Create a new local evidence storage.
-    #[must_use]
-    pub fn new(base_path: impl Into<PathBuf>) -> Self {
-        Self {
-            base_path: base_path.into(),
-        }
-    }
-
-    /// Get the full path for an evidence file.
-    fn get_path(&self, bucket: &str, key: &str) -> PathBuf {
-        self.base_path.join(bucket).join(key)
-    }
-
-    /// Ensure the directory exists for a path.
-    async fn ensure_dir(&self, path: &PathBuf) -> Result<(), DomainError> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| DomainError::Internal(format!("Failed to create directory: {e}")))?;
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl portal_domain::services::tournament::EvidenceS3Client for LocalEvidenceStorage {
-    async fn presign_put(
-        &self,
-        bucket: &str,
-        key: &str,
-        _content_type: &str,
-        _ttl: Duration,
-    ) -> Result<String, DomainError> {
-        let path = self.get_path(bucket, key);
-        self.ensure_dir(&path).await?;
-
-        // Return the local file path as the "upload URL"
-        // In a real implementation, this would be a presigned URL
-        Ok(format!("file://{}", path.display()))
-    }
-
-    async fn presign_get(
-        &self,
-        bucket: &str,
-        key: &str,
-        _ttl: Duration,
-    ) -> Result<String, DomainError> {
-        let path = self.get_path(bucket, key);
-
-        // Return the local file path as the "download URL"
-        Ok(format!("file://{}", path.display()))
-    }
-
-    async fn object_exists(&self, bucket: &str, key: &str) -> Result<bool, DomainError> {
-        let path = self.get_path(bucket, key);
-        Ok(path.exists())
-    }
-
-    async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), DomainError> {
-        let path = self.get_path(bucket, key);
-        if path.exists() {
-            fs::remove_file(&path)
-                .await
-                .map_err(|e| DomainError::Internal(format!("Failed to delete file: {e}")))?;
-        }
-        Ok(())
     }
 }
 

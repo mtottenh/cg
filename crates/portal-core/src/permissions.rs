@@ -162,12 +162,24 @@ pub mod service {
     /// Submit, claim, and update discovered matches.
     pub const DISCOVERED_MATCHES_WRITE: &str = "discovered_matches.write";
 
+    /// Catalog (batch-create) demo records.
+    pub const DEMOS_CATALOG: &str = "demos.catalog";
+
+    /// Read demo records (e.g. pending demos for processing).
+    pub const DEMOS_READ: &str = "demos.read";
+
+    /// Submit or update demo stats (parse results, mark failures).
+    pub const DEMOS_STATS: &str = "demos.stats";
+
     /// All service scopes for iteration/validation.
     pub const ALL: &[&str] = &[
         STEAM_TRACKING_READ,
         STEAM_TRACKING_WRITE,
         DISCOVERED_MATCHES_READ,
         DISCOVERED_MATCHES_WRITE,
+        DEMOS_CATALOG,
+        DEMOS_READ,
+        DEMOS_STATS,
     ];
 }
 

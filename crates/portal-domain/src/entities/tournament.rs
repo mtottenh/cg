@@ -607,12 +607,27 @@ pub struct TournamentMatch {
     pub stream_url: Option<String>,
     pub vod_url: Option<String>,
 
+    // Check-in
+    pub check_in_opens_at: Option<DateTime<Utc>>,
+    pub check_in_deadline: Option<DateTime<Utc>>,
+    pub participant1_checked_in_at: Option<DateTime<Utc>>,
+    pub participant2_checked_in_at: Option<DateTime<Utc>>,
+    pub participant1_checked_in_by: Option<UserId>,
+    pub participant2_checked_in_by: Option<UserId>,
+    pub veto_required: bool,
+    pub check_in_required: bool,
+
     // Timestamps
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl TournamentMatch {
+    /// Check if both participants have checked in.
+    #[must_use]
+    pub const fn both_checked_in(&self) -> bool {
+        self.participant1_checked_in_at.is_some() && self.participant2_checked_in_at.is_some()
+    }
     /// Check if the match is pending (waiting for participants).
     #[must_use]
     pub const fn is_pending(&self) -> bool {

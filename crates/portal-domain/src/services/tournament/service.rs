@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use portal_core::types::{
     AdvancementRule, BracketType, MatchFormat, StageFormat, StageStatus, TournamentFormat,
-    TournamentRegistrationStatus, TournamentStatus,
+    TournamentMatchStatus, TournamentRegistrationStatus, TournamentStatus,
 };
-use portal_core::{DomainError, TournamentBracketId, TournamentId, TournamentMatchId, UserId};
+use portal_core::{
+    DomainError, PlayerId, TournamentBracketId, TournamentId, TournamentMatchId, UserId,
+};
 
 use crate::entities::tournament::{
     CreateTournamentCommand, Tournament, TournamentBracket, TournamentMatch, TournamentRegistration,
@@ -225,6 +227,86 @@ where
             .await
     }
 
+    /// Close registration for a tournament (transition to Scheduled).
+    pub async fn close_registration(&self, id: TournamentId) -> Result<Tournament, DomainError> {
+        let tournament = self.get_tournament(id).await?;
+
+        if !tournament.status.can_transition_to(TournamentStatus::Scheduled) {
+            return Err(DomainError::InvalidTournamentTransition {
+                from: tournament.status.to_string(),
+                to: TournamentStatus::Scheduled.to_string(),
+            });
+        }
+
+        self.tournament_repo
+            .update_status(id, TournamentStatus::Scheduled)
+            .await
+    }
+
+    /// Reopen registration for a tournament (transition from Scheduled back to Registration).
+    pub async fn reopen_registration(&self, id: TournamentId) -> Result<Tournament, DomainError> {
+        let tournament = self.get_tournament(id).await?;
+
+        if !tournament.status.can_transition_to(TournamentStatus::Registration) {
+            return Err(DomainError::InvalidTournamentTransition {
+                from: tournament.status.to_string(),
+                to: TournamentStatus::Registration.to_string(),
+            });
+        }
+
+        self.tournament_repo
+            .update_status(id, TournamentStatus::Registration)
+            .await
+    }
+
+    /// Cancel a tournament.
+    pub async fn cancel_tournament(&self, id: TournamentId) -> Result<Tournament, DomainError> {
+        let tournament = self.get_tournament(id).await?;
+
+        if !tournament.status.can_transition_to(TournamentStatus::Cancelled) {
+            return Err(DomainError::InvalidTournamentTransition {
+                from: tournament.status.to_string(),
+                to: TournamentStatus::Cancelled.to_string(),
+            });
+        }
+
+        self.tournament_repo
+            .update_status(id, TournamentStatus::Cancelled)
+            .await
+    }
+
+    /// Complete a tournament.
+    pub async fn complete_tournament(&self, id: TournamentId) -> Result<Tournament, DomainError> {
+        let tournament = self.get_tournament(id).await?;
+
+        if !tournament.status.can_transition_to(TournamentStatus::Completed) {
+            return Err(DomainError::InvalidTournamentTransition {
+                from: tournament.status.to_string(),
+                to: TournamentStatus::Completed.to_string(),
+            });
+        }
+
+        self.tournament_repo
+            .update_status(id, TournamentStatus::Completed)
+            .await
+    }
+
+    /// Finalize a tournament.
+    pub async fn finalize_tournament(&self, id: TournamentId) -> Result<Tournament, DomainError> {
+        let tournament = self.get_tournament(id).await?;
+
+        if !tournament.status.can_transition_to(TournamentStatus::Finalized) {
+            return Err(DomainError::InvalidTournamentTransition {
+                from: tournament.status.to_string(),
+                to: TournamentStatus::Finalized.to_string(),
+            });
+        }
+
+        self.tournament_repo
+            .update_status(id, TournamentStatus::Finalized)
+            .await
+    }
+
     /// Create a stage for a tournament.
     pub async fn create_stage(
         &self,
@@ -284,14 +366,18 @@ where
             return Err(DomainError::TournamentNotOpen);
         }
 
-        // Check not already registered
-        if self
+        // Check not already registered (allow re-registration after withdrawal)
+        if let Some(existing) = self
             .registration_repo
             .find_by_team_season(tournament_id, team_season_id)
             .await?
-            .is_some()
         {
-            return Err(DomainError::AlreadyRegisteredForTournament);
+            if existing.status.is_terminal() {
+                // Remove old withdrawn/disqualified/etc. registration so a fresh one can be created
+                self.registration_repo.delete(existing.id).await?;
+            } else {
+                return Err(DomainError::AlreadyRegisteredForTournament);
+            }
         }
 
         // Check capacity
@@ -330,14 +416,17 @@ where
             return Err(DomainError::TournamentNotOpen);
         }
 
-        // Check not already registered
-        if self
+        // Check not already registered (allow re-registration after withdrawal)
+        if let Some(existing) = self
             .registration_repo
             .find_by_player(tournament_id, player_id)
             .await?
-            .is_some()
         {
-            return Err(DomainError::AlreadyRegisteredForTournament);
+            if existing.status.is_terminal() {
+                self.registration_repo.delete(existing.id).await?;
+            } else {
+                return Err(DomainError::AlreadyRegisteredForTournament);
+            }
         }
 
         // Check capacity
@@ -574,6 +663,9 @@ where
             }
         }
 
+        // Mark matches with both participants as Ready
+        self.mark_ready_matches(bracket.id).await?;
+
         Ok(())
     }
 
@@ -778,6 +870,9 @@ where
                 .await?;
         }
 
+        // Mark matches with both participants as Ready
+        self.mark_ready_matches(wb.id).await?;
+
         Ok(())
     }
 
@@ -844,6 +939,9 @@ where
             })
             .collect();
         self.standings_repo.bulk_create(standings).await?;
+
+        // Mark matches with both participants as Ready
+        self.mark_ready_matches(bracket.id).await?;
 
         Ok(())
     }
@@ -933,6 +1031,9 @@ where
                 })
                 .await?;
         }
+
+        // Mark matches with both participants as Ready
+        self.mark_ready_matches(bracket.id).await?;
 
         Ok(())
     }
@@ -1142,6 +1243,9 @@ where
                 })
                 .collect();
             self.standings_repo.bulk_create(standings).await?;
+
+            // Mark matches with both participants as Ready
+            self.mark_ready_matches(bracket.id).await?;
         }
 
         // Activate group stage (playoff stage stays Pending)
@@ -1322,6 +1426,9 @@ where
             )
             .await?;
 
+        // Mark matches with both participants as Ready
+        self.mark_ready_matches(bracket.id).await?;
+
         Ok(new_matches)
     }
 
@@ -1348,6 +1455,22 @@ where
             position_to_match,
         )
         .await
+    }
+
+    /// Scan a bracket for Pending matches that have both participants and mark them Ready.
+    async fn mark_ready_matches(
+        &self,
+        bracket_id: TournamentBracketId,
+    ) -> Result<(), DomainError> {
+        let matches = self.match_repo.list_by_bracket(bracket_id).await?;
+        for m in matches {
+            if m.status == TournamentMatchStatus::Pending && m.has_both_participants() {
+                self.match_repo
+                    .update_status(m.id, TournamentMatchStatus::Ready)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     /// Apply bye advancements (participants who auto-advance).
@@ -1387,6 +1510,39 @@ where
         tournament_id: TournamentId,
     ) -> Result<Vec<TournamentMatch>, DomainError> {
         self.match_repo.list_by_tournament(tournament_id).await
+    }
+
+    /// Get a single match by ID, verifying it belongs to the tournament.
+    pub async fn get_tournament_match(
+        &self,
+        tournament_id: TournamentId,
+        match_id: TournamentMatchId,
+    ) -> Result<TournamentMatch, DomainError> {
+        let match_ = self
+            .match_repo
+            .find_by_id(match_id)
+            .await?
+            .ok_or_else(|| DomainError::not_found("match", match_id.to_string()))?;
+
+        if match_.tournament_id != tournament_id {
+            return Err(DomainError::not_found("match", match_id.to_string()));
+        }
+
+        Ok(match_)
+    }
+
+    /// Get all matches for a player across tournaments.
+    pub async fn get_player_matches(
+        &self,
+        player_id: PlayerId,
+        status: Option<TournamentMatchStatus>,
+        tournament_id: Option<TournamentId>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError> {
+        self.match_repo
+            .list_by_player(player_id, status, tournament_id, limit, offset)
+            .await
     }
 
     /// Delete a tournament (only if in draft status).

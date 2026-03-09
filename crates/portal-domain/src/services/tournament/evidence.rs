@@ -131,10 +131,15 @@ where
     /// Initiate an evidence upload.
     ///
     /// Returns presigned URL information for the client to upload directly to S3.
+    /// The evidence record is created with `Pending` status until `complete_upload()` is called.
+    ///
+    /// `s3_key_prefix` — optional human-readable prefix built by the handler from
+    /// league/tournament slugs. Falls back to UUID-based key if `None`.
     #[instrument(skip(self))]
     pub async fn initiate_upload(
         &self,
         match_id: TournamentMatchId,
+        s3_key_prefix: Option<String>,
         game_number: Option<i32>,
         evidence_type: EvidenceType,
         file_name: String,
@@ -160,21 +165,21 @@ where
         // Find user's registration
         let registration_id = self.find_user_registration(&match_, uploaded_by).await.ok();
 
-        // Generate S3 key
+        // Generate S3 key — use human-readable prefix if provided, else UUID-based
         let extension = file_name.rsplit('.').next().unwrap_or("bin");
         let evidence_id = EvidenceId::new();
-        let s3_key = format!(
-            "evidence/{}/{}/{}.{}",
-            match_.tournament_id,
-            match_id,
-            evidence_id,
-            extension
-        );
+        let s3_key = match s3_key_prefix {
+            Some(prefix) => format!("{}/{}.{}", prefix, evidence_id, extension),
+            None => format!(
+                "evidence/{}/{}/{}.{}",
+                match_.tournament_id, match_id, evidence_id, extension
+            ),
+        };
 
         // Calculate expiration
         let expires_at = Utc::now() + ChronoDuration::days(self.config.default_retention_days);
 
-        // Create evidence record in pending state
+        // Create evidence record as Pending (not yet uploaded)
         let evidence = self
             .evidence_repo
             .create(CreateEvidence {
@@ -196,6 +201,7 @@ where
                 discovered_by_plugin: None,
                 discovered_at: None,
                 expires_at: Some(expires_at),
+                status: Some(EvidenceStatus::Pending),
             })
             .await?;
 
@@ -237,7 +243,7 @@ where
         })
     }
 
-    /// Complete an evidence upload (verify file was uploaded).
+    /// Complete an evidence upload (verify file was uploaded and transition to Active).
     #[instrument(skip(self))]
     pub async fn complete_upload(&self, evidence_id: EvidenceId) -> Result<Evidence, DomainError> {
         let evidence = self
@@ -245,6 +251,14 @@ where
             .find_by_id(evidence_id)
             .await?
             .ok_or_else(|| DomainError::EvidenceNotFound(evidence_id.to_string()))?;
+
+        // Only pending evidence can be completed
+        if evidence.status != EvidenceStatus::Pending {
+            return Err(DomainError::InvalidState(format!(
+                "Evidence {} is already {} (expected pending)",
+                evidence_id, evidence.status
+            )));
+        }
 
         // Verify the file was actually uploaded
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
@@ -256,12 +270,18 @@ where
             }
         }
 
+        // Transition Pending → Active
+        let updated = self
+            .evidence_repo
+            .update_status(evidence_id, EvidenceStatus::Active)
+            .await?;
+
         info!(
             evidence_id = %evidence_id,
             "Evidence upload completed"
         );
 
-        Ok(evidence)
+        Ok(updated)
     }
 
     /// Add an external link as evidence.
@@ -314,6 +334,7 @@ where
                 discovered_by_plugin: None,
                 discovered_at: None,
                 expires_at: Some(expires_at),
+                status: None, // Links are immediately Active
             })
             .await?;
 
@@ -498,6 +519,38 @@ where
         Ok(processed)
     }
 
+    /// Clean up stale pending evidence (abandoned uploads).
+    ///
+    /// Deletes any evidence that has been in `Pending` status for longer than
+    /// the specified max age. Also removes the S3 object if one was partially uploaded.
+    #[instrument(skip(self))]
+    pub async fn cleanup_stale_pending(&self, max_age: ChronoDuration) -> Result<Vec<Evidence>, DomainError> {
+        let cutoff = Utc::now() - max_age;
+        let stale = self.evidence_repo.find_stale_pending(cutoff).await?;
+
+        let mut cleaned = Vec::new();
+        for evidence in stale {
+            // Best-effort delete from storage
+            if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
+                let _ = self.s3_client.delete_object(bucket, key).await;
+            }
+
+            if let Ok(updated) = self
+                .evidence_repo
+                .update_status(evidence.id, EvidenceStatus::Deleted)
+                .await
+            {
+                cleaned.push(updated);
+            }
+        }
+
+        if !cleaned.is_empty() {
+            info!(count = cleaned.len(), "Cleaned up stale pending evidence");
+        }
+
+        Ok(cleaned)
+    }
+
     // =========================================================================
     // INTERNAL HELPERS
     // =========================================================================
@@ -601,6 +654,7 @@ where
                 discovered_by_plugin: None, // Plugin ID would come from context
                 discovered_at: Some(discovered.discovered_at),
                 expires_at: Some(expires_at),
+                status: None, // Discovered evidence is immediately Active
             })
             .await?;
 

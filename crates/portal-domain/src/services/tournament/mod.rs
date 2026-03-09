@@ -62,7 +62,7 @@ pub use scheduling::SchedulingService;
 pub use seeding::{SeededParticipant, SeedingService};
 pub use service::TournamentService;
 pub use standings::StandingsService;
-pub use veto::VetoService;
+pub use veto::{SideSelectionProvider, VetoFormatProvider, VetoService};
 pub use veto_authorization::{VetoAuthorizationRole, VetoAuthorizationService};
 pub use forfeit::ForfeitService;
 pub use dispute::DisputeService;

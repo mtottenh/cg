@@ -1,7 +1,7 @@
 //! League domain entities.
 
 use chrono::{DateTime, Utc};
-use portal_core::{GameId, LeagueId, LeagueInvitationId, LeagueMemberId, UserId};
+use portal_core::{GameId, LeagueId, LeagueInvitationId, LeagueMemberId, LeagueSeasonId, UserId};
 use serde::{Deserialize, Serialize};
 
 /// A league that organizes tournaments for a specific game.
@@ -23,6 +23,8 @@ pub struct League {
     pub access_type: LeagueAccessType,
     /// Current status of the league.
     pub status: LeagueStatus,
+    /// Current active season for this league.
+    pub current_season_id: Option<LeagueSeasonId>,
     /// League-specific settings as JSON.
     pub settings: serde_json::Value,
     /// User who created the league.
@@ -333,6 +335,8 @@ pub struct CreateLeagueCommand {
     pub logo_url: Option<String>,
     /// How users can join.
     pub access_type: LeagueAccessType,
+    /// Optional league settings (entry requirements, etc.).
+    pub settings: Option<serde_json::Value>,
 }
 
 /// Command to update a league.

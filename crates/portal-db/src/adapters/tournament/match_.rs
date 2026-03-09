@@ -8,8 +8,8 @@ use crate::transaction::DbTransaction;
 use crate::DbPool;
 use portal_core::types::TournamentMatchStatus;
 use portal_core::{
-    DomainError, TournamentBracketId, TournamentId, TournamentMatchId, TournamentRegistrationId,
-    TournamentStageId, UserId,
+    DomainError, PlayerId, TournamentBracketId, TournamentId, TournamentMatchId,
+    TournamentRegistrationId, TournamentStageId, UserId,
 };
 use portal_domain::entities::tournament::TournamentMatch;
 use portal_domain::repositories::tournament::{
@@ -334,6 +334,55 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         Ok(TournamentMatch::from(row))
     }
 
+    async fn check_in_participant(
+        &self,
+        id: TournamentMatchId,
+        slot: ParticipantSlot,
+        checked_in_by: UserId,
+    ) -> Result<TournamentMatch, DomainError> {
+        let now = Utc::now();
+
+        let row = match slot {
+            ParticipantSlot::One => {
+                sqlx::query_as::<_, TournamentMatchRow>(
+                    r"
+                    UPDATE tournament_matches SET
+                        participant1_checked_in_at = $2,
+                        participant1_checked_in_by = $3,
+                        updated_at = $2
+                    WHERE id = $1
+                    RETURNING *
+                    ",
+                )
+                .bind(id.as_uuid())
+                .bind(now)
+                .bind(checked_in_by.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+            }
+            ParticipantSlot::Two => {
+                sqlx::query_as::<_, TournamentMatchRow>(
+                    r"
+                    UPDATE tournament_matches SET
+                        participant2_checked_in_at = $2,
+                        participant2_checked_in_by = $3,
+                        updated_at = $2
+                    WHERE id = $1
+                    RETURNING *
+                    ",
+                )
+                .bind(id.as_uuid())
+                .bind(now)
+                .bind(checked_in_by.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+            }
+        }
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentMatch::from(row))
+    }
+
     async fn complete(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError> {
         let now = Utc::now();
 
@@ -556,6 +605,61 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
             ",
         )
         .bind(registration_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(TournamentMatch::from).collect())
+    }
+
+    async fn list_by_player(
+        &self,
+        player_id: PlayerId,
+        status: Option<TournamentMatchStatus>,
+        tournament_id: Option<TournamentId>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError> {
+        let status_str = status.map(|s| s.to_string());
+        let tournament_uuid = tournament_id.map(|id| id.as_uuid());
+
+        let rows = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            SELECT DISTINCT tm.*
+            FROM tournament_matches tm
+            JOIN tournament_registrations tr
+              ON tm.participant1_registration_id = tr.id
+              OR tm.participant2_registration_id = tr.id
+            LEFT JOIN league_team_members ltm
+              ON tr.team_season_id = ltm.team_season_id
+              AND ltm.player_id = $1
+            WHERE (tr.player_id = $1 OR ltm.player_id IS NOT NULL)
+              AND ($2::text IS NULL OR tm.status::text = $2)
+              AND ($3::uuid IS NULL OR tm.tournament_id = $3)
+            ORDER BY
+              CASE tm.status::text
+                WHEN 'in_progress' THEN 1
+                WHEN 'pick_ban' THEN 2
+                WHEN 'checking_in' THEN 3
+                WHEN 'scheduled' THEN 4
+                WHEN 'ready' THEN 5
+                WHEN 'awaiting_result' THEN 6
+                WHEN 'disputed' THEN 7
+                WHEN 'pending' THEN 8
+                WHEN 'completed' THEN 9
+                WHEN 'forfeit' THEN 10
+                WHEN 'cancelled' THEN 11
+              END,
+              tm.scheduled_at ASC NULLS LAST,
+              tm.created_at DESC
+            LIMIT $4 OFFSET $5
+            ",
+        )
+        .bind(player_id.as_uuid())
+        .bind(status_str.as_deref())
+        .bind(tournament_uuid)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;

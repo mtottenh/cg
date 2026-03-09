@@ -444,6 +444,15 @@ where
             .step_route_loser(saga_coordinator, execution, match_, &input, &bracket)
             .await?;
 
+        // Step 6.5: Mark newly ready matches
+        self.step_mark_ready_matches(
+            saga_coordinator,
+            execution,
+            winner_next_match_id,
+            loser_next_match_id,
+        )
+        .await?;
+
         // Step 7: Update standings (if applicable)
         let standings_updated = self
             .step_update_standings(saga_coordinator, execution, match_, &bracket, &input)
@@ -966,6 +975,48 @@ where
         );
 
         Ok(Some(loser_match_id))
+    }
+
+    /// Step 6.5: Mark target matches as Ready if both participants are now assigned.
+    async fn step_mark_ready_matches(
+        &self,
+        saga_coordinator: &SagaCoordinator<SR>,
+        execution: &mut SagaExecution,
+        winner_next_match_id: Option<TournamentMatchId>,
+        loser_next_match_id: Option<TournamentMatchId>,
+    ) -> Result<(), DomainError> {
+        const STEP_NAME: &str = "mark_ready_matches";
+        let mut newly_ready = Vec::new();
+
+        for target_id in [winner_next_match_id, loser_next_match_id]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(target) = self.match_repo.find_by_id(target_id).await? {
+                if target.status == TournamentMatchStatus::Pending
+                    && target.has_both_participants()
+                {
+                    self.match_repo
+                        .update_status(target_id, TournamentMatchStatus::Ready)
+                        .await?;
+                    newly_ready.push(target_id.to_string());
+                }
+            }
+        }
+
+        saga_coordinator
+            .complete_step(
+                execution,
+                STEP_NAME,
+                Some(serde_json::json!({ "newly_ready": newly_ready })),
+            )
+            .await?;
+
+        if !newly_ready.is_empty() {
+            info!(matches = ?newly_ready, "Marked matches as ready");
+        }
+
+        Ok(())
     }
 
     /// Step 7: Update standings (for round robin/swiss).

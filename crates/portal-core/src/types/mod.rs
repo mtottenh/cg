@@ -1,14 +1,21 @@
 //! Common type definitions used across the portal.
 
 mod demo;
+pub mod evidence;
 mod league_team;
 mod pagination;
 mod permission;
 mod rating;
 mod status;
 mod tournament;
+pub mod veto;
 
 pub use demo::{DemoCategory, DemoLinkType, DemoStatus};
+pub use evidence::{
+    DemoFileMetadata, DiscoveredEvidenceData, EvidenceStorage, EvidenceType,
+    EvidenceValidationResult, ExtractedMatchResult, GameMatchResult, MatchEvidenceContext,
+    ParticipantEvidenceContext,
+};
 pub use league_team::{
     LeagueTeamInvitationStatus, LeagueTeamInvitationType, LeagueTeamMemberStatus, LeagueTeamRole,
     LeagueTeamSeasonStatus, LeagueTeamStatus, RosterLockStatus, SeasonStatus,
@@ -23,3 +30,4 @@ pub use tournament::{
     TournamentFormat, TournamentMatchStatus, TournamentParticipantType, TournamentRegistrationStatus,
     WithdrawalPolicy,
 };
+pub use veto::{SideSelectionMode, VetoActionType, VetoFormatActionConfig, VetoFormatConfig};

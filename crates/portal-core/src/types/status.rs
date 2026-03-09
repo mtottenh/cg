@@ -200,7 +200,7 @@ impl TournamentStatus {
             Self::Draft => vec![Self::Published, Self::Cancelled],
             Self::Published => vec![Self::Registration, Self::Cancelled],
             Self::Registration => vec![Self::Scheduled, Self::InProgress, Self::Cancelled],
-            Self::Scheduled => vec![Self::InProgress, Self::Cancelled],
+            Self::Scheduled => vec![Self::Registration, Self::InProgress, Self::Cancelled],
             Self::InProgress => vec![Self::Completed, Self::Cancelled],
             Self::Completed => vec![Self::Finalized],
             Self::Finalized => vec![],

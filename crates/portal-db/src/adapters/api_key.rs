@@ -8,25 +8,45 @@ use portal_domain::entities::api_key::ApiKey;
 use portal_domain::repositories::api_key::{ApiKeyRepository, CreateApiKey};
 
 // =============================================================================
-// Type Conversions
+// Helpers
 // =============================================================================
 
-impl From<ApiKeyRow> for ApiKey {
-    fn from(row: ApiKeyRow) -> Self {
-        Self {
-            id: ApiKeyId::from(row.id),
-            service_name: row.service_name,
-            key_hash: row.key_hash,
-            key_prefix: row.key_prefix,
-            permissions: row.permissions,
-            is_active: row.is_active,
-            expires_at: row.expires_at,
-            last_used_at: row.last_used_at,
-            created_by: row.created_by.map(UserId::from),
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        }
-    }
+/// Fetch the permission names linked to an API key via the join table.
+async fn get_permissions_for_key(
+    pool: &DbPool,
+    api_key_id: uuid::Uuid,
+) -> Result<Vec<String>, DomainError> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        r"
+        SELECT p.name
+        FROM api_key_permissions akp
+        JOIN permissions p ON p.id = akp.permission_id
+        WHERE akp.api_key_id = $1
+        ",
+    )
+    .bind(api_key_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+    Ok(rows.into_iter().map(|(name,)| name).collect())
+}
+
+/// Convert an `ApiKeyRow` + resolved permissions into an `ApiKey` domain entity.
+fn row_to_api_key(row: ApiKeyRow, permissions: Vec<String>) -> ApiKey {
+    ApiKey::with_permissions(
+        ApiKeyId::from(row.id),
+        row.service_name,
+        row.key_hash,
+        row.key_prefix,
+        row.is_active,
+        row.expires_at,
+        row.last_used_at,
+        row.created_by.map(UserId::from),
+        row.created_at,
+        row.updated_at,
+        permissions,
+    )
 }
 
 // =============================================================================
@@ -58,7 +78,13 @@ impl ApiKeyRepository for PgApiKeyRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(row.map(ApiKey::from))
+        match row {
+            Some(r) => {
+                let perms = get_permissions_for_key(&self.pool, r.id).await?;
+                Ok(Some(row_to_api_key(r, perms)))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn find_by_id(&self, id: ApiKeyId) -> Result<Option<ApiKey>, DomainError> {
@@ -70,26 +96,45 @@ impl ApiKeyRepository for PgApiKeyRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(row.map(ApiKey::from))
+        match row {
+            Some(r) => {
+                let perms = get_permissions_for_key(&self.pool, r.id).await?;
+                Ok(Some(row_to_api_key(r, perms)))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn create(&self, cmd: CreateApiKey) -> Result<ApiKey, DomainError> {
         let row = sqlx::query_as::<_, ApiKeyRow>(
             r"
-            INSERT INTO api_keys (service_name, key_hash, key_prefix, permissions)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO api_keys (service_name, key_hash, key_prefix)
+            VALUES ($1, $2, $3)
             RETURNING *
             ",
         )
         .bind(&cmd.service_name)
         .bind(&cmd.key_hash)
         .bind(&cmd.key_prefix)
-        .bind(&cmd.permissions)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(ApiKey::from(row))
+        // Link permissions via the join table
+        sqlx::query(
+            r"
+            INSERT INTO api_key_permissions (api_key_id, permission_id)
+            SELECT $1, p.id FROM permissions p WHERE p.name = ANY($2)
+            ",
+        )
+        .bind(row.id)
+        .bind(&cmd.permissions)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let perms = get_permissions_for_key(&self.pool, row.id).await?;
+        Ok(row_to_api_key(row, perms))
     }
 
     async fn touch(&self, id: ApiKeyId) -> Result<(), DomainError> {

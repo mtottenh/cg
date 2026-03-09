@@ -168,7 +168,7 @@ mod tests {
             Ok(json!({}))
         }
 
-        fn format_player_stats(&self, _stats: &Value) -> Vec<DisplayStat> {
+        fn format_player_stats(&self, _stats: &Value, _context: &PlayerStatsContext) -> Vec<DisplayStat> {
             vec![]
         }
 

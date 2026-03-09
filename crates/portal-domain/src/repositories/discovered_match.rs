@@ -41,6 +41,14 @@ pub trait DiscoveredMatchRepository: Send + Sync {
         demo_url: Option<String>,
     ) -> Result<DiscoveredMatch, DomainError>;
 
+    /// Find recent enriched matches that have a demo URL, optionally filtered by tracking ID.
+    async fn find_recent_with_demo_url(
+        &self,
+        game_id: GameId,
+        tracking_id: Option<SteamTrackingId>,
+        limit: i64,
+    ) -> Result<Vec<DiscoveredMatch>, DomainError>;
+
     /// Mark as failed.
     async fn mark_failed(
         &self,

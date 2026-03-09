@@ -31,6 +31,7 @@ impl From<LeagueRow> for League {
             logo_url: row.logo_url,
             access_type: LeagueAccessType::from_str(&row.access_type).unwrap_or(LeagueAccessType::Open),
             status: LeagueStatus::from_str(&row.status).unwrap_or(LeagueStatus::Active),
+            current_season_id: row.current_season_id.map(portal_core::LeagueSeasonId::from),
             settings: row.settings,
             created_by: UserId::from(row.created_by),
             created_at: row.created_at,
@@ -143,10 +144,11 @@ impl LeagueRepository for PgLeagueRepository {
     }
 
     async fn create(&self, cmd: CreateLeague) -> Result<League, DomainError> {
+        let settings = cmd.settings.unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
         let league = sqlx::query_as::<_, LeagueRow>(
             r"
-            INSERT INTO leagues (game_id, name, slug, description, logo_url, access_type, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO leagues (game_id, name, slug, description, logo_url, access_type, settings, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING *
             ",
         )
@@ -156,6 +158,7 @@ impl LeagueRepository for PgLeagueRepository {
         .bind(&cmd.description)
         .bind(&cmd.logo_url)
         .bind(&cmd.access_type)
+        .bind(&settings)
         .bind(cmd.created_by.as_uuid())
         .fetch_one(&self.pool)
         .await

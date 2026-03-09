@@ -32,7 +32,7 @@ pub mod repositories;
 pub mod transaction;
 
 pub use adapters::{
-    complete_match_in_transaction, LocalEvidenceStorage, MatchCompletionTxInput,
+    complete_match_in_transaction, MatchCompletionTxInput,
     MatchCompletionTxOutput, PgApiKeyRepository, PgAvailabilityOverrideRepository,
     PgAvailabilityWindowRepository, PgBanRepository, PgDemoMatchLinkRepository,
     PgDemoPlayerRepository, PgDemoRepository,
@@ -41,7 +41,8 @@ pub use adapters::{
     PgLeagueMemberRepository, PgLeagueRepository, PgLeagueSeasonParticipantRepository,
     PgLeagueSeasonRepository, PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository,
     PgLeagueTeamRepository, PgLeagueTeamSeasonRepository, PgMatchStatusLogRepository,
-    PgPermissionRepository, PgPlayerGameProfileRepository, PgPlayerRatingHistoryRepository,
+    PgPermissionRepository, PgPlayerGameProfileRepository, PgPlayerMatchHistoryRepository,
+    PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository,
     PgPlayerRepository,
     PgResultClaimRepository, PgResultReviewRepository,
     PgScheduleProposalRepository, PgSuggestedTimeRepository, PgTournamentBracketRepository,
@@ -56,7 +57,7 @@ pub use adapters::{
 pub use entities::NewUserRole;
 pub use error::RepositoryError;
 pub use pool::{create_pool, DbPool, PoolConfig};
-pub use repositories::{GameRepository, PermissionRepository, PlatformStats, RoleRepository, StatsRepository};
+pub use repositories::{ActionItem, ActionItemRepository, GameRepository, PermissionRepository, PlatformStats, RoleRepository, StatsRepository};
 pub use transaction::{begin_transaction, with_transaction, DbTransaction, Transactional};
 
 /// Re-export sqlx types for convenience.

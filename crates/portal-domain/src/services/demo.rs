@@ -386,14 +386,21 @@ where
         };
 
         // Query the catalog
+        let game_id = context.game_id.parse::<uuid::Uuid>()
+            .map(portal_core::GameId::from_uuid)
+            .map_err(|_| portal_core::DomainError::Internal(
+                format!("Invalid game_id UUID in evidence context: {}", context.game_id),
+            ))?;
+        let match_id = portal_core::TournamentMatchId::from_uuid(context.match_id);
+
         let matching_demos = self
             .demo_repo
             .find_matching_for_context(
-                context.game_id,
+                game_id,
                 &steam_ids,
                 time_from,
                 time_to,
-                Some(context.match_id),
+                Some(match_id),
                 50,
             )
             .await?;

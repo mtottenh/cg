@@ -115,6 +115,24 @@ impl PlayerGameProfileRepository for PgPlayerGameProfileRepository {
         Ok(PlayerGameProfile::from(row))
     }
 
+    async fn find_by_players_and_game(
+        &self,
+        player_ids: &[PlayerId],
+        game_id: GameId,
+    ) -> Result<Vec<PlayerGameProfile>, DomainError> {
+        let uuids: Vec<uuid::Uuid> = player_ids.iter().map(|id| id.as_uuid()).collect();
+        let rows = sqlx::query_as::<_, PlayerGameProfileRow>(
+            "SELECT * FROM player_game_profiles WHERE player_id = ANY($1) AND game_id = $2",
+        )
+        .bind(&uuids)
+        .bind(game_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(PlayerGameProfile::from).collect())
+    }
+
     async fn update_stats_after_match(
         &self,
         player_id: PlayerId,

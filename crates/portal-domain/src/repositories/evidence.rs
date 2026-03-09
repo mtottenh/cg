@@ -64,6 +64,10 @@ pub trait EvidenceRepository: Send + Sync {
 
     /// Get access log for evidence.
     async fn get_access_log(&self, evidence_id: EvidenceId) -> Result<Vec<EvidenceAccessLog>, DomainError>;
+
+    /// Find stale pending evidence (created before the given timestamp).
+    /// Used by background cleanup to remove abandoned uploads.
+    async fn find_stale_pending(&self, created_before: DateTime<Utc>) -> Result<Vec<Evidence>, DomainError>;
 }
 
 /// Data for creating evidence.
@@ -84,6 +88,8 @@ pub struct CreateEvidence {
     pub discovered_by_plugin: Option<String>,
     pub discovered_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
+    /// Initial status (defaults to Active if not set).
+    pub status: Option<EvidenceStatus>,
 }
 
 /// Data for updating evidence.

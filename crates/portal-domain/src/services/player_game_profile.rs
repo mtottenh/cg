@@ -41,6 +41,18 @@ impl<PGPR: PlayerGameProfileRepository> PlayerGameProfileService<PGPR> {
         self.profile_repo.list_by_player(player_id).await
     }
 
+    /// Batch-fetch profiles for multiple players in a single game.
+    #[instrument(skip(self, player_ids))]
+    pub async fn find_by_players_and_game(
+        &self,
+        player_ids: &[PlayerId],
+        game_id: GameId,
+    ) -> Result<Vec<PlayerGameProfile>, DomainError> {
+        self.profile_repo
+            .find_by_players_and_game(player_ids, game_id)
+            .await
+    }
+
     /// Update stats after a match completes.
     ///
     /// Ensures the profile exists (via find_or_create) before updating.
@@ -62,6 +74,16 @@ impl<PGPR: PlayerGameProfileRepository> PlayerGameProfileService<PGPR> {
         self.profile_repo
             .update_stats_after_match(player_id, game_id, &new_stats, is_win, is_loss, is_draw)
             .await
+    }
+
+    /// Ensure a player game profile exists (find or create).
+    #[instrument(skip(self))]
+    pub async fn ensure_profile_exists(
+        &self,
+        player_id: PlayerId,
+        game_id: GameId,
+    ) -> Result<PlayerGameProfile, DomainError> {
+        self.profile_repo.find_or_create(player_id, game_id).await
     }
 
     /// Update a player's rating and optionally rank tier for a game.

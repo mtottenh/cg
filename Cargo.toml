@@ -11,6 +11,7 @@ members = [
     "crates/portal-test",
     "crates/portal-app",
     "crates/portal-cli",
+    "crates/portal-scanner",
 ]
 
 [workspace.package]
@@ -40,7 +41,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Types
-uuid = { version = "1", features = ["v4", "v7", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # Error handling

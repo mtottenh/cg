@@ -13,7 +13,9 @@ use crate::entities::match_lifecycle::TransitionTrigger;
 use crate::entities::tournament::TournamentMatch;
 use crate::entities::MatchStatusLog;
 use crate::repositories::match_lifecycle::{CreateMatchStatusLog, MatchStatusLogRepository};
-use crate::repositories::tournament::{TournamentMatchRepository, TournamentRegistrationRepository};
+use crate::repositories::tournament::{
+    ParticipantSlot, TournamentMatchRepository, TournamentRegistrationRepository,
+};
 
 /// Service for managing match lifecycle and state transitions.
 pub struct MatchLifecycleService<TMR, TRR, MSLR>
@@ -205,8 +207,31 @@ where
             ));
         }
 
-        // Update check-in timestamp using raw SQL since this is a new field
-        // (The repository would need to be extended for proper check-in tracking)
+        let slot = if is_participant1 {
+            ParticipantSlot::One
+        } else {
+            ParticipantSlot::Two
+        };
+
+        // Re-fetch match to get current check-in state (may have been transitioned above)
+        let current = self.get_match(match_id).await?;
+
+        // Guard against double check-in
+        let already_checked_in = if is_participant1 {
+            current.participant1_checked_in_at.is_some()
+        } else {
+            current.participant2_checked_in_at.is_some()
+        };
+        if already_checked_in {
+            return Ok(current);
+        }
+
+        // Persist check-in
+        let updated = self
+            .match_repo
+            .check_in_participant(match_id, slot, checked_in_by)
+            .await?;
+
         info!(
             match_id = %match_id,
             registration_id = %registration_id,
@@ -215,8 +240,26 @@ where
             "Participant checked in for match"
         );
 
-        // Get updated match state
-        self.get_match(match_id).await
+        // If both participants have now checked in, auto-advance
+        if updated.both_checked_in() {
+            let next_status = if updated.veto_required {
+                TournamentMatchStatus::PickBan
+            } else {
+                TournamentMatchStatus::InProgress
+            };
+            return self
+                .transition(
+                    match_id,
+                    next_status,
+                    TransitionTrigger::System {
+                        job_name: "both_checked_in".to_string(),
+                    },
+                    Some("Both participants checked in".to_string()),
+                )
+                .await;
+        }
+
+        Ok(updated)
     }
 
     /// Start a match that is ready to play.

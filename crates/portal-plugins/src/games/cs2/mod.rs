@@ -21,13 +21,14 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::error::{PluginError, RatingError, StatsError};
-use crate::traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier, SideOption, TournamentPlugin, VetoFormat};
+use crate::traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier, SideOption, TournamentPlugin};
 use crate::types::{
     DemoMetadata, DiscoveredEvidence, DisplayStat, EvidenceStorage, EvidenceType,
     EvidenceValidation, ExtractedResult, GameResult, MapPickBanFormat, MapVetoAction, MatchContext,
-    MatchData, MatchFormat, MatchmakingCriteria, RankedParticipant, RatingChange,
-    TournamentFormatId, VetoActionType,
+    MatchData, MatchFormat, MatchmakingCriteria, PlayerStatsContext, RankedParticipant,
+    RatingChange, TournamentFormatId, VetoActionType,
 };
+use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
 use chrono::Utc;
 
 /// Counter-Strike 2 game plugin.
@@ -44,6 +45,10 @@ impl Cs2Plugin {
 impl GamePlugin for Cs2Plugin {
     fn id(&self) -> &'static str {
         "cs2"
+    }
+
+    fn as_tournament_plugin(&self) -> Option<&dyn TournamentPlugin> {
+        Some(self)
     }
 
     fn as_evidence_plugin(&self) -> Option<&dyn EvidencePlugin> {
@@ -75,7 +80,7 @@ impl GamePlugin for Cs2Plugin {
             MapInfo {
                 id: "de_dust2".to_string(),
                 display_name: "Dust II".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_dust2_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
                 external_id: None,
                 external_url: None,
@@ -83,7 +88,7 @@ impl GamePlugin for Cs2Plugin {
             MapInfo {
                 id: "de_mirage".to_string(),
                 display_name: "Mirage".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_mirage_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
                 external_id: None,
                 external_url: None,
@@ -91,7 +96,7 @@ impl GamePlugin for Cs2Plugin {
             MapInfo {
                 id: "de_inferno".to_string(),
                 display_name: "Inferno".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_inferno_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
                 external_id: None,
                 external_url: None,
@@ -99,7 +104,7 @@ impl GamePlugin for Cs2Plugin {
             MapInfo {
                 id: "de_nuke".to_string(),
                 display_name: "Nuke".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_nuke_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
                 external_id: None,
                 external_url: None,
@@ -107,7 +112,7 @@ impl GamePlugin for Cs2Plugin {
             MapInfo {
                 id: "de_ancient".to_string(),
                 display_name: "Ancient".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_ancient_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
                 external_id: None,
                 external_url: None,
@@ -115,7 +120,7 @@ impl GamePlugin for Cs2Plugin {
             MapInfo {
                 id: "de_anubis".to_string(),
                 display_name: "Anubis".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_anubis_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
                 external_id: None,
                 external_url: None,
@@ -123,7 +128,7 @@ impl GamePlugin for Cs2Plugin {
             MapInfo {
                 id: "de_vertigo".to_string(),
                 display_name: "Vertigo".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_vertigo_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
                 external_id: None,
                 external_url: None,
@@ -348,7 +353,7 @@ impl GamePlugin for Cs2Plugin {
         Ok(stats)
     }
 
-    fn format_player_stats(&self, stats: &Value) -> Vec<DisplayStat> {
+    fn format_player_stats(&self, stats: &Value, context: &PlayerStatsContext) -> Vec<DisplayStat> {
         let kills = stats["kills"].as_i64().unwrap_or(0);
         let deaths = stats["deaths"].as_i64().unwrap_or(0);
         let assists = stats["assists"].as_i64().unwrap_or(0);
@@ -380,64 +385,125 @@ impl GamePlugin for Cs2Plugin {
             0.0
         };
 
-        vec![
+        // Determine rank tier color
+        let rank_color = self
+            .rating_to_rank_tier(context.rating)
+            .and_then(|tier| tier.color);
+
+        let mut result = vec![
+            // Rating stats
+            DisplayStat {
+                key: "elo_current".to_string(),
+                label: "CS Rating".to_string(),
+                value: context.rating.to_string(),
+                category: "Rating".to_string(),
+                sort_order: 1,
+                color: rank_color.clone(),
+            },
+            DisplayStat {
+                key: "elo_peak".to_string(),
+                label: "Peak Rating".to_string(),
+                value: context.peak_rating.to_string(),
+                category: "Rating".to_string(),
+                sort_order: 2,
+                color: None,
+            },
+        ];
+
+        if let Some(avg) = context.average_rating {
+            result.push(DisplayStat {
+                key: "elo_avg".to_string(),
+                label: "Avg Rating".to_string(),
+                value: format!("{avg:.0}"),
+                category: "Rating".to_string(),
+                sort_order: 3,
+                color: None,
+            });
+        }
+
+        if let Some(ref tier_id) = context.rank_tier {
+            if let Some(tier) = self.rank_tiers().into_iter().find(|t| t.id == *tier_id) {
+                result.push(DisplayStat {
+                    key: "rank_tier".to_string(),
+                    label: "Rank".to_string(),
+                    value: tier.display_name,
+                    category: "Rating".to_string(),
+                    sort_order: 4,
+                    color: tier.color,
+                });
+            }
+        }
+
+        // General stats
+        result.extend([
             DisplayStat {
                 key: "matches".to_string(),
                 label: "Matches".to_string(),
                 value: matches_played.to_string(),
                 category: "General".to_string(),
-                sort_order: 1,
+                sort_order: 10,
+                color: None,
             },
             DisplayStat {
                 key: "win_rate".to_string(),
                 label: "Win Rate".to_string(),
                 value: format!("{win_rate:.1}%"),
                 category: "General".to_string(),
-                sort_order: 2,
+                sort_order: 11,
+                color: None,
             },
+            // Combat stats
             DisplayStat {
                 key: "kd_ratio".to_string(),
                 label: "K/D Ratio".to_string(),
                 value: format!("{kd_ratio:.2}"),
                 category: "Combat".to_string(),
-                sort_order: 3,
+                sort_order: 20,
+                color: None,
             },
             DisplayStat {
                 key: "kills".to_string(),
                 label: "Kills".to_string(),
                 value: kills.to_string(),
                 category: "Combat".to_string(),
-                sort_order: 4,
+                sort_order: 21,
+                color: None,
             },
             DisplayStat {
                 key: "deaths".to_string(),
                 label: "Deaths".to_string(),
                 value: deaths.to_string(),
                 category: "Combat".to_string(),
-                sort_order: 5,
+                sort_order: 22,
+                color: None,
             },
             DisplayStat {
                 key: "assists".to_string(),
                 label: "Assists".to_string(),
                 value: assists.to_string(),
                 category: "Combat".to_string(),
-                sort_order: 6,
+                sort_order: 23,
+                color: None,
             },
             DisplayStat {
                 key: "hs_percent".to_string(),
                 label: "HS%".to_string(),
                 value: format!("{hs_percent:.1}%"),
                 category: "Combat".to_string(),
-                sort_order: 7,
+                sort_order: 24,
+                color: None,
             },
             DisplayStat {
                 key: "adr".to_string(),
                 label: "ADR".to_string(),
                 value: format!("{adr:.1}"),
                 category: "Combat".to_string(),
-                sort_order: 8,
+                sort_order: 25,
+                color: None,
             },
-        ]
+        ]);
+
+        result
     }
 
     fn build_match_data_from_demo(
@@ -706,19 +772,19 @@ impl GamePlugin for Cs2Plugin {
 // ============================================================================
 
 impl TournamentPlugin for Cs2Plugin {
-    fn veto_formats(&self) -> Vec<VetoFormat> {
+    fn veto_formats(&self) -> Vec<VetoFormatConfig> {
         vec![
-            VetoFormat::bo1(),
-            VetoFormat::bo3(),
-            VetoFormat::bo5(),
+            VetoFormatConfig::bo1(),
+            VetoFormatConfig::bo3(),
+            VetoFormatConfig::bo5(),
         ]
     }
 
     fn default_veto_format(&self, match_format: MatchFormat) -> Option<String> {
         match match_format {
-            MatchFormat::Bo1 => Some("bo1_veto".to_string()),
-            MatchFormat::Bo3 => Some("bo3_veto".to_string()),
-            MatchFormat::Bo5 => Some("bo5_veto".to_string()),
+            MatchFormat::Bo1 => Some("bo1_standard".to_string()),
+            MatchFormat::Bo3 => Some("bo3_standard".to_string()),
+            MatchFormat::Bo5 => Some("bo5_standard".to_string()),
             MatchFormat::Bo7 => None, // CS2 doesn't typically do Bo7
         }
     }
@@ -737,6 +803,18 @@ impl TournamentPlugin for Cs2Plugin {
                 short_name: "T".to_string(),
             },
         ]
+    }
+
+    fn available_side_selection_modes(&self) -> Vec<SideSelectionMode> {
+        vec![
+            SideSelectionMode::PickerChoice,
+            SideSelectionMode::CoinFlip,
+            SideSelectionMode::Knife,
+        ]
+    }
+
+    fn default_side_selection_mode(&self) -> SideSelectionMode {
+        SideSelectionMode::PickerChoice
     }
 }
 
@@ -1077,8 +1155,8 @@ impl GamePlugin for Cs2PluginWithEvidence {
             .calculate_player_stats(match_data, player_id, existing_stats)
     }
 
-    fn format_player_stats(&self, stats: &serde_json::Value) -> Vec<DisplayStat> {
-        self.inner.format_player_stats(stats)
+    fn format_player_stats(&self, stats: &serde_json::Value, context: &PlayerStatsContext) -> Vec<DisplayStat> {
+        self.inner.format_player_stats(stats, context)
     }
 
     fn build_match_data_from_demo(
@@ -1119,13 +1197,17 @@ impl GamePlugin for Cs2PluginWithEvidence {
         self.inner.supported_match_formats()
     }
 
+    fn as_tournament_plugin(&self) -> Option<&dyn TournamentPlugin> {
+        Some(self)
+    }
+
     fn as_evidence_plugin(&self) -> Option<&dyn EvidencePlugin> {
         Some(self)
     }
 }
 
 impl TournamentPlugin for Cs2PluginWithEvidence {
-    fn veto_formats(&self) -> Vec<VetoFormat> {
+    fn veto_formats(&self) -> Vec<VetoFormatConfig> {
         self.inner.veto_formats()
     }
 
@@ -1135,6 +1217,14 @@ impl TournamentPlugin for Cs2PluginWithEvidence {
 
     fn get_available_sides(&self, map_id: &str) -> Vec<SideOption> {
         self.inner.get_available_sides(map_id)
+    }
+
+    fn available_side_selection_modes(&self) -> Vec<SideSelectionMode> {
+        self.inner.available_side_selection_modes()
+    }
+
+    fn default_side_selection_mode(&self) -> SideSelectionMode {
+        self.inner.default_side_selection_mode()
     }
 }
 

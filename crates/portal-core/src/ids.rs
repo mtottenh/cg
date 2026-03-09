@@ -502,6 +502,16 @@ define_id!(
     PlayerRatingHistoryId
 );
 
+define_id!(
+    /// Unique identifier for a player's public matchmaking aggregate stats.
+    PlayerMmStatsId
+);
+
+define_id!(
+    /// Unique identifier for a player match history entry.
+    PlayerMatchHistoryId
+);
+
 // =============================================================================
 // String-based Slugs
 // =============================================================================

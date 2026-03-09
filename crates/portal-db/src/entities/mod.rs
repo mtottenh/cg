@@ -18,6 +18,8 @@ mod game;
 mod league;
 pub mod league_team;
 mod player;
+pub mod player_match_history;
+pub mod player_mm_stats;
 mod player_rating_history;
 mod refresh_token;
 mod rbac;
@@ -54,6 +56,8 @@ pub use league_team::{
     UpdateLeagueSeasonParticipant, UpdateLeagueTeam, UpdateLeagueTeamInvitation,
     UpdateLeagueTeamMember, UpdateLeagueTeamSeason,
 };
+pub use player_match_history::PlayerMatchHistoryRow;
+pub use player_mm_stats::PlayerMmStatsRow;
 pub use player_rating_history::{PlayerRatingHistoryRow, RatingStatsRow};
 pub use player::{
     NewPlayer, NewPlayerGameProfile, PlayerGameProfileRow, PlayerRow, UpdatePlayer,

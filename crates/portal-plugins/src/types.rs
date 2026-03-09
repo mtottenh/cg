@@ -32,43 +32,8 @@ pub struct MatchConfig {
     pub custom_settings: Value,
 }
 
-/// Match format (best of N).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MatchFormat {
-    Bo1,
-    Bo3,
-    Bo5,
-    Bo7,
-}
-
-impl MatchFormat {
-    /// Get the number of maps in this format.
-    pub const fn map_count(&self) -> u32 {
-        match self {
-            Self::Bo1 => 1,
-            Self::Bo3 => 3,
-            Self::Bo5 => 5,
-            Self::Bo7 => 7,
-        }
-    }
-
-    /// Get the number of wins required.
-    pub const fn wins_required(&self) -> u32 {
-        (self.map_count() / 2) + 1
-    }
-}
-
-impl std::fmt::Display for MatchFormat {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Bo1 => write!(f, "bo1"),
-            Self::Bo3 => write!(f, "bo3"),
-            Self::Bo5 => write!(f, "bo5"),
-            Self::Bo7 => write!(f, "bo7"),
-        }
-    }
-}
+// MatchFormat is re-exported from portal-core
+pub use portal_core::MatchFormat;
 
 // ============================================================================
 // Matchmaking Types
@@ -149,6 +114,27 @@ pub struct DisplayStat {
     pub value: String,
     pub category: String,
     pub sort_order: i32,
+    /// Optional color hint for the frontend (e.g., hex color for rank tier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+/// Context passed to plugins when formatting player stats.
+///
+/// Contains rating and rank data from the platform so plugins can
+/// include game-specific rating display stats.
+#[derive(Debug, Clone)]
+pub struct PlayerStatsContext {
+    /// Current rating value.
+    pub rating: i32,
+    /// All-time peak rating.
+    pub peak_rating: i32,
+    /// When peak rating was achieved (RFC 3339).
+    pub peak_rating_at: Option<String>,
+    /// Current rank tier id (e.g., "gold", "purple").
+    pub rank_tier: Option<String>,
+    /// Average rating across all history entries.
+    pub average_rating: Option<f64>,
 }
 
 // ============================================================================
@@ -243,14 +229,10 @@ pub struct MapVetoAction {
     pub action: VetoActionType,
 }
 
-/// Type of veto action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum VetoActionType {
-    Ban,
-    Pick,
-    Decider,
-}
+// VetoActionType is re-exported from portal-core
+pub use portal_core::VetoActionType;
+/// Alias for the canonical portal-core VetoFormatConfig.
+pub use portal_core::VetoFormatConfig;
 
 // ============================================================================
 // Tournament Types
@@ -301,162 +283,12 @@ pub trait LobbyStateMachine: Send + Sync {
 }
 
 // ============================================================================
-// Evidence Types
+// Evidence Types — re-exported from portal-core
 // ============================================================================
 
-/// Context for evidence discovery.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchContext {
-    /// Tournament ID
-    pub tournament_id: Uuid,
-    /// Match ID
-    pub match_id: Uuid,
-    /// Game identifier (e.g., "cs2")
-    pub game_id: String,
-    /// Participants in the match
-    pub participants: Vec<ParticipantContext>,
-    /// When the match was scheduled
-    pub scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// When the match started
-    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// When the match completed
-    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-/// Context for a match participant.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParticipantContext {
-    /// Registration ID
-    pub registration_id: Uuid,
-    /// Display name
-    pub name: String,
-    /// Player IDs (for team registration)
-    pub player_ids: Vec<Uuid>,
-    /// Steam IDs (for CS2, etc.)
-    pub steam_ids: Vec<String>,
-}
-
-/// Evidence discovered by a plugin.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiscoveredEvidence {
-    /// External identifier for this evidence
-    pub external_id: String,
-    /// Type of evidence
-    pub evidence_type: EvidenceType,
-    /// Display name
-    pub name: String,
-    /// Storage location
-    pub storage: EvidenceStorage,
-    /// File size if known
-    pub file_size_bytes: Option<i64>,
-    /// Plugin-specific metadata
-    pub metadata: Value,
-    /// When this was discovered
-    pub discovered_at: chrono::DateTime<chrono::Utc>,
-    /// Relevance score (0.0 to 1.0, higher = more likely to be the correct demo)
-    pub relevance_score: f32,
-}
-
-/// Type of evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EvidenceType {
-    /// Game replay/demo file
-    Demo,
-    /// Screenshot image
-    Screenshot,
-    /// Video recording
-    Video,
-    /// External link
-    Link,
-    /// Game server log
-    ServerLog,
-}
-
-impl std::fmt::Display for EvidenceType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Demo => write!(f, "demo"),
-            Self::Screenshot => write!(f, "screenshot"),
-            Self::Video => write!(f, "video"),
-            Self::Link => write!(f, "link"),
-            Self::ServerLog => write!(f, "server_log"),
-        }
-    }
-}
-
-/// Storage location for evidence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum EvidenceStorage {
-    /// Stored in S3
-    S3 { bucket: String, key: String },
-    /// External URL
-    Url { url: String },
-    /// Inline content
-    Inline { content: String },
-}
-
-/// Result of evidence validation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvidenceValidation {
-    /// Whether the evidence validates the claimed result
-    pub is_valid: bool,
-    /// Confidence level (0.0 to 1.0)
-    pub confidence: f32,
-    /// Extracted result from the evidence
-    pub extracted_result: Option<ExtractedResult>,
-    /// Warnings (non-fatal issues)
-    pub warnings: Vec<String>,
-    /// Errors (reasons for invalid)
-    pub errors: Vec<String>,
-}
-
-/// Result extracted from evidence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtractedResult {
-    /// Map identifier
-    pub map_id: String,
-    /// Score for participant 1
-    pub participant1_score: i32,
-    /// Score for participant 2
-    pub participant2_score: i32,
-    /// Duration in seconds
-    pub duration_seconds: i64,
-    /// Game-specific player statistics
-    pub player_stats: Value,
-}
-
-/// Metadata from a demo file header.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DemoMetadata {
-    /// Map name
-    pub map_name: String,
-    /// Duration in seconds
-    pub duration_seconds: i64,
-    /// Number of players
-    pub player_count: u32,
-    /// Team 1 final score
-    pub team1_score: i32,
-    /// Team 2 final score
-    pub team2_score: i32,
-    /// When the demo was recorded
-    pub recorded_at: chrono::DateTime<chrono::Utc>,
-    /// Server name if available
-    pub server_name: Option<String>,
-    /// Demo file format version
-    pub demo_version: String,
-}
-
-/// A claimed game result for evidence validation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GameResult {
-    /// Game number in series
-    pub game_number: i32,
-    /// Map ID
-    pub map_id: Option<String>,
-    /// Participant 1 score
-    pub participant1_score: i32,
-    /// Participant 2 score
-    pub participant2_score: i32,
-}
+pub use portal_core::types::evidence::{
+    DemoFileMetadata as DemoMetadata, DiscoveredEvidenceData as DiscoveredEvidence,
+    EvidenceStorage, EvidenceType, EvidenceValidationResult as EvidenceValidation,
+    ExtractedMatchResult as ExtractedResult, GameMatchResult as GameResult,
+    MatchEvidenceContext as MatchContext, ParticipantEvidenceContext as ParticipantContext,
+};

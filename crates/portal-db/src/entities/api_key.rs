@@ -11,7 +11,6 @@ pub struct ApiKeyRow {
     pub service_name: String,
     pub key_hash: String,
     pub key_prefix: String,
-    pub permissions: Vec<String>,
     pub is_active: bool,
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,

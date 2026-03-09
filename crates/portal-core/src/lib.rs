@@ -22,10 +22,15 @@ pub use ids::{
     GameId, GameSlug, LeagueId, LeagueInvitationId, LeagueMemberId, LeagueSeasonId, LeagueTeamId,
     LeagueTeamInvitationId, LeagueTeamMemberId, LeagueTeamSeasonId, LobbyId, MatchId,
     MatchStatusLogId, PlayerGameProfileId, PlayerId, ProgressionLogId, ResultClaimId,
-    PlayerRatingHistoryId, ResultReviewId, SagaId, ScheduleProposalId, SteamTrackingId,
+    PlayerMatchHistoryId, PlayerMmStatsId, PlayerRatingHistoryId, ResultReviewId, SagaId,
+    ScheduleProposalId, SteamTrackingId,
     SuggestedTimeId,
     TournamentBracketId, TournamentId, TournamentMapPoolId, TournamentMatchGameId,
     TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId, VetoActionId,
     VetoDelegateId, VetoLobbyMessageId, VetoSessionId,
 };
-pub use types::{DemoCategory, DemoLinkType, DemoStatus, ParseScopeTypeError, PermissionScope, ScopeType};
+pub use types::{
+    DemoCategory, DemoLinkType, DemoStatus, EvidenceStorage, EvidenceType, MatchFormat,
+    ParseScopeTypeError, PermissionScope, ScopeType, SideSelectionMode, VetoActionType,
+    VetoFormatActionConfig, VetoFormatConfig,
+};

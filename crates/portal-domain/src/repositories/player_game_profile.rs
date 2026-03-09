@@ -38,6 +38,13 @@ pub trait PlayerGameProfileRepository: Send + Sync {
         is_draw: bool,
     ) -> Result<PlayerGameProfile, DomainError>;
 
+    /// Batch-fetch profiles for multiple players in a single game.
+    async fn find_by_players_and_game(
+        &self,
+        player_ids: &[PlayerId],
+        game_id: GameId,
+    ) -> Result<Vec<PlayerGameProfile>, DomainError>;
+
     /// Update a player's rating values and optionally their rank tier.
     async fn update_rating(
         &self,

@@ -539,6 +539,14 @@ pub trait TournamentMatchRepository: Send + Sync {
     /// Start a match.
     async fn start(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
 
+    /// Record a participant check-in.
+    async fn check_in_participant(
+        &self,
+        id: TournamentMatchId,
+        slot: ParticipantSlot,
+        checked_in_by: UserId,
+    ) -> Result<TournamentMatch, DomainError>;
+
     /// Complete a match.
     async fn complete(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
 
@@ -601,6 +609,19 @@ pub trait TournamentMatchRepository: Send + Sync {
     async fn list_by_participant(
         &self,
         registration_id: TournamentRegistrationId,
+    ) -> Result<Vec<TournamentMatch>, DomainError>;
+
+    /// List matches for a player across all tournaments.
+    ///
+    /// Finds matches where the player is a participant via either direct solo
+    /// registration or team registration (through `league_team_members`).
+    async fn list_by_player(
+        &self,
+        player_id: PlayerId,
+        status: Option<TournamentMatchStatus>,
+        tournament_id: Option<TournamentId>,
+        limit: i64,
+        offset: i64,
     ) -> Result<Vec<TournamentMatch>, DomainError>;
 
     /// List upcoming scheduled matches.
@@ -939,6 +960,7 @@ pub struct CreateVetoSession {
     pub veto_format_id: String,
     pub map_pool: Vec<String>,
     pub timeout_seconds: u32,
+    pub side_selection_mode: crate::entities::veto::SideSelectionMode,
 }
 
 /// Data for updating a veto session.

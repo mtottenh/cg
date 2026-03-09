@@ -73,6 +73,9 @@ pub trait PlayerRepository: Send + Sync {
     /// Find a player by display name.
     async fn find_by_display_name(&self, name: &str) -> Result<Option<Player>, DomainError>;
 
+    /// Find a player by SteamID64.
+    async fn find_by_steam_id_64(&self, steam_id_64: i64) -> Result<Option<Player>, DomainError>;
+
     /// Create a new player.
     async fn create(&self, cmd: CreatePlayer) -> Result<Player, DomainError>;
 

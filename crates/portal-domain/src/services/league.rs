@@ -85,6 +85,7 @@ where
                 description: cmd.description,
                 logo_url: cmd.logo_url,
                 access_type: cmd.access_type.as_str().to_string(),
+                settings: cmd.settings,
                 created_by: creator_id,
             })
             .await?;

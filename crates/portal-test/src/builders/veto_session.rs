@@ -122,6 +122,7 @@ impl VetoSessionBuilder {
             veto_format_id: self.veto_format_id,
             map_pool: self.map_pool,
             timeout_seconds: self.timeout_seconds,
+            side_selection_mode: portal_core::SideSelectionMode::Knife,
         };
 
         repo.create(create)

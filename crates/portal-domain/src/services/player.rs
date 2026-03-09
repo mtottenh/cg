@@ -58,6 +58,15 @@ where
             .ok_or_else(|| DomainError::PlayerNotFound(format!("user:{user_id}")))
     }
 
+    /// Find a player by their SteamID64. Returns None if not found.
+    #[instrument(skip(self))]
+    pub async fn find_by_steam_id_64(
+        &self,
+        steam_id_64: i64,
+    ) -> Result<Option<Player>, DomainError> {
+        self.player_repo.find_by_steam_id_64(steam_id_64).await
+    }
+
     /// Search players with filters.
     #[instrument(skip(self))]
     pub async fn search_players(

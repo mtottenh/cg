@@ -188,6 +188,62 @@ impl DiscoveredMatchRepository for PgDiscoveredMatchRepository {
         Ok(DiscoveredMatch::from(row))
     }
 
+    async fn find_recent_with_demo_url(
+        &self,
+        game_id: GameId,
+        tracking_id: Option<SteamTrackingId>,
+        limit: i64,
+    ) -> Result<Vec<DiscoveredMatch>, DomainError> {
+        let (sql, has_tracking) = if tracking_id.is_some() {
+            (
+                format!(
+                    r"
+                    SELECT {COLUMNS} FROM discovered_matches
+                    WHERE game_id = $1
+                      AND tracking_id = $2
+                      AND status = 'enriched'
+                      AND demo_url IS NOT NULL
+                    ORDER BY enriched_at DESC
+                    LIMIT $3
+                    "
+                ),
+                true,
+            )
+        } else {
+            (
+                format!(
+                    r"
+                    SELECT {COLUMNS} FROM discovered_matches
+                    WHERE game_id = $1
+                      AND status = 'enriched'
+                      AND demo_url IS NOT NULL
+                    ORDER BY enriched_at DESC
+                    LIMIT $2
+                    "
+                ),
+                false,
+            )
+        };
+
+        let rows = if has_tracking {
+            sqlx::query_as::<_, DiscoveredMatchRow>(&sql)
+                .bind(game_id.as_uuid())
+                .bind(tracking_id.unwrap().as_uuid())
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+        } else {
+            sqlx::query_as::<_, DiscoveredMatchRow>(&sql)
+                .bind(game_id.as_uuid())
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+        }
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(DiscoveredMatch::from).collect())
+    }
+
     async fn mark_failed(
         &self,
         id: DiscoveredMatchId,

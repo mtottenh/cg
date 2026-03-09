@@ -558,6 +558,18 @@ where
         })
     }
 
+    /// Get the active dispute for a match (if any).
+    ///
+    /// Returns the most recent non-resolved dispute for the given match,
+    /// or None if no active dispute exists.
+    #[instrument(skip(self))]
+    pub async fn get_match_dispute(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<Dispute>, DomainError> {
+        self.dispute_repo.find_pending_by_match(match_id).await
+    }
+
     /// Get pending disputes (admin queue).
     #[instrument(skip(self))]
     pub async fn get_pending_disputes(

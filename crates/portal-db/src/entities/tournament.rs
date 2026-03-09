@@ -336,6 +336,16 @@ pub struct TournamentMatchRow {
     // Timestamps
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+
+    // Check-in
+    pub check_in_opens_at: Option<DateTime<Utc>>,
+    pub check_in_deadline: Option<DateTime<Utc>>,
+    pub participant1_checked_in_at: Option<DateTime<Utc>>,
+    pub participant2_checked_in_at: Option<DateTime<Utc>>,
+    pub participant1_checked_in_by: Option<Uuid>,
+    pub participant2_checked_in_by: Option<Uuid>,
+    pub veto_required: bool,
+    pub check_in_required: bool,
 }
 
 /// Data for inserting a new tournament match.
@@ -579,6 +589,9 @@ pub struct VetoSessionRow {
     pub action_deadline: Option<DateTime<Utc>>,
     pub timeout_seconds: i32,
 
+    // Side selection
+    pub side_selection_mode: String,
+
     // Timestamps
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -594,6 +607,7 @@ pub struct NewVetoSession {
     pub map_pool: Vec<String>,
     pub remaining_maps: Vec<String>,
     pub timeout_seconds: i32,
+    pub side_selection_mode: String,
 }
 
 /// Data for updating a veto session.

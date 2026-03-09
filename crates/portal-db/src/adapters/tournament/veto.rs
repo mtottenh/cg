@@ -66,14 +66,15 @@ impl VetoSessionRepository for PgVetoSessionRepository {
             map_pool: session.map_pool.clone(),
             remaining_maps: session.map_pool,
             timeout_seconds: session.timeout_seconds as i32,
+            side_selection_mode: session.side_selection_mode.to_string(),
         };
 
         let row = sqlx::query_as::<_, VetoSessionRow>(
             r"
             INSERT INTO veto_sessions (
-                match_id, veto_format_id, map_pool, remaining_maps, timeout_seconds
+                match_id, veto_format_id, map_pool, remaining_maps, timeout_seconds, side_selection_mode
             )
-            VALUES ($1, $2, $3, $4, $5)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING *
             ",
         )
@@ -82,6 +83,7 @@ impl VetoSessionRepository for PgVetoSessionRepository {
         .bind(&new_session.map_pool)
         .bind(&new_session.remaining_maps)
         .bind(new_session.timeout_seconds)
+        .bind(&new_session.side_selection_mode)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(format!("Failed to create veto session: {e}")))?;
@@ -377,10 +379,17 @@ impl VetoActionRepository for PgVetoActionRepository {
 // =============================================================================
 
 fn session_row_to_domain(row: VetoSessionRow) -> Result<VetoSession, DomainError> {
+    use portal_domain::entities::veto::SideSelectionMode;
+
     let status: VetoStatus = row
         .status
         .parse()
         .map_err(|e: String| DomainError::Internal(format!("Invalid veto status: {e}")))?;
+
+    let side_selection_mode: SideSelectionMode = row
+        .side_selection_mode
+        .parse()
+        .unwrap_or(SideSelectionMode::Knife);
 
     Ok(VetoSession {
         id: VetoSessionId::from_uuid(row.id),
@@ -400,6 +409,7 @@ fn session_row_to_domain(row: VetoSessionRow) -> Result<VetoSession, DomainError
         status,
         action_deadline: row.action_deadline,
         timeout_seconds: row.timeout_seconds as u32,
+        side_selection_mode,
         started_at: row.started_at,
         completed_at: row.completed_at,
         created_at: row.created_at,

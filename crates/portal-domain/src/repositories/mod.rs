@@ -17,6 +17,8 @@ pub mod league_team;
 pub mod match_lifecycle;
 pub mod permission;
 pub mod player_game_profile;
+pub mod player_match_history;
+pub mod player_mm_stats;
 pub mod refresh_token;
 pub mod player_rating_history;
 pub mod result_review;
@@ -63,6 +65,8 @@ pub use tournament::{
     VetoActionRepository, VetoSessionRepository,
 };
 pub use player_game_profile::PlayerGameProfileRepository;
+pub use player_match_history::{CreatePlayerMatchHistory, PlayerMatchHistoryRepository};
+pub use player_mm_stats::{AccumulateMatchStats, PlayerMmStatsRepository};
 pub use player_rating_history::{
     CreatePlayerRatingHistory, PlayerRatingHistoryRepository, RatingStats,
 };

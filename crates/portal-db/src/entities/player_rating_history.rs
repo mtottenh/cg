@@ -12,6 +12,7 @@ pub struct PlayerRatingHistoryRow {
     pub game_id: Uuid,
     pub rating: i32,
     pub source: String,
+    pub rank_type_id: i32,
     pub recorded_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }

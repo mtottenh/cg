@@ -22,7 +22,8 @@ pub use games::{
     Cs2DemoClient, Cs2DemoStats, Cs2EvidenceValidator, Cs2Plugin, Cs2PluginWithEvidence,
 };
 pub use manager::PluginManager;
-pub use traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier};
+pub use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
+pub use traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier, TournamentPlugin};
 pub use types::{
     DemoMetadata, DiscoveredEvidence, DisplayStat, EvidenceStorage, EvidenceType,
     EvidenceValidation, ExtractedResult, GameResult, LobbyStateMachine, MapPickBanFormat,

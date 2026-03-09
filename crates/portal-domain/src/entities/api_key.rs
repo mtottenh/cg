@@ -20,6 +20,36 @@ pub struct ApiKey {
 }
 
 impl ApiKey {
+    /// Construct an `ApiKey` from its fields plus separately-resolved permissions.
+    #[must_use]
+    pub fn with_permissions(
+        id: ApiKeyId,
+        service_name: String,
+        key_hash: String,
+        key_prefix: String,
+        is_active: bool,
+        expires_at: Option<DateTime<Utc>>,
+        last_used_at: Option<DateTime<Utc>>,
+        created_by: Option<UserId>,
+        created_at: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+        permissions: Vec<String>,
+    ) -> Self {
+        Self {
+            id,
+            service_name,
+            key_hash,
+            key_prefix,
+            permissions,
+            is_active,
+            expires_at,
+            last_used_at,
+            created_by,
+            created_at,
+            updated_at,
+        }
+    }
+
     /// Check if the key is currently valid (active and not expired).
     #[must_use]
     pub fn is_valid(&self) -> bool {

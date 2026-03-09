@@ -73,10 +73,14 @@ pub async fn initiate_upload(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid evidence type"))?;
 
+    // Build human-readable S3 key prefix from league/tournament slugs
+    let s3_key_prefix = build_evidence_key_prefix(&state, match_id, evidence_type).await;
+
     let upload_info = state
         .evidence_service
         .initiate_upload(
             match_id,
+            s3_key_prefix,
             req.game_number,
             evidence_type,
             req.file_name,
@@ -375,11 +379,25 @@ pub async fn get_access_url(
 pub async fn delete_evidence(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Path((_match_id, evidence_id)): Path<(String, String)>,
+    Path((match_id, evidence_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
     let evidence_id: EvidenceId = evidence_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid evidence ID format"))?;
+
+    // Before deleting, check if there's a corresponding demo_match_link to clean up.
+    // Both `link_discovered` (catalog: prefix) and `link_demo` (with demo_id) store
+    // `catalog_demo_id` in the evidence metadata.
+    let evidence = state.evidence_service.get_evidence(evidence_id).await?;
+    if let Some(demo_id_str) = evidence.plugin_metadata.get("catalog_demo_id").and_then(|v| v.as_str()) {
+        if let Ok(demo_id) = demo_id_str.parse::<portal_core::DemoId>() {
+            // Best-effort: ignore errors if the link was already removed
+            let _ = state.demo_service.unlink_from_match(demo_id, match_id).await;
+        }
+    }
 
     state
         .evidence_service
@@ -667,6 +685,53 @@ pub async fn validate_evidence(
 // EVIDENCE PLUGIN RESOLUTION HELPERS
 // =============================================================================
 
+/// Build a human-readable S3 key prefix from league/tournament slugs.
+///
+/// Returns `Some("league-slug/tournament-slug/evidence/demos/R1M3")` or
+/// `Some("tournament-slug/evidence/screenshots/R2M1")` (no league).
+/// Falls back to `None` if any lookup fails, letting the service use UUID-based keys.
+async fn build_evidence_key_prefix(
+    state: &AppState,
+    match_id: TournamentMatchId,
+    evidence_type: portal_domain::entities::evidence::EvidenceType,
+) -> Option<String> {
+    use portal_domain::entities::evidence::EvidenceType;
+
+    let match_ = state.tournament_match_repo.find_by_id(match_id).await.ok()??;
+
+    let tournament = state
+        .tournament_service
+        .get_tournament(match_.tournament_id)
+        .await
+        .ok()?;
+
+    let league_slug = if let Some(lid) = tournament.league_id {
+        state.league_service.get_league(lid).await.ok().map(|l| l.slug)
+    } else {
+        None
+    };
+
+    let type_dir = match evidence_type {
+        EvidenceType::Demo => "demos",
+        EvidenceType::Screenshot => "screenshots",
+        EvidenceType::Video => "videos",
+        EvidenceType::ServerLog => "logs",
+        EvidenceType::Link => "links",
+    };
+
+    let round_match = format!("R{}M{}", match_.round, match_.match_number);
+
+    let prefix = match league_slug {
+        Some(ls) => format!(
+            "{}/{}/evidence/{}/{}",
+            ls, tournament.slug, type_dir, round_match
+        ),
+        None => format!("{}/evidence/{}/{}", tournament.slug, type_dir, round_match),
+    };
+
+    Some(prefix)
+}
+
 /// Resolve the evidence plugin for a given match.
 ///
 /// Follows the chain: match → tournament → game → plugin.
@@ -759,17 +824,17 @@ async fn build_evidence_context(
         }
 
         participants.push(ParticipantContext {
-            registration_id: reg_id,
+            registration_id: reg_id.as_uuid(),
             name: reg.participant_name,
-            player_ids,
+            player_ids: player_ids.iter().map(|id| id.as_uuid()).collect(),
             steam_ids,
         });
     }
 
     Ok(MatchEvidenceContext {
-        tournament_id: match_.tournament_id,
-        match_id: match_.id,
-        game_id: tournament.game_id,
+        tournament_id: match_.tournament_id.as_uuid(),
+        match_id: match_.id.as_uuid(),
+        game_id: tournament.game_id.to_string(),
         participants,
         scheduled_at: match_.scheduled_at,
         started_at: match_.started_at,
@@ -1010,10 +1075,33 @@ pub async fn link_demo(
             "demo_name": req.demo_name,
             "map": stats.map,
             "description": req.description,
+            "catalog_demo_id": req.demo_id,
         }),
         discovered_at: chrono::Utc::now(),
         relevance_score: 1.0,
     };
+
+    // If a catalog demo_id was provided, also create a demo_match_link so the
+    // demo is visible via GET /v1/matches/{match_id}/demos.
+    if let Some(ref demo_id_str) = req.demo_id {
+        let demo_id: portal_core::DemoId = demo_id_str
+            .parse()
+            .map_err(|_| ApiError::bad_request("Invalid demo_id format"))?;
+
+        // Verify the catalog demo exists
+        let _demo = state.demo_service.get_demo(demo_id).await?;
+
+        let _link = state
+            .demo_service
+            .link_to_match(
+                demo_id,
+                match_id,
+                req.game_number,
+                portal_core::DemoLinkType::Evidence,
+                Some(auth.user_id),
+            )
+            .await?;
+    }
 
     let evidence = state
         .evidence_service
@@ -1027,6 +1115,35 @@ pub async fn link_demo(
             request_id,
         )),
     ))
+}
+
+// =============================================================================
+// LOCAL EVIDENCE UPLOAD HANDLER
+// =============================================================================
+
+/// Handle direct file upload for local development.
+///
+/// In production, uploads go directly to S3 via presigned URLs.
+/// For local dev, the presigned URL points to this handler which writes to disk.
+pub async fn local_evidence_upload(
+    State(state): State<AppState>,
+    axum::extract::Path(path): axum::extract::Path<String>,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    let file_path = std::path::Path::new(&state.uploads_path).join(&path);
+
+    // Ensure parent directories exist
+    if let Some(parent) = file_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to create directory: {e}")))?;
+    }
+
+    tokio::fs::write(&file_path, &body)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to write file: {e}")))?;
+
+    Ok(StatusCode::OK)
 }
 
 /// Create a CS2 plugin with evidence support, using the configured demo service URL.

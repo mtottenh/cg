@@ -1,7 +1,9 @@
 //! Application state for dependency injection.
 
+use crate::adapters::{EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceStorageAdapter};
 use portal_db::{
-    DbPool, GameRepository, LocalEvidenceStorage, PgApiKeyRepository, PgDiscoveredMatchRepository,
+    ActionItemRepository, DbPool, GameRepository, PgApiKeyRepository,
+    PgDiscoveredMatchRepository, PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository,
     PgPlayerRatingHistoryRepository, PgRefreshTokenRepository, PgSteamTrackingRepository, PermissionRepository,
     PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgBanRepository,
     PgDemoMatchLinkRepository, PgDemoPlayerRepository, PgDemoRepository,
@@ -14,8 +16,9 @@ use portal_db::{
     PgResultClaimRepository,
     PgResultReviewRepository, PgSagaExecutionRepository, PgScheduleProposalRepository,
     PgSuggestedTimeRepository, PgTournamentBracketRepository, PgTournamentMatchRepository,
-    PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
-    PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
+    PgTournamentMapPoolRepository, PgTournamentRegistrationRepository, PgTournamentRepository,
+    PgTournamentStageRepository, PgTournamentStandingsRepository, PgUserRepository,
+    PgVetoActionRepository,
     PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
     RoleRepository, StatsRepository,
 };
@@ -32,7 +35,10 @@ use portal_domain::services::{
     PermissionService, PlayerGameProfileService, PlayerService, SteamTrackingService,
     TournamentService, UserService,
 };
-use crate::adapters::{DemoValidatorAdapter, ReviewCreatorAdapter, StatsUpdaterAdapter};
+use crate::adapters::{
+    DemoValidatorAdapter, PluginSideSelectionProvider, PluginVetoFormatProvider,
+    ReviewCreatorAdapter, StatsUpdaterAdapter,
+};
 use crate::websocket::VetoLobbyManager;
 use portal_plugins::PluginManager;
 use portal_storage::{LocalStorage, StorageBackend};
@@ -65,6 +71,8 @@ pub type AppLeagueSeasonParticipantService =
     LeagueSeasonParticipantService<PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository>;
 pub type AppPlayerGameProfileService =
     PlayerGameProfileService<PgPlayerGameProfileRepository>;
+pub type AppEligibilityService =
+    portal_domain::services::EligibilityService<PgPlayerGameProfileRepository, PgPlayerRatingHistoryRepository>;
 pub type AppBanService = BanService<PgBanRepository>;
 pub type AppTournamentService = TournamentService<
     PgTournamentRepository,
@@ -120,7 +128,7 @@ pub type AppEvidenceService = EvidenceService<
     PgEvidenceRepository,
     PgTournamentMatchRepository,
     PgTournamentRegistrationRepository,
-    LocalEvidenceStorage,
+    EvidenceStorageBackend,
 >;
 pub type AppForfeitService = ForfeitService<
     PgForfeitRecordRepository,
@@ -183,6 +191,8 @@ pub struct AppState {
     pub player_service: AppPlayerService,
     /// Player game profile service.
     pub player_game_profile_service: AppPlayerGameProfileService,
+    /// Eligibility checking service (shared by league + tournament handlers).
+    pub eligibility_service: AppEligibilityService,
     /// League service.
     pub league_service: AppLeagueService,
     /// League season service.
@@ -235,6 +245,8 @@ pub struct AppState {
     pub standings_service: AppStandingsService,
     /// Tournament match repository for direct match access.
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
+    /// Tournament map pool repository for veto auto-creation.
+    pub tournament_map_pool_repo: Arc<PgTournamentMapPoolRepository>,
     /// Permission service for high-level authorization checks (`is_admin`, etc).
     pub permission_service: AppPermissionService,
     /// Permission repository for low-level/scoped permission checks.
@@ -245,6 +257,8 @@ pub struct AppState {
     pub game_repo: GameRepository,
     /// Stats repository for admin dashboard.
     pub stats_repo: StatsRepository,
+    /// Action item repository for captain pending actions.
+    pub action_item_repo: ActionItemRepository,
     /// Storage backend for file uploads.
     pub storage: Arc<dyn StorageBackend>,
     /// Plugin manager for game-specific logic.
@@ -261,6 +275,10 @@ pub struct AppState {
     pub discovered_match_service: AppDiscoveredMatchService,
     /// Player rating history repository for rating submissions.
     pub rating_history_repo: Arc<PgPlayerRatingHistoryRepository>,
+    /// Player MM stats repository (public matchmaking aggregates).
+    pub mm_stats_repo: Arc<PgPlayerMmStatsRepository>,
+    /// Player match history repository (individual public match results).
+    pub match_history_repo: Arc<PgPlayerMatchHistoryRepository>,
     /// Base path for local file uploads (used for static file serving).
     pub uploads_path: String,
     /// Refresh token repository.
@@ -307,14 +325,12 @@ impl Default for StorageConfig {
 
 impl AppState {
     /// Create new application state.
-    #[must_use]
-    pub fn new(db_pool: DbPool, jwt_secret: impl Into<Arc<str>>) -> Self {
-        Self::with_storage(db_pool, jwt_secret, StorageConfig::default())
+    pub async fn new(db_pool: DbPool, jwt_secret: impl Into<Arc<str>>) -> Self {
+        Self::with_storage(db_pool, jwt_secret, StorageConfig::default()).await
     }
 
     /// Create new application state with custom storage configuration.
-    #[must_use]
-    pub fn with_storage(
+    pub async fn with_storage(
         db_pool: DbPool,
         jwt_secret: impl Into<Arc<str>>,
         storage_config: StorageConfig,
@@ -350,10 +366,13 @@ impl AppState {
         // Create stats repository
         let stats_repo = StatsRepository::new(db_pool.clone());
 
+        // Create action item repository
+        let action_item_repo = ActionItemRepository::new(db_pool.clone());
+
         // Create storage backend
         // Save paths before consuming storage_config
         let uploads_path = storage_config.base_path.clone();
-        let evidence_base_path = format!("{}/evidence", storage_config.base_path);
+        let evidence_base_url = storage_config.base_url.clone();
         let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(
             storage_config.base_path,
             storage_config.base_url,
@@ -391,6 +410,14 @@ impl AppState {
             PlayerGameProfileService::new(Arc::clone(&player_game_profile_repo));
         let rating_history_repo =
             Arc::new(PgPlayerRatingHistoryRepository::new(db_pool.clone()));
+        let eligibility_service = portal_domain::services::EligibilityService::new(
+            PlayerGameProfileService::new(Arc::clone(&player_game_profile_repo)),
+            Arc::clone(&rating_history_repo),
+        );
+        let mm_stats_repo =
+            Arc::new(PgPlayerMmStatsRepository::new(db_pool.clone()));
+        let match_history_repo =
+            Arc::new(PgPlayerMatchHistoryRepository::new(db_pool.clone()));
         let league_service = LeagueService::new(
             Arc::clone(&league_repo),
             Arc::clone(&league_member_repo),
@@ -488,12 +515,19 @@ impl AppState {
         // Create veto and result repositories and services
         let veto_session_repo = Arc::new(PgVetoSessionRepository::new(db_pool.clone()));
         let veto_action_repo = Arc::new(PgVetoActionRepository::new(db_pool.clone()));
+        let tournament_map_pool_repo = Arc::new(PgTournamentMapPoolRepository::new(db_pool.clone()));
+
+        let format_provider = Arc::new(PluginVetoFormatProvider::new(Arc::clone(&plugin_manager)));
+        let side_provider = Arc::new(PluginSideSelectionProvider::new(Arc::clone(&plugin_manager)));
+
         let veto_service = VetoService::new(
             Arc::clone(&veto_session_repo),
             Arc::clone(&veto_action_repo),
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_registration_repo),
-        );
+        )
+        .with_format_provider(format_provider)
+        .with_side_provider(side_provider);
 
         let result_claim_repo = Arc::new(PgResultClaimRepository::new(db_pool.clone()));
 
@@ -524,18 +558,44 @@ impl AppState {
             Arc::clone(&tournament_match_repo),
         );
 
-        // Create evidence service with local storage
+        // Create evidence service — storage backend chosen by EVIDENCE_STORAGE env var
         let evidence_repo = Arc::new(PgEvidenceRepository::new(db_pool.clone()));
-        let evidence_storage = Arc::new(LocalEvidenceStorage::new(evidence_base_path));
+        let evidence_storage_mode = std::env::var("EVIDENCE_STORAGE")
+            .unwrap_or_else(|_| "local".to_string());
+
+        let (evidence_storage, evidence_bucket) = if evidence_storage_mode == "s3" {
+            let bucket = std::env::var("S3_EVIDENCE_BUCKET")
+                .expect("S3_EVIDENCE_BUCKET must be set when EVIDENCE_STORAGE=s3");
+            let region = std::env::var("S3_EVIDENCE_REGION")
+                .expect("S3_EVIDENCE_REGION must be set when EVIDENCE_STORAGE=s3");
+            let public_url = std::env::var("S3_EVIDENCE_PUBLIC_URL")
+                .expect("S3_EVIDENCE_PUBLIC_URL must be set when EVIDENCE_STORAGE=s3");
+            let endpoint = std::env::var("S3_EVIDENCE_ENDPOINT").ok();
+
+            let s3_config = portal_storage::S3Config {
+                bucket: bucket.clone(),
+                region,
+                public_url,
+                endpoint,
+            };
+            let adapter = S3EvidenceStorageAdapter::new(s3_config).await;
+            tracing::info!(bucket = %bucket, "Evidence storage: S3");
+            (EvidenceStorageBackend::S3(adapter), bucket)
+        } else {
+            let local = LocalEvidenceStorage::new(&uploads_path, evidence_base_url);
+            tracing::info!("Evidence storage: local filesystem");
+            (EvidenceStorageBackend::Local(local), "evidence".to_string())
+        };
+
         let evidence_config = EvidenceServiceConfig {
-            evidence_bucket: "evidence".to_string(),
+            evidence_bucket,
             ..Default::default()
         };
         let evidence_service = EvidenceService::new(
             Arc::clone(&evidence_repo),
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_registration_repo),
-            Arc::clone(&evidence_storage),
+            Arc::new(evidence_storage),
             evidence_config,
         );
 
@@ -630,6 +690,7 @@ impl AppState {
             user_service,
             player_service,
             player_game_profile_service,
+            eligibility_service,
             league_service,
             league_season_service,
             league_team_service,
@@ -656,11 +717,13 @@ impl AppState {
             veto_lobby_manager,
             standings_service,
             tournament_match_repo,
+            tournament_map_pool_repo,
             permission_service,
             permission_repo,
             role_repo,
             game_repo,
             stats_repo,
+            action_item_repo,
             storage,
             plugin_manager,
             match_completion_saga,
@@ -669,6 +732,8 @@ impl AppState {
             steam_tracking_service,
             discovered_match_service,
             rating_history_repo,
+            mm_stats_repo,
+            match_history_repo,
             uploads_path,
             refresh_token_repo,
             token_config: TokenConfig::default(),
@@ -679,6 +744,29 @@ impl AppState {
     #[must_use]
     pub fn with_token_config(mut self, config: TokenConfig) -> Self {
         self.token_config = config;
+        self
+    }
+
+    /// Replace the evidence storage backend.
+    ///
+    /// Used by integration tests to inject a MinIO-backed S3 backend
+    /// without relying on process-wide environment variables.
+    #[must_use]
+    pub fn with_evidence_storage(mut self, storage: EvidenceStorageBackend, bucket: String) -> Self {
+        let evidence_repo = Arc::new(PgEvidenceRepository::new(self.db_pool.clone()));
+        let match_repo = Arc::clone(&self.tournament_match_repo);
+        let reg_repo = Arc::new(PgTournamentRegistrationRepository::new(self.db_pool.clone()));
+        let config = EvidenceServiceConfig {
+            evidence_bucket: bucket,
+            ..Default::default()
+        };
+        self.evidence_service = EvidenceService::new(
+            evidence_repo,
+            match_repo,
+            reg_repo,
+            Arc::new(storage),
+            config,
+        );
         self
     }
 }

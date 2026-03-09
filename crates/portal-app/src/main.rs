@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     );
 
     // Create app state
-    let state = AppState::new(pool, jwt_secret)
+    let state = AppState::new(pool, jwt_secret).await
         .with_token_config(token_config);
 
     // Start background tasks

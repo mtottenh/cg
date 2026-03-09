@@ -95,6 +95,24 @@ impl S3Storage {
         }
     }
 
+    /// Create from a pre-configured S3 client (for MinIO/test with path-style).
+    #[must_use]
+    pub fn from_client(
+        client: Client,
+        bucket: impl Into<String>,
+        public_url: impl Into<String>,
+    ) -> Self {
+        let mut public_url = public_url.into();
+        if public_url.ends_with('/') {
+            public_url.pop();
+        }
+        Self {
+            client,
+            bucket: bucket.into(),
+            public_url,
+        }
+    }
+
     /// Generate a unique storage key.
     fn generate_key(&self, request: &StoreRequest) -> String {
         let id = uuid::Uuid::now_v7();

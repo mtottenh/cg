@@ -1520,7 +1520,14 @@ mod tests {
             "matches_won": 6
         });
 
-        let formatted = plugin.format_player_stats(&stats);
+        let context = crate::types::PlayerStatsContext {
+            rating: 0,
+            peak_rating: 0,
+            peak_rating_at: None,
+            rank_tier: None,
+            average_rating: None,
+        };
+        let formatted = plugin.format_player_stats(&stats, &context);
         assert!(!formatted.is_empty());
 
         // Check K/D ratio is calculated

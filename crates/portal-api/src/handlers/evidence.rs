@@ -732,9 +732,33 @@ async fn build_evidence_key_prefix(
     Some(prefix)
 }
 
+/// Process-wide cache of `tournament_id → plugin`.
+///
+/// Tournaments' `game_id` is immutable after creation (a tournament belongs
+/// to exactly one game), games' `plugin_id` is immutable after seeding, and
+/// plugins themselves are `Arc<dyn GamePlugin>` — cheap to clone. So once
+/// we've resolved the plugin for a tournament, we can serve every
+/// subsequent call from memory. This eliminates 2 of the 3 DB round-trips
+/// previously paid on every `/matches/{id}/evidence/*` request (match
+/// lookup still happens because callers need the full match entity).
+///
+/// Invalidation: none is needed while those invariants hold. If tournament
+/// migration or plugin reassignment ever becomes a real operation, add an
+/// invalidation hook on the write path.
+fn plugin_cache() -> &'static dashmap::DashMap<
+    portal_core::TournamentId,
+    Arc<dyn portal_plugins::GamePlugin>,
+> {
+    static CACHE: std::sync::OnceLock<
+        dashmap::DashMap<portal_core::TournamentId, Arc<dyn portal_plugins::GamePlugin>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(dashmap::DashMap::new)
+}
+
 /// Resolve the evidence plugin for a given match.
 ///
-/// Follows the chain: match → tournament → game → plugin.
+/// Follows the chain: match → tournament → game → plugin. The tournament
+/// → game → plugin leg is cached per-tournament.
 async fn resolve_evidence_plugin(
     state: &AppState,
     match_id: TournamentMatchId,
@@ -742,7 +766,7 @@ async fn resolve_evidence_plugin(
     portal_domain::entities::TournamentMatch,
     Arc<dyn portal_plugins::GamePlugin>,
 )> {
-    // 1. Get the match
+    // 1. Get the match (always fresh — callers use its full state).
     let match_ = state
         .tournament_match_repo
         .find_by_id(match_id)
@@ -750,14 +774,18 @@ async fn resolve_evidence_plugin(
         .map_err(|e| ApiError::internal(format!("Failed to load match: {e}")))?
         .ok_or_else(|| ApiError::not_found("Match not found"))?;
 
-    // 2. Get the tournament for game_id
+    // 2. Cached path: tournament_id → plugin.
+    if let Some(plugin) = plugin_cache().get(&match_.tournament_id) {
+        return Ok((match_, Arc::clone(plugin.value())));
+    }
+
+    // 3. Cache miss — resolve via tournament → game → plugin manager.
     let tournament = state
         .tournament_service
         .get_tournament(match_.tournament_id)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to load tournament: {e}")))?;
 
-    // 3. Get the game for plugin_id
     let game = state
         .game_repo
         .find_by_id(tournament.game_id.as_uuid())
@@ -765,7 +793,6 @@ async fn resolve_evidence_plugin(
         .map_err(|e| ApiError::internal(format!("Failed to load game: {e}")))?
         .ok_or_else(|| ApiError::not_found("Game not found"))?;
 
-    // 4. Get the plugin
     let plugin = state
         .plugin_manager
         .get(&game.plugin_id)
@@ -775,6 +802,8 @@ async fn resolve_evidence_plugin(
                 game.display_name, game.plugin_id
             ))
         })?;
+
+    plugin_cache().insert(match_.tournament_id, Arc::clone(&plugin));
 
     Ok((match_, plugin))
 }

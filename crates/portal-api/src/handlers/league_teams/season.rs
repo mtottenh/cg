@@ -6,7 +6,7 @@ use crate::dto::requests::{CreateLeagueSeasonRequest, UpdateLeagueSeasonRequest}
 use crate::dto::responses::LeagueSeasonResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::LeagueTeamState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -36,7 +36,7 @@ pub struct ListSeasonsParams {
     tag = "league-seasons"
 )]
 pub async fn create_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -80,7 +80,7 @@ pub async fn create_season(
     tag = "league-seasons"
 )]
 pub async fn get_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
     Path(season_id): Path<LeagueSeasonId>,
 ) -> ApiResult<Json<DataResponse<LeagueSeasonResponse>>> {
@@ -106,7 +106,7 @@ pub async fn get_season(
     tag = "league-seasons"
 )]
 pub async fn list_seasons(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
     Query(params): Query<ListSeasonsParams>,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueSeasonResponse>>>> {
@@ -144,7 +144,7 @@ pub async fn list_seasons(
     tag = "league-seasons"
 )]
 pub async fn update_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,

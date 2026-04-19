@@ -12,7 +12,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::{AppState, DisputeReadState};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -225,7 +225,7 @@ pub async fn add_dispute_message(
     tag = "disputes"
 )]
 pub async fn get_dispute(
-    State(state): State<AppState>,
+    State(state): State<DisputeReadState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -264,7 +264,7 @@ pub async fn get_dispute(
 /// a solo player, or indirectly as an active member of the team-season
 /// associated with that registration.
 async fn is_dispute_participant(
-    state: &AppState,
+    state: &DisputeReadState,
     dispute: &Dispute,
     auth: &AuthenticatedUser,
 ) -> ApiResult<bool> {

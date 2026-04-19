@@ -95,6 +95,29 @@ impl FromRef<AppState> for DisputeReadState {
     }
 }
 
+/// State slice used by demo catalog handlers.
+///
+/// The `cs2_demo_base_url` field carries the per-process demo service URL
+/// that was validated at startup by
+/// [`portal_plugins::validate_demo_service_url`]; handlers consult it when
+/// building download URLs.
+#[derive(Clone)]
+pub struct DemoState {
+    /// Demo service.
+    pub demo_service: super::AppDemoService,
+    /// Validated CS2 demo service base URL (None if unset at startup).
+    pub cs2_demo_base_url: Option<String>,
+}
+
+impl FromRef<AppState> for DemoState {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            demo_service: s.demo_service.clone(),
+            cs2_demo_base_url: s.cs2_demo_base_url.clone(),
+        }
+    }
+}
+
 /// State slice used by league-team handlers.
 ///
 /// Covers team CRUD, invitations, seasons, and the league metadata needed

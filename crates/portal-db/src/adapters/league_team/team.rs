@@ -441,6 +441,34 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
+        // Grant the team-scoped `team_captain` RBAC role to the captain's
+        // user. This is what makes `PermissionChecker::require_team_permission`
+        // succeed for the owner. Without this row the owner can only be
+        // authorised by the ad-hoc `team.is_owner(...)` check in the
+        // handler layer — see audit item I4.
+        //
+        // The lookup is done as a single INSERT...SELECT so we can roll
+        // back with the same transaction if the owner has no linked
+        // user_id (edge case: bot/player-only rows) — in that case the
+        // SELECT returns zero rows and nothing is inserted, which is
+        // correct: there is no user account to grant the role to.
+        sqlx::query(
+            r"
+            INSERT INTO user_roles (user_id, role_id, scope_type, scope_id, granted_at)
+            SELECT p.user_id, r.id, 'team', $1, $2
+            FROM players p
+            JOIN roles r ON r.name = 'team_captain'
+            WHERE p.id = $3 AND p.user_id IS NOT NULL
+            ON CONFLICT DO NOTHING
+            ",
+        )
+        .bind(team_id)
+        .bind(now)
+        .bind(captain_player_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
         tx.commit()
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?;

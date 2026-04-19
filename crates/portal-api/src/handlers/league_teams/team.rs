@@ -12,11 +12,11 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::LeagueTeamState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use portal_core::{LeagueSeasonId, LeagueTeamId, ScopeType};
+use portal_core::{permissions, LeagueSeasonId, LeagueTeamId};
 
 /// Query parameters for listing teams in a league.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -64,7 +64,7 @@ pub struct ListTeamSeasonsParams {
     tag = "league-teams"
 )]
 pub async fn create_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(season_id): Path<LeagueSeasonId>,
@@ -112,7 +112,7 @@ pub async fn create_team(
     tag = "league-teams"
 )]
 pub async fn register_team_for_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -126,7 +126,7 @@ pub async fn register_team_for_season(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
-    require_team_owner_or_admin(&state, &perm, &auth, team_id).await?;
+    require_team_settings_manage(&perm, &auth, team_id).await?;
 
     let team_season = state
         .league_team_service
@@ -153,7 +153,7 @@ pub async fn register_team_for_season(
     tag = "league-teams"
 )]
 pub async fn get_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
     Path(team_id): Path<LeagueTeamId>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
@@ -182,7 +182,7 @@ pub async fn get_team(
     tag = "league-teams"
 )]
 pub async fn list_teams_in_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
     Path(season_id): Path<LeagueSeasonId>,
     Query(params): Query<ListTeamSeasonsParams>,
@@ -230,7 +230,7 @@ pub async fn list_teams_in_season(
     tag = "league-teams"
 )]
 pub async fn update_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -239,7 +239,7 @@ pub async fn update_team(
 ) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
     let request_id = get_request_id(&headers);
 
-    require_team_owner_or_admin(&state, &perm, &auth, team_id).await?;
+    require_team_settings_manage(&perm, &auth, team_id).await?;
 
     let cmd = req.into();
     let updated = state
@@ -270,44 +270,39 @@ pub async fn update_team(
     tag = "league-teams"
 )]
 pub async fn disband_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     Path(team_id): Path<LeagueTeamId>,
 ) -> ApiResult<StatusCode> {
-    require_team_owner_or_admin(&state, &perm, &auth, team_id).await?;
+    require_team_settings_manage(&perm, &auth, team_id).await?;
 
     state.league_team_service.disband_team(team_id).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Require that the caller owns `team_id` or holds the team admin override.
+/// Require that the caller holds `team.settings.manage` for `team_id`.
 ///
-/// Centralises the owner-or-admin check that used to be copy-pasted into
-/// every team settings handler. Kept as a helper (rather than a
-/// `require_team_permission` call) because the `team_captain` RBAC role is
-/// not currently assigned to the owner at team-creation time — once that
-/// seed is in place (new migration + role assignment in
-/// `create_team_with_season_and_captain`), this can collapse to
-/// `perm.require_team_permission(&auth, team_id.as_uuid(),
-/// permissions::team::SETTINGS_MANAGE)` and the helper can be deleted.
-async fn require_team_owner_or_admin(
-    state: &AppState,
+/// Team owners are granted the `team_captain` RBAC role (scoped to the
+/// team) at creation time — see
+/// `PgLeagueTeamRepository::create_team_with_season_and_captain` and the
+/// 0061 backfill migration — so this single check now covers owners,
+/// explicitly-assigned captains, and platform admins (via the
+/// `admin.teams.manage_any` override folded into
+/// `require_team_permission`).
+///
+/// Thin wrapper kept for readability at the call sites, and because the
+/// earlier `require_team_owner_or_admin` helper — which did an extra
+/// `get_team()` roundtrip before checking ownership — was removed as
+/// part of the I4 cleanup.
+async fn require_team_settings_manage(
     perm: &PermissionChecker,
     auth: &AuthenticatedUser,
     team_id: LeagueTeamId,
 ) -> ApiResult<()> {
-    let team = state.league_team_service.get_team(team_id).await?;
-    if team.is_owner(auth.player_id) {
-        return Ok(());
-    }
-    if perm.has_admin_override(auth, ScopeType::Team).await {
-        return Ok(());
-    }
-    Err(ApiError::forbidden(
-        "Only the team owner or a platform admin can perform this action",
-    ))
+    perm.require_team_permission(auth, team_id.as_uuid(), permissions::team::SETTINGS_MANAGE)
+        .await
 }
 
 /// Transfer team ownership to another player (owner only).
@@ -329,7 +324,7 @@ async fn require_team_owner_or_admin(
     tag = "league-teams"
 )]
 pub async fn transfer_ownership(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(team_id): Path<LeagueTeamId>,

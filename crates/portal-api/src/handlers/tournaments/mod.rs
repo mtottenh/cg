@@ -1,7 +1,35 @@
 //! Tournament handlers.
 //!
-//! Phase 1 implementation - core tournament CRUD operations.
-//! Phase 2 implementation - registration management and seeding.
+//! This module is in the middle of a split — see audit item N1. The
+//! `map_pool` subsystem has already been extracted; the remaining ~2200
+//! lines below are candidates for further extraction:
+//!
+//! * **`lifecycle`** — create / get / list / update / publish / start /
+//!   complete / cancel / finalize, plus open/close/reopen registration.
+//! * **`stages`** — create_stage, get_stages.
+//! * **`registration`** — register_team / register_player /
+//!   get_registrations / check_in / withdraw / approve / reject /
+//!   disqualify / admin_check_in / process_no_shows.
+//! * **`brackets`** — get_brackets / get_matches / get_match.
+//! * **`seeding`** — get_seeding / auto_seed / manual_seed /
+//!   clear_seeding.
+//! * **`match_lifecycle`** — match status / check-in / schedule /
+//!   forfeit / admin_match_transition.
+//! * **`scheduling`** — propose / accept / reject / counter_propose /
+//!   get_active_proposal / get_proposal_history / admin_schedule_match,
+//!   plus the standings + swiss helpers at the bottom.
+//!
+//! Because `openapi.rs` references every handler as
+//! `tournaments::handler_name`, each future sub-module must be
+//! re-exported via `pub use` here so those paths keep working.
+
+pub mod map_pool;
+// Glob re-export so `openapi.rs` can keep referencing
+// `tournaments::get_tournament_map_pool` (etc.) *and* so the
+// `__path_<handler>` types the `utoipa::path` macro generates are
+// visible at the same `tournaments::` path — which is what utoipa's
+// `paths(...)` list actually resolves against.
+pub use map_pool::*;
 
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{
@@ -10,12 +38,12 @@ use crate::dto::requests::{
     DisqualifyRequest, ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest,
     MatchCheckInRequest, ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest,
     RejectRegistrationRequest, RejectScheduleProposalRequest, ScheduleMatchRequest,
-    SetTournamentMapPoolRequest, UpdateTournamentRequest,
+    UpdateTournamentRequest,
 };
 use crate::dto::responses::{
     CheckInStatusResponse, MatchStatusDetailsResponse, MatchStatusLogResponse,
     ScheduleProposalResponse, SeededParticipantResponse, TournamentBracketResponse,
-    TournamentMapPoolResponse, TournamentMatchResponse, TournamentRegistrationResponse,
+    TournamentMatchResponse, TournamentRegistrationResponse,
     TournamentResponse, TournamentStageResponse, TournamentStandingResponse,
     TournamentSummaryResponse,
 };
@@ -32,11 +60,14 @@ use portal_domain::entities::schedule_proposal::{
     AcceptProposalCommand, CounterProposeCommand, RejectProposalCommand,
 };
 use portal_domain::repositories::tournament::{
-    TournamentFilters, TournamentMapPoolRepository, UpsertTournamentMapPool,
+    TournamentFilters, TournamentMapPoolRepository,
 };
 
 /// Extract request ID from headers.
-fn get_request_id(headers: &HeaderMap) -> &str {
+///
+/// `pub(super)` so the extracted sub-modules (currently just `map_pool`)
+/// can reuse the same helper without duplicating it.
+pub(super) fn get_request_id(headers: &HeaderMap) -> &str {
     headers
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
@@ -2175,179 +2206,6 @@ pub async fn admin_generate_next_swiss_round(
     Ok(Json(DataResponse::new(response, request_id)))
 }
 
-// =============================================================================
-// TOURNAMENT MAP POOL ENDPOINTS
-// =============================================================================
-
-/// Get effective map pool for a tournament (tournament override → game default fallback).
-#[utoipa::path(
-    get,
-    path = "/v1/tournaments/{tournament_id}/map-pool",
-    params(
-        ("tournament_id" = String, Path, description = "Tournament ID")
-    ),
-    responses(
-        (status = 200, description = "Effective map pool", body = DataResponse<TournamentMapPoolResponse>),
-        (status = 404, description = "Tournament not found", body = ApiError),
-    ),
-    tag = "tournaments"
-)]
-pub async fn get_tournament_map_pool(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(tournament_id): Path<TournamentId>,
-) -> ApiResult<Json<DataResponse<TournamentMapPoolResponse>>> {
-    let request_id = get_request_id(&headers);
-
-    let tournament = state
-        .tournament_service
-        .get_tournament(tournament_id)
-        .await?;
-
-    // Try tournament-specific pool first
-    if let Some(pool) = state
-        .tournament_map_pool_repo
-        .find_by_tournament(tournament_id)
-        .await?
-    {
-        return Ok(Json(DataResponse::new(
-            TournamentMapPoolResponse {
-                maps: pool.maps,
-                source: "tournament".to_string(),
-            },
-            request_id,
-        )));
-    }
-
-    // Fall back to game's default pool
-    let game = state
-        .game_repo
-        .find_by_id(tournament.game_id.as_uuid())
-        .await?
-        .ok_or_else(|| ApiError::not_found("Game not found"))?;
-
-    let maps: Vec<String> = crate::handlers::games::extract_map_pool(&game);
-
-    Ok(Json(DataResponse::new(
-        TournamentMapPoolResponse {
-            maps,
-            source: "game".to_string(),
-        },
-        request_id,
-    )))
-}
-
-/// Set a tournament-specific map pool (admin only).
-#[utoipa::path(
-    put,
-    path = "/v1/tournaments/{tournament_id}/map-pool",
-    params(
-        ("tournament_id" = String, Path, description = "Tournament ID")
-    ),
-    request_body = SetTournamentMapPoolRequest,
-    responses(
-        (status = 200, description = "Map pool updated", body = DataResponse<TournamentMapPoolResponse>),
-        (status = 400, description = "Invalid map IDs", body = ApiError),
-        (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 403, description = "Forbidden", body = ApiError),
-        (status = 404, description = "Tournament not found", body = ApiError),
-    ),
-    security(("bearer_auth" = [])),
-    tag = "tournaments"
-)]
-pub async fn set_tournament_map_pool(
-    State(state): State<AppState>,
-    auth: AuthenticatedUser,
-    perm_checker: PermissionChecker,
-    headers: HeaderMap,
-    Path(tournament_id): Path<TournamentId>,
-    ValidatedJson(req): ValidatedJson<SetTournamentMapPoolRequest>,
-) -> ApiResult<Json<DataResponse<TournamentMapPoolResponse>>> {
-    let request_id = get_request_id(&headers);
-
-    // Check admin permission
-    perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
-        .await?;
-
-    let tournament = state
-        .tournament_service
-        .get_tournament(tournament_id)
-        .await?;
-
-    // Validate all map IDs exist in the game's catalog
-    let game = state
-        .game_repo
-        .find_by_id(tournament.game_id.as_uuid())
-        .await?
-        .ok_or_else(|| ApiError::not_found("Game not found"))?;
-
-    let plugin = state.plugin_manager.get(&game.plugin_id);
-    let catalog = crate::handlers::games::load_available_maps(&game, &plugin);
-
-    for map_id in &req.map_ids {
-        if !catalog.iter().any(|m| m.id == *map_id) {
-            return Err(ApiError::bad_request(format!("Unknown map: {map_id}")));
-        }
-    }
-
-    let pool = state
-        .tournament_map_pool_repo
-        .upsert(UpsertTournamentMapPool {
-            tournament_id,
-            stage_id: None,
-            maps: req.map_ids,
-            veto_format_id: None,
-        })
-        .await?;
-
-    Ok(Json(DataResponse::new(
-        TournamentMapPoolResponse {
-            maps: pool.maps,
-            source: "tournament".to_string(),
-        },
-        request_id,
-    )))
-}
-
-/// Remove a tournament-specific map pool override (reverts to game default).
-#[utoipa::path(
-    delete,
-    path = "/v1/tournaments/{tournament_id}/map-pool",
-    params(
-        ("tournament_id" = String, Path, description = "Tournament ID")
-    ),
-    responses(
-        (status = 204, description = "Map pool override removed"),
-        (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 403, description = "Forbidden", body = ApiError),
-        (status = 404, description = "Tournament or map pool not found", body = ApiError),
-    ),
-    security(("bearer_auth" = [])),
-    tag = "tournaments"
-)]
-pub async fn delete_tournament_map_pool(
-    State(state): State<AppState>,
-    auth: AuthenticatedUser,
-    perm_checker: PermissionChecker,
-    Path(tournament_id): Path<TournamentId>,
-) -> ApiResult<StatusCode> {
-
-    perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
-        .await?;
-
-    // Find and delete the tournament-level pool
-    let pool = state
-        .tournament_map_pool_repo
-        .find_by_tournament(tournament_id)
-        .await?
-        .ok_or_else(|| ApiError::not_found("No tournament map pool override found"))?;
-
-    state.tournament_map_pool_repo.delete(pool.id).await?;
-
-    Ok(StatusCode::NO_CONTENT)
-}
 
 // =============================================================================
 // INTERNAL HELPERS

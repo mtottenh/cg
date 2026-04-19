@@ -13,7 +13,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
-use crate::state::AppState;
+use crate::state::{AppState, DemoState};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -115,7 +115,7 @@ pub async fn list_demos(
     tag = "demos"
 )]
 pub async fn get_demo(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -146,7 +146,7 @@ pub async fn get_demo(
     tag = "demos"
 )]
 pub async fn get_demo_players(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -451,7 +451,7 @@ pub async fn link_demo_to_match(
     tag = "demos"
 )]
 pub async fn get_demo_links(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -485,7 +485,7 @@ pub async fn get_demo_links(
     tag = "demos"
 )]
 pub async fn get_demo_download(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -1028,7 +1028,7 @@ pub async fn set_demo_notes(
 /// / `get_demo_download` would return any demo by ID with no gate. That
 /// leaked stats and download coordinates for hidden/private demos.
 async fn authorize_demo_read(
-    state: &AppState,
+    state: &DemoState,
     perm: &PermissionChecker,
     auth: &AuthenticatedUser,
     demo: &Demo,

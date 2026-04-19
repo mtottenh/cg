@@ -11,7 +11,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | C1 | ☑ | Gate `local_evidence_upload`, fix path traversal | `portal-api/src/app.rs:22-25`, `handlers/evidence.rs:1128-1147` |
 | C2 | ☑ | Hard-fail on missing `JWT_SECRET` | `portal-app/src/main.rs:38-39` |
 | C3 | ☑ | Remove `DEV_AUTH_ENABLED` runtime bypass | `extractors/auth.rs:61-66,117-119`, `extractors/permission.rs:37-40,70,97,134,152` |
-| C4 | ☐ | Argon2 on `spawn_blocking`; dummy-verify on user-not-found | `portal-domain/src/auth.rs:11-32`, `services/user.rs:139,186-209` |
+| C4 | ☑ | Argon2 on `spawn_blocking`; dummy-verify on user-not-found | `portal-domain/src/auth.rs:11-32`, `services/user.rs:139,186-209` |
 | C4b | ☐ | Rate-limit `/auth/*` routes | `portal-api/src/routes/auth.rs:9-14` |
 | C5 | ☐ | Exhaustive `RepositoryError→DomainError`; mask raw SQL text | `portal-db/src/error.rs:108-136`, `portal-api/src/error.rs:323` |
 | C6 | ☑ | Respond with `application/problem+json` | `portal-api/src/error.rs:130-134` |

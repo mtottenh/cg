@@ -1,6 +1,6 @@
 //! User service with business logic.
 
-use crate::auth::{hash_password, verify_password};
+use crate::auth::{hash_password, verify_dummy_for_timing, verify_password};
 use crate::entities::user::UserStatus;
 use crate::entities::{Player, User};
 use crate::jwt::generate_access_token;
@@ -135,8 +135,8 @@ where
             )));
         }
 
-        // Hash the password
-        let password_hash = hash_password(&cmd.password)?;
+        // Hash the password (dispatched to spawn_blocking inside hash_password)
+        let password_hash = hash_password(cmd.password).await?;
 
         // Generate a shared ID for User and Player
         let user_id = UserId::new();
@@ -182,12 +182,20 @@ where
         cmd: LoginCommand,
         jwt_secret: &str,
     ) -> Result<AuthResult, DomainError> {
-        // Find user by username or email
-        let user_creds = self
+        // Find user by username or email. If they don't exist, spend the
+        // same Argon2 work as a real verify so an attacker can't enumerate
+        // accounts via response timing.
+        let user_creds = match self
             .user_repo
             .find_for_auth(&cmd.username_or_email)
             .await?
-            .ok_or(DomainError::InvalidCredentials)?;
+        {
+            Some(c) => c,
+            None => {
+                verify_dummy_for_timing().await?;
+                return Err(DomainError::InvalidCredentials);
+            }
+        };
 
         // Check if account is active
         if user_creds.status != UserStatus::Active {
@@ -197,13 +205,18 @@ where
             )));
         }
 
-        // Verify password
-        let password_hash = user_creds
-            .password_hash
-            .as_ref()
-            .ok_or(DomainError::InvalidCredentials)?;
+        // Verify password. Same dummy-verify treatment for users without a
+        // password hash (e.g. social-only accounts) so the existence of such
+        // accounts isn't observable via timing either.
+        let password_hash = match user_creds.password_hash.clone() {
+            Some(h) => h,
+            None => {
+                verify_dummy_for_timing().await?;
+                return Err(DomainError::InvalidCredentials);
+            }
+        };
 
-        let is_valid = verify_password(&cmd.password, password_hash)?;
+        let is_valid = verify_password(cmd.password, password_hash).await?;
         if !is_valid {
             return Err(DomainError::InvalidCredentials);
         }

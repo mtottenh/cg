@@ -1,16 +1,19 @@
 //! Application builder.
 
 use crate::handlers::evidence::local_evidence_upload;
-use crate::middleware::request_id_layer;
+use crate::middleware::{request_id_middleware, REQUEST_ID_HEADER};
 use crate::openapi::swagger_routes;
 use crate::routes::api_routes;
 use crate::state::AppState;
+use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
-use axum::http::HeaderValue;
+use axum::http::{HeaderValue, Request};
+use axum::middleware;
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
+use tracing::info_span;
 
 /// Global body-size cap for ordinary API requests (JSON, small forms).
 ///
@@ -69,6 +72,25 @@ fn build_cors_layer() -> CorsLayer {
     }
 }
 
+/// Tracing span builder that attaches the server-generated request id.
+///
+/// `request_id_middleware` has already overwritten `x-request-id` by the
+/// time `TraceLayer` inspects the request, so the header read here is always
+/// the server-generated value.
+fn make_http_span(req: &Request<Body>) -> tracing::Span {
+    let request_id = req
+        .headers()
+        .get(&REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    info_span!(
+        "http_request",
+        method = %req.method(),
+        uri = %req.uri(),
+        request_id = %request_id,
+    )
+}
+
 /// Create the Axum application.
 pub fn create_app(state: AppState) -> Router {
     let cors = build_cors_layer();
@@ -90,10 +112,12 @@ pub fn create_app(state: AppState) -> Router {
         .nest("/uploads", uploads_router)
         // Health check
         .route("/health", axum::routing::get(|| async { "OK" }))
-        // Middleware
+        // Middleware. Layer application order is bottom-up: the last .layer
+        // added wraps all inner work, so request_id runs before TraceLayer
+        // gets to make its span — giving the span access to the id.
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT_BYTES))
-        .layer(TraceLayer::new_for_http())
-        .layer(request_id_layer())
+        .layer(TraceLayer::new_for_http().make_span_with(make_http_span))
+        .layer(middleware::from_fn(request_id_middleware))
         .layer(cors)
         // State
         .with_state(state)

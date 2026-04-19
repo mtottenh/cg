@@ -7,8 +7,8 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 ## Sprint progress
 
 - **Critical**: 6 of 7 done (C1, C2, C3, C4, C5, C6). C4b deferred — needs dep + IP-trust decision.
-- **Important**: 5 of 12 done (I5, I6, I7, I8, I10, I11). Remaining: I1, I2, I3, I4, I9, I12 — each is a larger refactor or needs a design call.
-- **Nice-to-have**: 0 of 8 done. Pulled forward only if cheap to bundle with related Important work.
+- **Important**: 10 of 12 done (I1, I3, I5, I6, I7, I8, I9, I10, I11, I12). I2 and I4 deferred — each is a codebase-wide refactor (transaction plumbing / typed NotFound IDs) that needs its own sprint.
+- **Nice-to-have**: 0 of 8 done. Left for targeted follow-ups.
 
 ## Critical — Week 1
 
@@ -27,9 +27,9 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | # | Status | Item | Evidence |
 |---|--------|------|----------|
 | I1 | ☑ | Replace hand-rolled `is_owner`/`is_captain` checks with override-aware equivalents (restores admin override) | `handlers/league_teams/team.rs:150,284,333`, `team_season.rs`, `invitation.rs` |
-| I2 | ☐ | Thread `&mut Transaction` through multi-step writes | `services/league_team/team.rs:105-203` |
+| I2 | ⏸ | Thread `&mut Transaction` through multi-step writes — deferred, requires a trait-wide refactor across every repo; dedicated sprint. `portal-db/src/transaction.rs` already exposes the helpers, but take-up is zero. | `services/league_team/team.rs:105-203` |
 | I3 | ☑ | Reconcile SQLx claim: CLAUDE.md updated to describe the runtime-query reality. Migration to the macro form deferred until schema stabilises. | 574 runtime `sqlx::query_*(` calls; `.sqlx/` nearly empty |
-| I4 | ☐ | Replace `DomainError::*NotFound(String)` with typed IDs | `portal-core/src/errors.rs` |
+| I4 | ⏸ | Replace `DomainError::*NotFound(String)` with typed IDs — deferred, 124 call sites + enum variant signatures; dedicated sprint. C5's generic-fallback masking removes the security urgency. | `portal-core/src/errors.rs` |
 | I5 | ☑ | Stop refetching `Player` every auth'd request; use `auth.player_id` | `handlers/league_teams/team.rs:83-86,143-146,277-280,326-329` |
 | I6 | ☑ | Graceful shutdown; manage background task `JoinHandle` | `portal-app/src/main.rs:78`, `websocket/timeout_task.rs:60` |
 | I7 | ☑ | Add `DefaultBodyLimit` (global + per-route) | `portal-api/src/app.rs` |
@@ -54,7 +54,6 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 
 ## Cross-cutting follow-ups
 
-- Update `CLAUDE.md` once I3 is resolved — currently claims compile-time SQLx verification that doesn't hold.
 - Document `portal-scanner` crate purpose in `CLAUDE.md` (present in workspace, absent from docs).
 
 ## How to use this tracker

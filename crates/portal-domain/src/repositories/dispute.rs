@@ -82,6 +82,47 @@ pub trait DisputeRepository: Send + Sync + 'static {
 
     /// Cancel a dispute.
     async fn cancel(&self, id: DisputeId) -> Result<Dispute, DomainError>;
+
+    /// Raise a dispute in a single transaction: insert the `disputes`
+    /// row, flip the match status to `Disputed`, and append the initial
+    /// system message to the thread.
+    ///
+    /// Replaces the previous three-call chain in
+    /// `DisputeService::raise_dispute`. A partial failure there could
+    /// leave any of: a dispute with no `Disputed` match (so a concurrent
+    /// result submission could still land), a `Disputed` match with no
+    /// dispute row (so the admin queue wouldn't see it), or a dispute +
+    /// status without the initial message (confusing for the
+    /// participant). See audit I5.
+    async fn raise_atomic(
+        &self,
+        create: CreateDispute,
+        initial_message: CreateDisputeMessage,
+    ) -> Result<Dispute, DomainError>;
+
+    /// Apply the resolution of a dispute in a single transaction:
+    /// mark the dispute Resolved, submit the overturned scores on the
+    /// match row, append the resolution message to the thread.
+    ///
+    /// Replaces the `dispute_repo.resolve + match_repo.submit_result +
+    /// match_repo.update_status + message_repo.create` chain in
+    /// `resolve_overturn`. Partial failure there left the dispute
+    /// marked Resolved but the match still showing the old (disputed)
+    /// result — bracket progression would then advance the wrong
+    /// winner. See audit I5.
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve_with_overturn(
+        &self,
+        dispute_id: DisputeId,
+        resolved_by: UserId,
+        resolution: DisputeResolution,
+        match_id: TournamentMatchId,
+        new_winner_registration_id: TournamentRegistrationId,
+        new_loser_registration_id: TournamentRegistrationId,
+        new_participant1_score: i32,
+        new_participant2_score: i32,
+        resolution_message: CreateDisputeMessage,
+    ) -> Result<Dispute, DomainError>;
 }
 
 /// Data for creating a dispute message.

@@ -327,6 +327,82 @@ impl ResultClaimRepository for PgResultClaimRepository {
         row_to_domain(claim_row)
     }
 
+    async fn create_and_supersede_pending(
+        &self,
+        claim: CreateResultClaim,
+    ) -> Result<ResultClaim, DomainError> {
+        // One tx: supersede any pre-existing pending claim for the
+        // match, then insert the new one. The split version left the
+        // match in a claim-less state if the create failed after the
+        // supersede succeeded. See audit I5.
+        let game_results_json = serde_json::to_value(&claim.game_results)
+            .map_err(|e| DomainError::Internal(format!("Failed to serialize game results: {e}")))?;
+
+        let evidence_uuids: Vec<_> = claim
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
+        let demo_link_uuids: Vec<_> = claim
+            .demo_link_ids
+            .iter()
+            .map(portal_core::DemoMatchLinkId::as_uuid)
+            .collect();
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to begin transaction: {e}")))?;
+
+        // Supersede any existing pending claim for this match. No row
+        // is fine — first submission has nothing to supersede.
+        sqlx::query(
+            r"
+            UPDATE result_claims
+            SET status = 'superseded', updated_at = NOW()
+            WHERE match_id = $1 AND status = 'pending'
+            ",
+        )
+        .bind(claim.match_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to supersede pending claim: {e}")))?;
+
+        let row = sqlx::query_as::<_, ResultClaimRow>(
+            r"
+            INSERT INTO result_claims (
+                match_id, submitted_by_registration_id, submitted_by_user_id,
+                claimed_winner_registration_id, claimed_participant1_score,
+                claimed_participant2_score, game_results, auto_confirm_at,
+                evidence_ids, demo_link_ids, submitter_notes
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING *
+            ",
+        )
+        .bind(claim.match_id.as_uuid())
+        .bind(claim.submitted_by_registration_id.as_uuid())
+        .bind(claim.submitted_by_user_id.as_uuid())
+        .bind(claim.claimed_winner_registration_id.as_uuid())
+        .bind(claim.participant1_score)
+        .bind(claim.participant2_score)
+        .bind(&game_results_json)
+        .bind(claim.auto_confirm_at)
+        .bind(&evidence_uuids)
+        .bind(&demo_link_uuids)
+        .bind(&claim.notes)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to create result claim: {e}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to commit: {e}")))?;
+
+        row_to_domain(row)
+    }
+
     async fn supersede_pending_claims(
         &self,
         match_id: TournamentMatchId,

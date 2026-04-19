@@ -1110,6 +1110,20 @@ pub trait ResultClaimRepository: Send + Sync {
         except_claim_id: ResultClaimId,
     ) -> Result<(), DomainError>;
 
+    /// Create a new result claim and mark any prior pending claim for
+    /// the same match as `Superseded`, all in one transaction.
+    ///
+    /// Replaces the sequential `update_status(Superseded) + create`
+    /// pair in `ResultService::submit_claim`. Partial failure there
+    /// left the old claim marked Superseded with no replacement, so
+    /// the match had *no* actionable claim until the user resubmitted
+    /// — and during that window both confirmation and auto-confirm
+    /// treated the match as unclaimed. See audit I5.
+    async fn create_and_supersede_pending(
+        &self,
+        create: CreateResultClaim,
+    ) -> Result<ResultClaim, DomainError>;
+
     /// Find claims ready for auto-confirmation.
     async fn find_ready_for_auto_confirm(&self) -> Result<Vec<ResultClaim>, DomainError>;
 }

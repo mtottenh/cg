@@ -732,7 +732,14 @@ where
                 (input.loser_score, input.winner_score)
             };
 
-        // Submit the result
+        // Submit the result. `submit_result` already sets
+        // `status = 'completed'` on the match row (see the adapter's
+        // UPDATE), so the prior separate `match_repo.complete(...)`
+        // call that used to follow this was redundant *and*
+        // non-atomic — if `complete()` failed after `submit_result()`,
+        // the saga step logged a partial success but the db reflected
+        // the correct end state anyway. Dropping it tightens the
+        // invariant: one write, one atomic transition. See audit I5.
         self.match_repo
             .submit_result(
                 input.match_id,
@@ -742,9 +749,6 @@ where
                 input.loser_registration_id,
             )
             .await?;
-
-        // Complete the match
-        self.match_repo.complete(input.match_id).await?;
 
         saga_coordinator
             .complete_step(

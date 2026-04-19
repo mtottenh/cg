@@ -388,6 +388,204 @@ impl DisputeRepository for PgDisputeRepository {
 
         Ok(Dispute::from(dispute))
     }
+
+    async fn raise_atomic(
+        &self,
+        create: CreateDispute,
+        initial_message: CreateDisputeMessage,
+    ) -> Result<Dispute, DomainError> {
+        // Insert dispute + flip match status + append message, all in
+        // one tx. The `match_id` on the incoming message is a
+        // placeholder because the caller doesn't yet know the dispute
+        // id — we overwrite it after the INSERT below. See audit I5.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let create_evidence_ids: Vec<uuid::Uuid> = create
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
+
+        let dispute_row = sqlx::query_as::<_, DisputeRow>(
+            r"
+            INSERT INTO disputes (
+                match_id, result_claim_id, disputed_by_registration_id, disputed_by_user_id,
+                reason, description, evidence_ids, original_winner_registration_id,
+                original_participant1_score, original_participant2_score, priority
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING *
+            ",
+        )
+        .bind(create.match_id.as_uuid())
+        .bind(create.result_claim_id.map(|id| id.as_uuid()))
+        .bind(create.disputed_by_registration_id.as_uuid())
+        .bind(create.disputed_by_user_id.as_uuid())
+        .bind(create.reason.to_string())
+        .bind(&create.description)
+        .bind(&create_evidence_ids)
+        .bind(create.original_winner_registration_id.map(|id| id.as_uuid()))
+        .bind(create.original_participant1_score)
+        .bind(create.original_participant2_score)
+        .bind(create.priority.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let dispute = Dispute::from(dispute_row);
+
+        sqlx::query(
+            r"
+            UPDATE tournament_matches SET
+                status = 'disputed',
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(create.match_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let msg_evidence_ids: Vec<uuid::Uuid> = initial_message
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
+
+        sqlx::query(
+            r"
+            INSERT INTO dispute_messages (
+                dispute_id, author_user_id, author_type, message, evidence_ids, is_internal
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ",
+        )
+        .bind(dispute.id.as_uuid())
+        .bind(initial_message.author_user_id.as_uuid())
+        .bind(initial_message.author_type.to_string())
+        .bind(&initial_message.message)
+        .bind(&msg_evidence_ids)
+        .bind(initial_message.is_internal)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(dispute)
+    }
+
+    async fn resolve_with_overturn(
+        &self,
+        dispute_id: DisputeId,
+        resolved_by: UserId,
+        resolution: DisputeResolution,
+        match_id: TournamentMatchId,
+        new_winner_registration_id: TournamentRegistrationId,
+        new_loser_registration_id: TournamentRegistrationId,
+        new_participant1_score: i32,
+        new_participant2_score: i32,
+        resolution_message: CreateDisputeMessage,
+    ) -> Result<Dispute, DomainError> {
+        // Resolve dispute + overwrite match result + append message,
+        // all atomically. Previously the service did these as four
+        // sequential calls; a failure between them left admins staring
+        // at a Resolved dispute whose match still showed the disputed
+        // result, and the bracket progression would advance the wrong
+        // winner. See audit I5.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let dispute_row = sqlx::query_as::<_, DisputeRow>(
+            r"
+            UPDATE disputes SET
+                status = 'resolved',
+                resolved_at = NOW(),
+                resolved_by_user_id = $2,
+                resolution_type = $3,
+                resolution_notes = $4,
+                new_winner_registration_id = $5,
+                new_participant1_score = $6,
+                new_participant2_score = $7,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(dispute_id.as_uuid())
+        .bind(resolved_by.as_uuid())
+        .bind(resolution.resolution_type.to_string())
+        .bind(&resolution.notes)
+        .bind(resolution.new_winner_registration_id.map(|id| id.as_uuid()))
+        .bind(resolution.new_participant1_score)
+        .bind(resolution.new_participant2_score)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or_else(|| DomainError::DisputeNotFound(dispute_id))?;
+
+        sqlx::query(
+            r"
+            UPDATE tournament_matches SET
+                participant1_score = $2,
+                participant2_score = $3,
+                winner_registration_id = $4,
+                loser_registration_id = $5,
+                completed_at = NOW(),
+                status = 'completed',
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(match_id.as_uuid())
+        .bind(new_participant1_score)
+        .bind(new_participant2_score)
+        .bind(new_winner_registration_id.as_uuid())
+        .bind(new_loser_registration_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let msg_evidence_ids: Vec<uuid::Uuid> = resolution_message
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
+
+        sqlx::query(
+            r"
+            INSERT INTO dispute_messages (
+                dispute_id, author_user_id, author_type, message, evidence_ids, is_internal
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ",
+        )
+        .bind(dispute_id.as_uuid())
+        .bind(resolution_message.author_user_id.as_uuid())
+        .bind(resolution_message.author_type.to_string())
+        .bind(&resolution_message.message)
+        .bind(&msg_evidence_ids)
+        .bind(resolution_message.is_internal)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(Dispute::from(dispute_row))
+    }
 }
 
 // =============================================================================

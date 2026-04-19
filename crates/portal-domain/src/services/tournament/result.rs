@@ -139,17 +139,15 @@ where
         // Calculate auto-confirm time
         let auto_confirm_at = Utc::now() + Duration::seconds(self.auto_confirm_timeout_seconds);
 
-        // Supersede any existing pending claims
-        if let Some(existing) = self.claim_repo.find_pending_by_match(match_id).await? {
-            self.claim_repo
-                .update_status(existing.id, ClaimStatus::Superseded)
-                .await?;
-        }
-
-        // Create the claim
+        // Atomic: supersede any existing pending claim for the match
+        // and insert the new one in one transaction. The previous
+        // two-call version (`update_status(Superseded) + create`) left
+        // the match claim-less on partial failure — confirmation and
+        // auto-confirm both treated it as unclaimed until resubmission.
+        // See audit I5.
         let claim = self
             .claim_repo
-            .create(CreateResultClaim {
+            .create_and_supersede_pending(CreateResultClaim {
                 match_id,
                 submitted_by_registration_id: submitter_registration,
                 submitted_by_user_id: submitted_by_user,

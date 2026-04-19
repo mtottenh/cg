@@ -2,6 +2,16 @@
 //!
 //! These endpoints are authenticated with API keys (`AuthenticatedService`)
 //! instead of JWT tokens.
+//!
+//! # OpenAPI exclusion
+//!
+//! Handlers in this module are deliberately **not** annotated with
+//! `#[utoipa::path(...)]` and therefore do not appear in the public
+//! `/api-docs/openapi.json` spec. Their contract is between the portal
+//! server and first-party services (the Steam poller, the CS2 demo
+//! scanner) — not a surface we publish for third-party consumers. If a
+//! future caller (e.g. a partner integration) needs any of these, lift it
+//! out of this module and annotate it like any other public endpoint.
 
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{

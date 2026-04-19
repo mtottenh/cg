@@ -1,4 +1,10 @@
 //! WebSocket handler for veto lobby real-time communication.
+//!
+//! Not annotated with `#[utoipa::path]` — OpenAPI 3.0 describes
+//! request/response HTTP contracts and has no first-class representation
+//! for WebSocket channel protocols. The client-side message schema for
+//! this endpoint lives in `crate::websocket::{ClientMessage,
+//! ServerMessage}`; keep that in sync with any protocol changes.
 
 use std::sync::Arc;
 use std::time::Duration;

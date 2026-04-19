@@ -157,13 +157,16 @@ pub fn create_test_token(user_id: Uuid, player_id: Uuid, username: &str, secret:
 ///
 /// # Returns
 ///
-/// A JWT token string with `is_admin: true` that can be used for admin endpoints.
+/// A JWT token string for the given user. Admin status is not encoded in the
+/// token — tests that need admin privileges must also grant the user the
+/// appropriate RBAC role (e.g. `super_admin`) in the database. Kept as
+/// `create_admin_token` for test-side readability.
 ///
 /// # Panics
 ///
 /// Panics if token generation fails.
 pub fn create_admin_token(user_id: Uuid, player_id: Uuid, username: &str, secret: &str) -> String {
-    portal_domain::generate_access_token_with_admin(user_id, player_id, username, secret, true)
+    portal_domain::generate_access_token(user_id, player_id, username, secret)
         .expect("Failed to create admin token")
 }
 

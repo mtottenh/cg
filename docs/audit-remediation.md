@@ -48,7 +48,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | N1 | ☐ | Use newtype-typed `Path` extractors (delete ~200 manual parses) | across `portal-api/src/handlers/` |
 | N2 | ☐ | Split `AppState` into sub-states with `FromRef` | `portal-api/src/state.rs:183` |
 | N3 | ☐ | Close OpenAPI coverage gap (249 handlers vs 235 `utoipa::path`) | `portal-api/src/handlers/` |
-| N4 | ☐ | Re-check `is_admin` from DB on sensitive admin ops | `portal-domain/src/jwt.rs:26` |
+| N4 | ☑ | Removed `is_admin` claim from JWT entirely. Every authz check already flows through `PermissionChecker` which hits the DB, so the claim was dead weight + a 15-min staleness window. DB is now the single source of truth. | `portal-domain/src/jwt.rs:26` |
 | N5 | ☐ | Cache plugin resolution per match | `handlers/evidence.rs:738-780` |
 | N6 | ☐ | Clarify User/Player ID relationship (single `AccountId` or distinct IDs) | `services/user.rs:142-143` |
 | N7 | ☑ | Argon2 params configurable via env (`PORTAL_ARGON2_{M,T,P}_COST`); OWASP 2023 defaults | `portal-domain/src/auth.rs` |

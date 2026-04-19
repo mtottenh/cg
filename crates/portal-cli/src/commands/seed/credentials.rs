@@ -97,6 +97,10 @@ pub async fn print_credentials(
         });
 
     // Check admin role
+    // Admin status is enforced by RBAC, not by JWT claim (see
+    // portal-domain::jwt). The seed previously embedded an is_admin claim
+    // gated on the super_admin role; that claim is gone, so now we
+    // compute the role tag purely for downstream presentation.
     let has_admin_role: bool = sqlx::query_scalar(
         r"SELECT EXISTS(
             SELECT 1 FROM user_roles ur
@@ -112,12 +116,11 @@ pub async fn print_credentials(
     let mut personas = Vec::new();
     for p in PERSONAS {
         let is_admin = p.is_admin && has_admin_role;
-        let token = portal_domain::jwt::generate_access_token_with_admin_and_expiry(
+        let token = portal_domain::jwt::generate_access_token_with_expiry(
             p.user_id(),
             p.player_id(),
             p.username,
             jwt_secret,
-            is_admin,
             expiry_minutes,
         )
         .map_err(|e| anyhow::anyhow!("Failed to generate token for {}: {e}", p.key))?;

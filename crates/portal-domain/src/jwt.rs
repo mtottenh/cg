@@ -1,4 +1,20 @@
 //! JWT token generation and validation.
+//!
+//! # Claims philosophy
+//!
+//! The access token carries the minimum needed to identify the caller
+//! (`sub`, `player_id`, `username`) plus the standard timestamps. We
+//! deliberately do **not** embed role information or an `is_admin` flag in
+//! the claims.
+//!
+//! Previously there was an `is_admin: bool` claim populated at token-issue
+//! time from a DB lookup. Nothing in the request-handling path read it —
+//! every admin check already flows through `PermissionChecker` which
+//! consults the live RBAC tables — so the claim was both dead weight *and*
+//! a soft-staleness window: a user demoted mid-session would still carry
+//! `is_admin: true` until their 15-min access token expired. Removing the
+//! claim makes the DB the single source of truth for authz on every
+//! request.
 
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
@@ -21,10 +37,6 @@ pub struct Claims {
     /// Username for display/logging.
     pub username: String,
 
-    /// Whether the user has admin privileges.
-    #[serde(default)]
-    pub is_admin: bool,
-
     /// Expiration time (Unix timestamp).
     pub exp: i64,
 
@@ -36,18 +48,6 @@ impl Claims {
     /// Create new claims for a user.
     #[must_use]
     pub fn new(user_id: Uuid, player_id: Uuid, username: String, expiry_minutes: i64) -> Self {
-        Self::with_admin(user_id, player_id, username, expiry_minutes, false)
-    }
-
-    /// Create new claims for a user with admin flag.
-    #[must_use]
-    pub fn with_admin(
-        user_id: Uuid,
-        player_id: Uuid,
-        username: String,
-        expiry_minutes: i64,
-        is_admin: bool,
-    ) -> Self {
         let now = Utc::now();
         let exp = now + Duration::minutes(expiry_minutes);
 
@@ -55,7 +55,6 @@ impl Claims {
             sub: user_id.to_string(),
             player_id,
             username,
-            is_admin,
             exp: exp.timestamp(),
             iat: now.timestamp(),
         }
@@ -68,70 +67,23 @@ impl Claims {
     }
 }
 
-/// Generate an access token for a user.
-///
-/// # Arguments
-/// * `user_id` - The user's unique identifier
-/// * `player_id` - The player's unique identifier (for game operations)
-/// * `username` - The user's username for display
-/// * `secret` - The JWT secret key
-///
-/// # Returns
-/// The encoded JWT token string
+/// Generate an access token for a user with the default expiry.
 pub fn generate_access_token(
     user_id: Uuid,
     player_id: Uuid,
     username: &str,
     secret: &str,
 ) -> Result<String, DomainError> {
-    generate_access_token_with_admin(user_id, player_id, username, secret, false)
-}
-
-/// Generate an access token for a user with admin flag.
-///
-/// # Arguments
-/// * `user_id` - The user's unique identifier
-/// * `player_id` - The player's unique identifier (for game operations)
-/// * `username` - The user's username for display
-/// * `secret` - The JWT secret key
-/// * `is_admin` - Whether the user has admin privileges
-///
-/// # Returns
-/// The encoded JWT token string
-pub fn generate_access_token_with_admin(
-    user_id: Uuid,
-    player_id: Uuid,
-    username: &str,
-    secret: &str,
-    is_admin: bool,
-) -> Result<String, DomainError> {
-    let claims = Claims::with_admin(
+    generate_access_token_with_expiry(
         user_id,
         player_id,
-        username.to_string(),
+        username,
+        secret,
         ACCESS_TOKEN_EXPIRY_MINUTES,
-        is_admin,
-    );
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
     )
-    .map_err(|e| DomainError::Internal(format!("Failed to generate token: {e}")))
 }
 
-/// Generate an access token with custom expiry.
-///
-/// # Arguments
-/// * `user_id` - The user's unique identifier
-/// * `player_id` - The player's unique identifier
-/// * `username` - The user's username
-/// * `secret` - The JWT secret key
-/// * `expiry_minutes` - Custom expiry time in minutes
-///
-/// # Returns
-/// The encoded JWT token string
+/// Generate an access token with a custom expiry.
 pub fn generate_access_token_with_expiry(
     user_id: Uuid,
     player_id: Uuid,
@@ -140,31 +92,6 @@ pub fn generate_access_token_with_expiry(
     expiry_minutes: i64,
 ) -> Result<String, DomainError> {
     let claims = Claims::new(user_id, player_id, username.to_string(), expiry_minutes);
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
-    .map_err(|e| DomainError::Internal(format!("Failed to generate token: {e}")))
-}
-
-/// Generate an access token with admin flag and custom expiry.
-pub fn generate_access_token_with_admin_and_expiry(
-    user_id: Uuid,
-    player_id: Uuid,
-    username: &str,
-    secret: &str,
-    is_admin: bool,
-    expiry_minutes: i64,
-) -> Result<String, DomainError> {
-    let claims = Claims::with_admin(
-        user_id,
-        player_id,
-        username.to_string(),
-        expiry_minutes,
-        is_admin,
-    );
 
     encode(
         &Header::default(),

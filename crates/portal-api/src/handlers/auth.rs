@@ -13,7 +13,7 @@ use chrono::{Duration, Utc};
 use portal_core::DomainError;
 use portal_db::NewUserRole;
 use portal_domain::repositories::refresh_token::RefreshTokenRepository;
-use portal_domain::{generate_access_token_with_admin_and_expiry, generate_refresh_token, hash_refresh_token};
+use portal_domain::{generate_access_token_with_expiry, generate_refresh_token, hash_refresh_token};
 use portal_domain::services::{LoginCommand, RegisterUserCommand};
 
 /// Extract request ID from headers.
@@ -75,13 +75,13 @@ pub async fn register(
         tracing::warn!("Default 'user' role not found - skipping role assignment");
     }
 
-    // Generate access token for the newly registered user (new users are never admin)
-    let access_token = generate_access_token_with_admin_and_expiry(
+    // Generate access token. Admin status is *not* encoded in the claim —
+    // every request that needs it re-checks the DB via PermissionChecker.
+    let access_token = generate_access_token_with_expiry(
         user.id.as_uuid(),
         player.id.as_uuid(),
         &user.username,
         &state.jwt_secret,
-        false, // new users are not admins
         state.token_config.access_token_expiry_minutes,
     )?;
 
@@ -136,20 +136,14 @@ pub async fn login(
         .authenticate(cmd, &state.jwt_secret)
         .await?;
 
-    // Check if user is admin for JWT claim
-    let is_admin = state
-        .permission_service
-        .is_admin(auth_result.user_id)
-        .await
-        .unwrap_or(false);
-
-    // Generate token with admin claim and configurable expiry
-    let access_token = generate_access_token_with_admin_and_expiry(
+    // Generate token with configurable expiry. No admin claim — the DB is
+    // the single source of truth for authz and is re-checked on every
+    // request via PermissionChecker.
+    let access_token = generate_access_token_with_expiry(
         auth_result.user_id.as_uuid(),
         auth_result.player_id.as_uuid(),
         &auth_result.username,
         &state.jwt_secret,
-        is_admin,
         state.token_config.access_token_expiry_minutes,
     )?;
 
@@ -259,20 +253,12 @@ pub async fn refresh(
         .get_player_by_user_id(stored.user_id.into())
         .await?;
 
-    // Check admin status
-    let is_admin = state
-        .permission_service
-        .is_admin(stored.user_id.into())
-        .await
-        .unwrap_or(false);
-
-    // Issue new access token
-    let access_token = generate_access_token_with_admin_and_expiry(
+    // Issue new access token. No admin claim — see comments on login().
+    let access_token = generate_access_token_with_expiry(
         user.id.as_uuid(),
         player.id.as_uuid(),
         &user.username,
         &state.jwt_secret,
-        is_admin,
         state.token_config.access_token_expiry_minutes,
     )?;
 

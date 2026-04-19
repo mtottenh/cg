@@ -6,7 +6,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 
 ## Sprint progress
 
-- **Critical**: 6 of 7 done (C1, C2, C3, C4, C5, C6). C4b deferred — needs dep + IP-trust decision.
+- **Critical**: 7 of 7 done. C4b landed with `tower_governor`; deployments behind a proxy need to configure forwarded-IP trust explicitly.
 - **Important**: 10 of 12 done (I1, I3, I5, I6, I7, I8, I9, I10, I11, I12). I2 and I4 deferred — each is a codebase-wide refactor (transaction plumbing / typed NotFound IDs) that needs its own sprint.
 - **Nice-to-have**: 0 of 8 done. Left for targeted follow-ups.
 
@@ -18,7 +18,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | C2 | ☑ | Hard-fail on missing `JWT_SECRET` | `portal-app/src/main.rs:38-39` |
 | C3 | ☑ | Remove `DEV_AUTH_ENABLED` runtime bypass | `extractors/auth.rs:61-66,117-119`, `extractors/permission.rs:37-40,70,97,134,152` |
 | C4 | ☑ | Argon2 on `spawn_blocking`; dummy-verify on user-not-found | `portal-domain/src/auth.rs:11-32`, `services/user.rs:139,186-209` |
-| C4b | ⏸ | Rate-limit `/auth/*` routes — needs decision on dep (`tower-governor` recommended) and per-IP key extraction (trust X-Forwarded-For?) | `portal-api/src/routes/auth.rs:9-14` |
+| C4b | ☑ | Rate-limit `/auth/*` routes (`tower_governor` 0.7, per-IP via `SmartIpKeyExtractor`, env-tunable). Trust chain for forwarded IPs is deployment-specific — see docstring in `routes/auth.rs`. | `portal-api/src/routes/auth.rs:9-14` |
 | C5 | ☑ | Exhaustive `RepositoryError→DomainError`; mask raw SQL text | `portal-db/src/error.rs:108-136`, `portal-api/src/error.rs:323` |
 | C6 | ☑ | Respond with `application/problem+json` | `portal-api/src/error.rs:130-134` |
 

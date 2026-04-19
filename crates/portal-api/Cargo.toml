@@ -25,6 +25,7 @@ axum = { workspace = true }
 axum-extra = { workspace = true, features = ["multipart"] }
 tower = { workspace = true }
 tower-http = { workspace = true }
+tower_governor = { workspace = true }
 
 # Bytes for multipart handling
 bytes = { workspace = true }

@@ -13,7 +13,7 @@ use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use portal_core::{LeagueTeamSeasonId, PlayerId, ScopeType};
+use portal_core::{LeagueTeamSeasonId, PlayerId};
 
 /// Get a team's seasonal participation.
 #[utoipa::path(

@@ -651,14 +651,14 @@ where
         self.match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))
     }
 
     async fn get_dispute(&self, dispute_id: DisputeId) -> Result<Dispute, DomainError> {
         self.dispute_repo
             .find_by_id(dispute_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("dispute", dispute_id.to_string()))
+            .ok_or_else(|| DomainError::DisputeNotFound(dispute_id))
     }
 
     fn validate_can_dispute(

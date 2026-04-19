@@ -401,7 +401,7 @@ async fn resume_saga_after_review(
         .find_by_id(match_id)
         .await?
         .ok_or_else(|| {
-            portal_core::DomainError::TournamentMatchNotFound(match_id.to_string())
+            portal_core::DomainError::TournamentMatchNotFound(match_id)
         })?;
 
     let winner_registration_id = match_.winner_registration_id.ok_or_else(|| {

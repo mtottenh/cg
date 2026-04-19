@@ -125,7 +125,7 @@ where
         self.tournament_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::TournamentNotFound(id.to_string()))
+            .ok_or_else(|| DomainError::TournamentNotFound(id))
     }
 
     /// Get a tournament by slug.
@@ -133,7 +133,10 @@ where
         self.tournament_repo
             .find_by_slug(slug)
             .await?
-            .ok_or_else(|| DomainError::TournamentNotFound(slug.to_string()))
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "tournament",
+                query: slug.to_string(),
+            })
     }
 
     /// Update a tournament.
@@ -473,7 +476,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         let tournament = self.get_tournament(registration.tournament_id).await?;
 
@@ -1522,10 +1525,10 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("match", match_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
 
         if match_.tournament_id != tournament_id {
-            return Err(DomainError::not_found("match", match_id.to_string()));
+            return Err(DomainError::TournamentMatchNotFound(match_id));
         }
 
         Ok(match_)

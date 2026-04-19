@@ -119,7 +119,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
 
         // 2. Get the tournament to find game_id
         let tournament = self
@@ -127,7 +127,7 @@ where
             .find_by_id(match_.tournament_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentNotFound(match_.tournament_id.to_string())
+                DomainError::TournamentNotFound(match_.tournament_id)
             })?;
         let game_id = tournament.game_id;
 
@@ -160,14 +160,14 @@ where
             .find_by_id(winner_registration_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(winner_registration_id.to_string())
+                DomainError::TournamentRegistrationNotFound(winner_registration_id)
             })?;
         let loser_reg = self
             .registration_repo
             .find_by_id(loser_registration_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(loser_registration_id.to_string())
+                DomainError::TournamentRegistrationNotFound(loser_registration_id)
             })?;
 
         // For now, only handle individual player registrations.

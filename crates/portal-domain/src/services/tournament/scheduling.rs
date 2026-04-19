@@ -77,7 +77,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
 
         if !tournament_match.status.can_schedule() {
             return Err(DomainError::InvalidState(format!(
@@ -139,7 +139,7 @@ where
             .find_by_id(command.proposal_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("ScheduleProposal", command.proposal_id.to_string())
+                DomainError::LookupFailed { resource: "ScheduleProposal", query: command.proposal_id.to_string() }
             })?;
 
         // Check proposal can be responded to
@@ -165,7 +165,7 @@ where
             .match_repo
             .find_by_id(proposal.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(proposal.match_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(proposal.match_id))?;
 
         self.validate_responder_is_opponent(command.accepted_by_user_id, &proposal, &tournament_match)
             .await?;
@@ -204,7 +204,7 @@ where
             .find_by_id(command.proposal_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("ScheduleProposal", command.proposal_id.to_string())
+                DomainError::LookupFailed { resource: "ScheduleProposal", query: command.proposal_id.to_string() }
             })?;
 
         if !proposal.can_respond() {
@@ -219,7 +219,7 @@ where
             .match_repo
             .find_by_id(proposal.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(proposal.match_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(proposal.match_id))?;
 
         self.validate_responder_is_opponent(command.rejected_by_user_id, &proposal, &tournament_match)
             .await?;
@@ -243,10 +243,7 @@ where
             .find_by_id(command.original_proposal_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found(
-                    "ScheduleProposal",
-                    command.original_proposal_id.to_string(),
-                )
+                DomainError::LookupFailed { resource: "ScheduleProposal", query: command.original_proposal_id.to_string() }
             })?;
 
         if !original_proposal.can_respond() {
@@ -277,7 +274,7 @@ where
             .match_repo
             .find_by_id(command.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(command.match_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(command.match_id))?;
 
         self.validate_responder_is_opponent(
             command.proposed_by_user_id,
@@ -322,7 +319,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
 
         if !tournament_match.status.can_schedule() {
             return Err(DomainError::InvalidState(format!(

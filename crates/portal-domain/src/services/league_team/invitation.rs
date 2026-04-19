@@ -71,14 +71,14 @@ where
             .team_season_repo
             .find_by_id(team_season_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league team season", team_season_id.to_string()))?;
+            .ok_or_else(|| DomainError::LookupFailed { resource: "league team season", query: team_season_id.to_string() })?;
 
         let season = self
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league season", team_season.season_id.to_string())
+                DomainError::LeagueSeasonNotFound(team_season.season_id)
             })?;
 
         // Check roster lock status
@@ -155,14 +155,14 @@ where
             .team_season_repo
             .find_by_id(team_season_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league team season", team_season_id.to_string()))?;
+            .ok_or_else(|| DomainError::LookupFailed { resource: "league team season", query: team_season_id.to_string() })?;
 
         let season = self
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league season", team_season.season_id.to_string())
+                DomainError::LeagueSeasonNotFound(team_season.season_id)
             })?;
 
         if !season.is_registration_open() {
@@ -238,7 +238,7 @@ where
             .find_by_id(invitation_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league team invitation", invitation_id.to_string())
+                DomainError::LeagueTeamInvitationNotFound(invitation_id)
             })?;
 
         if !invitation.is_actionable() {
@@ -253,7 +253,7 @@ where
             .find_by_id(invitation.team_season_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league team season", invitation.team_season_id.to_string())
+                DomainError::LookupFailed { resource: "league team season", query: invitation.team_season_id.to_string() }
             })?;
 
         // Verify the acceptor is the appropriate party
@@ -285,7 +285,7 @@ where
             .find_by_id(team_season.season_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league season", team_season.season_id.to_string())
+                DomainError::LeagueSeasonNotFound(team_season.season_id)
             })?;
 
         // Re-verify roster lock status
@@ -377,7 +377,7 @@ where
             .find_by_id(invitation_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league team invitation", invitation_id.to_string())
+                DomainError::LeagueTeamInvitationNotFound(invitation_id)
             })?;
 
         if !invitation.is_actionable() {
@@ -437,7 +437,7 @@ where
             .find_by_id(invitation_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league team invitation", invitation_id.to_string())
+                DomainError::LeagueTeamInvitationNotFound(invitation_id)
             })?;
 
         if !invitation.is_pending() {
@@ -502,7 +502,7 @@ where
             .find_by_id_with_team(invitation_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league team invitation", invitation_id.to_string())
+                DomainError::LeagueTeamInvitationNotFound(invitation_id)
             })
     }
 }

@@ -104,7 +104,7 @@ where
             .find_by_id(registration_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(registration_id.to_string())
+                DomainError::TournamentRegistrationNotFound(registration_id)
             })?;
 
         // Get team_season_id (required for team registrations)
@@ -332,7 +332,7 @@ where
             .find_by_id(team_season.team_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("team", team_season.team_id.to_string())
+                DomainError::LeagueTeamNotFound(team_season.team_id)
             })?;
 
         Ok(team.owner_player_id == player_id)

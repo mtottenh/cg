@@ -11,6 +11,13 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::ids::{
+    BanId, DemoId, DemoMatchLinkId, DisputeId, EvidenceId, ForfeitRecordId, GameId, LeagueId,
+    LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LobbyId, MatchId, PlayerId,
+    ResultClaimId, ResultReviewId, TournamentBracketId, TournamentId, TournamentMatchId,
+    TournamentRegistrationId, TournamentStageId, UserId, VetoSessionId,
+};
+
 /// A single validation error for a specific field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FieldError {
@@ -157,11 +164,11 @@ impl std::error::Error for ValidationError {}
 pub enum DomainError {
     /// The requested user was not found.
     #[error("user not found: {0}")]
-    UserNotFound(String),
+    UserNotFound(UserId),
 
     /// The requested player was not found.
     #[error("player not found: {0}")]
-    PlayerNotFound(String),
+    PlayerNotFound(PlayerId),
 
     /// The requested team was not found.
     #[error("team not found: {0}")]
@@ -169,83 +176,83 @@ pub enum DomainError {
 
     /// The requested game was not found.
     #[error("game not found: {0}")]
-    GameNotFound(String),
+    GameNotFound(GameId),
 
     /// The requested match was not found.
     #[error("match not found: {0}")]
-    MatchNotFound(String),
+    MatchNotFound(MatchId),
 
     /// The requested tournament was not found.
     #[error("tournament not found: {0}")]
-    TournamentNotFound(String),
+    TournamentNotFound(TournamentId),
 
     /// The requested league was not found.
     #[error("league not found: {0}")]
-    LeagueNotFound(String),
+    LeagueNotFound(LeagueId),
 
     /// The requested lobby was not found.
     #[error("lobby not found: {0}")]
-    LobbyNotFound(String),
+    LobbyNotFound(LobbyId),
 
     /// The requested league season was not found.
     #[error("league season not found: {0}")]
-    LeagueSeasonNotFound(String),
+    LeagueSeasonNotFound(LeagueSeasonId),
 
     /// The requested league team was not found.
     #[error("league team not found: {0}")]
-    LeagueTeamNotFound(String),
+    LeagueTeamNotFound(LeagueTeamId),
 
     /// The requested league team invitation was not found.
     #[error("league team invitation not found: {0}")]
-    LeagueTeamInvitationNotFound(String),
+    LeagueTeamInvitationNotFound(LeagueTeamInvitationId),
 
     /// The requested ban record was not found.
     #[error("ban not found: {0}")]
-    BanNotFound(String),
+    BanNotFound(BanId),
 
     /// The requested tournament stage was not found.
     #[error("tournament stage not found: {0}")]
-    TournamentStageNotFound(String),
+    TournamentStageNotFound(TournamentStageId),
 
     /// The requested tournament bracket was not found.
     #[error("tournament bracket not found: {0}")]
-    TournamentBracketNotFound(String),
+    TournamentBracketNotFound(TournamentBracketId),
 
     /// The requested tournament match was not found.
     #[error("tournament match not found: {0}")]
-    TournamentMatchNotFound(String),
+    TournamentMatchNotFound(TournamentMatchId),
 
     /// The requested tournament registration was not found.
     #[error("tournament registration not found: {0}")]
-    TournamentRegistrationNotFound(String),
+    TournamentRegistrationNotFound(TournamentRegistrationId),
 
     /// The requested dispute was not found.
     #[error("dispute not found: {0}")]
-    DisputeNotFound(String),
+    DisputeNotFound(DisputeId),
 
     /// The requested forfeit record was not found.
     #[error("forfeit record not found: {0}")]
-    ForfeitRecordNotFound(String),
+    ForfeitRecordNotFound(ForfeitRecordId),
 
     /// The requested evidence was not found.
     #[error("evidence not found: {0}")]
-    EvidenceNotFound(String),
+    EvidenceNotFound(EvidenceId),
 
     /// The requested result claim was not found.
     #[error("result claim not found: {0}")]
-    ResultClaimNotFound(String),
+    ResultClaimNotFound(ResultClaimId),
 
     /// The requested veto session was not found.
     #[error("veto session not found: {0}")]
-    VetoSessionNotFound(String),
+    VetoSessionNotFound(VetoSessionId),
 
     /// The requested demo was not found.
     #[error("demo not found: {0}")]
-    DemoNotFound(String),
+    DemoNotFound(DemoId),
 
     /// The requested demo-match link was not found.
     #[error("demo-match link not found: {0}")]
-    DemoMatchLinkNotFound(String),
+    DemoMatchLinkNotFound(DemoMatchLinkId),
 
     /// Demo is not linked to the specified match.
     #[error("demo link {0} is not linked to match {1}")]
@@ -253,7 +260,21 @@ pub enum DomainError {
 
     /// The requested result review was not found.
     #[error("result review not found: {0}")]
-    ResultReviewNotFound(String),
+    ResultReviewNotFound(ResultReviewId),
+
+    /// Lookup by a non-ID field (slug, name, composite key, …) returned no
+    /// result.
+    ///
+    /// Use when there is no typed ID to cite — e.g. `find_by_slug` returns
+    /// `None`, or a composite lookup like "league member by league+user".
+    /// Renders as 404 at the API boundary.
+    #[error("{resource} not found: {query}")]
+    LookupFailed {
+        /// Human-readable resource name (`"league"`, `"participant"`, …).
+        resource: &'static str,
+        /// The key that was looked up and missed (slug, name, composite).
+        query: String,
+    },
 
     /// Invalid review state for the requested operation.
     #[error("invalid review state '{0}': {1}")]
@@ -516,42 +537,6 @@ impl DomainError {
         Self::Internal(msg.into())
     }
 
-    /// Create a not found error for any entity type.
-    ///
-    /// This is a generic helper that uses the appropriate specific variant
-    /// based on the entity type name.
-    #[must_use]
-    pub fn not_found(entity_type: &str, id: impl Into<String>) -> Self {
-        let id = id.into();
-        match entity_type {
-            "user" => Self::UserNotFound(id),
-            "player" => Self::PlayerNotFound(id),
-            "team" => Self::TeamNotFound(id),
-            "game" => Self::GameNotFound(id),
-            "match" => Self::MatchNotFound(id),
-            "tournament" => Self::TournamentNotFound(id),
-            "tournament stage" => Self::TournamentStageNotFound(id),
-            "tournament bracket" => Self::TournamentBracketNotFound(id),
-            "tournament match" => Self::TournamentMatchNotFound(id),
-            "tournament registration" => Self::TournamentRegistrationNotFound(id),
-            "dispute" => Self::DisputeNotFound(id),
-            "forfeit record" => Self::ForfeitRecordNotFound(id),
-            "evidence" => Self::EvidenceNotFound(id),
-            "result claim" => Self::ResultClaimNotFound(id),
-            "veto session" => Self::VetoSessionNotFound(id),
-            "league" => Self::LeagueNotFound(id),
-            "lobby" => Self::LobbyNotFound(id),
-            "league season" => Self::LeagueSeasonNotFound(id),
-            "league team" => Self::LeagueTeamNotFound(id),
-            "league team invitation" => Self::LeagueTeamInvitationNotFound(id),
-            "ban" => Self::BanNotFound(id),
-            "demo" => Self::DemoNotFound(id),
-            "demo match link" => Self::DemoMatchLinkNotFound(id),
-            "result review" => Self::ResultReviewNotFound(id),
-            _ => Self::Internal(format!("{entity_type} not found: {id}")),
-        }
-    }
-
     /// Check if this is a "not found" type error.
     #[must_use]
     pub const fn is_not_found(&self) -> bool {
@@ -581,6 +566,7 @@ impl DomainError {
                 | Self::DemoNotFound(_)
                 | Self::DemoMatchLinkNotFound(_)
                 | Self::ResultReviewNotFound(_)
+                | Self::LookupFailed { .. }
         )
     }
 
@@ -629,7 +615,8 @@ mod tests {
 
     #[test]
     fn test_domain_error_categorization() {
-        assert!(DomainError::UserNotFound("123".into()).is_not_found());
+        use crate::ids::UserId;
+        assert!(DomainError::UserNotFound(UserId::new()).is_not_found());
         assert!(DomainError::TeamNotFound("456".into()).is_not_found());
         assert!(!DomainError::AlreadyTeamMember.is_not_found());
 

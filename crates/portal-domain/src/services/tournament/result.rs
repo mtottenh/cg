@@ -115,7 +115,7 @@ where
             let found_ids: Vec<_> = links.iter().map(|l| l.id).collect();
             for id in &demo_link_ids {
                 if !found_ids.contains(id) {
-                    return Err(DomainError::DemoMatchLinkNotFound(id.to_string()));
+                    return Err(DomainError::DemoMatchLinkNotFound(*id));
                 }
             }
 
@@ -369,7 +369,7 @@ where
         self.match_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(id.to_string()))
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(id))
     }
 
     async fn get_claim(&self, id: ResultClaimId) -> Result<ResultClaim, DomainError> {

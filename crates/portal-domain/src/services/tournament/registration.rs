@@ -46,7 +46,7 @@ where
         self.registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id.to_string()))
+            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))
     }
 
     /// Withdraw from a tournament.
@@ -75,7 +75,7 @@ where
             .find_by_id(registration.tournament_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentNotFound(registration.tournament_id.to_string())
+                DomainError::TournamentNotFound(registration.tournament_id)
             })?;
 
         // Check if tournament has already started and is past a certain state
@@ -125,7 +125,7 @@ where
             .find_by_id(registration.tournament_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentNotFound(registration.tournament_id.to_string())
+                DomainError::TournamentNotFound(registration.tournament_id)
             })?;
 
         // Check capacity
@@ -242,7 +242,7 @@ where
             .tournament_repo
             .find_by_id(tournament_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentNotFound(tournament_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentNotFound(tournament_id))?;
 
         // Check registration is open
         if !tournament.is_registration_open() {

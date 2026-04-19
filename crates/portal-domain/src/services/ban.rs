@@ -29,7 +29,7 @@ where
         self.ban_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::BanNotFound(id.to_string()))
+            .ok_or_else(|| DomainError::BanNotFound(id))
     }
 
     /// Create a new ban.

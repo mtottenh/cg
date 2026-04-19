@@ -41,7 +41,7 @@ where
         self.season_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league season", id.to_string()))
+            .ok_or_else(|| DomainError::LeagueSeasonNotFound(id))
     }
 
     /// Get a season by league and slug.
@@ -54,7 +54,10 @@ where
         self.season_repo
             .find_by_slug(league_id, slug)
             .await?
-            .ok_or_else(|| DomainError::not_found("league season", slug.to_string()))
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "league season",
+                query: slug.to_string(),
+            })
     }
 
     /// Get the current season for a league.
@@ -78,7 +81,7 @@ where
             .league_repo
             .find_by_id(cmd.league_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueNotFound(cmd.league_id.to_string()))?;
+            .ok_or_else(|| DomainError::LeagueNotFound(cmd.league_id))?;
 
         // Check slug uniqueness within the league
         if self

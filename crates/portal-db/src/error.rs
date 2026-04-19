@@ -121,32 +121,67 @@ impl RepositoryError {
 //      and return an opaque message.
 impl From<RepositoryError> for DomainError {
     fn from(err: RepositoryError) -> Self {
+        // Parse the String id (adapter boundary is untyped) into the typed
+        // ID expected by each DomainError variant. The id is produced by the
+        // adapter itself — a parse failure here means the adapter wrote a
+        // malformed string, not user input. We still fail closed to a
+        // generic Internal error rather than panicking, and log loudly.
+        macro_rules! typed {
+            ($id:expr, $ty:ty, $variant:ident) => {
+                match $id.parse::<$ty>() {
+                    Ok(parsed) => Self::$variant(parsed),
+                    Err(_) => {
+                        tracing::error!(
+                            id = %$id,
+                            target_type = stringify!($ty),
+                            "adapter returned malformed id in RepositoryError::NotFound"
+                        );
+                        Self::Internal("entity not found".into())
+                    }
+                }
+            };
+        }
+
+        use portal_core::ids::{
+            BanId, DemoId, DemoMatchLinkId, DisputeId, EvidenceId, ForfeitRecordId, GameId,
+            LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LobbyId, MatchId,
+            PlayerId, ResultClaimId, ResultReviewId, TournamentBracketId, TournamentId,
+            TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId, VetoSessionId,
+        };
+
         match err {
             RepositoryError::NotFound { entity_type, id } => match entity_type {
-                "User" => Self::UserNotFound(id),
-                "Player" => Self::PlayerNotFound(id),
+                "User" => typed!(id, UserId, UserNotFound),
+                "Player" => typed!(id, PlayerId, PlayerNotFound),
+                // Team has no typed ID yet (matchmaking/lobby feature pending).
                 "Team" => Self::TeamNotFound(id),
-                "Game" => Self::GameNotFound(id),
-                "Match" => Self::MatchNotFound(id),
-                "Tournament" => Self::TournamentNotFound(id),
-                "TournamentStage" => Self::TournamentStageNotFound(id),
-                "TournamentBracket" => Self::TournamentBracketNotFound(id),
-                "TournamentMatch" => Self::TournamentMatchNotFound(id),
-                "TournamentRegistration" => Self::TournamentRegistrationNotFound(id),
-                "League" | "LeagueMember" | "LeagueInvitation" => Self::LeagueNotFound(id),
-                "LeagueSeason" => Self::LeagueSeasonNotFound(id),
-                "LeagueTeam" => Self::LeagueTeamNotFound(id),
-                "LeagueTeamInvitation" => Self::LeagueTeamInvitationNotFound(id),
-                "Lobby" => Self::LobbyNotFound(id),
-                "Ban" => Self::BanNotFound(id),
-                "Dispute" => Self::DisputeNotFound(id),
-                "ForfeitRecord" => Self::ForfeitRecordNotFound(id),
-                "Evidence" => Self::EvidenceNotFound(id),
-                "ResultClaim" => Self::ResultClaimNotFound(id),
-                "VetoSession" => Self::VetoSessionNotFound(id),
-                "Demo" => Self::DemoNotFound(id),
-                "DemoMatchLink" => Self::DemoMatchLinkNotFound(id),
-                "ResultReview" => Self::ResultReviewNotFound(id),
+                "Game" => typed!(id, GameId, GameNotFound),
+                "Match" => typed!(id, MatchId, MatchNotFound),
+                "Tournament" => typed!(id, TournamentId, TournamentNotFound),
+                "TournamentStage" => typed!(id, TournamentStageId, TournamentStageNotFound),
+                "TournamentBracket" => typed!(id, TournamentBracketId, TournamentBracketNotFound),
+                "TournamentMatch" => typed!(id, TournamentMatchId, TournamentMatchNotFound),
+                "TournamentRegistration" => {
+                    typed!(id, TournamentRegistrationId, TournamentRegistrationNotFound)
+                }
+                "League" | "LeagueMember" | "LeagueInvitation" => {
+                    typed!(id, LeagueId, LeagueNotFound)
+                }
+                "LeagueSeason" => typed!(id, LeagueSeasonId, LeagueSeasonNotFound),
+                "LeagueTeam" => typed!(id, LeagueTeamId, LeagueTeamNotFound),
+                "LeagueTeamInvitation" => {
+                    typed!(id, LeagueTeamInvitationId, LeagueTeamInvitationNotFound)
+                }
+                "Lobby" => typed!(id, LobbyId, LobbyNotFound),
+                "Ban" => typed!(id, BanId, BanNotFound),
+                "Dispute" => typed!(id, DisputeId, DisputeNotFound),
+                "ForfeitRecord" => typed!(id, ForfeitRecordId, ForfeitRecordNotFound),
+                "Evidence" => typed!(id, EvidenceId, EvidenceNotFound),
+                "ResultClaim" => typed!(id, ResultClaimId, ResultClaimNotFound),
+                "VetoSession" => typed!(id, VetoSessionId, VetoSessionNotFound),
+                "Demo" => typed!(id, DemoId, DemoNotFound),
+                "DemoMatchLink" => typed!(id, DemoMatchLinkId, DemoMatchLinkNotFound),
+                "ResultReview" => typed!(id, ResultReviewId, ResultReviewNotFound),
                 other => {
                     // Programmer error: an adapter returned a NotFound for an
                     // entity type we don't know how to surface. Log loudly so

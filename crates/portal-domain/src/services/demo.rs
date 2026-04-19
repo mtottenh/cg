@@ -59,7 +59,7 @@ where
         self.demo_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::not_found("demo", id.to_string()))
+            .ok_or_else(|| DomainError::DemoNotFound(id))
     }
 
     /// List demos with filtering.
@@ -268,11 +268,9 @@ where
             .link_repo
             .find_by_demo_and_match(demo_id, match_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::not_found(
-                    "demo match link",
-                    format!("demo={demo_id},match={match_id}"),
-                )
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "demo match link",
+                query: format!("demo={demo_id},match={match_id}"),
             })?;
 
         self.link_repo.delete(link.id).await?;

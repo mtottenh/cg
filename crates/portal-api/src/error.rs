@@ -203,6 +203,9 @@ impl From<DomainError> for ApiError {
             DomainError::ResultReviewNotFound(id) => {
                 Self::not_found(format!("Result review not found: {id}"))
             }
+            DomainError::LookupFailed { resource, query } => {
+                Self::not_found(format!("{resource} not found: {query}"))
+            }
             DomainError::InvalidReviewState(status, msg) => {
                 Self::conflict(format!("Invalid review state '{status}': {msg}"))
             }

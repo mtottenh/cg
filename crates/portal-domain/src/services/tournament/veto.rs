@@ -111,7 +111,7 @@ where
     ) -> Result<VetoSession, DomainError> {
         // Verify the match exists
         let match_ = self.match_repo.find_by_id(match_id).await?.ok_or_else(|| {
-            DomainError::TournamentMatchNotFound(match_id.to_string())
+            DomainError::TournamentMatchNotFound(match_id)
         })?;
 
         // Verify match has both participants
@@ -201,7 +201,7 @@ where
 
         // Verify winner is a participant
         let match_ = self.match_repo.find_by_id(session.match_id).await?.ok_or_else(|| {
-            DomainError::TournamentMatchNotFound(session.match_id.to_string())
+            DomainError::TournamentMatchNotFound(session.match_id)
         })?;
 
         let is_participant = match_.participant1_registration_id == Some(winner)
@@ -687,7 +687,7 @@ where
         next_action: Option<&VetoFormatAction>,
     ) -> Result<TournamentRegistrationId, DomainError> {
         let match_ = self.match_repo.find_by_id(session.match_id).await?.ok_or_else(|| {
-            DomainError::TournamentMatchNotFound(session.match_id.to_string())
+            DomainError::TournamentMatchNotFound(session.match_id)
         })?;
 
         let team1 = match_.participant1_registration_id.ok_or_else(|| {

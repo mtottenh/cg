@@ -113,7 +113,7 @@ impl BanRepository for PgBanRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::BanNotFound(id.to_string()))?;
+        .ok_or_else(|| DomainError::BanNotFound(id))?;
 
         Ok(Ban::from(ban))
     }

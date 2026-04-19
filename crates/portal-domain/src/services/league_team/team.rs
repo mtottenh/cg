@@ -60,7 +60,7 @@ where
         self.team_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league team", id.to_string()))
+            .ok_or_else(|| DomainError::LeagueTeamNotFound(id))
     }
 
     /// Get a team season by ID.
@@ -72,7 +72,7 @@ where
         self.team_season_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league team season", id.to_string()))
+            .ok_or_else(|| DomainError::LookupFailed { resource: "league team season", query: id.to_string() })
     }
 
     /// Get team season by team and season.
@@ -112,7 +112,7 @@ where
             .season_repo
             .find_by_id(cmd.season_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league season", cmd.season_id.to_string()))?;
+            .ok_or_else(|| DomainError::LeagueSeasonNotFound(cmd.season_id))?;
 
         if !season.can_register_team() {
             return Err(DomainError::RegistrationClosed);
@@ -215,7 +215,7 @@ where
             .season_repo
             .find_by_id(season_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league season", season_id.to_string()))?;
+            .ok_or_else(|| DomainError::LeagueSeasonNotFound(season_id))?;
 
         // Verify team belongs to this league
         if team.league_id != season.league_id {
@@ -399,7 +399,7 @@ where
             .find_by_id(team_season.season_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league season", team_season.season_id.to_string())
+                DomainError::LeagueSeasonNotFound(team_season.season_id)
             })?;
 
         // Check roster lock status
@@ -494,7 +494,7 @@ where
             .find_by_id(team_season.season_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league season", team_season.season_id.to_string())
+                DomainError::LeagueSeasonNotFound(team_season.season_id)
             })?;
 
         let member = self
@@ -677,7 +677,7 @@ where
             .find_by_id(team_season.season_id)
             .await?
             .ok_or_else(|| {
-                DomainError::not_found("league season", team_season.season_id.to_string())
+                DomainError::LeagueSeasonNotFound(team_season.season_id)
             })?;
 
         // Check roster lock status

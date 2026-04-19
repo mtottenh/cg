@@ -250,7 +250,7 @@ where
     async fn validate_match_exists(&self, match_id: TournamentMatchId) -> Result<(), DomainError> {
         let match_exists = self.match_repo.find_by_id(match_id).await?;
         if match_exists.is_none() {
-            return Err(DomainError::TournamentMatchNotFound(match_id.to_string()));
+            return Err(DomainError::TournamentMatchNotFound(match_id));
         }
         Ok(())
     }

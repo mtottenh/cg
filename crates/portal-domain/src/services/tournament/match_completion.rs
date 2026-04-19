@@ -410,7 +410,7 @@ where
             .find_by_id(input.match_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentMatchNotFound(input.match_id.to_string())
+                DomainError::TournamentMatchNotFound(input.match_id)
             })?;
 
         self.run_progression_steps_inner(saga_coordinator, execution, input, &match_)
@@ -499,7 +499,7 @@ where
             .find_by_id(input.match_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentMatchNotFound(input.match_id.to_string())
+                DomainError::TournamentMatchNotFound(input.match_id)
             })?;
 
         // Validate match is in valid state for completion.
@@ -678,7 +678,7 @@ where
             .find_by_id(match_.bracket_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentBracketNotFound(match_.bracket_id.to_string())
+                DomainError::TournamentBracketNotFound(match_.bracket_id)
             })?;
 
         saga_coordinator
@@ -702,7 +702,7 @@ where
             .find_by_id(input.match_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentMatchNotFound(input.match_id.to_string())
+                DomainError::TournamentMatchNotFound(input.match_id)
             })?;
 
         // If the match is already completed (e.g., by confirm_claim), skip
@@ -794,11 +794,9 @@ where
             .registration_repo
             .find_by_id(input.winner_registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(
-                    input.winner_registration_id.to_string(),
-                )
-            })?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(
+                input.winner_registration_id,
+            ))?;
 
         // Determine which slot the winner goes to
         let target_slot = self
@@ -917,11 +915,9 @@ where
             .registration_repo
             .find_by_id(input.loser_registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(
-                    input.loser_registration_id.to_string(),
-                )
-            })?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(
+                input.loser_registration_id,
+            ))?;
 
         // Determine which slot the loser goes to
         let target_slot = self
@@ -1233,7 +1229,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
         Ok(match_.tournament_id)
     }
 
@@ -1254,7 +1250,7 @@ where
             .find_by_id(target_match_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentMatchNotFound(target_match_id.to_string())
+                DomainError::TournamentMatchNotFound(target_match_id)
             })?;
 
         // Check which slot expects input from this match

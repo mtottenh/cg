@@ -916,7 +916,7 @@ where
         self.match_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(id.to_string()))
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(id))
     }
 
     async fn get_bracket(&self, id: TournamentBracketId) -> Result<TournamentBracket, DomainError> {

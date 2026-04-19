@@ -46,7 +46,7 @@ where
         self.league_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::LeagueNotFound(id.to_string()))
+            .ok_or_else(|| DomainError::LeagueNotFound(id))
     }
 
     /// Get a league by slug.
@@ -55,7 +55,10 @@ where
         self.league_repo
             .find_by_slug(slug)
             .await?
-            .ok_or_else(|| DomainError::LeagueNotFound(slug.to_string()))
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "league",
+                query: slug.to_string(),
+            })
     }
 
     /// Create a new league.

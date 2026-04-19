@@ -73,7 +73,7 @@ where
         self.user_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::UserNotFound(id.to_string()))
+            .ok_or_else(|| DomainError::UserNotFound(id))
     }
 
     /// Get the current authenticated user.
@@ -226,7 +226,10 @@ where
             .player_repo
             .find_by_user_id(user_creds.id)
             .await?
-            .ok_or_else(|| DomainError::PlayerNotFound(user_creds.id.to_string()))?;
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "player",
+                query: format!("user:{}", user_creds.id),
+            })?;
 
         // Generate access token
         let access_token = generate_access_token(

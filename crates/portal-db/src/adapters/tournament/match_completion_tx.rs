@@ -109,7 +109,7 @@ async fn validate_match(
 ) -> Result<TournamentMatch, DomainError> {
     let match_ = PgTournamentMatchRepository::find_by_id_in_tx(tx, input.match_id)
         .await?
-        .ok_or_else(|| DomainError::TournamentMatchNotFound(input.match_id.to_string()))?;
+        .ok_or_else(|| DomainError::TournamentMatchNotFound(input.match_id))?;
 
     // Validate match is in valid state for completion
     // The match must be in an active state that allows result submission
@@ -156,7 +156,7 @@ async fn get_bracket(
 ) -> Result<TournamentBracket, DomainError> {
     PgTournamentBracketRepository::find_by_id_in_tx(tx, bracket_id)
         .await?
-        .ok_or_else(|| DomainError::TournamentBracketNotFound(bracket_id.to_string()))
+        .ok_or_else(|| DomainError::TournamentBracketNotFound(bracket_id))
 }
 
 /// Complete the match with result.
@@ -202,11 +202,9 @@ async fn advance_winner(
     let registration =
         PgTournamentRegistrationRepository::find_by_id_in_tx(tx, input.winner_registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(
-                    input.winner_registration_id.to_string(),
-                )
-            })?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(
+                input.winner_registration_id,
+            ))?;
 
     // Determine which slot the winner goes to
     let target_slot = determine_target_slot(tx, match_, next_match_id, true).await?;
@@ -250,7 +248,7 @@ async fn route_loser(
         PgTournamentRegistrationRepository::find_by_id_in_tx(tx, input.loser_registration_id)
             .await?
             .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(input.loser_registration_id.to_string())
+                DomainError::TournamentRegistrationNotFound(input.loser_registration_id)
             })?;
 
     // Determine which slot the loser goes to
@@ -338,7 +336,7 @@ async fn determine_target_slot(
 ) -> Result<ParticipantSlot, DomainError> {
     let target_match = PgTournamentMatchRepository::find_by_id_in_tx(tx, target_match_id)
         .await?
-        .ok_or_else(|| DomainError::TournamentMatchNotFound(target_match_id.to_string()))?;
+        .ok_or_else(|| DomainError::TournamentMatchNotFound(target_match_id))?;
 
     // Check which slot expects input from this match
     // Check participant 1 source

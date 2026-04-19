@@ -46,7 +46,7 @@ where
         self.player_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::PlayerNotFound(id.to_string()))
+            .ok_or_else(|| DomainError::PlayerNotFound(id))
     }
 
     /// Get a player by user ID.
@@ -55,7 +55,10 @@ where
         self.player_repo
             .find_by_user_id(user_id)
             .await?
-            .ok_or_else(|| DomainError::PlayerNotFound(format!("user:{user_id}")))
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "player",
+                query: format!("user:{user_id}"),
+            })
     }
 
     /// Find a player by their SteamID64. Returns None if not found.

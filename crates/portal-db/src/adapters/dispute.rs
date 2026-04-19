@@ -365,7 +365,7 @@ impl DisputeRepository for PgDisputeRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::not_found("dispute", id.to_string()))?;
+        .ok_or_else(|| DomainError::DisputeNotFound(id))?;
 
         Ok(Dispute::from(dispute))
     }
@@ -384,7 +384,7 @@ impl DisputeRepository for PgDisputeRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::not_found("dispute", id.to_string()))?;
+        .ok_or_else(|| DomainError::DisputeNotFound(id))?;
 
         Ok(Dispute::from(dispute))
     }

@@ -194,7 +194,7 @@ impl LeagueRepository for PgLeagueRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::LeagueNotFound(id.to_string()))?;
+        .ok_or_else(|| DomainError::LeagueNotFound(id))?;
 
         Ok(League::from(league))
     }

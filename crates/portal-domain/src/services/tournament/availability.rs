@@ -376,7 +376,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
 
         let reg1_id = tournament_match.participant1_registration_id.ok_or_else(|| {
             DomainError::InvalidState("Match participant 1 not assigned".to_string())

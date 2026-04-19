@@ -12,7 +12,7 @@ pub mod demo_client;
 pub mod demo_stats;
 pub mod evidence_validator;
 
-pub use demo_client::Cs2DemoClient;
+pub use demo_client::{validate_base_url as validate_demo_service_url, Cs2DemoClient};
 pub use demo_stats::Cs2DemoStats;
 pub use evidence_validator::Cs2EvidenceValidator;
 

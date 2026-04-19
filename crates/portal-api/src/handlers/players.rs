@@ -4,7 +4,7 @@ use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::UpdatePlayerProfileRequest;
 use crate::dto::responses::{PlayerResponse, PlayerSearchResponse};
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::AuthenticatedUser;
+use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::handlers::player_game_profiles::build_stats_context;
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
@@ -14,7 +14,6 @@ use portal_core::{GameId, PlayerId};
 use portal_domain::repositories::{PlayerSearchFilters, UpdatePlayer};
 use serde::Deserialize;
 use std::collections::HashMap;
-use validator::Validate;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -246,12 +245,9 @@ pub async fn update_my_profile(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Json(request): Json<UpdatePlayerProfileRequest>,
+    ValidatedJson(request): ValidatedJson<UpdatePlayerProfileRequest>,
 ) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
     let request_id = get_request_id(&headers);
-
-    // Validate request
-    request.validate().map_err(ApiError::from)?;
 
     let update = UpdatePlayer::from(request);
 

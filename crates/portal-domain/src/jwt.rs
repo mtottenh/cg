@@ -17,10 +17,15 @@
 //! request.
 
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use portal_core::DomainError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// The signing algorithm we accept and emit. Pinned explicitly so a future
+/// `jsonwebtoken` default change, or a crafted header specifying a different
+/// algorithm, can never cause validation to silently fall through.
+const JWT_ALGORITHM: Algorithm = Algorithm::HS256;
 
 /// Default access token expiry in minutes.
 pub const ACCESS_TOKEN_EXPIRY_MINUTES: i64 = 15;
@@ -94,7 +99,7 @@ pub fn generate_access_token_with_expiry(
     let claims = Claims::new(user_id, player_id, username.to_string(), expiry_minutes);
 
     encode(
-        &Header::default(),
+        &Header::new(JWT_ALGORITHM),
         &claims,
         &EncodingKey::from_secret(secret.as_bytes()),
     )
@@ -110,7 +115,10 @@ pub fn generate_access_token_with_expiry(
 /// # Returns
 /// The decoded claims if valid
 pub fn validate_token(token: &str, secret: &str) -> Result<Claims, DomainError> {
-    let validation = Validation::default();
+    // Pin the accepted algorithm explicitly. `Validation::new` constrains
+    // `algorithms` to a single entry, so a token with `alg: none` or a
+    // different symmetric/asymmetric algorithm will be rejected outright.
+    let validation = Validation::new(JWT_ALGORITHM);
 
     let token_data = decode::<Claims>(
         token,

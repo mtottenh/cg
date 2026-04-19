@@ -2,7 +2,7 @@
 
 use crate::dto::common::DataResponse;
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::AuthenticatedUser;
+use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -10,6 +10,7 @@ use axum::Json;
 use portal_domain::entities::steam_tracking::CreateSteamTrackingCommand;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use validator::Validate;
 
 fn get_request_id(headers: &HeaderMap) -> &str {
     headers
@@ -23,15 +24,18 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 // =============================================================================
 
 /// Request to register for steam tracking.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, Validate)]
 pub struct RegisterSteamTrackingRequest {
     /// The game auth code (format: XXXX-XXXXX-XXXX).
+    #[validate(length(min = 8, max = 32, message = "auth code must be 8-32 characters"))]
     pub game_auth_code: String,
     /// Game slug (e.g. "cs2"). Defaults to "cs2" if omitted.
     #[serde(default = "default_game_slug")]
+    #[validate(length(min = 1, max = 32, message = "game slug must be 1-32 characters"))]
     pub game_slug: String,
     /// Most recent CS2 match share code (e.g. CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx).
     /// Used as the starting cursor for the poller to discover newer matches.
+    #[validate(length(max = 64, message = "share code must be at most 64 characters"))]
     pub initial_share_code: Option<String>,
 }
 
@@ -40,9 +44,10 @@ fn default_game_slug() -> String {
 }
 
 /// Request to update steam tracking auth code.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, Validate)]
 pub struct UpdateSteamTrackingRequest {
     /// The new game auth code (format: XXXX-XXXXX-XXXX).
+    #[validate(length(min = 8, max = 32, message = "auth code must be 8-32 characters"))]
     pub game_auth_code: String,
 }
 
@@ -105,7 +110,7 @@ pub async fn register_tracking(
     State(state): State<AppState>,
     headers: HeaderMap,
     user: AuthenticatedUser,
-    Json(req): Json<RegisterSteamTrackingRequest>,
+    ValidatedJson(req): ValidatedJson<RegisterSteamTrackingRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<SteamTrackingResponse>>)> {
     let request_id = get_request_id(&headers);
 
@@ -210,7 +215,7 @@ pub async fn update_tracking(
     State(state): State<AppState>,
     headers: HeaderMap,
     user: AuthenticatedUser,
-    Json(req): Json<UpdateSteamTrackingRequest>,
+    ValidatedJson(req): ValidatedJson<UpdateSteamTrackingRequest>,
 ) -> ApiResult<Json<DataResponse<SteamTrackingResponse>>> {
     let request_id = get_request_id(&headers);
 

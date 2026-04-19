@@ -12,14 +12,14 @@ use crate::dto::responses::{
     DemoStatusCountsResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::AuthenticatedUser;
+use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use chrono::DateTime;
-use portal_core::{DemoCategory, DemoId, DemoLinkType, DemoStatus, GameId, LeagueId, TournamentId, TournamentMatchId};
-use portal_domain::entities::demo::{DemoFilter, DemoPlayerStats, ParsedDemoMetadata};
+use portal_core::{DemoCategory, DemoId, DemoLinkType, DemoStatus, GameId, LeagueId, ScopeType, TournamentId, TournamentMatchId};
+use portal_domain::entities::demo::{Demo, DemoFilter, DemoPlayerStats, ParsedDemoMetadata};
 use portal_domain::services::DemoPlayerInput;
 use validator::Validate;
 
@@ -108,6 +108,7 @@ pub async fn list_demos(
     responses(
         (status = 200, description = "Demo details", body = DataResponse<DemoResponse>),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Demo is not publicly visible", body = ApiError),
         (status = 404, description = "Demo not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -115,13 +116,15 @@ pub async fn list_demos(
 )]
 pub async fn get_demo(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,
 ) -> ApiResult<Json<DataResponse<DemoResponse>>> {
     let request_id = get_request_id(&headers);
 
     let demo = state.demo_service.get_demo(demo_id).await?;
+    authorize_demo_read(&state, &perm, &auth, &demo).await?;
 
     Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
 }
@@ -136,6 +139,7 @@ pub async fn get_demo(
     responses(
         (status = 200, description = "Demo players", body = DataResponse<Vec<DemoPlayerResponse>>),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Demo is not publicly visible", body = ApiError),
         (status = 404, description = "Demo not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -143,11 +147,15 @@ pub async fn get_demo(
 )]
 pub async fn get_demo_players(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,
 ) -> ApiResult<Json<DataResponse<Vec<DemoPlayerResponse>>>> {
     let request_id = get_request_id(&headers);
+
+    let demo = state.demo_service.get_demo(demo_id).await?;
+    authorize_demo_read(&state, &perm, &auth, &demo).await?;
 
     let players = state.demo_service.get_demo_players(demo_id).await?;
     let responses: Vec<DemoPlayerResponse> = players.into_iter().map(DemoPlayerResponse::from).collect();
@@ -436,6 +444,7 @@ pub async fn link_demo_to_match(
     responses(
         (status = 200, description = "Demo links", body = DataResponse<Vec<DemoMatchLinkResponse>>),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Demo is not publicly visible", body = ApiError),
         (status = 404, description = "Demo not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -443,11 +452,15 @@ pub async fn link_demo_to_match(
 )]
 pub async fn get_demo_links(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,
 ) -> ApiResult<Json<DataResponse<Vec<DemoMatchLinkResponse>>>> {
     let request_id = get_request_id(&headers);
+
+    let demo = state.demo_service.get_demo(demo_id).await?;
+    authorize_demo_read(&state, &perm, &auth, &demo).await?;
 
     let links = state.demo_service.get_demo_links(demo_id).await?;
     let responses: Vec<DemoMatchLinkResponse> = links.into_iter().map(DemoMatchLinkResponse::from).collect();
@@ -465,6 +478,7 @@ pub async fn get_demo_links(
     responses(
         (status = 200, description = "Demo download info", body = DataResponse<DemoDownloadResponse>),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Demo is not publicly visible", body = ApiError),
         (status = 404, description = "Demo not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -472,13 +486,15 @@ pub async fn get_demo_links(
 )]
 pub async fn get_demo_download(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,
 ) -> ApiResult<Json<DataResponse<DemoDownloadResponse>>> {
     let request_id = get_request_id(&headers);
 
     let demo = state.demo_service.get_demo(demo_id).await?;
+    authorize_demo_read(&state, &perm, &auth, &demo).await?;
 
     // Build download URL using cs2_demo_base_url if available, otherwise construct from S3 coordinates
     let download_url = match &state.cs2_demo_base_url {
@@ -998,6 +1014,43 @@ pub async fn set_demo_notes(
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
+
+/// Require that the caller is allowed to read `demo`.
+///
+/// Visibility rules:
+/// - Any admin holding `admin.tournaments.manage_any` sees all demos.
+/// - A publicly visible demo (`!is_hidden` and a visible category) is
+///   readable by every authenticated user.
+/// - Otherwise, the caller must appear as a linked player on the demo —
+///   i.e. a `demo_players` row with `player_id = auth.player_id`.
+///
+/// Prior to this check, `get_demo` / `get_demo_players` / `get_demo_links`
+/// / `get_demo_download` would return any demo by ID with no gate. That
+/// leaked stats and download coordinates for hidden/private demos.
+async fn authorize_demo_read(
+    state: &AppState,
+    perm: &PermissionChecker,
+    auth: &AuthenticatedUser,
+    demo: &Demo,
+) -> ApiResult<()> {
+    if perm.has_admin_override(auth, ScopeType::Tournament).await {
+        return Ok(());
+    }
+
+    if demo.is_visible() {
+        return Ok(());
+    }
+
+    let players = state.demo_service.get_demo_players(demo.id).await?;
+    if players
+        .iter()
+        .any(|p| p.player_id == Some(auth.player_id))
+    {
+        return Ok(());
+    }
+
+    Err(ApiError::forbidden("Demo is not publicly visible"))
+}
 
 /// Extract typed CS2 player stats from a game-specific JSON blob.
 pub fn extract_cs2_player_stats(stats_json: &serde_json::Value) -> DemoPlayerStats {

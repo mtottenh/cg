@@ -16,8 +16,9 @@ use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use portal_core::{DisputeId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId};
-use portal_domain::entities::dispute::{AuthorType, DisputePriority, DisputeReason};
+use portal_core::{DisputeId, EvidenceId, ResultClaimId, ScopeType, TournamentMatchId, TournamentRegistrationId};
+use portal_domain::entities::dispute::{AuthorType, Dispute, DisputePriority, DisputeReason};
+use portal_domain::repositories::tournament::TournamentMatchRepository;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -216,27 +217,92 @@ pub async fn add_dispute_message(
     ),
     responses(
         (status = 200, description = "Dispute with thread", body = DataResponse<DisputeWithThreadResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not a participant in this dispute", body = ApiError),
         (status = 404, description = "Dispute not found", body = ApiError),
     ),
+    security(("bearer_auth" = [])),
     tag = "disputes"
 )]
 pub async fn get_dispute(
     State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(dispute_id): Path<DisputeId>,
 ) -> ApiResult<Json<DataResponse<DisputeWithThreadResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // Regular users don't see internal messages
+    // Load the dispute first so we can do authorization before returning the
+    // (potentially sensitive) thread contents. Admin override wins; otherwise
+    // the caller must be a participant in the disputed match.
+    let dispute = state.dispute_service.get_dispute(dispute_id).await?;
+
+    let is_admin = perm.has_admin_override(&auth, ScopeType::Tournament).await;
+    if !is_admin && !is_dispute_participant(&state, &dispute, &auth).await? {
+        return Err(ApiError::forbidden("Not a participant in this dispute"));
+    }
+
+    // Regular users don't see internal messages; admins get them via the
+    // dedicated admin endpoint.
+    let include_internal = is_admin;
     let dispute_with_thread = state
         .dispute_service
-        .get_dispute_with_thread(dispute_id, false)
+        .get_dispute_with_thread(dispute_id, include_internal)
         .await?;
 
     Ok(Json(DataResponse::new(
         DisputeWithThreadResponse::from(dispute_with_thread),
         request_id,
     )))
+}
+
+/// Whether `auth` has standing to view a dispute's thread.
+///
+/// A viewer is a participant iff they either raised the dispute themselves or
+/// are tied to one of the match's two participant registrations — directly as
+/// a solo player, or indirectly as an active member of the team-season
+/// associated with that registration.
+async fn is_dispute_participant(
+    state: &AppState,
+    dispute: &Dispute,
+    auth: &AuthenticatedUser,
+) -> ApiResult<bool> {
+    if dispute.disputed_by_user_id == auth.user_id {
+        return Ok(true);
+    }
+
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(dispute.match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Match for dispute not found"))?;
+
+    for reg_id in [
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let registration = state.registration_service.get_registration(reg_id).await?;
+
+        if registration.player_id == Some(auth.player_id) {
+            return Ok(true);
+        }
+
+        if let Some(ts_id) = registration.team_season_id {
+            if state
+                .league_team_service
+                .is_member(ts_id, auth.player_id)
+                .await?
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
 }
 
 // =============================================================================

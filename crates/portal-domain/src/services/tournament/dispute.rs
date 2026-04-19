@@ -654,7 +654,12 @@ where
             .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))
     }
 
-    async fn get_dispute(&self, dispute_id: DisputeId) -> Result<Dispute, DomainError> {
+    /// Fetch a dispute by ID or return a typed `DisputeNotFound` error.
+    ///
+    /// Pub because authorization logic in handlers needs to load the dispute
+    /// metadata (match id, disputed-by user) before deciding whether to
+    /// expose the thread to the caller.
+    pub async fn get_dispute(&self, dispute_id: DisputeId) -> Result<Dispute, DomainError> {
         self.dispute_repo
             .find_by_id(dispute_id)
             .await?

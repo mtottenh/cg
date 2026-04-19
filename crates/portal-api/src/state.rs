@@ -378,8 +378,19 @@ impl AppState {
             storage_config.base_url,
         ));
 
-        // Create plugin manager with built-in plugins
-        let cs2_demo_base_url = std::env::var("CS2_DEMO_SERVICE_URL").ok();
+        // Create plugin manager with built-in plugins.
+        //
+        // If `CS2_DEMO_SERVICE_URL` is set we validate it up-front: must be
+        // https and point at a non-private, non-loopback host. An invalid
+        // value hard-fails startup rather than silently letting the demo
+        // plugin issue SSRF-adjacent requests.
+        let cs2_demo_base_url = match std::env::var("CS2_DEMO_SERVICE_URL").ok() {
+            Some(raw) => Some(
+                portal_plugins::validate_demo_service_url(&raw)
+                    .expect("CS2_DEMO_SERVICE_URL failed validation"),
+            ),
+            None => None,
+        };
         let plugin_manager = Arc::new(portal_plugins::create_plugin_manager_with_config(
             cs2_demo_base_url.clone(),
         ));

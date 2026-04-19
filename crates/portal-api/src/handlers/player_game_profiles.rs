@@ -7,7 +7,7 @@ use crate::dto::responses::{
     PublicMmStatsResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, PermissionChecker};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -262,7 +262,7 @@ pub async fn submit_player_rating(
     perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((player_id_str, game_id_or_slug)): Path<(String, String)>,
-    Json(body): Json<SubmitRatingRequest>,
+    ValidatedJson(body): ValidatedJson<SubmitRatingRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<PlayerGameProfileResponse>>)> {
     let request_id = get_request_id(&headers);
 

@@ -4,6 +4,7 @@
 
 use super::demo_stats::Cs2DemoStats;
 use crate::error::PluginError;
+use futures_util::StreamExt;
 use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, instrument};
@@ -25,6 +26,83 @@ fn has_stats_json_extension(filename: &str) -> bool {
 const DEMO_BASE_URL: &str = "https://demos.cs210mans.uk";
 const STATS_PATH: &str = "/stats";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum response body size we'll accept from the demo service.
+///
+/// `Cs2DemoStats` JSON is typically a few hundred KiB. Capping prevents a
+/// compromised or hostile demo service from forcing the portal to buffer
+/// arbitrary amounts of memory.
+const MAX_STATS_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Validate a demo service base URL and return it normalized.
+///
+/// Defense-in-depth against SSRF: `CS2_DEMO_SERVICE_URL` is an operator-set
+/// env var, so the attacker model is "misconfiguration or supply-chain
+/// tampering" rather than a live request. Even so, refusing anything that
+/// isn't `https` on a routable host keeps the blast radius bounded if the
+/// var is ever wired to user input.
+pub fn validate_base_url(raw: &str) -> Result<String, PluginError> {
+    let url = reqwest::Url::parse(raw)
+        .map_err(|e| PluginError::InvalidConfiguration(format!("invalid demo service URL: {e}")))?;
+
+    if url.scheme() != "https" {
+        return Err(PluginError::InvalidConfiguration(format!(
+            "demo service URL must use https (got scheme `{}`)",
+            url.scheme()
+        )));
+    }
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| PluginError::InvalidConfiguration("demo service URL has no host".into()))?;
+
+    if is_private_or_loopback_host(host) {
+        return Err(PluginError::InvalidConfiguration(format!(
+            "demo service URL host `{host}` is loopback/private/link-local; refusing to pivot to internal network"
+        )));
+    }
+
+    // Strip any trailing slash so callers can do `format!("{base}/{path}")`
+    // without producing `//`.
+    let trimmed = raw.trim_end_matches('/').to_string();
+    Ok(trimmed)
+}
+
+fn is_private_or_loopback_host(host: &str) -> bool {
+    // Reject obvious name-based internal targets.
+    if host.eq_ignore_ascii_case("localhost")
+        || host.ends_with(".localhost")
+        || host.ends_with(".internal")
+        || host.ends_with(".local")
+    {
+        return true;
+    }
+
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_private()
+                    || v4.is_loopback()
+                    || v4.is_link_local()
+                    || v4.is_broadcast()
+                    || v4.is_unspecified()
+                    || v4.is_multicast()
+                    // CGNAT 100.64.0.0/10
+                    || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    // fc00::/7 unique-local and fe80::/10 link-local
+                    || (v6.segments()[0] & 0xfe00) == 0xfc00
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+            }
+        };
+    }
+
+    false
+}
 
 /// Client for fetching demo stats from the external demo service.
 #[derive(Debug, Clone)]
@@ -90,9 +168,36 @@ impl Cs2DemoClient {
             )));
         }
 
-        let stats: Cs2DemoStats = response
-            .json()
-            .await
+        // Cap the response body so a hostile (or broken) demo service can't
+        // force unbounded buffering. `Content-Length` is advisory — we also
+        // enforce the cap while streaming chunks.
+        if let Some(len) = response.content_length() {
+            if (len as usize) > MAX_STATS_RESPONSE_BYTES {
+                return Err(PluginError::ExternalService(format!(
+                    "Demo stats response too large: {len} bytes (max {MAX_STATS_RESPONSE_BYTES})"
+                )));
+            }
+        }
+
+        let mut body = Vec::with_capacity(
+            response
+                .content_length()
+                .map_or(64 * 1024, |l| (l as usize).min(MAX_STATS_RESPONSE_BYTES)),
+        );
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| {
+                PluginError::ExternalService(format!("Failed to read demo stats body: {e}"))
+            })?;
+            if body.len() + chunk.len() > MAX_STATS_RESPONSE_BYTES {
+                return Err(PluginError::ExternalService(format!(
+                    "Demo stats response exceeded {MAX_STATS_RESPONSE_BYTES} bytes"
+                )));
+            }
+            body.extend_from_slice(&chunk);
+        }
+
+        let stats: Cs2DemoStats = serde_json::from_slice(&body)
             .map_err(|e| PluginError::ParseError(format!("Failed to parse demo stats: {e}")))?;
 
         debug!(

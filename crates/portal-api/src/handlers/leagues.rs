@@ -407,7 +407,7 @@ pub async fn update_member_role(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path((league_id, user_id)): Path<(LeagueId, UserId)>,
-    Json(req): Json<UpdateLeagueMemberRoleRequest>,
+    ValidatedJson(req): ValidatedJson<UpdateLeagueMemberRoleRequest>,
 ) -> ApiResult<Json<LeagueMemberBasicResponse>> {
 
     // Check RBAC permission

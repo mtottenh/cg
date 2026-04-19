@@ -52,7 +52,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | N5 | ☑ | Process-wide `tournament_id → plugin` cache (DashMap via OnceLock); removes 2 of 3 DB roundtrips per `/matches/*/evidence/*` call. | `handlers/evidence.rs:738-780` |
 | N6 | ☑ | Invariant is documented: `player.id.as_uuid() == user.id.as_uuid()` for every registered account. Construction funnels through `make_shared_account_ids()` — single seam to flip if/when the data model decouples. Migrating to distinct IDs deferred (data-migration). | `services/user.rs:142-143` |
 | N7 | ☑ | Argon2 params configurable via env (`PORTAL_ARGON2_{M,T,P}_COST`); OWASP 2023 defaults | `portal-domain/src/auth.rs` |
-| N8 | ☐ | Property tests for CS2 demo parsing | `portal-plugins/` |
+| N8 | ☑ | 4 `proptest!` properties added on `Cs2EvidenceValidator`: `maps_match` reflexivity & prefix-invariance, score validation agrees with truth, confidence stays in [0, 1]. All pass at default 256 iters. | `portal-plugins/src/games/cs2/evidence_validator.rs` |
 
 ## Cross-cutting follow-ups
 

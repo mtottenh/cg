@@ -32,5 +32,8 @@ chrono = { workspace = true }
 # HTTP client for external demo service
 reqwest = { workspace = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 [lints]
 workspace = true

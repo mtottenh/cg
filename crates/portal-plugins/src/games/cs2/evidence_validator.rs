@@ -516,4 +516,106 @@ mod tests {
         assert!(Cs2EvidenceValidator::maps_match("DE_DUST2", "de_dust2"));
         assert!(!Cs2EvidenceValidator::maps_match("de_dust2", "de_mirage"));
     }
+
+    // =========================================================================
+    // Property tests (N8)
+    // =========================================================================
+    //
+    // These use proptest to explore input spaces the example-based tests
+    // above can't cover exhaustively — arbitrary map names and score pairs.
+    // The validator is downstream of untrusted input (demo service JSON),
+    // and a panic or "valid" return on a malformed claim is a bug, so
+    // checking behavior across generated inputs is worth the extra surface.
+
+    use proptest::prelude::*;
+
+    fn stats_with_scores(alpha: i32, beta: i32) -> Cs2DemoStats {
+        let mut s = create_test_stats();
+        s.final_score.insert("team_Alpha".to_string(), alpha);
+        s.final_score.insert("team_Beta".to_string(), beta);
+        s
+    }
+
+    proptest! {
+        /// `maps_match` is reflexive for any non-empty map name: a demo
+        /// always validates against its own map id.
+        #[test]
+        fn maps_match_reflexive(map in "[a-z0-9_]{1,32}") {
+            prop_assert!(Cs2EvidenceValidator::maps_match(&map, &map));
+        }
+
+        /// Adding or removing the "de_" / "cs_" prefix leaves the match
+        /// relation intact (that's the normalization contract the
+        /// function advertises).
+        #[test]
+        fn maps_match_prefix_invariant(base in "[a-z0-9]{3,16}") {
+            let plain = base.clone();
+            let with_de = format!("de_{base}");
+            let with_cs = format!("cs_{base}");
+            prop_assert!(Cs2EvidenceValidator::maps_match(&plain, &with_de));
+            prop_assert!(Cs2EvidenceValidator::maps_match(&with_de, &plain));
+            prop_assert!(Cs2EvidenceValidator::maps_match(&plain, &with_cs));
+            prop_assert!(Cs2EvidenceValidator::maps_match(&with_cs, &with_de));
+        }
+
+        /// Validating a claim that matches the demo's scores on both sides
+        /// is always valid (modulo map/player checks which `create_test_stats`
+        /// fixes). Validating a claim that disagrees is never valid.
+        #[test]
+        fn score_validation_agrees_with_truth(
+            alpha_score in 0i32..=32,
+            beta_score in 0i32..=32,
+            claimed_alpha in 0i32..=32,
+            claimed_beta in 0i32..=32,
+        ) {
+            // Skip ties — the validator checks that the winner side
+            // agrees, and the "winner" of a tie is undefined. Real
+            // CS2 matches use overtime to avoid ties; fuzzing them
+            // only confuses the contract.
+            prop_assume!(alpha_score != beta_score);
+            prop_assume!(claimed_alpha != claimed_beta);
+
+            let stats = stats_with_scores(alpha_score, beta_score);
+            let claim = GameResult {
+                game_number: 1,
+                map_id: Some("de_dust2".to_string()),
+                participant1_score: claimed_alpha,
+                participant2_score: claimed_beta,
+            };
+            let p1 = vec!["76561198000000001".to_string()];
+            let p2 = vec!["76561198000000002".to_string()];
+
+            let result = Cs2EvidenceValidator::validate(&stats, &claim, &p1, &p2);
+
+            let scores_agree = alpha_score == claimed_alpha && beta_score == claimed_beta;
+            if scores_agree {
+                prop_assert!(result.is_valid, "agreeing scores should be valid; got {result:?}");
+            } else {
+                prop_assert!(!result.is_valid, "disagreeing scores should be invalid; got {result:?}");
+            }
+        }
+
+        /// Confidence is always in [0.0, 1.0]. A NaN or >1.0 from the
+        /// multiplicative confidence pipeline would be a bug.
+        #[test]
+        fn confidence_stays_in_unit_interval(
+            alpha_score in 0i32..=32,
+            beta_score in 0i32..=32,
+        ) {
+            let stats = stats_with_scores(alpha_score, beta_score);
+            let claim = GameResult {
+                game_number: 1,
+                map_id: Some("de_dust2".to_string()),
+                participant1_score: alpha_score,
+                participant2_score: beta_score,
+            };
+            let p1 = vec!["76561198000000001".to_string()];
+            let p2 = vec!["76561198000000002".to_string()];
+
+            let result = Cs2EvidenceValidator::validate(&stats, &claim, &p1, &p2);
+            prop_assert!(result.confidence >= 0.0 && result.confidence <= 1.0,
+                "confidence out of unit interval: {}", result.confidence);
+            prop_assert!(!result.confidence.is_nan());
+        }
+    }
 }

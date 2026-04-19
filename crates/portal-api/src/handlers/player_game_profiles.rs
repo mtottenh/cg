@@ -87,13 +87,9 @@ async fn profiles_to_responses(
 pub async fn list_player_game_profiles(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(player_id): Path<String>,
+    Path(player_id): Path<PlayerId>,
 ) -> ApiResult<Json<DataResponse<Vec<PlayerGameProfileResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let player_id: PlayerId = player_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
     // Verify player exists
     state.player_service.get_player(player_id).await?;

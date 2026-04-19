@@ -187,13 +187,9 @@ pub async fn search_players(
 pub async fn get_player(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(player_id): Path<String>,
+    Path(player_id): Path<PlayerId>,
 ) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let player_id: PlayerId = player_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
     let player = state.player_service.get_player(player_id).await?;
 

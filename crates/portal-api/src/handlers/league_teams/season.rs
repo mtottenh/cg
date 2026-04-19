@@ -82,13 +82,9 @@ pub async fn create_season(
 pub async fn get_season(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(season_id): Path<String>,
+    Path(season_id): Path<LeagueSeasonId>,
 ) -> ApiResult<Json<DataResponse<LeagueSeasonResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let season_id: LeagueSeasonId = season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid season ID format"))?;
 
     let season = state.league_season_service.get_season(season_id).await?;
 
@@ -152,14 +148,10 @@ pub async fn update_season(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(season_id): Path<String>,
+    Path(season_id): Path<LeagueSeasonId>,
     ValidatedJson(req): ValidatedJson<UpdateLeagueSeasonRequest>,
 ) -> ApiResult<Json<DataResponse<LeagueSeasonResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let season_id: LeagueSeasonId = season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid season ID format"))?;
 
     // Get the season to find the league
     let existing = state.league_season_service.get_season(season_id).await?;

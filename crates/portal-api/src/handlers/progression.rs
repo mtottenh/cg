@@ -46,12 +46,8 @@ pub async fn get_progression(
     State(_state): State<AppState>,
     _auth: AuthenticatedUser,
     _headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(_match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<ProgressionResponse>>> {
-    let _match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
-
     // Progression info is typically computed/stored during match completion.
     // This endpoint would need match progression history tracking to show past progression.
     // For now, we return not implemented as progression is typically processed automatically.
@@ -89,12 +85,9 @@ pub async fn revert_progression(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<()>>> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Require admin permission
     perm_checker
@@ -136,13 +129,10 @@ pub async fn reapply_progression(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<ReapplyProgressionRequest>,
 ) -> ApiResult<Json<DataResponse<ProgressionResponse>>> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Require admin permission
     perm_checker
@@ -192,13 +182,10 @@ pub async fn process_progression(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<ProcessProgressionRequest>,
 ) -> ApiResult<Json<DataResponse<ProgressionResponse>>> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Require admin permission
     perm_checker

@@ -258,7 +258,7 @@ pub async fn get_user_bans(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    Path(user_id): Path<UserId>,
 ) -> ApiResult<Json<DataResponse<Vec<BanResponse>>>> {
     let request_id = get_request_id(&headers);
 
@@ -272,10 +272,6 @@ pub async fn get_user_bans(
     if !is_admin {
         return Err(ApiError::forbidden("Admin access required"));
     }
-
-    let user_id: UserId = user_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid user ID"))?;
 
     let bans = state.ban_service.get_user_ban_history(user_id).await?;
 

@@ -129,14 +129,10 @@ pub async fn update_player_window(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(window_id): Path<String>,
+    Path(window_id): Path<AvailabilityWindowId>,
     ValidatedJson(req): ValidatedJson<UpdateAvailabilityWindowRequest>,
 ) -> ApiResult<Json<DataResponse<AvailabilityWindowResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let window_id: AvailabilityWindowId = window_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid window ID format"))?;
 
     // Verify ownership
     let existing = state
@@ -187,11 +183,8 @@ pub async fn update_player_window(
 pub async fn delete_player_window(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Path(window_id): Path<String>,
+    Path(window_id): Path<AvailabilityWindowId>,
 ) -> ApiResult<StatusCode> {
-    let window_id: AvailabilityWindowId = window_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid window ID format"))?;
 
     // Verify ownership
     let existing = state
@@ -307,11 +300,8 @@ pub async fn get_player_overrides(
 pub async fn delete_player_override(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Path(override_id): Path<String>,
+    Path(override_id): Path<AvailabilityExceptionId>,
 ) -> ApiResult<StatusCode> {
-    let override_id: AvailabilityExceptionId = override_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid override ID format"))?;
 
     // Verify ownership
     let existing = state
@@ -385,14 +375,10 @@ pub async fn get_player_date_availability(
 pub async fn get_player_date_availability_public(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(player_id): Path<String>,
+    Path(player_id): Path<PlayerId>,
     Query(query): Query<GetAvailabilityQuery>,
 ) -> ApiResult<Json<DataResponse<DateAvailabilityResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let player_id: PlayerId = player_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
     let availability = state
         .availability_service

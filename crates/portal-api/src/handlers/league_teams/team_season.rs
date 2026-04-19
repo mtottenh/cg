@@ -31,13 +31,9 @@ use portal_core::{LeagueTeamSeasonId, PlayerId};
 pub async fn get_team_season(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamSeasonResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
     let team_season = state
         .league_team_service
@@ -66,13 +62,9 @@ pub async fn get_team_season(
 pub async fn get_team_season_members(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueTeamMemberWithPlayerResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
     let members = state
         .league_team_service
@@ -112,14 +104,10 @@ pub async fn add_team_member(
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
     ValidatedJson(req): ValidatedJson<AddLeagueTeamMemberRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueTeamMemberResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
     require_captain_or_admin(&state, &perm, &auth, team_season_id, "add members").await?;
 
@@ -195,11 +183,8 @@ pub async fn remove_team_member(
 pub async fn leave_team(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<StatusCode> {
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
     state
         .league_team_service
@@ -356,13 +341,9 @@ pub async fn get_my_league_teams(
 pub async fn get_player_league_teams(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(player_id): Path<String>,
+    Path(player_id): Path<PlayerId>,
 ) -> ApiResult<Json<DataResponse<Vec<PlayerLeagueTeamMembershipResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let player_id: PlayerId = player_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
     let memberships = state
         .league_team_service

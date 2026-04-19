@@ -45,7 +45,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 
 | # | Status | Item | Evidence |
 |---|--------|------|----------|
-| N1 | ☐ | Use newtype-typed `Path` extractors (delete ~200 manual parses) | across `portal-api/src/handlers/` |
+| N1 | ☑ | 118 manual parses migrated to newtype-typed `Path<T>` extractors (96 single-arg + 14 one-line-parse + 8 tuple). Remaining 28 `Path<String>` sites are legitimately string (slug lookups like `games::get_game`, dev-only `local_evidence_upload`, or roles/bans/leagues that hit repos typed on raw `Uuid` — migrating those needs a repo signature change). | across `portal-api/src/handlers/` |
 | N2 | ☐ | Split `AppState` into sub-states with `FromRef` | `portal-api/src/state.rs:183` |
 | N3 | ☑ | OpenAPI coverage audited: 14 unannotated handlers are all legitimately excluded (11 internal service endpoints, 1 WebSocket upgrade, 1 local-dev upload). Module-level docs now document the exclusion rationale. No public handlers were missing. | `portal-api/src/handlers/internal.rs`, `veto_ws.rs`, `evidence.rs` |
 | N4 | ☑ | Removed `is_admin` claim from JWT entirely. Every authz check already flows through `PermissionChecker` which hits the DB, so the claim was dead weight + a 15-min staleness window. DB is now the single source of truth. | `portal-domain/src/jwt.rs:26` |

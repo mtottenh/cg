@@ -49,18 +49,10 @@ pub async fn withdraw_from_tournament(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path((tournament_id, registration_id)): Path<(String, String)>,
+    Path((tournament_id, registration_id)): Path<(TournamentId, TournamentRegistrationId)>,
     ValidatedJson(req): ValidatedJson<WithdrawFromTournamentRequest>,
 ) -> ApiResult<Json<DataResponse<WithdrawalResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
-
-    let registration_id: TournamentRegistrationId = registration_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
 
     // Authorization: the forfeit service validates that user_id is associated with
     // this registration (owns it or is team captain). If not the owner, require
@@ -178,7 +170,7 @@ pub async fn admin_disqualify(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path((tournament_id, registration_id)): Path<(String, String)>,
+    Path((tournament_id, registration_id)): Path<(TournamentId, TournamentRegistrationId)>,
     ValidatedJson(req): ValidatedJson<AdminDisqualifyRequest>,
 ) -> ApiResult<Json<DataResponse<DisqualificationResponse>>> {
     let request_id = get_request_id(&headers);
@@ -186,14 +178,6 @@ pub async fn admin_disqualify(
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
         .await?;
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
-
-    let registration_id: TournamentRegistrationId = registration_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
 
     let results = state
         .forfeit_service

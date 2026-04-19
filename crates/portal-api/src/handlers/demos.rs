@@ -117,10 +117,9 @@ pub async fn get_demo(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
 ) -> ApiResult<Json<DataResponse<DemoResponse>>> {
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     let demo = state.demo_service.get_demo(demo_id).await?;
 
@@ -146,10 +145,9 @@ pub async fn get_demo_players(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
 ) -> ApiResult<Json<DataResponse<Vec<DemoPlayerResponse>>>> {
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     let players = state.demo_service.get_demo_players(demo_id).await?;
     let responses: Vec<DemoPlayerResponse> = players.into_iter().map(DemoPlayerResponse::from).collect();
@@ -236,12 +234,11 @@ pub async fn categorize_demo(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
     Json(request): Json<CategorizeDemoRequest>,
 ) -> ApiResult<Json<DataResponse<DemoResponse>>> {
     request.validate()?;
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     // Check admin permission
     let is_admin = state
@@ -289,12 +286,11 @@ pub async fn set_demo_visibility(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
     Json(request): Json<SetDemoVisibilityRequest>,
 ) -> ApiResult<Json<DataResponse<DemoResponse>>> {
     request.validate()?;
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     // Check admin permission
     let is_admin = state
@@ -337,12 +333,11 @@ pub async fn associate_demo(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
     Json(request): Json<AssociateDemoRequest>,
 ) -> ApiResult<Json<DataResponse<DemoResponse>>> {
     request.validate()?;
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     // Check admin permission
     let is_admin = state
@@ -390,12 +385,11 @@ pub async fn link_demo_to_match(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
     Json(request): Json<LinkDemoToMatchRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<DemoMatchLinkResponse>>)> {
     request.validate()?;
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     // Check admin permission
     let is_admin = state
@@ -451,10 +445,9 @@ pub async fn get_demo_links(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
 ) -> ApiResult<Json<DataResponse<Vec<DemoMatchLinkResponse>>>> {
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     let links = state.demo_service.get_demo_links(demo_id).await?;
     let responses: Vec<DemoMatchLinkResponse> = links.into_iter().map(DemoMatchLinkResponse::from).collect();
@@ -481,10 +474,9 @@ pub async fn get_demo_download(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
 ) -> ApiResult<Json<DataResponse<DemoDownloadResponse>>> {
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     let demo = state.demo_service.get_demo(demo_id).await?;
 
@@ -800,12 +792,11 @@ pub async fn submit_demo_stats(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
     Json(request): Json<SubmitDemoStatsRequest>,
 ) -> ApiResult<Json<DataResponse<DemoResponse>>> {
     request.validate()?;
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     let is_admin = state
         .permission_service
@@ -897,12 +888,11 @@ pub async fn mark_demo_stats_failed(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
     Json(request): Json<MarkDemoFailedRequest>,
 ) -> ApiResult<Json<DataResponse<DemoResponse>>> {
     request.validate()?;
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     let is_admin = state
         .permission_service
@@ -941,9 +931,8 @@ pub async fn mark_demo_stats_failed(
 pub async fn delete_demo(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
 ) -> ApiResult<StatusCode> {
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     let is_admin = state
         .permission_service
@@ -982,12 +971,11 @@ pub async fn set_demo_notes(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
     Json(request): Json<SetDemoNotesRequest>,
 ) -> ApiResult<Json<DataResponse<DemoResponse>>> {
     request.validate()?;
     let request_id = get_request_id(&headers);
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     let is_admin = state
         .permission_service

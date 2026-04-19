@@ -40,14 +40,10 @@ pub async fn invite_to_team(
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
     ValidatedJson(req): ValidatedJson<InviteToLeagueTeamRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueTeamInvitationResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
     require_captain_or_admin(&state, &perm, &auth, team_season_id, "send invitations").await?;
 
@@ -85,14 +81,10 @@ pub async fn apply_to_team(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
     ValidatedJson(req): ValidatedJson<ApplyToLeagueTeamRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueTeamInvitationResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
     let cmd = req.into_command(team_season_id, auth.player_id)?;
     let invitation = state
@@ -160,13 +152,9 @@ pub async fn get_team_invitations(
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueTeamInvitationResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
     require_captain_or_admin(&state, &perm, &auth, team_season_id, "view team invitations").await?;
 
@@ -206,13 +194,9 @@ pub async fn accept_invitation(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(invitation_id): Path<String>,
+    Path(invitation_id): Path<LeagueTeamInvitationId>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamMemberResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let invitation_id: LeagueTeamInvitationId = invitation_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
 
     let member = state
         .league_team_invitation_service
@@ -247,12 +231,9 @@ pub async fn accept_invitation(
 pub async fn decline_invitation(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Path(invitation_id): Path<String>,
+    Path(invitation_id): Path<LeagueTeamInvitationId>,
     ValidatedJson(req): ValidatedJson<RespondToInvitationRequest>,
 ) -> ApiResult<StatusCode> {
-    let invitation_id: LeagueTeamInvitationId = invitation_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
 
     state
         .league_team_invitation_service
@@ -281,11 +262,8 @@ pub async fn decline_invitation(
 pub async fn cancel_invitation(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Path(invitation_id): Path<String>,
+    Path(invitation_id): Path<LeagueTeamInvitationId>,
 ) -> ApiResult<StatusCode> {
-    let invitation_id: LeagueTeamInvitationId = invitation_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
 
     state
         .league_team_invitation_service

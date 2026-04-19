@@ -52,14 +52,10 @@ pub async fn submit_result(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<SubmitResultClaimRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<ResultClaimSubmissionResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let claimed_winner_registration_id: TournamentRegistrationId = req
         .claimed_winner_registration_id
@@ -163,13 +159,9 @@ pub async fn submit_result(
 pub async fn get_result_claim(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<ResultClaimResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let claim = state.result_service.get_pending_claim(match_id).await?;
 
@@ -197,13 +189,9 @@ pub async fn get_result_claim(
 pub async fn list_result_claims(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<Vec<ResultClaimResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let claims = state.result_service.get_claim_history(match_id).await?;
 
@@ -234,17 +222,9 @@ pub async fn confirm_result(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path((match_id, claim_id)): Path<(String, String)>,
+    Path((match_id, claim_id)): Path<(TournamentMatchId, ResultClaimId)>,
 ) -> ApiResult<Json<DataResponse<ResultConfirmationResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
-
-    let claim_id: ResultClaimId = claim_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid claim ID format"))?;
 
     // Confirm the claim (marks match completed with scores)
     let claim = state

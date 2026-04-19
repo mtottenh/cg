@@ -60,13 +60,10 @@ pub async fn initiate_upload(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<InitiateUploadRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<UploadInfoResponse>>)> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let evidence_type: portal_domain::entities::evidence::EvidenceType = req
         .evidence_type
@@ -165,13 +162,10 @@ pub async fn add_link_evidence(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<AddLinkEvidenceRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<EvidenceResponse>>)> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let evidence_type: portal_domain::entities::evidence::EvidenceType = req
         .evidence_type
@@ -221,13 +215,10 @@ pub async fn add_link_evidence(
 pub async fn list_evidence(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     Query(query): Query<ListEvidenceQuery>,
 ) -> ApiResult<Json<DataResponse<Vec<EvidenceSummaryResponse>>>> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let mut evidence = if let Some(game_number) = query.game_number {
         state
@@ -280,15 +271,9 @@ pub async fn list_evidence(
 pub async fn get_evidence(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((match_id, evidence_id)): Path<(String, String)>,
+    Path((match_id, evidence_id)): Path<(TournamentMatchId, EvidenceId)>,
 ) -> ApiResult<Json<DataResponse<EvidenceResponse>>> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
-    let evidence_id: EvidenceId = evidence_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid evidence ID format"))?;
 
     let evidence = state.evidence_service.get_evidence(evidence_id).await?;
 
@@ -379,14 +364,8 @@ pub async fn get_access_url(
 pub async fn delete_evidence(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Path((match_id, evidence_id)): Path<(String, String)>,
+    Path((match_id, evidence_id)): Path<(TournamentMatchId, EvidenceId)>,
 ) -> ApiResult<StatusCode> {
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
-    let evidence_id: EvidenceId = evidence_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid evidence ID format"))?;
 
     // Before deleting, check if there's a corresponding demo_match_link to clean up.
     // Both `link_discovered` (catalog: prefix) and `link_demo` (with demo_id) store
@@ -432,13 +411,10 @@ pub async fn discover_evidence(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     Query(query): Query<DiscoverEvidenceQuery>,
 ) -> ApiResult<Json<DataResponse<Vec<DiscoveredEvidenceResponse>>>> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let (match_, plugin) = resolve_evidence_plugin(&state, match_id).await?;
     let context = build_evidence_context(&state, &match_).await?;
@@ -507,13 +483,10 @@ pub async fn link_discovered_evidence(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<LinkDiscoveredEvidenceRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<EvidenceResponse>>)> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Check if this is a catalog-based discovery (external_id starts with "catalog:")
     if let Some(demo_id_str) = req.external_id.strip_prefix("catalog:") {
@@ -633,13 +606,10 @@ pub async fn validate_evidence(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<ValidateEvidenceRequest>,
 ) -> ApiResult<Json<DataResponse<ValidationResultResponse>>> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let (_match, plugin) = resolve_evidence_plugin(&state, match_id).await?;
     let adapter = EvidencePluginAdapter::new(plugin)
@@ -1072,13 +1042,10 @@ pub async fn link_demo(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<LinkDemoRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<EvidenceResponse>>)> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let cs2_plugin = create_cs2_plugin(&state);
 

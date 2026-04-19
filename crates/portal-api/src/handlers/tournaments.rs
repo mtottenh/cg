@@ -145,13 +145,9 @@ pub async fn create_tournament(
 pub async fn get_tournament(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state.tournament_service.get_tournament(tournament_id).await?;
 
@@ -306,14 +302,10 @@ pub async fn update_tournament(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<UpdateTournamentRequest>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     // Guard: eligibility restrictions cannot be changed once registration has opened
     let wants_eligibility_change = req.eligibility_restrictions.is_some()
@@ -370,13 +362,9 @@ pub async fn publish_tournament(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state.tournament_service.publish_tournament(tournament_id).await?;
 
@@ -406,13 +394,9 @@ pub async fn open_registration(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state
         .tournament_service
@@ -445,13 +429,9 @@ pub async fn start_tournament(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state.tournament_service.start_tournament(tournament_id).await?;
 
@@ -481,13 +461,9 @@ pub async fn close_registration(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state
         .tournament_service
@@ -520,13 +496,9 @@ pub async fn reopen_registration(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state
         .tournament_service
@@ -559,13 +531,9 @@ pub async fn cancel_tournament(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state
         .tournament_service
@@ -598,13 +566,9 @@ pub async fn complete_tournament(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state
         .tournament_service
@@ -637,13 +601,9 @@ pub async fn finalize_tournament(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state
         .tournament_service
@@ -681,14 +641,10 @@ pub async fn create_stage(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<CreateTournamentStageRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<TournamentStageResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let cmd = req.into_command(tournament_id)?;
 
@@ -727,13 +683,9 @@ pub async fn create_stage(
 pub async fn get_stages(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<Vec<TournamentStageResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let stages = state.tournament_service.get_stages(tournament_id).await?;
 
@@ -768,14 +720,10 @@ pub async fn register_team(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<RegisterTeamRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<TournamentRegistrationResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let team_season_id = req.parse_team_season_id()?;
 
@@ -827,14 +775,10 @@ pub async fn register_player(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<RegisterPlayerRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<TournamentRegistrationResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let player_id = auth.player_id;
 
@@ -875,15 +819,11 @@ pub async fn register_player(
 pub async fn get_registrations(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
     Query(status_filter): Query<RegistrationStatusQuery>,
     Query(pagination): Query<PaginationParams>,
 ) -> ApiResult<Json<PaginatedResponse<TournamentRegistrationResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let status = status_filter
         .status
@@ -978,13 +918,9 @@ pub async fn check_in(
 pub async fn get_brackets(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<Vec<TournamentBracketResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let brackets = state.tournament_service.get_bracket(tournament_id).await?;
 
@@ -1009,13 +945,9 @@ pub async fn get_brackets(
 pub async fn get_matches(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<Vec<TournamentMatchResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let matches = state
         .tournament_service
@@ -1044,17 +976,9 @@ pub async fn get_matches(
 pub async fn get_match(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((tournament_id, match_id)): Path<(String, String)>,
+    Path((tournament_id, match_id)): Path<(TournamentId, TournamentMatchId)>,
 ) -> ApiResult<Json<DataResponse<TournamentMatchResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let match_ = state
         .tournament_service
@@ -1260,13 +1184,9 @@ pub async fn disqualify(
 pub async fn get_check_in_status(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<crate::dto::responses::CheckInStatusResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let status = state
         .checkin_service
@@ -1346,13 +1266,9 @@ pub async fn process_no_shows(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<Vec<TournamentRegistrationResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let no_shows = state
         .checkin_service
@@ -1385,13 +1301,9 @@ pub async fn process_no_shows(
 pub async fn get_seeding(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<Vec<crate::dto::responses::SeededParticipantResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let seeded = state
         .seeding_service
@@ -1432,14 +1344,10 @@ pub async fn auto_seed(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
     Json(req): Json<crate::dto::requests::AutoSeedRequest>,
 ) -> ApiResult<Json<DataResponse<Vec<crate::dto::responses::SeededParticipantResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let algorithm: portal_core::types::SeedingAlgorithm = req
         .algorithm
@@ -1485,14 +1393,10 @@ pub async fn manual_seed(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<crate::dto::requests::ManualSeedRequest>,
 ) -> ApiResult<Json<DataResponse<Vec<crate::dto::responses::SeededParticipantResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     // Parse registration IDs
     let seeds: Vec<(portal_core::TournamentRegistrationId, i32)> = req
@@ -1542,11 +1446,8 @@ pub async fn manual_seed(
 pub async fn clear_seeding(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<StatusCode> {
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     state
         .seeding_service
@@ -2255,17 +2156,13 @@ pub async fn admin_generate_next_swiss_round(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<Vec<TournamentMatchResponse>>>> {
     let request_id = get_request_id(&headers);
 
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
         .await?;
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let new_matches = state
         .tournament_service
@@ -2298,13 +2195,9 @@ pub async fn admin_generate_next_swiss_round(
 pub async fn get_tournament_map_pool(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentMapPoolResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     let tournament = state
         .tournament_service
@@ -2367,14 +2260,10 @@ pub async fn set_tournament_map_pool(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<SetTournamentMapPoolRequest>,
 ) -> ApiResult<Json<DataResponse<TournamentMapPoolResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     // Check admin permission
     perm_checker
@@ -2441,11 +2330,8 @@ pub async fn delete_tournament_map_pool(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
-    Path(tournament_id): Path<String>,
+    Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<StatusCode> {
-    let tournament_id: TournamentId = tournament_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
 
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)

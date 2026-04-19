@@ -78,14 +78,10 @@ pub async fn create_veto_session(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<CreateVetoSessionRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<VetoSessionResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Verify user is a match participant (via veto authorization) or tournament admin
     let match_ = state
@@ -203,13 +199,9 @@ pub async fn create_veto_session(
 pub async fn get_veto_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<VetoSessionStateResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let session_state = state.veto_service.get_session_state(match_id).await?;
 
@@ -241,14 +233,10 @@ pub async fn record_coin_flip(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     Json(req): Json<RecordCoinFlipRequest>,
 ) -> ApiResult<Json<DataResponse<VetoSessionResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let winner_registration_id: TournamentRegistrationId = req
         .winner_registration_id
@@ -301,13 +289,9 @@ pub async fn start_veto_session(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<VetoSessionResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Get session by match
     let session_state = state.veto_service.get_session_state(match_id).await?;
@@ -352,14 +336,10 @@ pub async fn perform_veto_action(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<PerformVetoActionRequest>,
 ) -> ApiResult<Json<DataResponse<VetoActionResultResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Get session by match
     let session_state = state.veto_service.get_session_state(match_id).await?;
@@ -436,16 +416,12 @@ pub async fn select_side(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<SelectSideRequest>,
 ) -> ApiResult<Json<DataResponse<VetoActionResponse>>> {
     use portal_domain::repositories::TournamentMatchRepository;
 
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Get session by match
     let session_state = state.veto_service.get_session_state(match_id).await?;

@@ -148,13 +148,9 @@ pub async fn create_league(
 pub async fn get_league(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
     let league = state.league_service.get_league(league_id).await?;
 
@@ -263,14 +259,10 @@ pub async fn update_league(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
     ValidatedJson(req): ValidatedJson<UpdateLeagueRequest>,
 ) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
     // Check RBAC permission
     perm_checker
@@ -310,12 +302,9 @@ pub async fn update_league(
 )]
 pub async fn list_members(
     State(state): State<AppState>,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<Vec<LeagueMemberResponse>>> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
     let offset = i64::from((params.page.max(1) - 1) * params.per_page);
     let limit = i64::from(params.per_page.clamp(1, 100));
@@ -350,11 +339,8 @@ pub async fn list_members(
 pub async fn join_league(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<LeagueMemberBasicResponse>> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
     // Check entry requirements via game plugin before joining
     let league = state.league_service.get_league(league_id).await?;
@@ -386,11 +372,8 @@ pub async fn join_league(
 pub async fn leave_league(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
 ) -> ApiResult<StatusCode> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
     state
         .league_service
@@ -423,15 +406,9 @@ pub async fn update_member_role(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
-    Path((league_id, user_id)): Path<(String, String)>,
+    Path((league_id, user_id)): Path<(LeagueId, UserId)>,
     Json(req): Json<UpdateLeagueMemberRoleRequest>,
 ) -> ApiResult<Json<LeagueMemberBasicResponse>> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
-    let user_id: UserId = user_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid user ID format"))?;
 
     // Check RBAC permission
     perm_checker
@@ -471,14 +448,8 @@ pub async fn remove_member(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
-    Path((league_id, user_id)): Path<(String, String)>,
+    Path((league_id, user_id)): Path<(LeagueId, UserId)>,
 ) -> ApiResult<StatusCode> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
-    let user_id: UserId = user_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid user ID format"))?;
 
     // Check RBAC permission
     perm_checker
@@ -519,14 +490,10 @@ pub async fn apply_to_league(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
     ValidatedJson(req): ValidatedJson<ApplyToLeagueRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueInvitationResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
     // Check entry requirements via game plugin before applying
     let league = state.league_service.get_league(league_id).await?;
@@ -570,14 +537,10 @@ pub async fn invite_user(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
     ValidatedJson(req): ValidatedJson<InviteToLeagueRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueInvitationResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
     let target_user_id: UserId = req
         .user_id
         .parse()
@@ -622,11 +585,8 @@ pub async fn list_invitations(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<Vec<LeagueInvitationResponse>>> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
     // Check RBAC permission to view invitations
     perm_checker
@@ -668,11 +628,8 @@ pub async fn list_applications(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<Vec<LeagueInvitationResponse>>> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
     // Check RBAC permission to view applications
     perm_checker

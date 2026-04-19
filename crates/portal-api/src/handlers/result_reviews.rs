@@ -50,13 +50,9 @@ pub async fn get_result_review(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let review = state
         .result_review_service
@@ -96,14 +92,10 @@ pub async fn acknowledge_result_review(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     Query(params): Query<AcknowledgeParams>,
 ) -> ApiResult<Json<DataResponse<AcknowledgmentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let registration_id: TournamentRegistrationId = params
         .registration_id
@@ -231,17 +223,13 @@ pub async fn get_result_review_by_id(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(review_id): Path<String>,
+    Path(review_id): Path<ResultReviewId>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
 
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
         .await?;
-
-    let review_id: ResultReviewId = review_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid review ID format"))?;
 
     let review = state
         .result_review_service
@@ -281,7 +269,7 @@ pub async fn approve_result_review(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(review_id): Path<String>,
+    Path(review_id): Path<ResultReviewId>,
     ValidatedJson(req): ValidatedJson<AdminReviewDecisionRequest>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
@@ -289,10 +277,6 @@ pub async fn approve_result_review(
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
         .await?;
-
-    let review_id: ResultReviewId = review_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid review ID format"))?;
 
     let review = state
         .result_review_service
@@ -341,7 +325,7 @@ pub async fn reject_result_review(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(review_id): Path<String>,
+    Path(review_id): Path<ResultReviewId>,
     ValidatedJson(req): ValidatedJson<AdminReviewDecisionRequest>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
@@ -349,10 +333,6 @@ pub async fn reject_result_review(
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
         .await?;
-
-    let review_id: ResultReviewId = review_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid review ID format"))?;
 
     let review = state
         .result_review_service

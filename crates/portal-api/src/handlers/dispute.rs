@@ -175,14 +175,10 @@ pub async fn add_dispute_message(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<AddDisputeMessageRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<DisputeMessageResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
 
     let evidence_ids: Vec<EvidenceId> = req
         .evidence_ids
@@ -227,13 +223,9 @@ pub async fn add_dispute_message(
 pub async fn get_dispute(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
 ) -> ApiResult<Json<DataResponse<DisputeWithThreadResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
 
     // Regular users don't see internal messages
     let dispute_with_thread = state
@@ -327,14 +319,10 @@ pub async fn admin_add_message(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<AdminDisputeMessageRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<DisputeMessageResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
 
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
@@ -389,13 +377,9 @@ pub async fn admin_assign_dispute(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
 ) -> ApiResult<Json<DataResponse<DisputeResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
 
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
@@ -432,14 +416,10 @@ pub async fn admin_resolve_uphold(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<ResolveUpholdRequest>,
 ) -> ApiResult<Json<DataResponse<DisputeResolutionResultResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
 
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
@@ -479,14 +459,10 @@ pub async fn admin_resolve_overturn(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<ResolveOverturnRequest>,
 ) -> ApiResult<Json<DataResponse<DisputeResolutionResultResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
 
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
@@ -538,14 +514,10 @@ pub async fn admin_resolve_rematch(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<ResolveRematchRequest>,
 ) -> ApiResult<Json<DataResponse<DisputeResolutionResultResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
 
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
@@ -585,14 +557,10 @@ pub async fn admin_resolve_adjusted(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<ResolveAdjustedRequest>,
 ) -> ApiResult<Json<DataResponse<DisputeResolutionResultResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
 
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
@@ -638,14 +606,10 @@ pub async fn admin_resolve_double_dq(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<ResolveDoubleDqRequest>,
 ) -> ApiResult<Json<DataResponse<DisputeResolutionResultResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
 
     perm_checker
         .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)

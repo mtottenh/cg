@@ -67,14 +67,10 @@ pub async fn create_team(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(season_id): Path<String>,
+    Path(season_id): Path<LeagueSeasonId>,
     ValidatedJson(req): ValidatedJson<CreateLeagueTeamRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueTeamWithSeasonResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let season_id: LeagueSeasonId = season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid season ID format"))?;
 
     // Get the season to find the league
     let season = state.league_season_service.get_season(season_id).await?;
@@ -120,14 +116,10 @@ pub async fn register_team_for_season(
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
-    Path(season_id): Path<String>,
+    Path(season_id): Path<LeagueSeasonId>,
     ValidatedJson(req): ValidatedJson<RegisterTeamForSeasonRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueTeamSeasonResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let season_id: LeagueSeasonId = season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid season ID format"))?;
 
     let team_id: LeagueTeamId = req
         .team_id
@@ -169,13 +161,9 @@ pub async fn register_team_for_season(
 pub async fn get_team(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(team_id): Path<String>,
+    Path(team_id): Path<LeagueTeamId>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let team_id: LeagueTeamId = team_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
     let team = state.league_team_service.get_team(team_id).await?;
 
@@ -202,14 +190,10 @@ pub async fn get_team(
 pub async fn list_teams_in_season(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(season_id): Path<String>,
+    Path(season_id): Path<LeagueSeasonId>,
     Query(params): Query<ListTeamSeasonsParams>,
 ) -> ApiResult<Json<PaginatedResponse<LeagueTeamSummaryResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let season_id: LeagueSeasonId = season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid season ID format"))?;
 
     let per_page = params.per_page.clamp(1, 100) as u32;
     let page = params.page.max(1) as u32;
@@ -256,14 +240,10 @@ pub async fn update_team(
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
-    Path(team_id): Path<String>,
+    Path(team_id): Path<LeagueTeamId>,
     ValidatedJson(req): ValidatedJson<UpdateLeagueTeamRequest>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let team_id: LeagueTeamId = team_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
     // Allow the team owner, or a platform admin holding the team override.
     let team = state.league_team_service.get_team(team_id).await?;
@@ -305,11 +285,8 @@ pub async fn disband_team(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
-    Path(team_id): Path<String>,
+    Path(team_id): Path<LeagueTeamId>,
 ) -> ApiResult<StatusCode> {
-    let team_id: LeagueTeamId = team_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
     // Allow the team owner, or a platform admin holding the team override.
     let team = state.league_team_service.get_team(team_id).await?;
@@ -346,14 +323,10 @@ pub async fn transfer_ownership(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(team_id): Path<String>,
+    Path(team_id): Path<LeagueTeamId>,
     ValidatedJson(req): ValidatedJson<TransferOwnershipRequest>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let team_id: LeagueTeamId = team_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
     let new_owner_id = req.parse_new_owner()?;
 

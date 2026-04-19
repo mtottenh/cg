@@ -109,14 +109,10 @@ pub struct UpdatePollResultRequest {
 pub async fn update_poll_result(
     State(state): State<AppState>,
     service: AuthenticatedService,
-    Path(id): Path<String>,
+    Path(tracking_id): Path<SteamTrackingId>,
     Json(req): Json<UpdatePollResultRequest>,
 ) -> ApiResult<StatusCode> {
     service.require_permission(service::STEAM_TRACKING_WRITE)?;
-
-    let tracking_id: SteamTrackingId = id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid tracking ID"))?;
 
     state
         .steam_tracking_service
@@ -817,12 +813,11 @@ pub async fn internal_get_pending_demos(
 pub async fn internal_submit_demo_stats(
     State(state): State<AppState>,
     service_auth: AuthenticatedService,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
     Json(request): Json<SubmitDemoStatsRequest>,
 ) -> ApiResult<Json<DataResponse<DemoResponse>>> {
     service_auth.require_permission(service::DEMOS_STATS)?;
     request.validate()?;
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     // Look up the demo to get its game_id
     let demo = state.demo_service.get_demo(demo_id).await?;
@@ -886,12 +881,11 @@ pub async fn internal_submit_demo_stats(
 pub async fn internal_mark_demo_stats_failed(
     State(state): State<AppState>,
     service_auth: AuthenticatedService,
-    Path(id): Path<String>,
+    Path(demo_id): Path<DemoId>,
     Json(request): Json<MarkDemoFailedRequest>,
 ) -> ApiResult<Json<DataResponse<DemoResponse>>> {
     service_auth.require_permission(service::DEMOS_STATS)?;
     request.validate()?;
-    let demo_id = id.parse::<DemoId>().map_err(|_| ApiError::bad_request("Invalid demo ID"))?;
 
     let demo = state
         .demo_service

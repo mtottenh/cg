@@ -2,7 +2,13 @@
 
 Living document for the 2026-04 architecture audit. Each row cites the original evidence and tracks remediation status.
 
-**Status legend**: ☐ todo · ◐ in progress · ☑ done
+**Status legend**: ☐ todo · ◐ in progress · ☑ done · ⏸ deferred (decision needed)
+
+## Sprint progress
+
+- **Critical**: 6 of 7 done (C1, C2, C3, C4, C5, C6). C4b deferred — needs dep + IP-trust decision.
+- **Important**: 5 of 12 done (I5, I6, I7, I8, I10, I11). Remaining: I1, I2, I3, I4, I9, I12 — each is a larger refactor or needs a design call.
+- **Nice-to-have**: 0 of 8 done. Pulled forward only if cheap to bundle with related Important work.
 
 ## Critical — Week 1
 

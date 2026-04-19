@@ -29,8 +29,8 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | I7 | ☐ | Add `DefaultBodyLimit` (global + per-route) | `portal-api/src/app.rs` |
 | I8 | ☑ | Log permission-check DB errors before fail-closed | `extractors/permission.rs:45,81,108,139,165` |
 | I9 | ☐ | Request-ID propagation + trace-span correlation | `middleware/request_id.rs`, every handler's `get_request_id` |
-| I10 | ☐ | CORS allow-list from env | `portal-api/src/app.rs:16-20` |
-| I11 | ☐ | Set `image` crate decode limits | `portal-storage/src/image/processor.rs:72-76` |
+| I10 | ☑ | CORS allow-list from env | `portal-api/src/app.rs:16-20` |
+| I11 | ☑ | Set `image` crate decode limits | `portal-storage/src/image/processor.rs:72-76` |
 | I12 | ☐ | Refresh-token reuse detection (revoke all on replay) | `handlers/auth.rs:191-214` |
 
 ## Nice-to-have — Next quarter

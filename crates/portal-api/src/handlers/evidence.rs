@@ -1121,22 +1121,86 @@ pub async fn link_demo(
 // LOCAL EVIDENCE UPLOAD HANDLER
 // =============================================================================
 
+/// Maximum size of a single local evidence upload (64 MiB).
+///
+/// This is generous for replays and screenshots but small enough that an
+/// abusive caller can't exhaust memory or fill the disk in one request.
+const LOCAL_EVIDENCE_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 /// Handle direct file upload for local development.
 ///
-/// In production, uploads go directly to S3 via presigned URLs.
-/// For local dev, the presigned URL points to this handler which writes to disk.
+/// In production, uploads go directly to S3 via presigned URLs and this
+/// endpoint is unreachable: it returns 404 unless `EVIDENCE_STORAGE` is unset
+/// or set to `local`.
+///
+/// Defenses:
+/// * **Authentication required** — the caller must hold a valid JWT. The
+///   prior implementation accepted any unauthenticated `PUT /uploads/*path`,
+///   which let anyone write arbitrary bytes to the server's filesystem.
+/// * **Path traversal rejected** — absolute paths, `..` components, and
+///   non-UTF-8 paths are refused outright. After joining we canonicalize the
+///   parent directory and verify it stays inside `state.uploads_path`.
+/// * **Size capped** — bodies above [`LOCAL_EVIDENCE_MAX_BYTES`] are rejected.
 pub async fn local_evidence_upload(
     State(state): State<AppState>,
+    _auth: AuthenticatedUser,
     axum::extract::Path(path): axum::extract::Path<String>,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
-    let file_path = std::path::Path::new(&state.uploads_path).join(&path);
+    // S3 mode: this endpoint should not be used. Refuse rather than silently
+    // writing files that nothing will ever read.
+    if std::env::var("EVIDENCE_STORAGE")
+        .ok()
+        .is_some_and(|v| v.eq_ignore_ascii_case("s3"))
+    {
+        return Err(ApiError::not_found("Local upload endpoint disabled in S3 mode"));
+    }
 
-    // Ensure parent directories exist
+    if body.len() > LOCAL_EVIDENCE_MAX_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "Upload too large ({} bytes; max {})",
+            body.len(),
+            LOCAL_EVIDENCE_MAX_BYTES
+        )));
+    }
+
+    let rel = std::path::Path::new(&path);
+    if rel.is_absolute() {
+        return Err(ApiError::bad_request("Absolute paths not allowed"));
+    }
+    if rel
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(ApiError::bad_request("Parent directory components not allowed"));
+    }
+    if path.is_empty() {
+        return Err(ApiError::bad_request("Empty path"));
+    }
+
+    let base = std::path::Path::new(&state.uploads_path);
+    // Canonicalize the base once. If it doesn't exist yet, create it.
+    tokio::fs::create_dir_all(base)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to prepare uploads dir: {e}")))?;
+    let canon_base = tokio::fs::canonicalize(base)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to canonicalize uploads dir: {e}")))?;
+
+    let file_path = canon_base.join(rel);
+
+    // Create parent dirs (relative to the safe base) and re-check containment
+    // after canonicalization, in case symlinks point outside the tree.
     if let Some(parent) = file_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| ApiError::internal(format!("Failed to create directory: {e}")))?;
+        let canon_parent = tokio::fs::canonicalize(parent)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to canonicalize parent: {e}")))?;
+        if !canon_parent.starts_with(&canon_base) {
+            return Err(ApiError::forbidden("Path escapes uploads directory"));
+        }
     }
 
     tokio::fs::write(&file_path, &body)

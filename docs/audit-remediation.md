@@ -26,7 +26,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 
 | # | Status | Item | Evidence |
 |---|--------|------|----------|
-| I1 | ☐ | Replace hand-rolled `is_owner` checks with `require_team_permission` (restores admin override) | `handlers/league_teams/team.rs:150,284,333` |
+| I1 | ☑ | Replace hand-rolled `is_owner`/`is_captain` checks with override-aware equivalents (restores admin override) | `handlers/league_teams/team.rs:150,284,333`, `team_season.rs`, `invitation.rs` |
 | I2 | ☐ | Thread `&mut Transaction` through multi-step writes | `services/league_team/team.rs:105-203` |
 | I3 | ☑ | Reconcile SQLx claim: CLAUDE.md updated to describe the runtime-query reality. Migration to the macro form deferred until schema stabilises. | 574 runtime `sqlx::query_*(` calls; `.sqlx/` nearly empty |
 | I4 | ☐ | Replace `DomainError::*NotFound(String)` with typed IDs | `portal-core/src/errors.rs` |

@@ -1,6 +1,6 @@
 //! League team invitation handlers.
 
-use super::get_request_id;
+use super::{get_request_id, require_captain_or_admin};
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     ApplyToLeagueTeamRequest, InviteToLeagueTeamRequest, RespondToInvitationRequest,
@@ -9,7 +9,7 @@ use crate::dto::responses::{
     LeagueTeamInvitationResponse, LeagueTeamInvitationWithTeamResponse, LeagueTeamMemberResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -38,6 +38,7 @@ use portal_core::{LeagueTeamInvitationId, LeagueTeamSeasonId};
 pub async fn invite_to_team(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(team_season_id): Path<String>,
     ValidatedJson(req): ValidatedJson<InviteToLeagueTeamRequest>,
@@ -48,14 +49,7 @@ pub async fn invite_to_team(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
-    // Check if the player is a captain
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, auth.player_id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can send invitations"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "send invitations").await?;
 
     let cmd = req.into_command(team_season_id)?;
     let invitation = state
@@ -164,6 +158,7 @@ pub async fn get_my_invitations(
 pub async fn get_team_invitations(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(team_season_id): Path<String>,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueTeamInvitationResponse>>>> {
@@ -173,14 +168,7 @@ pub async fn get_team_invitations(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
-    // Check if the player is a captain
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, auth.player_id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can view team invitations"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "view team invitations").await?;
 
     let invitations = state
         .league_team_invitation_service

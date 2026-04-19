@@ -1,6 +1,6 @@
 //! League team season handlers (seasonal roster management).
 
-use super::get_request_id;
+use super::{get_request_id, require_captain_or_admin};
 use crate::dto::common::DataResponse;
 use crate::dto::requests::AddLeagueTeamMemberRequest;
 use crate::dto::responses::{
@@ -8,12 +8,12 @@ use crate::dto::responses::{
     PlayerLeagueTeamMembershipResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use portal_core::{LeagueTeamSeasonId, PlayerId};
+use portal_core::{LeagueTeamSeasonId, PlayerId, ScopeType};
 
 /// Get a team's seasonal participation.
 #[utoipa::path(
@@ -110,6 +110,7 @@ pub async fn get_team_season_members(
 pub async fn add_team_member(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(team_season_id): Path<String>,
     ValidatedJson(req): ValidatedJson<AddLeagueTeamMemberRequest>,
@@ -120,14 +121,7 @@ pub async fn add_team_member(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
-    // Check if the player is a captain for this team season
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, auth.player_id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can add members"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "add members").await?;
 
     let cmd = req.into_command(team_season_id)?;
     let member = state
@@ -161,6 +155,7 @@ pub async fn add_team_member(
 pub async fn remove_team_member(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     Path((team_season_id, player_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     let team_season_id: LeagueTeamSeasonId = team_season_id
@@ -171,14 +166,7 @@ pub async fn remove_team_member(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
-    // Check if the player is a captain for this team season
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, auth.player_id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can remove members"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "remove members").await?;
 
     state
         .league_team_service
@@ -241,6 +229,7 @@ pub async fn leave_team(
 pub async fn promote_to_captain(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path((team_season_id, player_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamMemberResponse>>> {
@@ -254,14 +243,7 @@ pub async fn promote_to_captain(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
-    // Check if the player is a captain
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, auth.player_id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can promote members"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "promote members").await?;
 
     let member = state
         .league_team_service
@@ -295,6 +277,7 @@ pub async fn promote_to_captain(
 pub async fn demote_from_captain(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path((team_season_id, player_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamMemberResponse>>> {
@@ -308,14 +291,7 @@ pub async fn demote_from_captain(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
-    // Check if the player is a captain
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, auth.player_id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can demote members"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "demote members").await?;
 
     let member = state
         .league_team_service

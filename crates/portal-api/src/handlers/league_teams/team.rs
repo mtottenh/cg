@@ -11,12 +11,12 @@ use crate::dto::responses::{
     LeagueTeamWithSeasonResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use portal_core::{LeagueSeasonId, LeagueTeamId};
+use portal_core::{LeagueSeasonId, LeagueTeamId, ScopeType};
 
 /// Query parameters for listing teams in a league.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -118,6 +118,7 @@ pub async fn create_team(
 pub async fn register_team_for_season(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(season_id): Path<String>,
     ValidatedJson(req): ValidatedJson<RegisterTeamForSeasonRequest>,
@@ -133,10 +134,12 @@ pub async fn register_team_for_season(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
-    // Check if the player is the owner of the team
+    // Allow the team owner, or a platform admin holding the team override.
     let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(auth.player_id) {
-        return Err(ApiError::forbidden("Only the team owner can register for seasons"));
+    if !team.is_owner(auth.player_id)
+        && !perm.has_admin_override(&auth, ScopeType::Team).await
+    {
+        return Err(ApiError::forbidden("Only the team owner or a platform admin can register for seasons"));
     }
 
     let team_season = state
@@ -251,6 +254,7 @@ pub async fn list_teams_in_season(
 pub async fn update_team(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(team_id): Path<String>,
     ValidatedJson(req): ValidatedJson<UpdateLeagueTeamRequest>,
@@ -261,10 +265,12 @@ pub async fn update_team(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
-    // Check if the player is the owner
+    // Allow the team owner, or a platform admin holding the team override.
     let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(auth.player_id) {
-        return Err(ApiError::forbidden("Only the team owner can update team settings"));
+    if !team.is_owner(auth.player_id)
+        && !perm.has_admin_override(&auth, ScopeType::Team).await
+    {
+        return Err(ApiError::forbidden("Only the team owner or a platform admin can update team settings"));
     }
 
     let cmd = req.into();
@@ -298,16 +304,19 @@ pub async fn update_team(
 pub async fn disband_team(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     Path(team_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     let team_id: LeagueTeamId = team_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
-    // Check if the player is the owner
+    // Allow the team owner, or a platform admin holding the team override.
     let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(auth.player_id) {
-        return Err(ApiError::forbidden("Only the team owner can disband the team"));
+    if !team.is_owner(auth.player_id)
+        && !perm.has_admin_override(&auth, ScopeType::Team).await
+    {
+        return Err(ApiError::forbidden("Only the team owner or a platform admin can disband the team"));
     }
 
     state.league_team_service.disband_team(team_id).await?;

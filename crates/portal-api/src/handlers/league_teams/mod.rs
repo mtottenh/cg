@@ -31,6 +31,11 @@ pub use team_season::{
 
 use axum::http::HeaderMap;
 
+use crate::error::ApiError;
+use crate::extractors::{AuthenticatedUser, PermissionChecker};
+use crate::state::AppState;
+use portal_core::{LeagueTeamSeasonId, ScopeType};
+
 /// Extract request ID from headers.
 pub(crate) fn get_request_id(headers: &HeaderMap) -> &str {
     headers
@@ -45,4 +50,35 @@ pub(crate) const fn default_page() -> i64 {
 
 pub(crate) const fn default_per_page() -> i64 {
     20
+}
+
+/// Allow the call if the caller is a captain on `team_season_id` **or** holds
+/// the platform's team-admin override (`admin.teams.manage_any`). Returns
+/// 403 with a descriptive message otherwise.
+///
+/// Why both: captain is the per-team role that naturally gates roster
+/// management, and `admin.teams.manage_any` exists exactly so platform
+/// moderators can intervene without being added to every team. Previously
+/// handlers checked only `is_captain`, so admins were locked out — a bug
+/// flagged as I1 in the audit.
+pub(crate) async fn require_captain_or_admin(
+    state: &AppState,
+    perm: &PermissionChecker,
+    auth: &AuthenticatedUser,
+    team_season_id: LeagueTeamSeasonId,
+    action: &str,
+) -> Result<(), ApiError> {
+    let is_captain = state
+        .league_team_service
+        .is_captain(team_season_id, auth.player_id)
+        .await?;
+    if is_captain {
+        return Ok(());
+    }
+    if perm.has_admin_override(auth, ScopeType::Team).await {
+        return Ok(());
+    }
+    Err(ApiError::forbidden(format!(
+        "Only captains or platform admins can {action}"
+    )))
 }

@@ -34,9 +34,13 @@ async fn main() -> Result<()> {
         .await?;
     info!("Migrations complete");
 
-    // JWT secret
+    // JWT secret — no fallback. Missing or weak secrets must hard-fail at startup
+    // so a misconfigured deployment cannot serve traffic with a known signing key.
     let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "development-secret-change-in-production".to_string());
+        .map_err(|_| anyhow::anyhow!("JWT_SECRET must be set"))?;
+    if jwt_secret.len() < 32 {
+        anyhow::bail!("JWT_SECRET must be at least 32 bytes (got {})", jwt_secret.len());
+    }
 
     // Token expiry configuration
     let token_config = TokenConfig {

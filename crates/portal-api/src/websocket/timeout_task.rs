@@ -9,8 +9,10 @@ use std::time::Duration;
 
 use chrono::Utc;
 use portal_core::TournamentMatchId;
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 use tokio::time::interval;
-use tracing::{error, trace};
+use tracing::{error, info, trace};
 
 use crate::state::AppState;
 use crate::websocket::{LobbyBroadcast, TimeoutWarningBroadcast, VetoLobbyManager};
@@ -54,23 +56,35 @@ impl WarningTracker {
 
 /// Start the timeout warning background task.
 ///
-/// This spawns a Tokio task that runs indefinitely, checking for sessions
-/// with approaching deadlines and broadcasting warnings.
-pub fn spawn_timeout_warning_task(state: AppState) {
+/// Spawns a Tokio task that polls for sessions with approaching deadlines
+/// and broadcasts warnings. Returns the [`JoinHandle`] so the caller can
+/// `await` it during shutdown — previously the handle was dropped, so a
+/// panic in the loop was swallowed silently and the task could outlive the
+/// process's intent to exit.
+///
+/// `shutdown` is signalled (via `Notify::notify_waiters`) by the main
+/// shutdown handler; the loop exits at the next iteration.
+pub fn spawn_timeout_warning_task(state: AppState, shutdown: Arc<Notify>) -> JoinHandle<()> {
     tokio::spawn(async move {
-        run_timeout_warning_loop(state).await;
-    });
+        run_timeout_warning_loop(state, shutdown).await;
+    })
 }
 
-async fn run_timeout_warning_loop(state: AppState) {
+async fn run_timeout_warning_loop(state: AppState, shutdown: Arc<Notify>) {
     let mut check_interval = interval(Duration::from_millis(CHECK_INTERVAL_MS));
     let mut tracker = WarningTracker::new();
 
     loop {
-        check_interval.tick().await;
-
-        if let Err(e) = check_and_send_warnings(&state, &mut tracker).await {
-            error!("Error in timeout warning task: {}", e);
+        tokio::select! {
+            _ = check_interval.tick() => {
+                if let Err(e) = check_and_send_warnings(&state, &mut tracker).await {
+                    error!(error = %e, "timeout warning task iteration failed");
+                }
+            }
+            () = shutdown.notified() => {
+                info!("timeout warning task: shutdown signal received, exiting");
+                return;
+            }
         }
     }
 }

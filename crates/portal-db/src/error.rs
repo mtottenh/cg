@@ -104,7 +104,21 @@ impl RepositoryError {
     }
 }
 
-// Convert repository errors to domain errors for use in services
+// Convert repository errors to domain errors for use in services.
+//
+// Two principles:
+//
+//   1. **Every known NotFound variant maps to its typed DomainError**.
+//      The previous version handled only 8 entity types and silently
+//      collapsed the rest to DomainError::Internal — turning legitimate
+//      404s into 500s and leaking the constructed message into the
+//      response body.
+//
+//   2. **Raw database errors never reach the response body**. Database,
+//      Connection, and Serialization errors carry source-level detail
+//      (table names, constraint names, sometimes row data) that must
+//      not be exposed to API clients. We log the source via tracing
+//      and return an opaque message.
 impl From<RepositoryError> for DomainError {
     fn from(err: RepositoryError) -> Self {
         match err {
@@ -115,22 +129,66 @@ impl From<RepositoryError> for DomainError {
                 "Game" => Self::GameNotFound(id),
                 "Match" => Self::MatchNotFound(id),
                 "Tournament" => Self::TournamentNotFound(id),
-                "League" => Self::LeagueNotFound(id),
+                "TournamentStage" => Self::TournamentStageNotFound(id),
+                "TournamentBracket" => Self::TournamentBracketNotFound(id),
+                "TournamentMatch" => Self::TournamentMatchNotFound(id),
+                "TournamentRegistration" => Self::TournamentRegistrationNotFound(id),
+                "League" | "LeagueMember" | "LeagueInvitation" => Self::LeagueNotFound(id),
+                "LeagueSeason" => Self::LeagueSeasonNotFound(id),
+                "LeagueTeam" => Self::LeagueTeamNotFound(id),
+                "LeagueTeamInvitation" => Self::LeagueTeamInvitationNotFound(id),
                 "Lobby" => Self::LobbyNotFound(id),
-                _ => Self::Internal(format!("{entity_type} not found: {id}")),
+                "Ban" => Self::BanNotFound(id),
+                "Dispute" => Self::DisputeNotFound(id),
+                "ForfeitRecord" => Self::ForfeitRecordNotFound(id),
+                "Evidence" => Self::EvidenceNotFound(id),
+                "ResultClaim" => Self::ResultClaimNotFound(id),
+                "VetoSession" => Self::VetoSessionNotFound(id),
+                "Demo" => Self::DemoNotFound(id),
+                "DemoMatchLink" => Self::DemoMatchLinkNotFound(id),
+                "ResultReview" => Self::ResultReviewNotFound(id),
+                other => {
+                    // Programmer error: an adapter returned a NotFound for an
+                    // entity type we don't know how to surface. Log loudly so
+                    // it can be added; do not leak the constructed string.
+                    tracing::error!(
+                        entity_type = %other,
+                        id = %id,
+                        "RepositoryError::NotFound for unknown entity type — add a match arm in portal-db/src/error.rs"
+                    );
+                    Self::Internal("entity not found".into())
+                }
             },
             RepositoryError::Duplicate { field, value } => {
+                // Field name + value are user-facing (e.g. "username" / "alice")
+                // and so are intentionally preserved.
                 Self::Conflict(format!("{field} already exists: {value}"))
             }
             RepositoryError::ForeignKeyViolation { entity_type, id } => {
-                Self::Internal(format!("referenced {entity_type} not found: {id}"))
+                // A referenced row is missing — a 409 Conflict, not a 500.
+                tracing::warn!(
+                    entity_type = %entity_type,
+                    id = %id,
+                    "foreign key violation"
+                );
+                Self::Conflict("referenced entity does not exist".into())
             }
             RepositoryError::ConstraintViolation { message } => {
-                Self::InvalidState(message)
+                tracing::warn!(constraint = %message, "check constraint violation");
+                Self::InvalidState("constraint violation".into())
             }
-            RepositoryError::Connection(msg) => Self::Internal(msg),
-            RepositoryError::Database(err) => Self::Internal(err.to_string()),
-            RepositoryError::Serialization(err) => Self::Internal(err.to_string()),
+            RepositoryError::Connection(msg) => {
+                tracing::error!(error = %msg, "database connection error");
+                Self::Internal("database unavailable".into())
+            }
+            RepositoryError::Database(err) => {
+                tracing::error!(error = %err, "database error");
+                Self::Internal("database error".into())
+            }
+            RepositoryError::Serialization(err) => {
+                tracing::error!(error = %err, "serialization error");
+                Self::Internal("serialization error".into())
+            }
         }
     }
 }

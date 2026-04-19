@@ -258,26 +258,25 @@ where
             new_participant2_score: None,
         };
 
+        // Atomic: resolve dispute + restore match to Completed +
+        // append resolution message. See audit I5.
         let resolved = self
             .dispute_repo
-            .resolve(dispute_id, resolved_by, resolution)
-            .await?;
-
-        // Restore match status to completed
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Completed)
-            .await?;
-
-        // Add resolution message
-        self.message_repo
-            .create(CreateDisputeMessage {
+            .resolve_with_status_change(
                 dispute_id,
-                author_user_id: resolved_by,
-                author_type: AuthorType::Admin,
-                message: format!("Dispute upheld: {notes}"),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
+                resolved_by,
+                resolution,
+                dispute.match_id,
+                TournamentMatchStatus::Completed,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: resolved_by,
+                    author_type: AuthorType::Admin,
+                    message: format!("Dispute upheld: {notes}"),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
+            )
             .await?;
 
         info!(
@@ -392,26 +391,25 @@ where
             new_participant2_score: None,
         };
 
+        // Atomic: resolve dispute + reset match to Ready + append
+        // resolution message. See audit I5.
         let resolved = self
             .dispute_repo
-            .resolve(dispute_id, resolved_by, resolution)
-            .await?;
-
-        // Reset match to Ready status
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Ready)
-            .await?;
-
-        // Add resolution message
-        self.message_repo
-            .create(CreateDisputeMessage {
+            .resolve_with_status_change(
                 dispute_id,
-                author_user_id: resolved_by,
-                author_type: AuthorType::Admin,
-                message: format!("Rematch ordered: {notes}"),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
+                resolved_by,
+                resolution,
+                dispute.match_id,
+                TournamentMatchStatus::Ready,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: resolved_by,
+                    author_type: AuthorType::Admin,
+                    message: format!("Rematch ordered: {notes}"),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
+            )
             .await?;
 
         info!(
@@ -464,37 +462,33 @@ where
             new_participant2_score: Some(new_participant2_score),
         };
 
+        // Atomic: resolve dispute + overwrite match result + append
+        // message. Reuses the same repo path as `resolve_overturn`
+        // because the writes are structurally identical — only the
+        // `resolution.resolution_type` differs. The trailing
+        // `update_status(Completed)` that used to follow was redundant
+        // (submit_result already sets status=completed); dropped as
+        // part of the same audit I5 cleanup.
         let resolved = self
             .dispute_repo
-            .resolve(dispute_id, resolved_by, resolution)
-            .await?;
-
-        // Update match result
-        self.match_repo
-            .submit_result(
+            .resolve_with_overturn(
+                dispute_id,
+                resolved_by,
+                resolution,
                 dispute.match_id,
-                new_participant1_score,
-                new_participant2_score,
                 new_winner_id,
                 loser_id,
+                new_participant1_score,
+                new_participant2_score,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: resolved_by,
+                    author_type: AuthorType::Admin,
+                    message: format!("Scores adjusted to {new_participant1_score}-{new_participant2_score}. {notes}"),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
             )
-            .await?;
-
-        // Restore match status to completed
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Completed)
-            .await?;
-
-        // Add resolution message
-        self.message_repo
-            .create(CreateDisputeMessage {
-                dispute_id,
-                author_user_id: resolved_by,
-                author_type: AuthorType::Admin,
-                message: format!("Scores adjusted to {new_participant1_score}-{new_participant2_score}. {notes}"),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
             .await?;
 
         info!(
@@ -528,26 +522,25 @@ where
             new_participant2_score: None,
         };
 
+        // Atomic: resolve dispute + cancel match + append resolution
+        // message. See audit I5.
         let resolved = self
             .dispute_repo
-            .resolve(dispute_id, resolved_by, resolution)
-            .await?;
-
-        // Cancel the match
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Cancelled)
-            .await?;
-
-        // Add resolution message
-        self.message_repo
-            .create(CreateDisputeMessage {
+            .resolve_with_status_change(
                 dispute_id,
-                author_user_id: resolved_by,
-                author_type: AuthorType::Admin,
-                message: format!("Both teams disqualified: {notes}"),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
+                resolved_by,
+                resolution,
+                dispute.match_id,
+                TournamentMatchStatus::Cancelled,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: resolved_by,
+                    author_type: AuthorType::Admin,
+                    message: format!("Both teams disqualified: {notes}"),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
+            )
             .await?;
 
         info!(
@@ -620,23 +613,22 @@ where
             )));
         }
 
-        let cancelled = self.dispute_repo.cancel(dispute_id).await?;
-
-        // Restore match status
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Completed)
-            .await?;
-
-        // Add cancellation message
-        self.message_repo
-            .create(CreateDisputeMessage {
+        // Atomic: cancel dispute + restore match to Completed +
+        // append cancellation message. See audit I5.
+        let cancelled = self
+            .dispute_repo
+            .cancel_with_match_restore(
                 dispute_id,
-                author_user_id: cancelled_by,
-                author_type: AuthorType::System,
-                message: "Dispute cancelled".to_string(),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
+                dispute.match_id,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: cancelled_by,
+                    author_type: AuthorType::System,
+                    message: "Dispute cancelled".to_string(),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
+            )
             .await?;
 
         info!(

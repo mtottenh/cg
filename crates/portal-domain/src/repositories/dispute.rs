@@ -6,6 +6,7 @@ use portal_core::ids::{
     DisputeId, DisputeMessageId, EvidenceId, ResultClaimId, TournamentId, TournamentMatchId,
     TournamentRegistrationId, UserId,
 };
+use portal_core::types::TournamentMatchStatus;
 
 use crate::entities::dispute::{
     AuthorType, Dispute, DisputeMessage, DisputePriority, DisputeReason, DisputeResolution,
@@ -98,6 +99,34 @@ pub trait DisputeRepository: Send + Sync + 'static {
         &self,
         create: CreateDispute,
         initial_message: CreateDisputeMessage,
+    ) -> Result<Dispute, DomainError>;
+
+    /// Apply a dispute resolution that only changes the match **status**
+    /// (no score overwrite). Does three writes atomically: flip the
+    /// dispute to Resolved, set the match status (Completed for
+    /// `Upheld`, Ready for `Rematch`, Cancelled for `DoubleDq`), and
+    /// append the resolution message to the thread.
+    ///
+    /// Use [`Self::resolve_with_overturn`] instead when the resolution
+    /// also overwrites the match scores (Overturned / Adjusted).
+    async fn resolve_with_status_change(
+        &self,
+        dispute_id: DisputeId,
+        resolved_by: UserId,
+        resolution: DisputeResolution,
+        match_id: TournamentMatchId,
+        new_match_status: TournamentMatchStatus,
+        resolution_message: CreateDisputeMessage,
+    ) -> Result<Dispute, DomainError>;
+
+    /// Cancel a dispute, restore the match to Completed, and append a
+    /// cancellation message — all atomically. Counterpart to
+    /// [`Self::cancel`] that used to run the three writes sequentially.
+    async fn cancel_with_match_restore(
+        &self,
+        dispute_id: DisputeId,
+        match_id: TournamentMatchId,
+        cancellation_message: CreateDisputeMessage,
     ) -> Result<Dispute, DomainError>;
 
     /// Apply the resolution of a dispute in a single transaction:

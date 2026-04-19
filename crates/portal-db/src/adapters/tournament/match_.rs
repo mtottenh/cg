@@ -185,6 +185,39 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         Ok(TournamentMatch::from(row))
     }
 
+    async fn mark_pending_as_ready_bulk(
+        &self,
+        ids: &[TournamentMatchId],
+    ) -> Result<u64, DomainError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        // Single `WHERE id = ANY($1) AND status = 'pending'` so the
+        // full set either transitions or not. Prior code looped
+        // `update_status` per id; a mid-loop failure left the bracket
+        // half-Ready. Matches already beyond Pending (advanced, DQ'd,
+        // forfeited) are silently skipped by the WHERE clause — we
+        // don't want to accidentally un-progress them.
+        let now = Utc::now();
+        let uuids: Vec<uuid::Uuid> = ids.iter().map(|id| id.as_uuid()).collect();
+
+        let result = sqlx::query(
+            r"
+            UPDATE tournament_matches
+            SET status = 'ready', updated_at = $2
+            WHERE id = ANY($1) AND status = 'pending'
+            ",
+        )
+        .bind(&uuids)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn assign_participant(
         &self,
         id: TournamentMatchId,

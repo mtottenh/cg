@@ -406,11 +406,13 @@ where
             .map(|m| m.id)
             .collect();
 
-        // Update status to Ready for these matches
-        for match_id in &ready {
-            self.match_repo
-                .update_status(*match_id, TournamentMatchStatus::Ready)
-                .await?;
+        // Atomic: every match in the set flips Pending → Ready in one
+        // statement, or none do. Previously this loop updated matches
+        // one at a time; a mid-loop failure left the bracket with some
+        // Ready and the rest Pending, and the UI showed half-enabled
+        // controls. See audit I5.
+        if !ready.is_empty() {
+            self.match_repo.mark_pending_as_ready_bulk(&ready).await?;
         }
 
         Ok(ready)
@@ -568,12 +570,22 @@ where
             }
         }
 
-        // Mark group stage as Completed, playoff stage as Active
+        // Atomic status flip: completed group stage → Completed and
+        // next playoff stage → Active in one transaction. Previously
+        // the two UPDATEs ran sequentially; a failure between them
+        // left the tournament with a finished group stage but no
+        // active playoff stage — the tournament would appear stalled
+        // and would need manual DB intervention to resume. See audit
+        // I5. (The bracket-generation writes above run before this
+        // point, so a failure there cleanly aborts without mutating
+        // stage status.)
         self.stage_repo
-            .update_status(completed_stage.id, StageStatus::Completed)
-            .await?;
-        self.stage_repo
-            .update_status(next_stage.id, StageStatus::Active)
+            .transition_stages(
+                completed_stage.id,
+                StageStatus::Completed,
+                next_stage.id,
+                StageStatus::Active,
+            )
             .await?;
 
         info!(

@@ -389,6 +389,177 @@ impl DisputeRepository for PgDisputeRepository {
         Ok(Dispute::from(dispute))
     }
 
+    async fn resolve_with_status_change(
+        &self,
+        dispute_id: DisputeId,
+        resolved_by: UserId,
+        resolution: DisputeResolution,
+        match_id: TournamentMatchId,
+        new_match_status: portal_core::types::TournamentMatchStatus,
+        resolution_message: CreateDisputeMessage,
+    ) -> Result<Dispute, DomainError> {
+        // Atomic counterpart of the `dispute_repo.resolve + match_repo.
+        // update_status + message_repo.create` chain used by
+        // uphold / rematch / double_dq. The three writes run in one tx
+        // so an admin action never lands half-applied — previously the
+        // dispute could be marked Resolved but the match left in
+        // `Disputed`, which blocks every subsequent operation on it.
+        // See audit I5.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let dispute_row = sqlx::query_as::<_, DisputeRow>(
+            r"
+            UPDATE disputes SET
+                status = 'resolved',
+                resolved_at = NOW(),
+                resolved_by_user_id = $2,
+                resolution_type = $3,
+                resolution_notes = $4,
+                new_winner_registration_id = $5,
+                new_participant1_score = $6,
+                new_participant2_score = $7,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(dispute_id.as_uuid())
+        .bind(resolved_by.as_uuid())
+        .bind(resolution.resolution_type.to_string())
+        .bind(&resolution.notes)
+        .bind(resolution.new_winner_registration_id.map(|id| id.as_uuid()))
+        .bind(resolution.new_participant1_score)
+        .bind(resolution.new_participant2_score)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or_else(|| DomainError::DisputeNotFound(dispute_id))?;
+
+        sqlx::query(
+            r"
+            UPDATE tournament_matches SET
+                status = $2,
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(match_id.as_uuid())
+        .bind(new_match_status.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let msg_evidence_ids: Vec<uuid::Uuid> = resolution_message
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
+
+        sqlx::query(
+            r"
+            INSERT INTO dispute_messages (
+                dispute_id, author_user_id, author_type, message, evidence_ids, is_internal
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ",
+        )
+        .bind(dispute_id.as_uuid())
+        .bind(resolution_message.author_user_id.as_uuid())
+        .bind(resolution_message.author_type.to_string())
+        .bind(&resolution_message.message)
+        .bind(&msg_evidence_ids)
+        .bind(resolution_message.is_internal)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(Dispute::from(dispute_row))
+    }
+
+    async fn cancel_with_match_restore(
+        &self,
+        dispute_id: DisputeId,
+        match_id: TournamentMatchId,
+        cancellation_message: CreateDisputeMessage,
+    ) -> Result<Dispute, DomainError> {
+        // Atomic counterpart of cancel + update_status(Completed) +
+        // message_repo.create. Same rationale as
+        // `resolve_with_status_change`; the difference is that this
+        // one flips the dispute to Cancelled (not Resolved) and
+        // always restores the match to Completed.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let dispute_row = sqlx::query_as::<_, DisputeRow>(
+            r"
+            UPDATE disputes SET
+                status = 'cancelled',
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(dispute_id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or_else(|| DomainError::DisputeNotFound(dispute_id))?;
+
+        sqlx::query(
+            r"
+            UPDATE tournament_matches SET
+                status = 'completed',
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(match_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let msg_evidence_ids: Vec<uuid::Uuid> = cancellation_message
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
+
+        sqlx::query(
+            r"
+            INSERT INTO dispute_messages (
+                dispute_id, author_user_id, author_type, message, evidence_ids, is_internal
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ",
+        )
+        .bind(dispute_id.as_uuid())
+        .bind(cancellation_message.author_user_id.as_uuid())
+        .bind(cancellation_message.author_type.to_string())
+        .bind(&cancellation_message.message)
+        .bind(&msg_evidence_ids)
+        .bind(cancellation_message.is_internal)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(Dispute::from(dispute_row))
+    }
+
     async fn raise_atomic(
         &self,
         create: CreateDispute,

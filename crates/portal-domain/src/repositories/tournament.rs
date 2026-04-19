@@ -223,6 +223,22 @@ pub trait TournamentStageRepository: Send + Sync {
         status: StageStatus,
     ) -> Result<TournamentStage, DomainError>;
 
+    /// Flip two stages' statuses in a single transaction.
+    ///
+    /// Designed for the stage-advancement path in
+    /// `ProgressionService::advance_to_next_stage`, where the old
+    /// sequential pair — mark group stage Completed, then playoff
+    /// stage Active — could fail between the two updates and leave
+    /// the tournament with a finished group stage but no active
+    /// playoff. Returns the two updated rows in (`from`, `to`) order.
+    async fn transition_stages(
+        &self,
+        from_stage_id: TournamentStageId,
+        from_status: StageStatus,
+        to_stage_id: TournamentStageId,
+        to_status: StageStatus,
+    ) -> Result<(TournamentStage, TournamentStage), DomainError>;
+
     /// List all stages for a tournament (ordered by `stage_order`).
     async fn list_by_tournament(
         &self,
@@ -507,6 +523,23 @@ pub trait TournamentMatchRepository: Send + Sync {
         id: TournamentMatchId,
         status: TournamentMatchStatus,
     ) -> Result<TournamentMatch, DomainError>;
+
+    /// Transition every match in `ids` from Pending → Ready in one
+    /// statement.
+    ///
+    /// Designed for the progression-service path that flips newly-
+    /// populated matches to Ready after a round advances. The old
+    /// per-id loop meant a failure on match N left matches 1..N-1
+    /// Ready and the rest Pending — visually inconsistent and the
+    /// bracket would stall on the first unreferenced match. Uses a
+    /// single `UPDATE ... WHERE id = ANY($1) AND status = 'pending'`
+    /// so the set transition is atomic; returns the number of rows
+    /// that actually flipped (matches that had already advanced or
+    /// been forfeited are silently skipped).
+    async fn mark_pending_as_ready_bulk(
+        &self,
+        ids: &[TournamentMatchId],
+    ) -> Result<u64, DomainError>;
 
     /// Assign a participant to a match slot.
     async fn assign_participant(

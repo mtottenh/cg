@@ -142,6 +142,59 @@ impl TournamentStageRepository for PgTournamentStageRepository {
         Ok(TournamentStage::from(row))
     }
 
+    async fn transition_stages(
+        &self,
+        from_stage_id: TournamentStageId,
+        from_status: StageStatus,
+        to_stage_id: TournamentStageId,
+        to_status: StageStatus,
+    ) -> Result<(TournamentStage, TournamentStage), DomainError> {
+        // Both updates share one transaction. If either fails the tx
+        // drops without committing, so the tournament can never be
+        // left with a Completed-but-no-next-stage gap. See audit I5.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let now = Utc::now();
+
+        let from_row = sqlx::query_as::<_, TournamentStageRow>(
+            r"
+            UPDATE tournament_stages SET status = $2, updated_at = $3
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(from_stage_id.as_uuid())
+        .bind(from_status.to_string())
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let to_row = sqlx::query_as::<_, TournamentStageRow>(
+            r"
+            UPDATE tournament_stages SET status = $2, updated_at = $3
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(to_stage_id.as_uuid())
+        .bind(to_status.to_string())
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok((TournamentStage::from(from_row), TournamentStage::from(to_row)))
+    }
+
     async fn list_by_tournament(
         &self,
         tournament_id: TournamentId,

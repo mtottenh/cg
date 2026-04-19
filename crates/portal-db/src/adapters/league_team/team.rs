@@ -3,11 +3,11 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::league_team::LeagueTeamRow;
+use crate::entities::league_team::{LeagueTeamRow, LeagueTeamSeasonRow};
 use crate::DbPool;
-use portal_core::types::LeagueTeamStatus;
-use portal_core::{DomainError, LeagueId, LeagueTeamId, PlayerId};
-use portal_domain::entities::league_team::LeagueTeam;
+use portal_core::types::{LeagueTeamRole, LeagueTeamStatus};
+use portal_core::{DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, PlayerId};
+use portal_domain::entities::league_team::{LeagueTeam, LeagueTeamSeason};
 use portal_domain::repositories::league_team::{
     CreateLeagueTeam, LeagueTeamRepository, UpdateLeagueTeam,
 };
@@ -354,5 +354,97 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
+    }
+
+    async fn create_team_with_season_and_captain(
+        &self,
+        cmd: CreateLeagueTeam,
+        season_id: LeagueSeasonId,
+        captain_player_id: PlayerId,
+    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError> {
+        // All three writes share a single transaction. Any error below
+        // causes the transaction to roll back on drop, so a failed
+        // team_season insert doesn't orphan the league_teams row, and a
+        // failed member insert doesn't leave an empty team_season.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let now = Utc::now();
+        let team_id = uuid::Uuid::now_v7();
+        let team_row = sqlx::query_as::<_, LeagueTeamRow>(
+            r"
+            INSERT INTO league_teams (
+                id, league_id, name, tag,
+                description, logo_url, primary_color, secondary_color,
+                owner_player_id, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING *
+            ",
+        )
+        .bind(team_id)
+        .bind(cmd.league_id.as_uuid())
+        .bind(&cmd.name)
+        .bind(&cmd.tag)
+        .bind(&cmd.description)
+        .bind(&cmd.logo_url)
+        .bind(&cmd.primary_color)
+        .bind(&cmd.secondary_color)
+        .bind(cmd.owner_player_id.as_uuid())
+        .bind(now)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let team_season_id = uuid::Uuid::now_v7();
+        let team_season_row = sqlx::query_as::<_, LeagueTeamSeasonRow>(
+            r"
+            INSERT INTO league_team_seasons (
+                id, team_id, season_id, status, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING *
+            ",
+        )
+        .bind(team_season_id)
+        .bind(team_id)
+        .bind(season_id.as_uuid())
+        .bind("forming")
+        .bind(now)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let member_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            r"
+            INSERT INTO league_team_members (
+                id, team_season_id, player_id, role, position, jersey_number, added_by, joined_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ",
+        )
+        .bind(member_id)
+        .bind(team_season_id)
+        .bind(captain_player_id.as_uuid())
+        .bind(LeagueTeamRole::Captain.to_string())
+        .bind(None::<String>)
+        .bind(None::<i32>)
+        .bind(None::<uuid::Uuid>)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok((LeagueTeam::from(team_row), LeagueTeamSeason::from(team_season_row)))
     }
 }

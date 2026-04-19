@@ -163,6 +163,28 @@ pub trait LeagueTeamRepository: Send + Sync {
     /// Create a new team.
     async fn create(&self, team: CreateLeagueTeam) -> Result<LeagueTeam, DomainError>;
 
+    /// Atomically create a team, register it for a season, and add the
+    /// founding captain to the seasonal roster — all in a single database
+    /// transaction.
+    ///
+    /// Before this existed, the service composed three separate repository
+    /// calls, which ran on three different connections with no rollback on
+    /// partial failure. A team insert that succeeded followed by a
+    /// team_season insert that hit a constraint left an orphan row in
+    /// `league_teams`. This method binds the three writes to one
+    /// transaction so either everything commits or nothing does.
+    ///
+    /// The member is not returned because callers of
+    /// `LeagueTeamService::create_team` only ever consumed the team and
+    /// team_season; if you need the member, look it up after the call
+    /// (it's keyed by `(team_season_id, captain_player_id)`).
+    async fn create_team_with_season_and_captain(
+        &self,
+        team: CreateLeagueTeam,
+        season_id: LeagueSeasonId,
+        captain_player_id: PlayerId,
+    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError>;
+
     /// Update a team's profile.
     async fn update(
         &self,

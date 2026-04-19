@@ -104,27 +104,20 @@ async fn test_create_team_success() {
         .expect_find_primary_team_in_season()
         .returning(|_, _| Ok(None));
 
-    // Create team
+    // Atomic create: team + team_season + captain member in one transaction.
     let team = make_team(league_id);
     let team_id = team.id;
-    let team_clone = team.clone();
-    team_repo
-        .expect_create()
-        .returning(move |_| Ok(team_clone.clone()));
-
-    // Create team season
     let team_season = make_team_season(team_id, season_id);
     let team_season_id = team_season.id;
-    let ts_clone = team_season.clone();
-    team_season_repo
-        .expect_create()
-        .returning(move |_| Ok(ts_clone.clone()));
+    let result_clone = (team.clone(), team_season.clone());
+    team_repo
+        .expect_create_team_with_season_and_captain()
+        .returning(move |_, _, _| Ok(result_clone.clone()));
 
-    // Add owner as captain
-    let member = make_member(team_season_id, owner_player_id);
-    member_repo
-        .expect_add_member()
-        .returning(move |_| Ok(member.clone()));
+    // `make_member` was previously used to seed the separate add_member mock;
+    // keep it here so the test still exercises the helper but discard the
+    // value since the atomic method doesn't return the member.
+    let _ = make_member(team_season_id, owner_player_id);
 
     let service = create_service(team_repo, team_season_repo, member_repo, season_repo);
 

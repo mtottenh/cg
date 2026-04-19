@@ -155,40 +155,28 @@ where
             )));
         }
 
-        // Create the team (persistent entity at league level)
-        let team = self
+        // Atomic write: team + team_season + captain member all inside one
+        // transaction. Previously these were three independent repo calls on
+        // three connections with no rollback, so a failure after the team
+        // insert left an orphan league_teams row. The repository now owns
+        // the transaction boundary — see
+        // `PgLeagueTeamRepository::create_team_with_season_and_captain`.
+        let (team, team_season) = self
             .team_repo
-            .create(CreateLeagueTeam {
-                league_id: season.league_id,
-                name: cmd.name,
-                tag: cmd.tag,
-                description: cmd.description,
-                logo_url: cmd.logo_url,
-                primary_color: cmd.primary_color,
-                secondary_color: cmd.secondary_color,
-                owner_player_id: creator_player_id,
-            })
-            .await?;
-
-        // Register the team for this season
-        let team_season = self
-            .team_season_repo
-            .create(CreateLeagueTeamSeason {
-                team_id: team.id,
-                season_id: cmd.season_id,
-            })
-            .await?;
-
-        // Add the creator as captain on the seasonal roster
-        self.member_repo
-            .add_member(AddLeagueTeamMember {
-                team_season_id: team_season.id,
-                player_id: creator_player_id,
-                role: LeagueTeamRole::Captain,
-                position: None,
-                jersey_number: None,
-                added_by: None,
-            })
+            .create_team_with_season_and_captain(
+                CreateLeagueTeam {
+                    league_id: season.league_id,
+                    name: cmd.name,
+                    tag: cmd.tag,
+                    description: cmd.description,
+                    logo_url: cmd.logo_url,
+                    primary_color: cmd.primary_color,
+                    secondary_color: cmd.secondary_color,
+                    owner_player_id: creator_player_id,
+                },
+                cmd.season_id,
+                creator_player_id,
+            )
             .await?;
 
         info!(

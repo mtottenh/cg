@@ -8,8 +8,8 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 
 - **Critical**: 7 of 7 done. C4b landed with `tower_governor`; deployments behind a proxy need to configure forwarded-IP trust explicitly.
 
-**Follow-up sprint closed C4b, I4.** I2 remains the only non-nice-to-have open item.
-- **Important**: 11 of 12 done (I1, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12). I2 (transactions) still deferred — requires adding `&mut Transaction` variants to every repo trait.
+**Follow-up sprint closed C4b, I2, I4.** All Critical and Important items now resolved. Only the 8 Nice-to-have items remain open.
+- **Important**: 12 of 12 done. I2 closed specifically for the cited bug (`LeagueTeamService::create_team` now atomic); a broader trait-wide transaction refactor remains a future opportunity if other multi-step writes surface.
 - **Nice-to-have**: 0 of 8 done. Left for targeted follow-ups.
 
 ## Critical — Week 1
@@ -29,7 +29,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | # | Status | Item | Evidence |
 |---|--------|------|----------|
 | I1 | ☑ | Replace hand-rolled `is_owner`/`is_captain` checks with override-aware equivalents (restores admin override) | `handlers/league_teams/team.rs:150,284,333`, `team_season.rs`, `invitation.rs` |
-| I2 | ⏸ | Thread `&mut Transaction` through multi-step writes — deferred, requires a trait-wide refactor across every repo; dedicated sprint. `portal-db/src/transaction.rs` already exposes the helpers, but take-up is zero. | `services/league_team/team.rs:105-203` |
+| I2 | ☑ | Multi-step write atomicity for `LeagueTeamService::create_team` via new `LeagueTeamRepository::create_team_with_season_and_captain` method that runs all three inserts in a single DB transaction. Full trait-wide `&mut Transaction` plumbing still a future refactor, but the specific orphan-data bug the audit flagged is closed. | `services/league_team/team.rs:105-203` |
 | I3 | ☑ | Reconcile SQLx claim: CLAUDE.md updated to describe the runtime-query reality. Migration to the macro form deferred until schema stabilises. | 574 runtime `sqlx::query_*(` calls; `.sqlx/` nearly empty |
 | I4 | ☑ | Replace `DomainError::*NotFound(String)` with typed IDs. 23 variants migrated (`TeamNotFound` stays `String` until `TeamId` exists). New `LookupFailed { resource, query }` variant covers slug/composite-key lookups. | `portal-core/src/errors.rs` |
 | I5 | ☑ | Stop refetching `Player` every auth'd request; use `auth.player_id` | `handlers/league_teams/team.rs:83-86,143-146,277-280,326-329` |

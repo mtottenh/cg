@@ -126,13 +126,7 @@ pub async fn register_team_for_season(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
-    // Allow the team owner, or a platform admin holding the team override.
-    let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(auth.player_id)
-        && !perm.has_admin_override(&auth, ScopeType::Team).await
-    {
-        return Err(ApiError::forbidden("Only the team owner or a platform admin can register for seasons"));
-    }
+    require_team_owner_or_admin(&state, &perm, &auth, team_id).await?;
 
     let team_season = state
         .league_team_service
@@ -245,13 +239,7 @@ pub async fn update_team(
 ) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // Allow the team owner, or a platform admin holding the team override.
-    let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(auth.player_id)
-        && !perm.has_admin_override(&auth, ScopeType::Team).await
-    {
-        return Err(ApiError::forbidden("Only the team owner or a platform admin can update team settings"));
-    }
+    require_team_owner_or_admin(&state, &perm, &auth, team_id).await?;
 
     let cmd = req.into();
     let updated = state
@@ -287,18 +275,39 @@ pub async fn disband_team(
     perm: PermissionChecker,
     Path(team_id): Path<LeagueTeamId>,
 ) -> ApiResult<StatusCode> {
-
-    // Allow the team owner, or a platform admin holding the team override.
-    let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(auth.player_id)
-        && !perm.has_admin_override(&auth, ScopeType::Team).await
-    {
-        return Err(ApiError::forbidden("Only the team owner or a platform admin can disband the team"));
-    }
+    require_team_owner_or_admin(&state, &perm, &auth, team_id).await?;
 
     state.league_team_service.disband_team(team_id).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Require that the caller owns `team_id` or holds the team admin override.
+///
+/// Centralises the owner-or-admin check that used to be copy-pasted into
+/// every team settings handler. Kept as a helper (rather than a
+/// `require_team_permission` call) because the `team_captain` RBAC role is
+/// not currently assigned to the owner at team-creation time — once that
+/// seed is in place (new migration + role assignment in
+/// `create_team_with_season_and_captain`), this can collapse to
+/// `perm.require_team_permission(&auth, team_id.as_uuid(),
+/// permissions::team::SETTINGS_MANAGE)` and the helper can be deleted.
+async fn require_team_owner_or_admin(
+    state: &AppState,
+    perm: &PermissionChecker,
+    auth: &AuthenticatedUser,
+    team_id: LeagueTeamId,
+) -> ApiResult<()> {
+    let team = state.league_team_service.get_team(team_id).await?;
+    if team.is_owner(auth.player_id) {
+        return Ok(());
+    }
+    if perm.has_admin_override(auth, ScopeType::Team).await {
+        return Ok(());
+    }
+    Err(ApiError::forbidden(
+        "Only the team owner or a platform admin can perform this action",
+    ))
 }
 
 /// Transfer team ownership to another player (owner only).

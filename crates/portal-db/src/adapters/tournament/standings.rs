@@ -171,14 +171,57 @@ impl TournamentStandingsRepository for PgTournamentStandingsRepository {
         &self,
         standings: Vec<CreateTournamentStanding>,
     ) -> Result<Vec<TournamentStanding>, DomainError> {
-        let mut results = Vec::with_capacity(standings.len());
-
-        for cmd in standings {
-            let standing = self.create(cmd).await?;
-            results.push(standing);
+        if standings.is_empty() {
+            return Ok(Vec::new());
         }
 
-        Ok(results)
+        // Previously this looped `self.create(cmd).await?` — N round-trips
+        // per call, and non-atomic: a failure halfway through left the
+        // first few inserts committed. Now we bind one parallel-array
+        // query per tuple slot and atomically insert everything in one
+        // statement. `UNNEST` preserves order, so the returned rows match
+        // the input order (which callers rely on when pairing seeds to
+        // standings).
+        let len = standings.len();
+        let mut ids: Vec<uuid::Uuid> = Vec::with_capacity(len);
+        let mut bracket_ids: Vec<uuid::Uuid> = Vec::with_capacity(len);
+        let mut registration_ids: Vec<uuid::Uuid> = Vec::with_capacity(len);
+        let mut positions: Vec<i32> = Vec::with_capacity(len);
+
+        for cmd in standings {
+            ids.push(uuid::Uuid::now_v7());
+            bracket_ids.push(cmd.bracket_id.as_uuid());
+            registration_ids.push(cmd.registration_id.as_uuid());
+            positions.push(cmd.position);
+        }
+
+        let now = Utc::now();
+
+        let rows = sqlx::query_as::<_, TournamentStandingRow>(
+            r"
+            INSERT INTO tournament_standings (
+                id, bracket_id, registration_id, position, updated_at
+            )
+            SELECT * FROM UNNEST(
+                $1::uuid[],
+                $2::uuid[],
+                $3::uuid[],
+                $4::int4[]
+            ) AS t(id, bracket_id, registration_id, position)
+            CROSS JOIN (SELECT $5::timestamptz AS updated_at) u
+            RETURNING *
+            ",
+        )
+        .bind(&ids)
+        .bind(&bracket_ids)
+        .bind(&registration_ids)
+        .bind(&positions)
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(TournamentStanding::from).collect())
     }
 }
 

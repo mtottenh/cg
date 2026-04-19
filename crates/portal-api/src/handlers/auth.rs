@@ -1,11 +1,17 @@
 //! Authentication handlers.
+//!
+//! Handlers here take the narrower [`AuthState`] sub-state rather than
+//! the full `AppState`. `/auth/register` still needs `AppState` because
+//! it touches `role_repo` to assign the default "user" role — once a
+//! `role_repo` field is added to `AuthState` that handler can switch
+//! over too.
 
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{LoginRequest, RefreshTokenRequest, RegisterRequest};
 use crate::dto::responses::{LoginResponse, RegisterResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::ValidatedJson;
-use crate::state::AppState;
+use crate::state::{AppState, AuthState};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -119,7 +125,7 @@ pub async fn register(
     tag = "auth"
 )]
 pub async fn login(
-    State(state): State<AppState>,
+    State(state): State<AuthState>,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<LoginRequest>,
 ) -> ApiResult<Json<DataResponse<LoginResponse>>> {
@@ -183,7 +189,7 @@ pub async fn login(
     tag = "auth"
 )]
 pub async fn refresh(
-    State(state): State<AppState>,
+    State(state): State<AuthState>,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<RefreshTokenRequest>,
 ) -> ApiResult<Json<DataResponse<LoginResponse>>> {

@@ -695,12 +695,89 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         &self,
         matches: Vec<CreateTournamentMatch>,
     ) -> Result<Vec<TournamentMatch>, DomainError> {
+        if matches.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Previously this looped `self.create(cmd).await?` outside any
+        // transaction, so a mid-generation failure committed the earlier
+        // INSERTs and left the bracket half-populated. 23 columns per row
+        // (including JSON-encoded participant sources) makes a single
+        // UNNEST statement awkward, so we instead run every INSERT inside
+        // one transaction that commits or rolls back atomically.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
         let mut results = Vec::with_capacity(matches.len());
+        let now = Utc::now();
 
         for cmd in matches {
-            let match_ = self.create(cmd).await?;
-            results.push(match_);
+            let id = uuid::Uuid::now_v7();
+            let participant1_source_json = cmd
+                .participant1_source
+                .as_ref()
+                .and_then(|s| serde_json::to_value(s).ok());
+            let participant2_source_json = cmd
+                .participant2_source
+                .as_ref()
+                .and_then(|s| serde_json::to_value(s).ok());
+
+            let row = sqlx::query_as::<_, TournamentMatchRow>(
+                r"
+                INSERT INTO tournament_matches (
+                    id, bracket_id, stage_id, tournament_id,
+                    round, match_number, bracket_position,
+                    participant1_registration_id, participant2_registration_id,
+                    participant1_name, participant1_logo_url, participant1_seed,
+                    participant2_name, participant2_logo_url, participant2_seed,
+                    participant1_source, participant2_source,
+                    match_format, maps_required,
+                    winner_progresses_to, loser_progresses_to,
+                    created_at, updated_at
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+                )
+                RETURNING *
+                ",
+            )
+            .bind(id)
+            .bind(cmd.bracket_id.as_uuid())
+            .bind(cmd.stage_id.as_uuid())
+            .bind(cmd.tournament_id.as_uuid())
+            .bind(cmd.round)
+            .bind(cmd.match_number)
+            .bind(&cmd.bracket_position)
+            .bind(cmd.participant1_registration_id.map(|id| id.as_uuid()))
+            .bind(cmd.participant2_registration_id.map(|id| id.as_uuid()))
+            .bind(&cmd.participant1_name)
+            .bind(&cmd.participant1_logo_url)
+            .bind(cmd.participant1_seed)
+            .bind(&cmd.participant2_name)
+            .bind(&cmd.participant2_logo_url)
+            .bind(cmd.participant2_seed)
+            .bind(participant1_source_json)
+            .bind(participant2_source_json)
+            .bind(cmd.match_format.to_string())
+            .bind(cmd.maps_required)
+            .bind(cmd.winner_progresses_to.map(|id| id.as_uuid()))
+            .bind(cmd.loser_progresses_to.map(|id| id.as_uuid()))
+            .bind(now)
+            .bind(now)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+            results.push(TournamentMatch::from(row));
         }
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(results)
     }

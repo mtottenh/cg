@@ -52,13 +52,17 @@ pub fn validate_base_url(raw: &str) -> Result<String, PluginError> {
         )));
     }
 
-    let host = url
+    // `host_str()` wraps IPv6 addresses in `[...]`, which breaks parse-to-IpAddr.
+    // Strip those brackets so IPv4 names, DNS names, and raw IPv6 literals all
+    // flow through `is_private_or_loopback_host` the same way.
+    let host_raw = url
         .host_str()
         .ok_or_else(|| PluginError::InvalidConfiguration("demo service URL has no host".into()))?;
+    let host = host_raw.trim_start_matches('[').trim_end_matches(']');
 
     if is_private_or_loopback_host(host) {
         return Err(PluginError::InvalidConfiguration(format!(
-            "demo service URL host `{host}` is loopback/private/link-local; refusing to pivot to internal network"
+            "demo service URL host `{host_raw}` is loopback/private/link-local; refusing to pivot to internal network"
         )));
     }
 
@@ -289,6 +293,53 @@ mod tests {
             client.get_demo_url("test.dem"),
             "https://custom.example.com/test.dem"
         );
+    }
+
+    #[test]
+    fn test_validate_base_url_accepts_https_public_host() {
+        let ok = validate_base_url("https://demos.example.com").unwrap();
+        assert_eq!(ok, "https://demos.example.com");
+
+        // Trailing slash is trimmed so callers can `format!("{base}/…")`.
+        let trimmed = validate_base_url("https://demos.example.com/").unwrap();
+        assert_eq!(trimmed, "https://demos.example.com");
+    }
+
+    #[test]
+    fn test_validate_base_url_rejects_http() {
+        let err = validate_base_url("http://demos.example.com").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidConfiguration(_)),
+            "expected InvalidConfiguration, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_base_url_rejects_loopback_and_private() {
+        for bad in [
+            "https://localhost",
+            "https://demos.localhost",
+            "https://127.0.0.1",
+            "https://10.0.0.5",
+            "https://192.168.1.1",
+            "https://172.16.0.1",
+            "https://169.254.169.254", // AWS/Azure metadata
+            "https://[::1]",
+            "https://some-service.internal",
+        ] {
+            let result = validate_base_url(bad);
+            assert!(
+                matches!(result, Err(PluginError::InvalidConfiguration(_))),
+                "expected {bad} to be rejected, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_base_url_rejects_garbage() {
+        assert!(validate_base_url("not a url").is_err());
+        assert!(validate_base_url("ftp://example.com").is_err());
+        assert!(validate_base_url("https://").is_err());
     }
 
     #[tokio::test]

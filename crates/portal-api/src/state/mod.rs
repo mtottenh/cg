@@ -1,4 +1,14 @@
 //! Application state for dependency injection.
+//!
+//! `AppState` is the workspace-wide composite state passed to
+//! `.with_state(...)` at router construction. Domain-scoped projections
+//! of it live in the [`substates`] sub-module and are pulled out of
+//! `AppState` via `FromRef`. Prefer a sub-state in new handlers; it keeps
+//! the dependency list of each handler narrow and self-documenting.
+
+pub mod substates;
+
+pub use substates::{AuthState, DisputeReadState, LeagueTeamState};
 
 use crate::adapters::{EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceStorageAdapter};
 use portal_db::{

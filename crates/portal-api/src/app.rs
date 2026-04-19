@@ -5,11 +5,25 @@ use crate::middleware::request_id_layer;
 use crate::openapi::swagger_routes;
 use crate::routes::api_routes;
 use crate::state::AppState;
+use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
+
+/// Global body-size cap for ordinary API requests (JSON, small forms).
+///
+/// Multipart upload handlers run their own per-image limits (`ImageConfig`)
+/// and the local evidence PUT handler enforces its own 64 MiB cap, so this
+/// only needs to bound JSON payloads. 16 MiB is comfortably above any
+/// legitimate API request and small enough that a malformed body can't be
+/// used to exhaust memory.
+const DEFAULT_BODY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Body cap for the local evidence PUT route. Matches the per-handler limit
+/// in [`crate::handlers::evidence::local_evidence_upload`].
+const LOCAL_UPLOADS_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Build the CORS layer.
 ///
@@ -59,10 +73,13 @@ fn build_cors_layer() -> CorsLayer {
 pub fn create_app(state: AppState) -> Router {
     let cors = build_cors_layer();
 
-    // Uploads sub-router: PUT writes files, everything else served by ServeDir
+    // Uploads sub-router: PUT writes files, everything else served by ServeDir.
+    // Override the global body limit because file uploads are larger than
+    // ordinary API requests.
     let uploads_router = Router::new()
         .route("/{*path}", axum::routing::put(local_evidence_upload))
-        .fallback_service(ServeDir::new(&state.uploads_path));
+        .fallback_service(ServeDir::new(&state.uploads_path))
+        .layer(DefaultBodyLimit::max(LOCAL_UPLOADS_BODY_LIMIT_BYTES));
 
     Router::new()
         // API routes under /v1
@@ -74,6 +91,7 @@ pub fn create_app(state: AppState) -> Router {
         // Health check
         .route("/health", axum::routing::get(|| async { "OK" }))
         // Middleware
+        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT_BYTES))
         .layer(TraceLayer::new_for_http())
         .layer(request_id_layer())
         .layer(cors)

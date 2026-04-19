@@ -107,7 +107,7 @@ async fn test_withdraw_success() {
     let mut participant_repo = MockLeagueSeasonParticipantRepository::new();
     let season_repo = MockLeagueSeasonRepository::new();
 
-    let league_id = LeagueId::new();
+    let _league_id = LeagueId::new();
     let season_id = LeagueSeasonId::new();
     let player_id = PlayerId::new();
 

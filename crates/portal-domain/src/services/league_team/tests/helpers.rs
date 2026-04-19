@@ -26,6 +26,7 @@ pub fn make_league() -> League {
         logo_url: None,
         access_type: LeagueAccessType::Open,
         status: LeagueStatus::Active,
+        current_season_id: None,
         settings: serde_json::json!({}),
         created_by: UserId::new(),
         created_at: Utc::now(),

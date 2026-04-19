@@ -245,7 +245,7 @@ async fn test_accept_invitation_wrong_player() {
     let member_repo = MockLeagueTeamMemberRepository::new();
     let season_repo = MockLeagueSeasonRepository::new();
 
-    let league_id = LeagueId::new();
+    let _league_id = LeagueId::new();
     let team_id = LeagueTeamId::new();
     let season_id = LeagueSeasonId::new();
     let team_season = make_team_season(team_id, season_id);

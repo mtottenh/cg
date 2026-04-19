@@ -44,6 +44,20 @@ pub struct AuthResult {
     pub username: String,
 }
 
+/// Generate a `(UserId, PlayerId)` pair whose underlying UUIDs are equal.
+///
+/// This is the single construction site that preserves the platform's
+/// 1:1 user-to-player invariant. Every place that creates both IDs for a
+/// newly-registered account should go through here so the invariant is
+/// grep-able and future-us can flip it in one spot. See the docstring on
+/// [`UserService::register_user`] for the full rationale (audit item N6).
+#[must_use]
+pub fn make_shared_account_ids() -> (UserId, PlayerId) {
+    let user_id = UserId::new();
+    let player_id = PlayerId::from(user_id.as_uuid());
+    (user_id, player_id)
+}
+
 /// Service for user-related business logic.
 pub struct UserService<UR, PR>
 where
@@ -113,7 +127,30 @@ where
     /// Register a new user with a player profile.
     ///
     /// This creates both a User and a Player in a single operation.
-    /// The Player ID will match the User ID for 1:1 mapping.
+    ///
+    /// # Shared identifier
+    ///
+    /// The Player ID is deliberately generated from the User ID's UUID
+    /// (see [`make_shared_account_ids`]). That means at runtime every
+    /// stored row satisfies `player.id.as_uuid() == user.id.as_uuid()`,
+    /// and callers can navigate between the two without a DB lookup.
+    ///
+    /// This does blur the type-safety story the newtype pattern usually
+    /// buys: `UserId` and `PlayerId` are different types at the compiler
+    /// level, but the UUIDs underneath are the same. The audit flagged
+    /// this (N6) and the decision was:
+    ///
+    /// 1. Keep the 1:1 invariant — matchmaking and lobby flows (planned)
+    ///    assume a player maps to exactly one user. Breaking that now is
+    ///    a data-model change that would require migrating every stored
+    ///    player row.
+    /// 2. Document the invariant explicitly rather than pretending the
+    ///    IDs are unrelated. `make_shared_account_ids` is the single
+    ///    construction site; future code that needs both IDs for a new
+    ///    user should call through it.
+    /// 3. If we ever need distinct IDs (e.g. multiple players per user
+    ///    for alt accounts), migrate by pointing `register_user` at
+    ///    `PlayerId::new()` and running a one-time data fix.
     #[instrument(skip(self, cmd), fields(username = %cmd.username, email = %cmd.email))]
     pub async fn register_user(
         &self,
@@ -138,9 +175,11 @@ where
         // Hash the password (dispatched to spawn_blocking inside hash_password)
         let password_hash = hash_password(cmd.password).await?;
 
-        // Generate a shared ID for User and Player
-        let user_id = UserId::new();
-        let player_id = PlayerId::from(user_id.as_uuid());
+        // See the `# Shared identifier` note on `register_user`. Routing
+        // every new-user-ID construction through `make_shared_account_ids`
+        // makes the invariant obvious to future readers and gives us a
+        // single seam to change when/if we decouple the two IDs.
+        let (user_id, player_id) = make_shared_account_ids();
 
         // Create the user
         let user = self

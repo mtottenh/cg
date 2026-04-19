@@ -50,7 +50,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | N3 | ☑ | OpenAPI coverage audited: 14 unannotated handlers are all legitimately excluded (11 internal service endpoints, 1 WebSocket upgrade, 1 local-dev upload). Module-level docs now document the exclusion rationale. No public handlers were missing. | `portal-api/src/handlers/internal.rs`, `veto_ws.rs`, `evidence.rs` |
 | N4 | ☑ | Removed `is_admin` claim from JWT entirely. Every authz check already flows through `PermissionChecker` which hits the DB, so the claim was dead weight + a 15-min staleness window. DB is now the single source of truth. | `portal-domain/src/jwt.rs:26` |
 | N5 | ☑ | Process-wide `tournament_id → plugin` cache (DashMap via OnceLock); removes 2 of 3 DB roundtrips per `/matches/*/evidence/*` call. | `handlers/evidence.rs:738-780` |
-| N6 | ☐ | Clarify User/Player ID relationship (single `AccountId` or distinct IDs) | `services/user.rs:142-143` |
+| N6 | ☑ | Invariant is documented: `player.id.as_uuid() == user.id.as_uuid()` for every registered account. Construction funnels through `make_shared_account_ids()` — single seam to flip if/when the data model decouples. Migrating to distinct IDs deferred (data-migration). | `services/user.rs:142-143` |
 | N7 | ☑ | Argon2 params configurable via env (`PORTAL_ARGON2_{M,T,P}_COST`); OWASP 2023 defaults | `portal-domain/src/auth.rs` |
 | N8 | ☐ | Property tests for CS2 demo parsing | `portal-plugins/` |
 

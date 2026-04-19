@@ -48,16 +48,10 @@ pub async fn invite_to_team(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     // Check if the player is a captain
     if !state
         .league_team_service
-        .is_captain(team_season_id, player.id)
+        .is_captain(team_season_id, auth.player_id)
         .await?
     {
         return Err(ApiError::forbidden("Only captains can send invitations"));
@@ -106,16 +100,10 @@ pub async fn apply_to_team(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    let cmd = req.into_command(team_season_id, player.id)?;
+    let cmd = req.into_command(team_season_id, auth.player_id)?;
     let invitation = state
         .league_team_invitation_service
-        .create_join_request(team_season_id, player.id, cmd.role, cmd.message)
+        .create_join_request(team_season_id, auth.player_id, cmd.role, cmd.message)
         .await?;
 
     Ok((
@@ -143,15 +131,9 @@ pub async fn get_my_invitations(
 ) -> ApiResult<Json<DataResponse<Vec<LeagueTeamInvitationWithTeamResponse>>>> {
     let request_id = get_request_id(&headers);
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     let invitations = state
         .league_team_invitation_service
-        .get_player_invitations(player.id)
+        .get_player_invitations(auth.player_id)
         .await?;
 
     Ok(Json(DataResponse::new(
@@ -191,16 +173,10 @@ pub async fn get_team_invitations(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     // Check if the player is a captain
     if !state
         .league_team_service
-        .is_captain(team_season_id, player.id)
+        .is_captain(team_season_id, auth.player_id)
         .await?
     {
         return Err(ApiError::forbidden("Only captains can view team invitations"));
@@ -250,15 +226,9 @@ pub async fn accept_invitation(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     let member = state
         .league_team_invitation_service
-        .accept_invitation(invitation_id, player.id)
+        .accept_invitation(invitation_id, auth.player_id)
         .await?;
 
     Ok(Json(DataResponse::new(
@@ -296,15 +266,9 @@ pub async fn decline_invitation(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     state
         .league_team_invitation_service
-        .decline_invitation(invitation_id, player.id, req.message)
+        .decline_invitation(invitation_id, auth.player_id, req.message)
         .await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -335,15 +299,9 @@ pub async fn cancel_invitation(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     state
         .league_team_invitation_service
-        .cancel_invitation(invitation_id, player.id)
+        .cancel_invitation(invitation_id, auth.player_id)
         .await?;
 
     Ok(StatusCode::NO_CONTENT)

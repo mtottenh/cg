@@ -120,16 +120,10 @@ pub async fn add_team_member(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     // Check if the player is a captain for this team season
     if !state
         .league_team_service
-        .is_captain(team_season_id, player.id)
+        .is_captain(team_season_id, auth.player_id)
         .await?
     {
         return Err(ApiError::forbidden("Only captains can add members"));
@@ -177,16 +171,10 @@ pub async fn remove_team_member(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     // Check if the player is a captain for this team season
     if !state
         .league_team_service
-        .is_captain(team_season_id, player.id)
+        .is_captain(team_season_id, auth.player_id)
         .await?
     {
         return Err(ApiError::forbidden("Only captains can remove members"));
@@ -225,15 +213,9 @@ pub async fn leave_team(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     state
         .league_team_service
-        .leave_team(team_season_id, player.id)
+        .leave_team(team_season_id, auth.player_id)
         .await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -272,16 +254,10 @@ pub async fn promote_to_captain(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     // Check if the player is a captain
     if !state
         .league_team_service
-        .is_captain(team_season_id, player.id)
+        .is_captain(team_season_id, auth.player_id)
         .await?
     {
         return Err(ApiError::forbidden("Only captains can promote members"));
@@ -332,16 +308,10 @@ pub async fn demote_from_captain(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     // Check if the player is a captain
     if !state
         .league_team_service
-        .is_captain(team_season_id, player.id)
+        .is_captain(team_season_id, auth.player_id)
         .await?
     {
         return Err(ApiError::forbidden("Only captains can demote members"));
@@ -380,15 +350,9 @@ pub async fn get_my_league_teams(
 ) -> ApiResult<Json<DataResponse<Vec<PlayerLeagueTeamMembershipResponse>>>> {
     let request_id = get_request_id(&headers);
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     let memberships = state
         .league_team_service
-        .get_player_memberships(player.id)
+        .get_player_memberships(auth.player_id)
         .await?;
 
     Ok(Json(DataResponse::new(

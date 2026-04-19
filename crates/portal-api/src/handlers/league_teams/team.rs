@@ -79,16 +79,10 @@ pub async fn create_team(
     // Get the season to find the league
     let season = state.league_season_service.get_season(season_id).await?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     let cmd = req.into_command(season.league_id, season_id);
     let (team, team_season) = state
         .league_team_service
-        .create_team(player.id, cmd)
+        .create_team(auth.player_id, cmd)
         .await?;
 
     let response = LeagueTeamWithSeasonResponse {
@@ -139,21 +133,15 @@ pub async fn register_team_for_season(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     // Check if the player is the owner of the team
     let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(player.id) {
+    if !team.is_owner(auth.player_id) {
         return Err(ApiError::forbidden("Only the team owner can register for seasons"));
     }
 
     let team_season = state
         .league_team_service
-        .register_for_season(team_id, season_id, player.id)
+        .register_for_season(team_id, season_id, auth.player_id)
         .await?;
 
     Ok((
@@ -273,15 +261,9 @@ pub async fn update_team(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     // Check if the player is the owner
     let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(player.id) {
+    if !team.is_owner(auth.player_id) {
         return Err(ApiError::forbidden("Only the team owner can update team settings"));
     }
 
@@ -322,15 +304,9 @@ pub async fn disband_team(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     // Check if the player is the owner
     let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(player.id) {
+    if !team.is_owner(auth.player_id) {
         return Err(ApiError::forbidden("Only the team owner can disband the team"));
     }
 
@@ -372,15 +348,9 @@ pub async fn transfer_ownership(
 
     let new_owner_id = req.parse_new_owner()?;
 
-    // Get the player ID for the authenticated user (current owner)
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     let team = state
         .league_team_service
-        .transfer_ownership(team_id, player.id, new_owner_id)
+        .transfer_ownership(team_id, auth.player_id, new_owner_id)
         .await?;
 
     Ok(Json(DataResponse::new(

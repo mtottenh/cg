@@ -24,7 +24,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | I2 | ☐ | Thread `&mut Transaction` through multi-step writes | `services/league_team/team.rs:105-203` |
 | I3 | ☐ | Reconcile SQLx claim: either migrate to `query!`/`query_as!` or fix CLAUDE.md | 574 runtime `sqlx::query_*(` calls; `.sqlx/` nearly empty |
 | I4 | ☐ | Replace `DomainError::*NotFound(String)` with typed IDs | `portal-core/src/errors.rs` |
-| I5 | ☐ | Stop refetching `Player` every auth'd request; use `auth.player_id` | `handlers/league_teams/team.rs:83-86,143-146,277-280,326-329` |
+| I5 | ☑ | Stop refetching `Player` every auth'd request; use `auth.player_id` | `handlers/league_teams/team.rs:83-86,143-146,277-280,326-329` |
 | I6 | ☑ | Graceful shutdown; manage background task `JoinHandle` | `portal-app/src/main.rs:78`, `websocket/timeout_task.rs:60` |
 | I7 | ☑ | Add `DefaultBodyLimit` (global + per-route) | `portal-api/src/app.rs` |
 | I8 | ☑ | Log permission-check DB errors before fail-closed | `extractors/permission.rs:45,81,108,139,165` |

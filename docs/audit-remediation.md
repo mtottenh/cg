@@ -12,7 +12,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | C2 | ☑ | Hard-fail on missing `JWT_SECRET` | `portal-app/src/main.rs:38-39` |
 | C3 | ☑ | Remove `DEV_AUTH_ENABLED` runtime bypass | `extractors/auth.rs:61-66,117-119`, `extractors/permission.rs:37-40,70,97,134,152` |
 | C4 | ☑ | Argon2 on `spawn_blocking`; dummy-verify on user-not-found | `portal-domain/src/auth.rs:11-32`, `services/user.rs:139,186-209` |
-| C4b | ☐ | Rate-limit `/auth/*` routes | `portal-api/src/routes/auth.rs:9-14` |
+| C4b | ⏸ | Rate-limit `/auth/*` routes — needs decision on dep (`tower-governor` recommended) and per-IP key extraction (trust X-Forwarded-For?) | `portal-api/src/routes/auth.rs:9-14` |
 | C5 | ☑ | Exhaustive `RepositoryError→DomainError`; mask raw SQL text | `portal-db/src/error.rs:108-136`, `portal-api/src/error.rs:323` |
 | C6 | ☑ | Respond with `application/problem+json` | `portal-api/src/error.rs:130-134` |
 
@@ -27,7 +27,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | I5 | ☐ | Stop refetching `Player` every auth'd request; use `auth.player_id` | `handlers/league_teams/team.rs:83-86,143-146,277-280,326-329` |
 | I6 | ☐ | Graceful shutdown; manage background task `JoinHandle` | `portal-app/src/main.rs:78`, `websocket/timeout_task.rs:60` |
 | I7 | ☐ | Add `DefaultBodyLimit` (global + per-route) | `portal-api/src/app.rs` |
-| I8 | ☐ | Log permission-check DB errors before fail-closed | `extractors/permission.rs:45,81,108,139,165` |
+| I8 | ☑ | Log permission-check DB errors before fail-closed | `extractors/permission.rs:45,81,108,139,165` |
 | I9 | ☐ | Request-ID propagation + trace-span correlation | `middleware/request_id.rs`, every handler's `get_request_id` |
 | I10 | ☐ | CORS allow-list from env | `portal-api/src/app.rs:16-20` |
 | I11 | ☐ | Set `image` crate decode limits | `portal-storage/src/image/processor.rs:72-76` |

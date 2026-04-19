@@ -23,6 +23,27 @@ const fn is_dev_user(_user: &AuthenticatedUser) -> bool {
     false
 }
 
+/// Collapse a permission-check `Result` into a `bool`, logging failures so a
+/// permissions-DB outage doesn't manifest as silent global denial.
+///
+/// Fails closed: a DB error becomes `false` (deny). Without the log, the only
+/// signal of a permissions-backend failure was "everyone gets 403".
+fn log_and_deny<E: std::fmt::Display>(
+    result: Result<bool, E>,
+    user: &AuthenticatedUser,
+    check: &str,
+) -> bool {
+    result.unwrap_or_else(|e| {
+        tracing::error!(
+            error = %e,
+            user_id = %user.user_id,
+            check = %check,
+            "permission check failed; failing closed"
+        );
+        false
+    })
+}
+
 /// Wrapper for `PermissionRepository` that can be extracted from state.
 #[derive(Clone)]
 pub struct PermissionChecker(pub PermissionRepository);
@@ -52,10 +73,11 @@ impl PermissionChecker {
             return true;
         }
 
-        self.0
-            .user_has_permission(user.user_id, permission)
-            .await
-            .unwrap_or(false)
+        log_and_deny(
+            self.0.user_has_permission(user.user_id, permission).await,
+            user,
+            permission,
+        )
     }
 
     /// Require a permission or return 403 Forbidden.
@@ -84,12 +106,11 @@ impl PermissionChecker {
         }
 
         for permission in permissions {
-            if self
-                .0
-                .user_has_permission(user.user_id, permission)
-                .await
-                .unwrap_or(false)
-            {
+            if log_and_deny(
+                self.0.user_has_permission(user.user_id, permission).await,
+                user,
+                permission,
+            ) {
                 return Ok(());
             }
         }
@@ -110,12 +131,11 @@ impl PermissionChecker {
         }
 
         for permission in permissions {
-            if !self
-                .0
-                .user_has_permission(user.user_id, permission)
-                .await
-                .unwrap_or(false)
-            {
+            if !log_and_deny(
+                self.0.user_has_permission(user.user_id, permission).await,
+                user,
+                permission,
+            ) {
                 return Err(ApiError::forbidden(format!(
                     "Missing required permission: {permission}"
                 )));
@@ -146,10 +166,13 @@ impl PermissionChecker {
         }
 
         let scope = PermissionScope { scope_type, scope_id };
-        self.0
-            .user_has_scoped_permission(user.user_id, permission, Some(&scope))
-            .await
-            .unwrap_or(false)
+        log_and_deny(
+            self.0
+                .user_has_scoped_permission(user.user_id, permission, Some(&scope))
+                .await,
+            user,
+            permission,
+        )
     }
 
     /// Check if a user has global admin override for a scope type.
@@ -170,10 +193,13 @@ impl PermissionChecker {
             ScopeType::Match => "admin.tournaments.manage_any", // Matches fall under tournament admin
         };
 
-        self.0
-            .user_has_permission(user.user_id, admin_permission)
-            .await
-            .unwrap_or(false)
+        log_and_deny(
+            self.0
+                .user_has_permission(user.user_id, admin_permission)
+                .await,
+            user,
+            admin_permission,
+        )
     }
 
     /// Require a scoped permission or admin override, or return 403 Forbidden.

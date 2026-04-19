@@ -6,7 +6,7 @@ use crate::dto::responses::{PlayerResponse, PlayerSearchResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::handlers::player_game_profiles::build_stats_context;
-use crate::state::AppState;
+use crate::state::PlayerState;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -86,7 +86,7 @@ impl PlayerSearchParams {
     tag = "players"
 )]
 pub async fn search_players(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     headers: HeaderMap,
     Query(params): Query<PlayerSearchParams>,
 ) -> ApiResult<Json<PaginatedResponse<PlayerSearchResponse>>> {
@@ -184,7 +184,7 @@ pub async fn search_players(
     tag = "players"
 )]
 pub async fn get_player(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     headers: HeaderMap,
     Path(player_id): Path<PlayerId>,
 ) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
@@ -213,7 +213,7 @@ pub async fn get_player(
     tag = "players"
 )]
 pub async fn get_my_profile(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
@@ -242,7 +242,7 @@ pub async fn get_my_profile(
     tag = "players"
 )]
 pub async fn update_my_profile(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     ValidatedJson(request): ValidatedJson<UpdatePlayerProfileRequest>,

@@ -7,7 +7,7 @@ use crate::dto::requests::{ProcessProgressionRequest, ReapplyProgressionRequest}
 use crate::dto::responses::ProgressionResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::ProgressionState;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -43,7 +43,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "progression"
 )]
 pub async fn get_progression(
-    State(_state): State<AppState>,
+    State(_state): State<ProgressionState>,
     _auth: AuthenticatedUser,
     _headers: HeaderMap,
     Path(_match_id): Path<TournamentMatchId>,
@@ -81,7 +81,7 @@ pub async fn get_progression(
     tag = "progression"
 )]
 pub async fn revert_progression(
-    State(state): State<AppState>,
+    State(state): State<ProgressionState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -125,7 +125,7 @@ pub async fn revert_progression(
     tag = "progression"
 )]
 pub async fn reapply_progression(
-    State(state): State<AppState>,
+    State(state): State<ProgressionState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -178,7 +178,7 @@ pub async fn reapply_progression(
     tag = "progression"
 )]
 pub async fn process_progression(
-    State(state): State<AppState>,
+    State(state): State<ProgressionState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,

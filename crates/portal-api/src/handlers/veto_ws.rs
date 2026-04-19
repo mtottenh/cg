@@ -23,7 +23,7 @@ use tokio::sync::broadcast;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
-use crate::state::AppState;
+use crate::state::VetoWsState;
 use crate::websocket::{
     ChatBroadcast, ClientChatType, ClientMessage, ClientVetoAction, CoinFlipResultBroadcast,
     ConnectionId, LobbyBroadcast, ParticipantConnectionBroadcast, ServerMessage,
@@ -43,13 +43,13 @@ const PING_INTERVAL_SECS: u64 = 30;
 pub async fn ws_upgrade(
     ws: WebSocketUpgrade,
     Path(match_id): Path<TournamentMatchId>,
-    State(state): State<AppState>,
+    State(state): State<VetoWsState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, match_id, state))
 }
 
 /// Handle a WebSocket connection.
-async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: AppState) {
+async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: VetoWsState) {
     let connection_id = ConnectionId::new_v4();
     info!(%match_id, %connection_id, "New WebSocket connection");
 
@@ -236,7 +236,7 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ap
 async fn wait_for_auth(
     receiver: &mut futures_util::stream::SplitStream<WebSocket>,
     match_id: TournamentMatchId,
-    state: &AppState,
+    state: &VetoWsState,
 ) -> Result<(VetoConnection, crate::websocket::messages::LobbyStatePayload), String> {
     while let Some(msg) = receiver.next().await {
         match msg {
@@ -267,7 +267,7 @@ async fn wait_for_auth(
 async fn authenticate_user(
     token: &str,
     match_id: TournamentMatchId,
-    state: &AppState,
+    state: &VetoWsState,
 ) -> Result<(VetoConnection, crate::websocket::messages::LobbyStatePayload), String> {
     use portal_domain::repositories::TournamentMatchRepository;
 
@@ -399,7 +399,7 @@ async fn handle_client_message(
     text: &str,
     connection: &VetoConnection,
     match_id: TournamentMatchId,
-    state: &AppState,
+    state: &VetoWsState,
     lobby: &Arc<VetoLobby>,
     sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
 ) -> Result<(), String> {
@@ -441,7 +441,7 @@ async fn handle_chat_message(
     match_id: TournamentMatchId,
     chat_type: ClientChatType,
     content: String,
-    state: &AppState,
+    state: &VetoWsState,
     lobby: &Arc<VetoLobby>,
 ) -> Result<(), String> {
     match chat_type {
@@ -505,7 +505,7 @@ async fn handle_veto_action(
     connection: &VetoConnection,
     match_id: TournamentMatchId,
     action: ClientVetoAction,
-    state: &AppState,
+    state: &VetoWsState,
     sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
 ) -> Result<(), String> {
     use crate::dto::responses::{VetoActionResponse, VetoSessionResponse};
@@ -647,7 +647,7 @@ async fn handle_veto_action(
 
 /// Auto-perform coin flip when both participants are connected and session is in CoinFlip status.
 async fn try_auto_coin_flip(
-    state: &AppState,
+    state: &VetoWsState,
     match_id: TournamentMatchId,
     lobby: &Arc<VetoLobby>,
 ) {
@@ -742,7 +742,7 @@ async fn try_auto_coin_flip(
 
 /// Get chat history for a connection.
 async fn get_chat_history(
-    state: &AppState,
+    state: &VetoWsState,
     match_id: TournamentMatchId,
     connection: &VetoConnection,
 ) -> Result<Vec<crate::websocket::messages::ChatMessagePayload>, String> {

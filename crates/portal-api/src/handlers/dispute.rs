@@ -12,7 +12,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::{AppState, DisputeReadState};
+use crate::state::DisputeState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -55,7 +55,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "disputes"
 )]
 pub async fn raise_dispute(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
@@ -130,7 +130,7 @@ pub async fn raise_dispute(
     tag = "disputes"
 )]
 pub async fn get_match_dispute(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<DisputeResponse>>> {
@@ -173,7 +173,7 @@ pub async fn get_match_dispute(
     tag = "disputes"
 )]
 pub async fn add_dispute_message(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(dispute_id): Path<DisputeId>,
@@ -225,7 +225,7 @@ pub async fn add_dispute_message(
     tag = "disputes"
 )]
 pub async fn get_dispute(
-    State(state): State<DisputeReadState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -264,7 +264,7 @@ pub async fn get_dispute(
 /// a solo player, or indirectly as an active member of the team-season
 /// associated with that registration.
 async fn is_dispute_participant(
-    state: &DisputeReadState,
+    state: &DisputeState,
     dispute: &Dispute,
     auth: &AuthenticatedUser,
 ) -> ApiResult<bool> {
@@ -325,7 +325,7 @@ async fn is_dispute_participant(
     tag = "disputes"
 )]
 pub async fn admin_list_disputes(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -381,7 +381,7 @@ pub async fn admin_list_disputes(
     tag = "disputes"
 )]
 pub async fn admin_add_message(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -439,7 +439,7 @@ pub async fn admin_add_message(
     tag = "disputes"
 )]
 pub async fn admin_assign_dispute(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -478,7 +478,7 @@ pub async fn admin_assign_dispute(
     tag = "disputes"
 )]
 pub async fn admin_resolve_uphold(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -521,7 +521,7 @@ pub async fn admin_resolve_uphold(
     tag = "disputes"
 )]
 pub async fn admin_resolve_overturn(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -576,7 +576,7 @@ pub async fn admin_resolve_overturn(
     tag = "disputes"
 )]
 pub async fn admin_resolve_rematch(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -619,7 +619,7 @@ pub async fn admin_resolve_rematch(
     tag = "disputes"
 )]
 pub async fn admin_resolve_adjusted(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -668,7 +668,7 @@ pub async fn admin_resolve_adjusted(
     tag = "disputes"
 )]
 pub async fn admin_resolve_double_dq(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,

@@ -8,7 +8,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::ResultReviewState;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -47,7 +47,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "result_reviews"
 )]
 pub async fn get_result_review(
-    State(state): State<AppState>,
+    State(state): State<ResultReviewState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -89,7 +89,7 @@ pub async fn get_result_review(
     tag = "result_reviews"
 )]
 pub async fn acknowledge_result_review(
-    State(state): State<AppState>,
+    State(state): State<ResultReviewState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -171,7 +171,7 @@ pub struct AcknowledgeParams {
     tag = "result_reviews"
 )]
 pub async fn list_pending_reviews(
-    State(state): State<AppState>,
+    State(state): State<ResultReviewState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -219,7 +219,7 @@ pub async fn list_pending_reviews(
     tag = "result_reviews"
 )]
 pub async fn get_result_review_by_id(
-    State(state): State<AppState>,
+    State(state): State<ResultReviewState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -265,7 +265,7 @@ pub async fn get_result_review_by_id(
     tag = "result_reviews"
 )]
 pub async fn approve_result_review(
-    State(state): State<AppState>,
+    State(state): State<ResultReviewState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -321,7 +321,7 @@ pub async fn approve_result_review(
     tag = "result_reviews"
 )]
 pub async fn reject_result_review(
-    State(state): State<AppState>,
+    State(state): State<ResultReviewState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -373,7 +373,7 @@ pub async fn reject_result_review(
 /// Builds the `MatchCompletionInput` from the completed match state and calls
 /// `continue_after_review` to run the remaining progression steps.
 async fn resume_saga_after_review(
-    state: &AppState,
+    state: &ResultReviewState,
     match_id: TournamentMatchId,
 ) -> Result<(), portal_core::DomainError> {
     let match_ = state

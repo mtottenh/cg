@@ -7,7 +7,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
-use crate::state::AppState;
+use crate::state::UsersState;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -34,7 +34,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "users"
 )]
 pub async fn get_current_user(
-    State(state): State<AppState>,
+    State(state): State<UsersState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<UserResponse>>> {
@@ -57,7 +57,7 @@ pub async fn get_current_user(
     tag = "users"
 )]
 pub async fn get_my_roles(
-    State(state): State<AppState>,
+    State(state): State<UsersState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<UserRoleAssignmentResponse>>>> {
@@ -94,7 +94,7 @@ pub async fn get_my_roles(
     tag = "users"
 )]
 pub async fn get_my_matches(
-    State(state): State<AppState>,
+    State(state): State<UsersState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Query(query): Query<MyMatchesQuery>,
@@ -146,7 +146,7 @@ pub async fn get_my_matches(
     tag = "users"
 )]
 pub async fn get_my_action_items(
-    State(state): State<AppState>,
+    State(state): State<UsersState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<ActionItemResponse>>>> {

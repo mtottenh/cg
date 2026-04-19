@@ -3,7 +3,7 @@
 use crate::dto::common::DataResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::state::SteamTrackingState;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -107,7 +107,7 @@ impl SteamTrackingResponse {
     tag = "steam_tracking"
 )]
 pub async fn register_tracking(
-    State(state): State<AppState>,
+    State(state): State<SteamTrackingState>,
     headers: HeaderMap,
     user: AuthenticatedUser,
     ValidatedJson(req): ValidatedJson<RegisterSteamTrackingRequest>,
@@ -170,7 +170,7 @@ pub async fn register_tracking(
     tag = "steam_tracking"
 )]
 pub async fn get_tracking(
-    State(state): State<AppState>,
+    State(state): State<SteamTrackingState>,
     headers: HeaderMap,
     user: AuthenticatedUser,
 ) -> ApiResult<Json<DataResponse<SteamTrackingResponse>>> {
@@ -212,7 +212,7 @@ pub async fn get_tracking(
     tag = "steam_tracking"
 )]
 pub async fn update_tracking(
-    State(state): State<AppState>,
+    State(state): State<SteamTrackingState>,
     headers: HeaderMap,
     user: AuthenticatedUser,
     ValidatedJson(req): ValidatedJson<UpdateSteamTrackingRequest>,
@@ -259,7 +259,7 @@ pub async fn update_tracking(
     tag = "steam_tracking"
 )]
 pub async fn delete_tracking(
-    State(state): State<AppState>,
+    State(state): State<SteamTrackingState>,
     user: AuthenticatedUser,
 ) -> ApiResult<StatusCode> {
     let game = state

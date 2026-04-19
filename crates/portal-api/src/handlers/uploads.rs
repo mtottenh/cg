@@ -4,7 +4,7 @@ use crate::dto::common::DataResponse;
 use crate::dto::responses::PlayerResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
-use crate::state::AppState;
+use crate::state::UploadsState;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
@@ -71,7 +71,7 @@ async fn extract_file(mut multipart: Multipart) -> Result<(String, Bytes), ApiEr
     tag = "players"
 )]
 pub async fn upload_player_avatar(
-    State(state): State<AppState>,
+    State(state): State<UploadsState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     multipart: Multipart,
@@ -128,7 +128,7 @@ pub async fn upload_player_avatar(
     tag = "players"
 )]
 pub async fn upload_player_banner(
-    State(state): State<AppState>,
+    State(state): State<UploadsState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     multipart: Multipart,

@@ -8,7 +8,13 @@
 
 pub mod substates;
 
-pub use substates::{AuthState, DemoState, DisputeReadState, LeagueTeamState};
+pub use substates::{
+    AdminState, AuthState, AvailabilityState, BanState, DemoState, DisputeState,
+    EvidenceState, ForfeitState, GamesState, InternalState, LeagueTeamState, LeaguesState,
+    PlayerState, ProgressionState, ResultReviewState, ResultState, RolesState,
+    SteamTrackingState, TournamentState, UploadsState, UsersState, VetoDelegatesState,
+    VetoState, VetoWsState,
+};
 
 use crate::adapters::{EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceStorageAdapter};
 use portal_db::{

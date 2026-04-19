@@ -8,7 +8,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::state::ResultState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -49,7 +49,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "results"
 )]
 pub async fn submit_result(
-    State(state): State<AppState>,
+    State(state): State<ResultState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -157,7 +157,7 @@ pub async fn submit_result(
     tag = "results"
 )]
 pub async fn get_result_claim(
-    State(state): State<AppState>,
+    State(state): State<ResultState>,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<ResultClaimResponse>>> {
@@ -187,7 +187,7 @@ pub async fn get_result_claim(
     tag = "results"
 )]
 pub async fn list_result_claims(
-    State(state): State<AppState>,
+    State(state): State<ResultState>,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<Vec<ResultClaimResponse>>>> {
@@ -219,7 +219,7 @@ pub async fn list_result_claims(
     tag = "results"
 )]
 pub async fn confirm_result(
-    State(state): State<AppState>,
+    State(state): State<ResultState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((match_id, claim_id)): Path<(TournamentMatchId, ResultClaimId)>,
@@ -349,7 +349,7 @@ pub async fn confirm_result(
     tag = "results"
 )]
 pub async fn dispute_result(
-    State(state): State<AppState>,
+    State(state): State<ResultState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((match_id, claim_id)): Path<(String, String)>,

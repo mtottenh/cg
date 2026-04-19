@@ -1,17 +1,15 @@
 //! Authentication handlers.
 //!
-//! Handlers here take the narrower [`AuthState`] sub-state rather than
-//! the full `AppState`. `/auth/register` still needs `AppState` because
-//! it touches `role_repo` to assign the default "user" role — once a
-//! `role_repo` field is added to `AuthState` that handler can switch
-//! over too.
+//! All three endpoints (register, login, refresh) take the
+//! domain-scoped [`AuthState`] sub-state rather than the full
+//! `AppState`.
 
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{LoginRequest, RefreshTokenRequest, RegisterRequest};
 use crate::dto::responses::{LoginResponse, RegisterResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::ValidatedJson;
-use crate::state::{AppState, AuthState};
+use crate::state::AuthState;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -45,7 +43,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "auth"
 )]
 pub async fn register(
-    State(state): State<AppState>,
+    State(state): State<AuthState>,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<RegisterRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<RegisterResponse>>)> {

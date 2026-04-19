@@ -10,7 +10,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::VetoState;
 use crate::websocket::{LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast, VetoStateBroadcast};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -30,7 +30,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 ///
 /// Tries the plugin manager first (game-specific formats), then falls back
 /// to the built-in standard formats.
-fn resolve_veto_format(format_id: &str, state: &AppState) -> ApiResult<VetoFormatConfig> {
+fn resolve_veto_format(format_id: &str, state: &VetoState) -> ApiResult<VetoFormatConfig> {
     // Try plugin-provided formats
     for plugin in state.plugin_manager.list_plugins() {
         if let Some(tp) = plugin.as_tournament_plugin() {
@@ -74,7 +74,7 @@ fn resolve_veto_format(format_id: &str, state: &AppState) -> ApiResult<VetoForma
     tag = "veto"
 )]
 pub async fn create_veto_session(
-    State(state): State<AppState>,
+    State(state): State<VetoState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -197,7 +197,7 @@ pub async fn create_veto_session(
     tag = "veto"
 )]
 pub async fn get_veto_session(
-    State(state): State<AppState>,
+    State(state): State<VetoState>,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<VetoSessionStateResponse>>> {
@@ -230,7 +230,7 @@ pub async fn get_veto_session(
     tag = "veto"
 )]
 pub async fn record_coin_flip(
-    State(state): State<AppState>,
+    State(state): State<VetoState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -286,7 +286,7 @@ pub async fn record_coin_flip(
     tag = "veto"
 )]
 pub async fn start_veto_session(
-    State(state): State<AppState>,
+    State(state): State<VetoState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -333,7 +333,7 @@ pub async fn start_veto_session(
     tag = "veto"
 )]
 pub async fn perform_veto_action(
-    State(state): State<AppState>,
+    State(state): State<VetoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -413,7 +413,7 @@ pub async fn perform_veto_action(
     tag = "veto"
 )]
 pub async fn select_side(
-    State(state): State<AppState>,
+    State(state): State<VetoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -493,7 +493,7 @@ pub async fn select_side(
 
 /// Best-effort enrichment of map display names and image URLs from the game's map catalog.
 async fn enrich_map_metadata(
-    state: &AppState,
+    state: &VetoState,
     match_id: TournamentMatchId,
     maps: &mut [MapStatusResponse],
 ) {

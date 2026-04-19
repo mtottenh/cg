@@ -10,7 +10,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::LeagueTeamState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -36,7 +36,7 @@ use portal_core::{LeagueTeamInvitationId, LeagueTeamSeasonId};
     tag = "league-team-invitations"
 )]
 pub async fn invite_to_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -78,7 +78,7 @@ pub async fn invite_to_team(
     tag = "league-team-invitations"
 )]
 pub async fn apply_to_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(team_season_id): Path<LeagueTeamSeasonId>,
@@ -111,7 +111,7 @@ pub async fn apply_to_team(
     tag = "league-team-invitations"
 )]
 pub async fn get_my_invitations(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueTeamInvitationWithTeamResponse>>>> {
@@ -148,7 +148,7 @@ pub async fn get_my_invitations(
     tag = "league-team-invitations"
 )]
 pub async fn get_team_invitations(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -191,7 +191,7 @@ pub async fn get_team_invitations(
     tag = "league-team-invitations"
 )]
 pub async fn accept_invitation(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(invitation_id): Path<LeagueTeamInvitationId>,
@@ -229,7 +229,7 @@ pub async fn accept_invitation(
     tag = "league-team-invitations"
 )]
 pub async fn decline_invitation(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     Path(invitation_id): Path<LeagueTeamInvitationId>,
     ValidatedJson(req): ValidatedJson<RespondToInvitationRequest>,
@@ -260,7 +260,7 @@ pub async fn decline_invitation(
     tag = "league-team-invitations"
 )]
 pub async fn cancel_invitation(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     Path(invitation_id): Path<LeagueTeamInvitationId>,
 ) -> ApiResult<StatusCode> {

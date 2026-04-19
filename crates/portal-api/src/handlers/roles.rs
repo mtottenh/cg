@@ -9,7 +9,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
-use crate::state::AppState;
+use crate::state::RolesState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -27,7 +27,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 }
 
 /// Check if the user is an admin.
-async fn require_admin(state: &AppState, user_id: UserId) -> ApiResult<()> {
+async fn require_admin(state: &RolesState, user_id: UserId) -> ApiResult<()> {
     let is_admin = state
         .permission_service
         .is_admin(user_id)
@@ -55,7 +55,7 @@ async fn require_admin(state: &AppState, user_id: UserId) -> ApiResult<()> {
     tag = "admin_rbac"
 )]
 pub async fn list_roles(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<RoleResponse>>>> {
@@ -88,7 +88,7 @@ pub async fn list_roles(
     tag = "admin_rbac"
 )]
 pub async fn create_role(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Json(body): Json<CreateRoleRequest>,
@@ -137,7 +137,7 @@ pub async fn create_role(
     tag = "admin_rbac"
 )]
 pub async fn get_role(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(role_id): Path<String>,
@@ -185,7 +185,7 @@ pub async fn get_role(
     tag = "admin_rbac"
 )]
 pub async fn update_role(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(role_id): Path<String>,
@@ -253,7 +253,7 @@ pub async fn update_role(
     tag = "admin_rbac"
 )]
 pub async fn delete_role(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(role_id): Path<String>,
@@ -306,7 +306,7 @@ pub async fn delete_role(
     tag = "admin_rbac"
 )]
 pub async fn add_permission_to_role(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(role_id): Path<String>,
@@ -371,7 +371,7 @@ pub async fn add_permission_to_role(
     tag = "admin_rbac"
 )]
 pub async fn remove_permission_from_role(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((role_id, permission_id)): Path<(String, String)>,
@@ -427,7 +427,7 @@ pub async fn remove_permission_from_role(
     tag = "admin_rbac"
 )]
 pub async fn list_permissions(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<PermissionResponse>>>> {
@@ -465,7 +465,7 @@ pub async fn list_permissions(
     tag = "admin_rbac"
 )]
 pub async fn get_user_roles(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(user_id): Path<String>,
@@ -517,7 +517,7 @@ pub async fn get_user_roles(
     tag = "admin_rbac"
 )]
 pub async fn assign_role_to_user(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(user_id): Path<String>,
@@ -587,7 +587,7 @@ pub async fn assign_role_to_user(
     tag = "admin_rbac"
 )]
 pub async fn revoke_role_from_user(
-    State(state): State<AppState>,
+    State(state): State<RolesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((user_id, role_id)): Path<(String, String)>,

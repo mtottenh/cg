@@ -9,7 +9,7 @@ use super::get_request_id;
 use crate::dto::common::DataResponse;
 use crate::dto::responses::{TournamentBracketResponse, TournamentMatchResponse};
 use crate::error::{ApiError, ApiResult};
-use crate::state::AppState;
+use crate::state::TournamentState;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -29,7 +29,7 @@ use portal_core::{TournamentId, TournamentMatchId};
     tag = "tournaments"
 )]
 pub async fn get_brackets(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<Vec<TournamentBracketResponse>>>> {
@@ -56,7 +56,7 @@ pub async fn get_brackets(
     tag = "tournaments"
 )]
 pub async fn get_matches(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<Vec<TournamentMatchResponse>>>> {
@@ -87,7 +87,7 @@ pub async fn get_matches(
     tag = "tournaments"
 )]
 pub async fn get_match(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path((tournament_id, match_id)): Path<(TournamentId, TournamentMatchId)>,
 ) -> ApiResult<Json<DataResponse<TournamentMatchResponse>>> {

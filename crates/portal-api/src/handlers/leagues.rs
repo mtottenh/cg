@@ -11,7 +11,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::LeaguesState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -25,7 +25,7 @@ use portal_domain::entities::league::LeagueMembershipType;
 /// player's game profile and rating stats for the correct game, and
 /// runs the standard eligibility check.
 async fn check_league_entry_requirements(
-    state: &AppState,
+    state: &LeaguesState,
     league: &portal_domain::entities::league::League,
     player_id: portal_core::PlayerId,
 ) -> Result<(), ApiError> {
@@ -90,7 +90,7 @@ const fn default_per_page() -> i64 {
     tag = "leagues"
 )]
 pub async fn create_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<CreateLeagueRequest>,
@@ -146,7 +146,7 @@ pub async fn create_league(
     tag = "leagues"
 )]
 pub async fn get_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     headers: HeaderMap,
     Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
@@ -174,7 +174,7 @@ pub async fn get_league(
     tag = "leagues"
 )]
 pub async fn get_league_by_slug(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     headers: HeaderMap,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
@@ -199,7 +199,7 @@ pub async fn get_league_by_slug(
     tag = "leagues"
 )]
 pub async fn list_leagues(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     headers: HeaderMap,
     Query(params): Query<ListLeaguesParams>,
 ) -> ApiResult<Json<PaginatedResponse<LeagueResponse>>> {
@@ -255,7 +255,7 @@ pub async fn list_leagues(
     tag = "leagues"
 )]
 pub async fn update_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -301,7 +301,7 @@ pub async fn update_league(
     tag = "leagues"
 )]
 pub async fn list_members(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     Path(league_id): Path<LeagueId>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<Vec<LeagueMemberResponse>>> {
@@ -337,7 +337,7 @@ pub async fn list_members(
     tag = "leagues"
 )]
 pub async fn join_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<LeagueMemberBasicResponse>> {
@@ -370,7 +370,7 @@ pub async fn join_league(
     tag = "leagues"
 )]
 pub async fn leave_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     Path(league_id): Path<LeagueId>,
 ) -> ApiResult<StatusCode> {
@@ -403,7 +403,7 @@ pub async fn leave_league(
     tag = "leagues"
 )]
 pub async fn update_member_role(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path((league_id, user_id)): Path<(LeagueId, UserId)>,
@@ -445,7 +445,7 @@ pub async fn update_member_role(
     tag = "leagues"
 )]
 pub async fn remove_member(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path((league_id, user_id)): Path<(LeagueId, UserId)>,
@@ -487,7 +487,7 @@ pub async fn remove_member(
     tag = "leagues"
 )]
 pub async fn apply_to_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(league_id): Path<LeagueId>,
@@ -533,7 +533,7 @@ pub async fn apply_to_league(
     tag = "leagues"
 )]
 pub async fn invite_user(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -582,7 +582,7 @@ pub async fn invite_user(
     tag = "leagues"
 )]
 pub async fn list_invitations(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path(league_id): Path<LeagueId>,
@@ -625,7 +625,7 @@ pub async fn list_invitations(
     tag = "leagues"
 )]
 pub async fn list_applications(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path(league_id): Path<LeagueId>,
@@ -669,7 +669,7 @@ pub async fn list_applications(
     tag = "leagues"
 )]
 pub async fn approve_application(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path((league_id, application_id)): Path<(String, String)>,
@@ -712,7 +712,7 @@ pub async fn approve_application(
     tag = "leagues"
 )]
 pub async fn reject_application(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path((league_id, application_id)): Path<(String, String)>,
@@ -753,7 +753,7 @@ pub async fn reject_application(
     tag = "leagues"
 )]
 pub async fn get_my_leagues(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
 ) -> ApiResult<Json<Vec<UserLeagueMembershipResponse>>> {
     let memberships = state
@@ -781,7 +781,7 @@ pub async fn get_my_leagues(
     tag = "leagues"
 )]
 pub async fn get_my_invitations(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
 ) -> ApiResult<Json<Vec<LeagueInvitationResponse>>> {
     let invitations = state
@@ -813,7 +813,7 @@ pub async fn get_my_invitations(
     tag = "leagues"
 )]
 pub async fn accept_invitation(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     Path(invitation_id): Path<String>,
 ) -> ApiResult<Json<LeagueMemberBasicResponse>> {
@@ -845,7 +845,7 @@ pub async fn accept_invitation(
     tag = "leagues"
 )]
 pub async fn decline_invitation(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     Path(invitation_id): Path<String>,
 ) -> ApiResult<StatusCode> {

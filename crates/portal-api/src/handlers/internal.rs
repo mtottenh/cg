@@ -22,7 +22,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedService;
-use crate::state::AppState;
+use crate::state::InternalState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -60,7 +60,7 @@ pub struct InternalSteamTrackingEntry {
 
 /// Get all active tracking entries for a game.
 pub async fn get_active_tracking(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service: AuthenticatedService,
     Query(query): Query<ActiveTrackingQuery>,
 ) -> ApiResult<Json<Vec<InternalSteamTrackingEntry>>> {
@@ -107,7 +107,7 @@ pub struct UpdatePollResultRequest {
 
 /// Update a tracking entry's poll result.
 pub async fn update_poll_result(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service: AuthenticatedService,
     Path(tracking_id): Path<SteamTrackingId>,
     Json(req): Json<UpdatePollResultRequest>,
@@ -160,7 +160,7 @@ pub struct DiscoveredMatchResponse {
 
 /// Submit discovered matches (idempotent on share_code).
 pub async fn submit_discovered_matches(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service: AuthenticatedService,
     Json(req): Json<SubmitDiscoveredMatchesRequest>,
 ) -> ApiResult<(StatusCode, Json<Vec<DiscoveredMatchResponse>>)> {
@@ -234,7 +234,7 @@ pub struct PendingMatchResponse {
 
 /// Get pending matches for enrichment.
 pub async fn get_pending_matches(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service: AuthenticatedService,
     Query(query): Query<PendingMatchesQuery>,
 ) -> ApiResult<Json<Vec<PendingMatchResponse>>> {
@@ -295,7 +295,7 @@ pub struct EnrichedMatchWithDemoResponse {
 
 /// Get recent enriched matches that have a demo URL.
 pub async fn get_recent_demo_matches(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service: AuthenticatedService,
     Query(query): Query<RecentDemoMatchesQuery>,
 ) -> ApiResult<Json<Vec<EnrichedMatchWithDemoResponse>>> {
@@ -349,7 +349,7 @@ pub async fn get_recent_demo_matches(
 
 /// Claim a match for enrichment (atomic, prevents double-processing).
 pub async fn claim_match(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service: AuthenticatedService,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
@@ -402,7 +402,7 @@ pub struct EnrichedMatchRequest {
 
 /// Submit enriched match data from GC.
 pub async fn submit_enriched(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service: AuthenticatedService,
     Path(id): Path<String>,
     Json(req): Json<EnrichedMatchRequest>,
@@ -450,7 +450,7 @@ pub async fn submit_enriched(
 /// 3. Find or create PlayerGameProfile
 /// 4. Update current rating + insert history entry
 async fn process_demo_ratings(
-    state: &AppState,
+    state: &InternalState,
     discovered: &portal_domain::entities::discovered_match::DiscoveredMatch,
     ratings: &[DemoPlayerRating],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -532,7 +532,7 @@ async fn process_demo_ratings(
 /// Extracts player stats from `gc_data[0].players`, determines win/loss
 /// per player based on team position, and stores match history + aggregate stats.
 async fn process_match_stats(
-    state: &AppState,
+    state: &InternalState,
     discovered: &portal_domain::entities::discovered_match::DiscoveredMatch,
     map_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -715,7 +715,7 @@ pub struct FailedMatchRequest {
 
 /// Mark a match enrichment as failed.
 pub async fn mark_failed(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service: AuthenticatedService,
     Path(id): Path<String>,
     Json(req): Json<FailedMatchRequest>,
@@ -741,7 +741,7 @@ pub async fn mark_failed(
 
 /// Batch catalog demos (service auth).
 pub async fn internal_batch_catalog_demos(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service_auth: AuthenticatedService,
     Json(request): Json<BatchCatalogDemosRequest>,
 ) -> ApiResult<Json<DataResponse<BatchCatalogResultResponse>>> {
@@ -793,7 +793,7 @@ pub async fn internal_batch_catalog_demos(
 
 /// Get pending demos (service auth).
 pub async fn internal_get_pending_demos(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service_auth: AuthenticatedService,
     Query(query): Query<PendingDemosQuery>,
 ) -> ApiResult<Json<DataResponse<Vec<DemoResponse>>>> {
@@ -811,7 +811,7 @@ pub async fn internal_get_pending_demos(
 
 /// Submit parsed stats for a demo (service auth).
 pub async fn internal_submit_demo_stats(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service_auth: AuthenticatedService,
     Path(demo_id): Path<DemoId>,
     Json(request): Json<SubmitDemoStatsRequest>,
@@ -879,7 +879,7 @@ pub async fn internal_submit_demo_stats(
 
 /// Mark a demo's stats processing as failed (service auth).
 pub async fn internal_mark_demo_stats_failed(
-    State(state): State<AppState>,
+    State(state): State<InternalState>,
     service_auth: AuthenticatedService,
     Path(demo_id): Path<DemoId>,
     Json(request): Json<MarkDemoFailedRequest>,

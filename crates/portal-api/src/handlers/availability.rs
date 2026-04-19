@@ -21,7 +21,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::state::AvailabilityState;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -50,7 +50,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "availability"
 )]
 pub async fn create_player_window(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<CreateAvailabilityWindowRequest>,
@@ -91,7 +91,7 @@ pub async fn create_player_window(
     tag = "availability"
 )]
 pub async fn get_player_windows(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<AvailabilityWindowResponse>>>> {
@@ -126,7 +126,7 @@ pub async fn get_player_windows(
     tag = "availability"
 )]
 pub async fn update_player_window(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(window_id): Path<AvailabilityWindowId>,
@@ -181,7 +181,7 @@ pub async fn update_player_window(
     tag = "availability"
 )]
 pub async fn delete_player_window(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     Path(window_id): Path<AvailabilityWindowId>,
 ) -> ApiResult<StatusCode> {
@@ -220,7 +220,7 @@ pub async fn delete_player_window(
     tag = "availability"
 )]
 pub async fn create_player_override(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<CreateAvailabilityOverrideRequest>,
@@ -265,7 +265,7 @@ pub async fn create_player_override(
     tag = "availability"
 )]
 pub async fn get_player_overrides(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<AvailabilityOverrideResponse>>>> {
@@ -298,7 +298,7 @@ pub async fn get_player_overrides(
     tag = "availability"
 )]
 pub async fn delete_player_override(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     Path(override_id): Path<AvailabilityExceptionId>,
 ) -> ApiResult<StatusCode> {
@@ -339,7 +339,7 @@ pub async fn delete_player_override(
     tag = "availability"
 )]
 pub async fn get_player_date_availability(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Query(query): Query<GetAvailabilityQuery>,
@@ -373,7 +373,7 @@ pub async fn get_player_date_availability(
     tag = "availability"
 )]
 pub async fn get_player_date_availability_public(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     headers: HeaderMap,
     Path(player_id): Path<PlayerId>,
     Query(query): Query<GetAvailabilityQuery>,
@@ -414,7 +414,7 @@ pub async fn get_player_date_availability_public(
     tag = "availability"
 )]
 pub async fn generate_suggestions(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
@@ -459,7 +459,7 @@ pub async fn generate_suggestions(
     tag = "availability"
 )]
 pub async fn get_suggestions(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<Vec<SuggestedTimeResponse>>>> {

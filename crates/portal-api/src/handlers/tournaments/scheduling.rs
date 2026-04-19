@@ -22,7 +22,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::TournamentState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -51,7 +51,7 @@ use portal_domain::entities::schedule_proposal::{
     tag = "match_scheduling"
 )]
 pub async fn propose_schedule(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
@@ -96,7 +96,7 @@ pub async fn propose_schedule(
     tag = "match_scheduling"
 )]
 pub async fn accept_schedule_proposal(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_tournament_id, _match_id)): Path<(String, String)>,
@@ -142,7 +142,7 @@ pub async fn accept_schedule_proposal(
     tag = "match_scheduling"
 )]
 pub async fn reject_schedule_proposal(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_tournament_id, _match_id)): Path<(String, String)>,
@@ -187,7 +187,7 @@ pub async fn reject_schedule_proposal(
     tag = "match_scheduling"
 )]
 pub async fn counter_propose(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
@@ -269,7 +269,7 @@ pub async fn counter_propose(
     tag = "match_scheduling"
 )]
 pub async fn get_active_proposal(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<Option<ScheduleProposalResponse>>>> {
@@ -305,7 +305,7 @@ pub async fn get_active_proposal(
     tag = "match_scheduling"
 )]
 pub async fn get_proposal_history(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<Vec<ScheduleProposalResponse>>>> {
@@ -346,7 +346,7 @@ pub async fn get_proposal_history(
     tag = "match_scheduling"
 )]
 pub async fn admin_schedule_match(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -389,7 +389,7 @@ pub async fn admin_schedule_match(
     tag = "tournaments"
 )]
 pub async fn get_bracket_standings(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path((_tournament_id, bracket_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<Vec<TournamentStandingResponse>>>> {
@@ -425,7 +425,7 @@ pub async fn get_bracket_standings(
     tag = "tournaments"
 )]
 pub async fn admin_generate_next_swiss_round(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,

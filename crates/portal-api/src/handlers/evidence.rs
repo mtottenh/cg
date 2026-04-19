@@ -14,7 +14,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::state::EvidenceState;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::Json;
@@ -57,7 +57,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "evidence"
 )]
 pub async fn initiate_upload(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -116,7 +116,7 @@ pub async fn initiate_upload(
     tag = "evidence"
 )]
 pub async fn complete_upload(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_match_id, evidence_id)): Path<(String, String)>,
@@ -159,7 +159,7 @@ pub async fn complete_upload(
     tag = "evidence"
 )]
 pub async fn add_link_evidence(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -213,7 +213,7 @@ pub async fn add_link_evidence(
     tag = "evidence"
 )]
 pub async fn list_evidence(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
     Query(query): Query<ListEvidenceQuery>,
@@ -269,7 +269,7 @@ pub async fn list_evidence(
     tag = "evidence"
 )]
 pub async fn get_evidence(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     headers: HeaderMap,
     Path((match_id, evidence_id)): Path<(TournamentMatchId, EvidenceId)>,
 ) -> ApiResult<Json<DataResponse<EvidenceResponse>>> {
@@ -304,7 +304,7 @@ pub async fn get_evidence(
     tag = "evidence"
 )]
 pub async fn get_access_url(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_match_id, evidence_id)): Path<(String, String)>,
@@ -362,7 +362,7 @@ pub async fn get_access_url(
     tag = "evidence"
 )]
 pub async fn delete_evidence(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
     Path((match_id, evidence_id)): Path<(TournamentMatchId, EvidenceId)>,
 ) -> ApiResult<StatusCode> {
@@ -408,7 +408,7 @@ pub async fn delete_evidence(
     tag = "evidence"
 )]
 pub async fn discover_evidence(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -480,7 +480,7 @@ pub async fn discover_evidence(
     tag = "evidence"
 )]
 pub async fn link_discovered_evidence(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -603,7 +603,7 @@ pub async fn link_discovered_evidence(
     tag = "evidence"
 )]
 pub async fn validate_evidence(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -661,7 +661,7 @@ pub async fn validate_evidence(
 /// `Some("tournament-slug/evidence/screenshots/R2M1")` (no league).
 /// Falls back to `None` if any lookup fails, letting the service use UUID-based keys.
 async fn build_evidence_key_prefix(
-    state: &AppState,
+    state: &EvidenceState,
     match_id: TournamentMatchId,
     evidence_type: portal_domain::entities::evidence::EvidenceType,
 ) -> Option<String> {
@@ -730,7 +730,7 @@ fn plugin_cache() -> &'static dashmap::DashMap<
 /// Follows the chain: match → tournament → game → plugin. The tournament
 /// → game → plugin leg is cached per-tournament.
 async fn resolve_evidence_plugin(
-    state: &AppState,
+    state: &EvidenceState,
     match_id: TournamentMatchId,
 ) -> ApiResult<(
     portal_domain::entities::TournamentMatch,
@@ -783,7 +783,7 @@ async fn resolve_evidence_plugin(
 /// Resolves participant registration IDs to build participant contexts
 /// (currently without Steam IDs since game profiles are not yet implemented).
 async fn build_evidence_context(
-    state: &AppState,
+    state: &EvidenceState,
     match_: &portal_domain::entities::TournamentMatch,
 ) -> ApiResult<MatchEvidenceContext> {
     let tournament = state
@@ -875,7 +875,7 @@ use portal_plugins::{Cs2PluginWithEvidence, GameResult};
     tag = "evidence"
 )]
 pub async fn validate_demo(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(_match_id): Path<String>,
@@ -956,7 +956,7 @@ pub async fn validate_demo(
     tag = "evidence"
 )]
 pub async fn get_demo_stats(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_match_id, demo_name)): Path<(String, String)>,
@@ -1039,7 +1039,7 @@ pub async fn get_demo_stats(
     tag = "evidence"
 )]
 pub async fn link_demo(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
@@ -1138,7 +1138,7 @@ const LOCAL_EVIDENCE_MAX_BYTES: usize = 64 * 1024 * 1024;
 ///   parent directory and verify it stays inside `state.uploads_path`.
 /// * **Size capped** — bodies above [`LOCAL_EVIDENCE_MAX_BYTES`] are rejected.
 pub async fn local_evidence_upload(
-    State(state): State<AppState>,
+    State(state): State<EvidenceState>,
     _auth: AuthenticatedUser,
     axum::extract::Path(path): axum::extract::Path<String>,
     body: axum::body::Bytes,
@@ -1207,7 +1207,7 @@ pub async fn local_evidence_upload(
 }
 
 /// Create a CS2 plugin with evidence support, using the configured demo service URL.
-fn create_cs2_plugin(state: &AppState) -> Cs2PluginWithEvidence {
+fn create_cs2_plugin(state: &EvidenceState) -> Cs2PluginWithEvidence {
     match &state.cs2_demo_base_url {
         Some(url) => Cs2PluginWithEvidence::with_demo_url(url.clone()),
         None => Cs2PluginWithEvidence::new(),

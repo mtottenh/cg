@@ -20,7 +20,7 @@ use crate::dto::requests::{
 use crate::dto::responses::{CheckInStatusResponse, TournamentRegistrationResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::state::TournamentState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -72,7 +72,7 @@ pub struct RegistrationPath {
     tag = "tournaments"
 )]
 pub async fn register_team(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -127,7 +127,7 @@ pub async fn register_team(
     tag = "tournaments"
 )]
 pub async fn register_player(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -172,7 +172,7 @@ pub async fn register_player(
     tag = "tournaments"
 )]
 pub async fn get_registrations(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
     Query(status_filter): Query<RegistrationStatusQuery>,
@@ -222,7 +222,7 @@ pub async fn get_registrations(
     tag = "tournaments"
 )]
 pub async fn check_in(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(path): Path<CheckInPath>,
@@ -263,7 +263,7 @@ pub async fn check_in(
     tag = "tournaments"
 )]
 pub async fn withdraw(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(path): Path<RegistrationPath>,
@@ -304,7 +304,7 @@ pub async fn withdraw(
     tag = "tournaments"
 )]
 pub async fn approve_registration(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(path): Path<RegistrationPath>,
@@ -346,7 +346,7 @@ pub async fn approve_registration(
     tag = "tournaments"
 )]
 pub async fn reject_registration(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(path): Path<RegistrationPath>,
@@ -389,7 +389,7 @@ pub async fn reject_registration(
     tag = "tournaments"
 )]
 pub async fn disqualify(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(path): Path<RegistrationPath>,
@@ -427,7 +427,7 @@ pub async fn disqualify(
     tag = "tournaments"
 )]
 pub async fn get_check_in_status(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<crate::dto::responses::CheckInStatusResponse>>> {
@@ -468,7 +468,7 @@ pub async fn get_check_in_status(
     tag = "tournaments"
 )]
 pub async fn admin_check_in(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(path): Path<RegistrationPath>,
@@ -508,7 +508,7 @@ pub async fn admin_check_in(
     tag = "tournaments"
 )]
 pub async fn process_no_shows(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,

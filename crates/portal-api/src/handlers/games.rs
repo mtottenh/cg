@@ -10,7 +10,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::state::GamesState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -39,7 +39,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "games"
 )]
 pub async fn list_games(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     headers: HeaderMap,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<PaginatedResponse<GameSummaryResponse>>> {
@@ -88,7 +88,7 @@ pub async fn list_games(
     tag = "games"
 )]
 pub async fn get_game(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     headers: HeaderMap,
     Path(game_id): Path<String>,
 ) -> ApiResult<Json<DataResponse<GameDetailResponse>>> {
@@ -200,7 +200,7 @@ pub async fn get_game(
     tag = "games"
 )]
 pub async fn get_maps(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     headers: HeaderMap,
     Path(game_id): Path<String>,
 ) -> ApiResult<Json<DataResponse<Vec<MapInfoResponse>>>> {
@@ -248,7 +248,7 @@ pub async fn get_maps(
     tag = "games"
 )]
 pub async fn get_rank_tiers(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     headers: HeaderMap,
     Path(game_id): Path<String>,
 ) -> ApiResult<Json<DataResponse<Vec<RankTierResponse>>>> {
@@ -304,7 +304,7 @@ pub async fn get_rank_tiers(
     tag = "games"
 )]
 pub async fn update_game(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(game_id): Path<String>,
@@ -441,7 +441,7 @@ pub async fn update_game(
     tag = "games"
 )]
 pub async fn set_map_pool(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(game_id): Path<String>,
@@ -526,7 +526,7 @@ pub async fn set_map_pool(
     tag = "games"
 )]
 pub async fn enable_game(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(game_id): Path<String>,
@@ -579,7 +579,7 @@ pub async fn enable_game(
     tag = "games"
 )]
 pub async fn disable_game(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(game_id): Path<String>,
@@ -651,7 +651,7 @@ pub(crate) fn load_available_maps(
 }
 
 /// Check admin.games.manage permission.
-async fn require_games_admin(state: &AppState, auth: &AuthenticatedUser) -> ApiResult<()> {
+async fn require_games_admin(state: &GamesState, auth: &AuthenticatedUser) -> ApiResult<()> {
     let is_admin = state
         .permission_repo
         .user_has_permission(auth.user_id, "admin.games.manage")
@@ -690,7 +690,7 @@ async fn require_games_admin(state: &AppState, auth: &AuthenticatedUser) -> ApiR
     tag = "games"
 )]
 pub async fn add_map(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(game_id): Path<String>,
@@ -757,7 +757,7 @@ pub async fn add_map(
     tag = "games"
 )]
 pub async fn update_map(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((game_id, map_id)): Path<(String, String)>,
@@ -828,7 +828,7 @@ pub async fn update_map(
     tag = "games"
 )]
 pub async fn remove_map(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     auth: AuthenticatedUser,
     Path((game_id, map_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
@@ -884,7 +884,7 @@ pub async fn remove_map(
     tag = "games"
 )]
 pub async fn set_rank_tiers(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(game_id): Path<String>,
@@ -971,7 +971,7 @@ pub async fn set_rank_tiers(
     tag = "games"
 )]
 pub async fn update_team_size(
-    State(state): State<AppState>,
+    State(state): State<GamesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(game_id): Path<String>,

@@ -11,7 +11,7 @@ use crate::dto::requests::SetTournamentMapPoolRequest;
 use crate::dto::responses::TournamentMapPoolResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::TournamentState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -34,7 +34,7 @@ use portal_domain::repositories::tournament::{
     tag = "tournaments"
 )]
 pub async fn get_tournament_map_pool(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentMapPoolResponse>>> {
@@ -97,7 +97,7 @@ pub async fn get_tournament_map_pool(
     tag = "tournaments"
 )]
 pub async fn set_tournament_map_pool(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -168,7 +168,7 @@ pub async fn set_tournament_map_pool(
     tag = "tournaments"
 )]
 pub async fn delete_tournament_map_pool(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path(tournament_id): Path<TournamentId>,

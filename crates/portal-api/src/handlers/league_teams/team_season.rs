@@ -9,7 +9,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::LeagueTeamState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -29,7 +29,7 @@ use portal_core::{LeagueTeamSeasonId, PlayerId};
     tag = "league-team-seasons"
 )]
 pub async fn get_team_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
     Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamSeasonResponse>>> {
@@ -60,7 +60,7 @@ pub async fn get_team_season(
     tag = "league-team-seasons"
 )]
 pub async fn get_team_season_members(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
     Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueTeamMemberWithPlayerResponse>>>> {
@@ -100,7 +100,7 @@ pub async fn get_team_season_members(
     tag = "league-team-seasons"
 )]
 pub async fn add_team_member(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -141,7 +141,7 @@ pub async fn add_team_member(
     tag = "league-team-seasons"
 )]
 pub async fn remove_team_member(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     Path((team_season_id, player_id)): Path<(String, String)>,
@@ -181,7 +181,7 @@ pub async fn remove_team_member(
     tag = "league-team-seasons"
 )]
 pub async fn leave_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<StatusCode> {
@@ -212,7 +212,7 @@ pub async fn leave_team(
     tag = "league-team-seasons"
 )]
 pub async fn promote_to_captain(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -260,7 +260,7 @@ pub async fn promote_to_captain(
     tag = "league-team-seasons"
 )]
 pub async fn demote_from_captain(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm: PermissionChecker,
     headers: HeaderMap,
@@ -305,7 +305,7 @@ pub async fn demote_from_captain(
     tag = "players"
 )]
 pub async fn get_my_league_teams(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<PlayerLeagueTeamMembershipResponse>>>> {
@@ -339,7 +339,7 @@ pub async fn get_my_league_teams(
     tag = "players"
 )]
 pub async fn get_player_league_teams(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
     Path(player_id): Path<PlayerId>,
 ) -> ApiResult<Json<DataResponse<Vec<PlayerLeagueTeamMembershipResponse>>>> {

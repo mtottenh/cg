@@ -11,7 +11,7 @@ use crate::dto::requests::{AutoSeedRequest, ManualSeedRequest};
 use crate::dto::responses::SeededParticipantResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::state::TournamentState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -31,7 +31,7 @@ use portal_core::TournamentId;
     tag = "tournaments"
 )]
 pub async fn get_seeding(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<Vec<SeededParticipantResponse>>>> {
@@ -73,7 +73,7 @@ pub async fn get_seeding(
     tag = "tournaments"
 )]
 pub async fn auto_seed(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -122,7 +122,7 @@ pub async fn auto_seed(
     tag = "tournaments"
 )]
 pub async fn manual_seed(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -176,7 +176,7 @@ pub async fn manual_seed(
     tag = "tournaments"
 )]
 pub async fn clear_seeding(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<StatusCode> {

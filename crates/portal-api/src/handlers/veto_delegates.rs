@@ -10,7 +10,7 @@ use crate::dto::requests::CreateVetoDelegateRequest;
 use crate::dto::responses::{VetoDelegateListResponse, VetoDelegateResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::state::VetoDelegatesState;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -46,7 +46,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "veto_delegates"
 )]
 pub async fn create_delegation(
-    State(state): State<AppState>,
+    State(state): State<VetoDelegatesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_league_id, _team_id, season_id)): Path<(String, String, String)>,
@@ -110,7 +110,7 @@ pub async fn create_delegation(
     tag = "veto_delegates"
 )]
 pub async fn list_delegations(
-    State(state): State<AppState>,
+    State(state): State<VetoDelegatesState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_league_id, _team_id, season_id)): Path<(String, String, String)>,
@@ -153,7 +153,7 @@ pub async fn list_delegations(
     tag = "veto_delegates"
 )]
 pub async fn revoke_delegation(
-    State(state): State<AppState>,
+    State(state): State<VetoDelegatesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_league_id, _team_id, _season_id, delegate_id)): Path<(String, String, String, String)>,

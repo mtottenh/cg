@@ -33,7 +33,7 @@ use axum::http::HeaderMap;
 
 use crate::error::ApiError;
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
-use crate::state::AppState;
+use crate::state::LeagueTeamState;
 use portal_core::{LeagueTeamSeasonId, ScopeType};
 
 /// Extract request ID from headers.
@@ -62,7 +62,7 @@ pub(crate) const fn default_per_page() -> i64 {
 /// handlers checked only `is_captain`, so admins were locked out — a bug
 /// flagged as I1 in the audit.
 pub(crate) async fn require_captain_or_admin(
-    state: &AppState,
+    state: &LeagueTeamState,
     perm: &PermissionChecker,
     auth: &AuthenticatedUser,
     team_season_id: LeagueTeamSeasonId,

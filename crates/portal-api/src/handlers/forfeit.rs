@@ -5,7 +5,7 @@ use crate::dto::requests::{AdminDisqualifyRequest, AdminForfeitMatchRequest, Wit
 use crate::dto::responses::{DisqualificationResponse, ForfeitResponse, WithdrawalResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::ForfeitState;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -46,7 +46,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "forfeits"
 )]
 pub async fn withdraw_from_tournament(
-    State(state): State<AppState>,
+    State(state): State<ForfeitState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((tournament_id, registration_id)): Path<(TournamentId, TournamentRegistrationId)>,
@@ -97,7 +97,7 @@ pub async fn withdraw_from_tournament(
     tag = "forfeits"
 )]
 pub async fn admin_forfeit_match(
-    State(state): State<AppState>,
+    State(state): State<ForfeitState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -166,7 +166,7 @@ pub async fn admin_forfeit_match(
     tag = "forfeits"
 )]
 pub async fn admin_disqualify(
-    State(state): State<AppState>,
+    State(state): State<ForfeitState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -216,7 +216,7 @@ pub async fn admin_disqualify(
     tag = "forfeits"
 )]
 pub async fn admin_double_forfeit(
-    State(state): State<AppState>,
+    State(state): State<ForfeitState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,

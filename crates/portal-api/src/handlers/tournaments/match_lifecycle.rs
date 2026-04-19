@@ -17,7 +17,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::TournamentState;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -39,7 +39,7 @@ use portal_core::{TournamentMatchId, TournamentRegistrationId};
     tag = "match_lifecycle"
 )]
 pub async fn get_match_status(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<MatchStatusDetailsResponse>>> {
@@ -75,7 +75,7 @@ pub async fn get_match_status(
     tag = "match_lifecycle"
 )]
 pub async fn get_match_status_history(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<Vec<MatchStatusLogResponse>>>> {
@@ -114,7 +114,7 @@ pub async fn get_match_status_history(
     tag = "match_lifecycle"
 )]
 pub async fn match_check_in(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
@@ -172,7 +172,7 @@ pub async fn match_check_in(
     tag = "match_lifecycle"
 )]
 pub async fn schedule_match(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
@@ -214,7 +214,7 @@ pub async fn schedule_match(
     tag = "match_lifecycle"
 )]
 pub async fn forfeit_match(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
@@ -262,7 +262,7 @@ pub async fn forfeit_match(
     tag = "match_lifecycle"
 )]
 pub async fn admin_match_transition(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,

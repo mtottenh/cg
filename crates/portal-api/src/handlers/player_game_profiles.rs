@@ -8,7 +8,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::PlayerState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -30,7 +30,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 
 /// Build a `PlayerStatsContext` from a profile, deriving rating from history.
 pub(crate) async fn build_stats_context(
-    state: &AppState,
+    state: &PlayerState,
     profile: &PlayerGameProfile,
 ) -> PlayerStatsContext {
     let rating_stats = state
@@ -51,7 +51,7 @@ pub(crate) async fn build_stats_context(
 
 /// Resolve profiles to responses, looking up plugins for display stats.
 async fn profiles_to_responses(
-    state: &AppState,
+    state: &PlayerState,
     profiles: Vec<PlayerGameProfile>,
 ) -> Vec<PlayerGameProfileResponse> {
     let mut responses = Vec::with_capacity(profiles.len());
@@ -85,7 +85,7 @@ async fn profiles_to_responses(
     tag = "players"
 )]
 pub async fn list_player_game_profiles(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     headers: HeaderMap,
     Path(player_id): Path<PlayerId>,
 ) -> ApiResult<Json<DataResponse<Vec<PlayerGameProfileResponse>>>> {
@@ -121,7 +121,7 @@ pub async fn list_player_game_profiles(
     tag = "players"
 )]
 pub async fn get_player_game_profile(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     headers: HeaderMap,
     Path((player_id, game_id_or_slug)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<PlayerGameProfileResponse>>> {
@@ -176,7 +176,7 @@ pub async fn get_player_game_profile(
 
 /// Resolve a game_id string (UUID or slug) to a `GameId` and plugin_id.
 async fn resolve_game(
-    state: &AppState,
+    state: &PlayerState,
     game_id_or_slug: &str,
 ) -> Result<(GameId, String), ApiError> {
     if let Ok(uuid) = game_id_or_slug.parse::<uuid::Uuid>() {
@@ -218,7 +218,7 @@ pub struct RatingHistoryQuery {
     tag = "players"
 )]
 pub async fn get_my_game_profiles(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<PlayerGameProfileResponse>>>> {
@@ -257,7 +257,7 @@ pub async fn get_my_game_profiles(
     tag = "players"
 )]
 pub async fn submit_player_rating(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -355,7 +355,7 @@ pub async fn submit_player_rating(
     tag = "players"
 )]
 pub async fn get_player_rating_history(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     headers: HeaderMap,
     Path((player_id_str, game_id_or_slug)): Path<(String, String)>,
     Query(query): Query<RatingHistoryQuery>,
@@ -407,7 +407,7 @@ pub struct MatchHistoryQuery {
     tag = "players"
 )]
 pub async fn get_player_mm_stats(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     headers: HeaderMap,
     Path((player_id_str, game_id_or_slug)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<PublicMmStatsResponse>>> {
@@ -489,7 +489,7 @@ pub async fn get_player_mm_stats(
     tag = "players"
 )]
 pub async fn get_player_match_history(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     headers: HeaderMap,
     Path((player_id_str, game_id_or_slug)): Path<(String, String)>,
     Query(query): Query<MatchHistoryQuery>,

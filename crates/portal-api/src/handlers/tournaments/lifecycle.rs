@@ -14,7 +14,7 @@ use crate::dto::requests::{
 use crate::dto::responses::{TournamentResponse, TournamentSummaryResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::state::TournamentState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -39,7 +39,7 @@ use portal_domain::repositories::tournament::TournamentFilters;
     tag = "tournaments"
 )]
 pub async fn create_tournament(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<CreateTournamentRequest>,
@@ -85,7 +85,7 @@ pub async fn create_tournament(
     tag = "tournaments"
 )]
 pub async fn get_tournament(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
@@ -113,7 +113,7 @@ pub async fn get_tournament(
     tag = "tournaments"
 )]
 pub async fn get_tournament_by_slug(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
@@ -147,7 +147,7 @@ pub async fn get_tournament_by_slug(
     tag = "tournaments"
 )]
 pub async fn list_tournaments(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     headers: HeaderMap,
     Query(params): Query<ListTournamentsQuery>,
     Query(pagination): Query<PaginationParams>,
@@ -241,7 +241,7 @@ pub async fn list_tournaments(
     tag = "tournaments"
 )]
 pub async fn update_tournament(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -301,7 +301,7 @@ pub async fn update_tournament(
     tag = "tournaments"
 )]
 pub async fn publish_tournament(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -333,7 +333,7 @@ pub async fn publish_tournament(
     tag = "tournaments"
 )]
 pub async fn open_registration(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -368,7 +368,7 @@ pub async fn open_registration(
     tag = "tournaments"
 )]
 pub async fn start_tournament(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -400,7 +400,7 @@ pub async fn start_tournament(
     tag = "tournaments"
 )]
 pub async fn close_registration(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -435,7 +435,7 @@ pub async fn close_registration(
     tag = "tournaments"
 )]
 pub async fn reopen_registration(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -470,7 +470,7 @@ pub async fn reopen_registration(
     tag = "tournaments"
 )]
 pub async fn cancel_tournament(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -505,7 +505,7 @@ pub async fn cancel_tournament(
     tag = "tournaments"
 )]
 pub async fn complete_tournament(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
@@ -540,7 +540,7 @@ pub async fn complete_tournament(
     tag = "tournaments"
 )]
 pub async fn finalize_tournament(
-    State(state): State<AppState>,
+    State(state): State<TournamentState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,

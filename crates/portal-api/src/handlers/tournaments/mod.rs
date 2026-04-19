@@ -45,7 +45,7 @@ pub use seeding::*;
 pub use stages::*;
 
 use crate::error::ApiError;
-use crate::state::AppState;
+use crate::state::TournamentState;
 use axum::http::HeaderMap;
 use portal_core::types::MatchFormat;
 use portal_core::{PlayerId, VetoFormatConfig};
@@ -72,7 +72,7 @@ pub(super) fn get_request_id(headers: &HeaderMap) -> &str {
 /// keeping it out of the public surface avoids leaking an internal
 /// enforcement path.
 pub(super) async fn check_eligibility_for_players(
-    state: &AppState,
+    state: &TournamentState,
     tournament: &portal_domain::entities::Tournament,
     player_ids: &[PlayerId],
 ) -> Result<(), ApiError> {
@@ -114,7 +114,7 @@ pub(super) async fn check_eligibility_for_players(
 /// an internal side effect of the status transition, not a standalone
 /// API.
 pub(super) async fn auto_create_veto_session(
-    state: &AppState,
+    state: &TournamentState,
     match_: &portal_domain::entities::tournament::TournamentMatch,
 ) -> Result<(), ApiError> {
     use portal_domain::repositories::tournament::TournamentMapPoolRepository;

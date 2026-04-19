@@ -5,7 +5,7 @@ use crate::dto::requests::{CreateBanRequest, LiftBanRequest, ListBansQuery};
 use crate::dto::responses::{BanListResponse, BanResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
-use crate::state::AppState;
+use crate::state::BanState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -43,7 +43,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "admin"
 )]
 pub async fn list_bans(
-    State(state): State<AppState>,
+    State(state): State<BanState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Query(query): Query<ListBansQuery>,
@@ -97,7 +97,7 @@ pub async fn list_bans(
     tag = "admin"
 )]
 pub async fn get_ban(
-    State(state): State<AppState>,
+    State(state): State<BanState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -138,7 +138,7 @@ pub async fn get_ban(
     tag = "admin"
 )]
 pub async fn create_ban(
-    State(state): State<AppState>,
+    State(state): State<BanState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Json(body): Json<CreateBanRequest>,
@@ -203,7 +203,7 @@ pub async fn create_ban(
     tag = "admin"
 )]
 pub async fn lift_ban(
-    State(state): State<AppState>,
+    State(state): State<BanState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -255,7 +255,7 @@ pub async fn lift_ban(
     tag = "admin"
 )]
 pub async fn get_user_bans(
-    State(state): State<AppState>,
+    State(state): State<BanState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(user_id): Path<UserId>,

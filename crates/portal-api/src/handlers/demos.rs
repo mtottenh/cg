@@ -13,7 +13,7 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
-use crate::state::{AppState, DemoState};
+use crate::state::DemoState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -58,7 +58,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "demos"
 )]
 pub async fn list_demos(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Query(query): Query<ListDemosQuery>,
@@ -178,7 +178,7 @@ pub async fn get_demo_players(
     tag = "admin"
 )]
 pub async fn catalog_demo(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Json(request): Json<CatalogDemoRequest>,
@@ -239,7 +239,7 @@ pub async fn catalog_demo(
     tag = "admin"
 )]
 pub async fn categorize_demo(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,
@@ -291,7 +291,7 @@ pub async fn categorize_demo(
     tag = "admin"
 )]
 pub async fn set_demo_visibility(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,
@@ -338,7 +338,7 @@ pub async fn set_demo_visibility(
     tag = "admin"
 )]
 pub async fn associate_demo(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,
@@ -390,7 +390,7 @@ pub async fn associate_demo(
     tag = "admin"
 )]
 pub async fn link_demo_to_match(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,
@@ -527,7 +527,7 @@ pub async fn get_demo_download(
     tag = "admin"
 )]
 pub async fn get_demo_status_counts(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<DemoStatusCountsResponse>>> {
@@ -573,7 +573,7 @@ pub async fn get_demo_status_counts(
     tag = "admin"
 )]
 pub async fn get_pending_demos(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Query(query): Query<PendingDemosQuery>,
@@ -619,7 +619,7 @@ pub async fn get_pending_demos(
     tag = "demos"
 )]
 pub async fn get_demos_for_match(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(match_id): Path<String>,
@@ -668,7 +668,7 @@ pub async fn get_demos_for_match(
     tag = "admin"
 )]
 pub async fn unlink_demo_from_match(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     Path((demo_id, match_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
@@ -719,7 +719,7 @@ pub async fn unlink_demo_from_match(
     tag = "admin"
 )]
 pub async fn batch_catalog_demos(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Json(request): Json<BatchCatalogDemosRequest>,
@@ -805,7 +805,7 @@ pub async fn batch_catalog_demos(
     tag = "admin"
 )]
 pub async fn submit_demo_stats(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,
@@ -901,7 +901,7 @@ pub async fn submit_demo_stats(
     tag = "admin"
 )]
 pub async fn mark_demo_stats_failed(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,
@@ -945,7 +945,7 @@ pub async fn mark_demo_stats_failed(
     tag = "admin"
 )]
 pub async fn delete_demo(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     Path(demo_id): Path<DemoId>,
 ) -> ApiResult<StatusCode> {
@@ -984,7 +984,7 @@ pub async fn delete_demo(
     tag = "admin"
 )]
 pub async fn set_demo_notes(
-    State(state): State<AppState>,
+    State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(demo_id): Path<DemoId>,

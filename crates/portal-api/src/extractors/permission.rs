@@ -9,6 +9,20 @@ use portal_core::{PermissionScope, ScopeType};
 use portal_db::PermissionRepository;
 use uuid::Uuid;
 
+/// Whether the given user is the well-known dev account, granted blanket
+/// permissions in `test-utils` builds. Always returns `false` in production
+/// builds (the body is feature-gated, not the call site, so production code
+/// can keep calling this without `cfg!()` noise).
+#[cfg(feature = "test-utils")]
+fn is_dev_user(user: &AuthenticatedUser) -> bool {
+    user.username == crate::extractors::auth::DEV_USERNAME
+}
+
+#[cfg(not(feature = "test-utils"))]
+const fn is_dev_user(_user: &AuthenticatedUser) -> bool {
+    false
+}
+
 /// Wrapper for `PermissionRepository` that can be extracted from state.
 #[derive(Clone)]
 pub struct PermissionChecker(pub PermissionRepository);
@@ -34,8 +48,7 @@ where
 impl PermissionChecker {
     /// Check if a user has a specific permission.
     pub async fn has_permission(&self, user: &AuthenticatedUser, permission: &str) -> bool {
-        // Dev users have all permissions
-        if AuthenticatedUser::is_dev_auth_enabled() && user.username == "devuser" {
+        if is_dev_user(user) {
             return true;
         }
 
@@ -66,8 +79,7 @@ impl PermissionChecker {
         user: &AuthenticatedUser,
         permissions: &[&str],
     ) -> Result<(), ApiError> {
-        // Dev users have all permissions
-        if AuthenticatedUser::is_dev_auth_enabled() && user.username == "devuser" {
+        if is_dev_user(user) {
             return Ok(());
         }
 
@@ -93,8 +105,7 @@ impl PermissionChecker {
         user: &AuthenticatedUser,
         permissions: &[&str],
     ) -> Result<(), ApiError> {
-        // Dev users have all permissions
-        if AuthenticatedUser::is_dev_auth_enabled() && user.username == "devuser" {
+        if is_dev_user(user) {
             return Ok(());
         }
 
@@ -130,8 +141,7 @@ impl PermissionChecker {
         scope_type: ScopeType,
         scope_id: Uuid,
     ) -> bool {
-        // Dev users have all permissions
-        if AuthenticatedUser::is_dev_auth_enabled() && user.username == "devuser" {
+        if is_dev_user(user) {
             return true;
         }
 
@@ -149,8 +159,7 @@ impl PermissionChecker {
     /// - League scope: `admin.leagues.manage_any`
     /// - Tournament scope: `admin.tournaments.manage_any`
     pub async fn has_admin_override(&self, user: &AuthenticatedUser, scope_type: ScopeType) -> bool {
-        // Dev users have all permissions
-        if AuthenticatedUser::is_dev_auth_enabled() && user.username == "devuser" {
+        if is_dev_user(user) {
             return true;
         }
 

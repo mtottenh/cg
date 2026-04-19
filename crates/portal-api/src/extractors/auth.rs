@@ -8,16 +8,30 @@ use axum::http::HeaderMap;
 use portal_core::{PlayerId, UserId};
 use portal_domain::validate_token;
 use std::sync::Arc;
+#[cfg(feature = "test-utils")]
 use uuid::Uuid;
 
-/// Dev token for local development.
-/// In production, this would be disabled and real JWT verification used.
+/// Bearer token accepted as the well-known dev user under `test-utils` builds.
+///
+/// This constant — together with [`AuthenticatedUser::dev_user`] and the
+/// dev-token branch in [`AuthenticatedUser::from_request_parts`] — only exists
+/// when the `test-utils` cargo feature is enabled. Production builds do not
+/// see this code at all.
+#[cfg(feature = "test-utils")]
 const DEV_TOKEN: &str = "dev-token";
 
 /// Well-known dev user IDs (must exist in database via seed).
+#[cfg(feature = "test-utils")]
 const DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
+#[cfg(feature = "test-utils")]
 const DEV_PLAYER_ID: &str = "00000000-0000-0000-0000-000000000001";
-const DEV_USERNAME: &str = "devuser";
+/// The well-known dev username. Permission checks treat this name as having
+/// every permission **only under the `test-utils` cargo feature**, where the
+/// `is_dev_user` helper compiles to a real check; in production builds the
+/// helper is `const false` and registering a real account named "devuser"
+/// grants no special privileges.
+#[cfg(feature = "test-utils")]
+pub(crate) const DEV_USERNAME: &str = "devuser";
 
 /// JWT secret wrapper for `FromRef` extraction.
 #[derive(Clone)]
@@ -49,23 +63,8 @@ impl AuthenticatedUser {
             .and_then(|value| value.strip_prefix("Bearer "))
     }
 
-    /// Check if dev auth mode is enabled.
-    /// With the `test-utils` feature, dev auth is always enabled.
+    /// Create the well-known dev user for tests. Only compiled under `test-utils`.
     #[cfg(feature = "test-utils")]
-    pub fn is_dev_auth_enabled() -> bool {
-        true
-    }
-
-    /// Check if dev auth mode is enabled.
-    /// Without `test-utils` feature, requires `DEV_AUTH_ENABLED` environment variable.
-    #[cfg(not(feature = "test-utils"))]
-    pub fn is_dev_auth_enabled() -> bool {
-        std::env::var("DEV_AUTH_ENABLED")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    }
-
-    /// Create a dev user for testing.
     fn dev_user() -> Self {
         Self {
             user_id: UserId::from(Uuid::parse_str(DEV_USER_ID).expect("valid dev user id")),
@@ -113,8 +112,10 @@ where
         let token = Self::extract_token(&parts.headers)
             .ok_or_else(|| ApiError::unauthorized("Missing or invalid authorization header"))?;
 
-        // Dev mode: accept dev-token for local development
-        if Self::is_dev_auth_enabled() && token == DEV_TOKEN {
+        // Dev mode: accept dev-token for local development.
+        // This branch is removed entirely from production builds.
+        #[cfg(feature = "test-utils")]
+        if token == DEV_TOKEN {
             return Ok(Self::dev_user());
         }
 

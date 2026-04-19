@@ -5,12 +5,69 @@
 //! available for I/O. Calling `Argon2::default().hash_password(...)` directly
 //! from an `async fn` blocks a worker for tens to hundreds of milliseconds
 //! and trivially starves the runtime under concurrent login load.
+//!
+//! # Tuning
+//!
+//! The Argon2id parameters used for **new** hashes are read from the
+//! environment once at first use:
+//!
+//! * `PORTAL_ARGON2_M_COST` — memory cost in KiB (default 19456, OWASP 2023)
+//! * `PORTAL_ARGON2_T_COST` — iteration count (default 2)
+//! * `PORTAL_ARGON2_P_COST` — parallelism (default 1)
+//!
+//! Changing these only affects *newly* issued hashes. Verifications use the
+//! parameters encoded in each stored PHC string, so existing users keep
+//! authenticating with whatever cost they were hashed at — that's the
+//! standard Argon2 upgrade story. To re-hash at new parameters, trigger a
+//! password reset or verify-then-rehash-on-login.
 
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use portal_core::DomainError;
 use std::sync::OnceLock;
+
+/// OWASP Argon2id recommended minimums (2023).
+const DEFAULT_M_COST: u32 = 19_456;
+const DEFAULT_T_COST: u32 = 2;
+const DEFAULT_P_COST: u32 = 1;
+
+/// Configured Argon2id instance used for **hashing** (verify paths use the
+/// parameters encoded in the stored hash, not this one). Computed once per
+/// process from env vars.
+fn hashing_argon2() -> &'static Argon2<'static> {
+    static A2: OnceLock<Argon2<'static>> = OnceLock::new();
+    A2.get_or_init(|| {
+        let m = read_env_u32("PORTAL_ARGON2_M_COST", DEFAULT_M_COST);
+        let t = read_env_u32("PORTAL_ARGON2_T_COST", DEFAULT_T_COST);
+        let p = read_env_u32("PORTAL_ARGON2_P_COST", DEFAULT_P_COST);
+        let params = Params::new(m, t, p, None).unwrap_or_else(|e| {
+            tracing::warn!(
+                error = %e, m, t, p,
+                "invalid Argon2 params from env; falling back to OWASP defaults"
+            );
+            Params::new(DEFAULT_M_COST, DEFAULT_T_COST, DEFAULT_P_COST, None)
+                .expect("OWASP default Argon2 params are valid")
+        });
+        tracing::info!(
+            m_cost = params.m_cost(),
+            t_cost = params.t_cost(),
+            p_cost = params.p_cost(),
+            "Argon2id parameters configured"
+        );
+        Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+    })
+}
+
+fn read_env_u32(key: &str, default: u32) -> u32 {
+    match std::env::var(key) {
+        Ok(v) => v.parse::<u32>().unwrap_or_else(|_| {
+            tracing::warn!(key, value = %v, default, "invalid u32 for {key}; using default");
+            default
+        }),
+        Err(_) => default,
+    }
+}
 
 /// Hash a password using Argon2id.
 ///
@@ -50,7 +107,7 @@ pub async fn verify_dummy_for_timing() -> Result<(), DomainError> {
 
 fn hash_password_blocking(password: &str) -> Result<String, DomainError> {
     let salt = SaltString::generate(&mut OsRng);
-    Argon2::default()
+    hashing_argon2()
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
         .map_err(|e| DomainError::Internal(format!("Failed to hash password: {e}")))
@@ -59,6 +116,9 @@ fn hash_password_blocking(password: &str) -> Result<String, DomainError> {
 fn verify_password_blocking(password: &str, password_hash: &str) -> Result<bool, DomainError> {
     let parsed = PasswordHash::new(password_hash)
         .map_err(|e| DomainError::Internal(format!("Invalid password hash format: {e}")))?;
+    // Verify uses params encoded in `parsed`, not our configured instance —
+    // Argon2::default() is fine here and keeps existing hashes verifiable
+    // even after a parameter upgrade.
     Ok(Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok())
@@ -72,7 +132,10 @@ fn dummy_hash() -> &'static str {
     static DUMMY_HASH: OnceLock<String> = OnceLock::new();
     DUMMY_HASH.get_or_init(|| {
         let salt = SaltString::generate(&mut OsRng);
-        Argon2::default()
+        // Build the dummy hash with the currently-configured Argon2 so the
+        // verify-cost of a user-not-found path matches the verify-cost of a
+        // real user whose stored hash is already at current params.
+        hashing_argon2()
             .hash_password(b"timing-canary", &salt)
             .expect("dummy hash construction must succeed")
             .to_string()

@@ -206,14 +206,33 @@ where
             ));
         }
 
-        // Confirm the claim
+        // Atomic: claim Confirmed + match result submitted commit
+        // together. See audit I5. Loser derived here instead of inside
+        // `apply_result_to_match` because the match row will be mutated
+        // as part of the same tx.
+        let loser = if match_.participant1_registration_id
+            == Some(claim.claimed_winner_registration_id)
+        {
+            match_.participant2_registration_id
+        } else {
+            match_.participant1_registration_id
+        }
+        .ok_or_else(|| DomainError::InvalidState("Loser participant not found".to_string()))?;
+
         let claim = self
             .claim_repo
-            .confirm(claim_id, confirmer_registration, confirmed_by_user, false)
+            .confirm_and_apply_to_match(
+                claim_id,
+                confirmer_registration,
+                confirmed_by_user,
+                false,
+                match_.id,
+                claim.claimed_winner_registration_id,
+                loser,
+                claim.claimed_participant1_score,
+                claim.claimed_participant2_score,
+            )
             .await?;
-
-        // Apply the result to the match
-        self.apply_result_to_match(&match_, &claim).await?;
 
         info!(
             claim_id = %claim_id,
@@ -547,19 +566,30 @@ where
         }
         .ok_or_else(|| DomainError::InvalidState("Opponent not found".to_string()))?;
 
-        // Auto-confirm
+        // Atomic auto-confirm + result application. See audit I5.
+        let loser = if match_.participant1_registration_id
+            == Some(claim.claimed_winner_registration_id)
+        {
+            match_.participant2_registration_id
+        } else {
+            match_.participant1_registration_id
+        }
+        .ok_or_else(|| DomainError::InvalidState("Loser participant not found".to_string()))?;
+
         let claim = self
             .claim_repo
-            .confirm(
+            .confirm_and_apply_to_match(
                 claim.id,
                 opponent,
                 claim.submitted_by_user_id, // Use submitter's user ID as placeholder
                 true,                        // was_auto
+                match_.id,
+                claim.claimed_winner_registration_id,
+                loser,
+                claim.claimed_participant1_score,
+                claim.claimed_participant2_score,
             )
             .await?;
-
-        // Apply the result
-        self.apply_result_to_match(&match_, &claim).await?;
 
         info!(
             claim_id = %claim.id,
@@ -568,37 +598,5 @@ where
         );
 
         Ok(claim)
-    }
-
-    async fn apply_result_to_match(
-        &self,
-        match_: &TournamentMatch,
-        claim: &ResultClaim,
-    ) -> Result<(), DomainError> {
-        // Determine loser
-        let loser = if match_.participant1_registration_id == Some(claim.claimed_winner_registration_id) {
-            match_.participant2_registration_id
-        } else {
-            match_.participant1_registration_id
-        }
-        .ok_or_else(|| DomainError::InvalidState("Loser participant not found".to_string()))?;
-
-        // Update match with result using submit_result
-        self.match_repo
-            .submit_result(
-                match_.id,
-                claim.claimed_participant1_score,
-                claim.claimed_participant2_score,
-                claim.claimed_winner_registration_id,
-                loser,
-            )
-            .await?;
-
-        // Transition match to completed
-        self.match_repo
-            .complete(match_.id)
-            .await?;
-
-        Ok(())
     }
 }

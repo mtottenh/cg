@@ -333,22 +333,25 @@ where
             }
         }
 
-        // Update invitation status
-        self.invitation_repo
-            .update_status(invitation_id, LeagueTeamInvitationStatus::Accepted, None)
-            .await?;
-
-        // Add member to team
+        // Atomic: flipping the invitation to Accepted and seating the
+        // player on the roster commit together or not at all. The prior
+        // two-call version could leave an Accepted invitation with no
+        // matching roster row on partial failure — the player saw their
+        // invite accepted but was silently missing from the team, and
+        // retrying returned "invitation already used". See audit I5.
         let member = self
-            .member_repo
-            .add_member(AddLeagueTeamMember {
-                team_season_id: invitation.team_season_id,
-                player_id: invitation.player_id,
-                role: invitation.role,
-                position: None,
-                jersey_number: None,
-                added_by: invitation.invited_by,
-            })
+            .invitation_repo
+            .accept_and_add_member(
+                invitation_id,
+                AddLeagueTeamMember {
+                    team_season_id: invitation.team_season_id,
+                    player_id: invitation.player_id,
+                    role: invitation.role,
+                    position: None,
+                    jersey_number: None,
+                    added_by: invitation.invited_by,
+                },
+            )
             .await?;
 
         info!(

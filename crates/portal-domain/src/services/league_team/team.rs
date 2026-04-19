@@ -5,8 +5,8 @@ use crate::entities::league_team::{
     LeagueTeamSeason, LeagueTeamSummary, PlayerLeagueTeamMembership, UpdateLeagueTeamCommand,
 };
 use crate::repositories::league_team::{
-    AddLeagueTeamMember, CreateLeagueTeam, CreateLeagueTeamSeason, LeagueSeasonRepository,
-    LeagueTeamMemberRepository, LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueTeam,
+    AddLeagueTeamMember, CreateLeagueTeam, LeagueSeasonRepository, LeagueTeamMemberRepository,
+    LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueTeam,
 };
 use portal_core::types::{LeagueTeamRole, LeagueTeamSeasonStatus, LeagueTeamStatus};
 use portal_core::{
@@ -246,25 +246,13 @@ where
             }
         }
 
-        // Register the team for this season
+        // Atomic: season registration + captain roster seat commit together
+        // or not at all. The previous two-repo-call version could leave an
+        // orphaned `league_team_seasons` row with no captain if the member
+        // insert failed. See audit I5.
         let team_season = self
             .team_season_repo
-            .create(CreateLeagueTeamSeason {
-                team_id,
-                season_id,
-            })
-            .await?;
-
-        // Add the owner as captain on the seasonal roster
-        self.member_repo
-            .add_member(AddLeagueTeamMember {
-                team_season_id: team_season.id,
-                player_id: registering_player_id,
-                role: LeagueTeamRole::Captain,
-                position: None,
-                jersey_number: None,
-                added_by: None,
-            })
+            .create_with_captain(team_id, season_id, registering_player_id)
             .await?;
 
         info!(

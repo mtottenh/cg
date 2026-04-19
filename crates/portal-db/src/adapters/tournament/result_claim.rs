@@ -251,6 +251,82 @@ impl ResultClaimRepository for PgResultClaimRepository {
         row_to_domain(row)
     }
 
+    async fn confirm_and_apply_to_match(
+        &self,
+        id: ResultClaimId,
+        confirmed_by_registration_id: TournamentRegistrationId,
+        confirmed_by_user_id: UserId,
+        was_auto: bool,
+        match_id: TournamentMatchId,
+        winner_registration_id: TournamentRegistrationId,
+        loser_registration_id: TournamentRegistrationId,
+        participant1_score: i32,
+        participant2_score: i32,
+    ) -> Result<ResultClaim, DomainError> {
+        // Both the claim-side Confirm and the match-side submit_result
+        // commit in one tx or neither does. The old split
+        // `confirm(...) + submit_result(...) + complete(...)` chain
+        // could leave a Confirmed claim pointing at an incomplete
+        // match — a dangling FK target the bracket-progression saga
+        // would then trip over. Note: `submit_result` also sets
+        // `status = 'completed'` on the match, so a separate
+        // `complete(...)` write isn't needed.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to begin transaction: {e}")))?;
+
+        let claim_row = sqlx::query_as::<_, ResultClaimRow>(
+            r"
+            UPDATE result_claims
+            SET status = 'confirmed',
+                confirmed_at = NOW(),
+                confirmed_by_registration_id = $2,
+                confirmed_by_user_id = $3,
+                was_auto_confirmed = $4,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(confirmed_by_registration_id.as_uuid())
+        .bind(confirmed_by_user_id.as_uuid())
+        .bind(was_auto)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to confirm result claim: {e}")))?;
+
+        sqlx::query(
+            r"
+            UPDATE tournament_matches SET
+                participant1_score = $2,
+                participant2_score = $3,
+                winner_registration_id = $4,
+                loser_registration_id = $5,
+                completed_at = NOW(),
+                status = 'completed',
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(match_id.as_uuid())
+        .bind(participant1_score)
+        .bind(participant2_score)
+        .bind(winner_registration_id.as_uuid())
+        .bind(loser_registration_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to apply match result: {e}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to commit: {e}")))?;
+
+        row_to_domain(claim_row)
+    }
+
     async fn supersede_pending_claims(
         &self,
         match_id: TournamentMatchId,

@@ -1075,6 +1075,34 @@ pub trait ResultClaimRepository: Send + Sync {
         was_auto: bool,
     ) -> Result<ResultClaim, DomainError>;
 
+    /// Confirm a claim **and** apply its result to the match in a single
+    /// transaction.
+    ///
+    /// Performs three writes atomically:
+    /// 1. flip the claim to Confirmed (via the same path as
+    ///    [`Self::confirm`]),
+    /// 2. submit the claimed scores on the match row,
+    /// 3. transition the match status to Completed.
+    ///
+    /// Replaces the previous `confirm(...) + submit_result(...) +
+    /// complete(...)` chain in `ResultService::confirm_claim` /
+    /// `auto_confirm_claim`. Partial failure of the chain left the
+    /// claim marked Confirmed but the match still Pending, which
+    /// dangled FK targets for the bracket progression saga. See audit
+    /// item I5.
+    async fn confirm_and_apply_to_match(
+        &self,
+        id: ResultClaimId,
+        confirmed_by_registration_id: TournamentRegistrationId,
+        confirmed_by_user_id: UserId,
+        was_auto: bool,
+        match_id: TournamentMatchId,
+        winner_registration_id: TournamentRegistrationId,
+        loser_registration_id: TournamentRegistrationId,
+        participant1_score: i32,
+        participant2_score: i32,
+    ) -> Result<ResultClaim, DomainError>;
+
     /// Supersede all pending claims for a match (when a new claim is submitted).
     async fn supersede_pending_claims(
         &self,

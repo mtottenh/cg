@@ -37,7 +37,7 @@ Living document for the 2026-04 architecture audit. Each row cites the original 
 | I9 | ☑ | Request-ID propagation + trace-span correlation | `middleware/request_id.rs`, every handler's `get_request_id` |
 | I10 | ☑ | CORS allow-list from env | `portal-api/src/app.rs:16-20` |
 | I11 | ☑ | Set `image` crate decode limits | `portal-storage/src/image/processor.rs:72-76` |
-| I12 | ☐ | Refresh-token reuse detection (revoke all on replay) | `handlers/auth.rs:191-214` |
+| I12 | ☑ | Refresh-token reuse detection (revoke all on replay) | `handlers/auth.rs:191-214` |
 
 ## Nice-to-have — Next quarter
 

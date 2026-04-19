@@ -195,13 +195,37 @@ pub async fn refresh(
 ) -> ApiResult<Json<DataResponse<LoginResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // Hash incoming token and look up in DB
+    // Hash incoming token and look it up regardless of revoked state so we
+    // can distinguish "never existed" from "already revoked" (replay).
     let token_hash = hash_refresh_token(&req.refresh_token);
     let stored = state
         .refresh_token_repo
-        .find_active_by_hash(&token_hash)
+        .find_by_hash(&token_hash)
         .await?
         .ok_or(DomainError::RefreshTokenRevoked)?;
+
+    // Replay detection. A hash that matches a *revoked* row means either:
+    //   (a) the legitimate client retried with a token they already rotated,
+    //   (b) someone stole the old token and is using it after rotation.
+    // We can't tell (a) from (b), and (b) is the serious case — revoke every
+    // active token for the user so the attacker's stolen token chain dies
+    // and the user is forced to reauthenticate.
+    if stored.revoked_at.is_some() {
+        tracing::warn!(
+            user_id = %stored.user_id,
+            token_id = %stored.id,
+            "refresh token replay detected; revoking all tokens for user"
+        );
+        // Best effort — we still want to return 401 even if this fails.
+        if let Err(e) = state
+            .refresh_token_repo
+            .revoke_all_for_user(stored.user_id)
+            .await
+        {
+            tracing::error!(error = %e, user_id = %stored.user_id, "failed to revoke all tokens on replay");
+        }
+        return Err(DomainError::RefreshTokenRevoked.into());
+    }
 
     // Validate expiry
     if stored.is_expired() {
@@ -210,8 +234,18 @@ pub async fn refresh(
         return Err(DomainError::RefreshTokenExpired.into());
     }
 
-    // Revoke old token (rotation — each refresh token can only be used once)
-    state.refresh_token_repo.revoke(stored.id).await?;
+    // Race-safe rotation. try_revoke returns false if another concurrent
+    // refresh already consumed this token; that racer gets the new session
+    // and we fail. Preserves one-use semantics even under overlap.
+    let revoked = state.refresh_token_repo.try_revoke(stored.id).await?;
+    if !revoked {
+        tracing::warn!(
+            user_id = %stored.user_id,
+            token_id = %stored.id,
+            "refresh token rotation race — another request already consumed this token"
+        );
+        return Err(DomainError::RefreshTokenRevoked.into());
+    }
 
     // Look up user to get current info for the new JWT
     let user = state

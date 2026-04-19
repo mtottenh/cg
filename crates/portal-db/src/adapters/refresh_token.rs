@@ -81,6 +81,18 @@ impl RefreshTokenRepository for PgRefreshTokenRepository {
         Ok(row.map(RefreshToken::from))
     }
 
+    async fn find_by_hash(&self, token_hash: &str) -> Result<Option<RefreshToken>, DomainError> {
+        let row = sqlx::query_as::<_, RefreshTokenRow>(
+            "SELECT * FROM refresh_tokens WHERE token_hash = $1",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(row.map(RefreshToken::from))
+    }
+
     async fn revoke(&self, id: Uuid) -> Result<(), DomainError> {
         sqlx::query("UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = $1")
             .bind(id)
@@ -89,6 +101,18 @@ impl RefreshTokenRepository for PgRefreshTokenRepository {
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
+    }
+
+    async fn try_revoke(&self, id: Uuid) -> Result<bool, DomainError> {
+        let result = sqlx::query(
+            "UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     async fn revoke_all_for_user(&self, user_id: Uuid) -> Result<(), DomainError> {

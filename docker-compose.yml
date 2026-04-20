@@ -34,6 +34,13 @@ services:
       E2E_ADMIN_PASSWORD: ${E2E_ADMIN_PASSWORD:-AdminPassword123!}
       E2E_ADMIN_USERNAME: ${E2E_ADMIN_USERNAME:-e2e_admin}
       E2E_ADMIN_DISPLAY_NAME: ${E2E_ADMIN_DISPLAY_NAME:-E2E Admin}
+      # Auth endpoint rate limits. Production defaults (20 burst / 5 per
+      # second, in routes/auth.rs) are too tight for parallel Playwright
+      # workers that all authenticate as the same admin against a single
+      # peer IP. Use very generous limits here so the limiter doesn't eat
+      # test runs; production keeps the defaults.
+      PORTAL_AUTH_RATE_BURST: ${PORTAL_AUTH_RATE_BURST:-10000}
+      PORTAL_AUTH_RATE_PER_SECOND: ${PORTAL_AUTH_RATE_PER_SECOND:-1000}
     ports:
       - "3000:3000"
     depends_on:

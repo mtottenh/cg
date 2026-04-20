@@ -6,7 +6,7 @@
 //! - `/league-team-seasons` - Seasonal roster management
 //! - `/league-team-invitations` - Invitation management
 
-use crate::handlers::league_teams;
+use crate::handlers::{league_teams, uploads};
 use crate::state::AppState;
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
@@ -40,6 +40,9 @@ pub fn team_routes() -> Router<AppState> {
             "/{team_id}/transfer-ownership",
             post(league_teams::transfer_ownership),
         )
+        // Image uploads (team settings manage permission — i.e. owner/captain/admin)
+        .route("/{team_id}/logo", post(uploads::upload_team_logo))
+        .route("/{team_id}/banner", post(uploads::upload_team_banner))
 }
 
 /// League team season routes (nested under /league-team-seasons).

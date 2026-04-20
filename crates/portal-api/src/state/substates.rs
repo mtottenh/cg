@@ -282,13 +282,17 @@ impl FromRef<AppState> for SteamTrackingState {
     }
 }
 
-/// State slice used by file-upload handlers (player avatar / banner).
+/// State slice used by file-upload handlers (player avatar/banner, team
+/// logo/banner). Team uploads need the league-team service to persist the
+/// stored URL back to the team row after a successful upload.
 #[derive(Clone)]
 pub struct UploadsState {
     /// Storage backend.
     pub storage: Arc<dyn StorageBackend>,
     /// Player service (to update profile URLs after successful upload).
     pub player_service: AppPlayerService,
+    /// League-team service (to update team URLs after successful upload).
+    pub league_team_service: AppLeagueTeamService,
 }
 
 impl FromRef<AppState> for UploadsState {
@@ -296,6 +300,7 @@ impl FromRef<AppState> for UploadsState {
         Self {
             storage: Arc::clone(&s.storage),
             player_service: s.player_service.clone(),
+            league_team_service: s.league_team_service.clone(),
         }
     }
 }

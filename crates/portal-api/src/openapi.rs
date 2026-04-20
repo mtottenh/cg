@@ -164,6 +164,8 @@ use utoipa_swagger_ui::SwaggerUi;
         player_game_profiles::get_player_match_history,
         uploads::upload_player_avatar,
         uploads::upload_player_banner,
+        uploads::upload_team_logo,
+        uploads::upload_team_banner,
         // Users
         users::get_current_user,
         users::get_my_roles,

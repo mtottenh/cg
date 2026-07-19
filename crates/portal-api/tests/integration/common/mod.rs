@@ -66,6 +66,25 @@ impl TestApp {
         }
     }
 
+    /// Create a test application whose CS2 demo-stats client points at a
+    /// local mock server (e.g. `http://127.0.0.1:PORT`), bypassing the
+    /// https/non-private-host validation applied to the real env var.
+    pub async fn new_with_demo_service(demo_service_url: &str) -> Self {
+        Self::init_tracing();
+
+        let db = TestDb::new().await;
+        let state = AppState::new(db.pool.clone(), "test-jwt-secret")
+            .await
+            .with_cs2_demo_url_unchecked(demo_service_url.to_string());
+        let app = Self::with_connect_info(create_app(state));
+
+        Self {
+            app,
+            db,
+            server_addr: None,
+        }
+    }
+
     /// Create a new test application with S3 evidence storage backed by MinIO.
     ///
     /// `minio_endpoint` — e.g. `http://127.0.0.1:32768`

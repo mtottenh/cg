@@ -81,55 +81,9 @@ async fn test_get_active_proposal() {
     assert_eq!(body["data"]["status"], "pending");
 }
 
-#[tokio::test]
-async fn test_accept_schedule_proposal() {
-    let app = TestApp::new().await;
-    let (tournament_id, match_id, reg1, _) =
-        create_tournament_with_matches(&app, "accept-proposal-test").await;
-
-    // Create a proposal (using exact timestamp that will be stored)
-    let proposed_time = chrono::Utc::now() + chrono::Duration::hours(24);
-    let response = app
-        .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/propose",
-                tournament_id, match_id
-            ),
-            &json!({
-                "proposed_times": [proposed_time.to_rfc3339()]
-            }),
-        )
-        .await;
-    response.assert_status(StatusCode::CREATED);
-
-    let create_body: serde_json::Value = response.json();
-    let proposal_id = create_body["data"]["id"].as_str().unwrap();
-    // Use the time from the response to ensure exact match
-    let stored_time = create_body["data"]["proposed_times"][0].as_str().unwrap();
-
-    // Accept the proposal using a different user
-    // Since we're using dev auth, simulate the other participant accepting
-    // For now, use admin schedule as a workaround since both participants are dev user
-    let response = app
-        .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/schedule",
-                tournament_id, match_id
-            ),
-            &json!({
-                "scheduled_at": stored_time,
-                "reason": "Admin scheduling for test"
-            }),
-        )
-        .await;
-
-    response.assert_status(StatusCode::OK);
-
-    let body: serde_json::Value = response.json();
-    // Returns the updated match with scheduled time
-    assert_eq!(body["data"]["id"], match_id);
-    assert!(body["data"]["scheduled_at"].is_string());
-}
+// (The old test_accept_schedule_proposal admin-scheduled as a workaround for
+// both participants being the dev user; the real accept-endpoint test at the
+// bottom of this file replaces it, acting as the opponent via a second token.)
 
 #[tokio::test]
 async fn test_reject_schedule_proposal() {
@@ -173,10 +127,12 @@ async fn test_reject_schedule_proposal() {
     response.assert_status(StatusCode::UNAUTHORIZED);
 
     let body: serde_json::Value = response.json();
-    assert!(body["detail"]
-        .as_str()
-        .unwrap()
-        .contains("Cannot respond to your own proposal"));
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Cannot respond to your own proposal")
+    );
 }
 
 #[tokio::test]
@@ -378,14 +334,20 @@ async fn test_delete_availability_window() {
 
     // Delete the window
     let response = app
-        .delete_auth(&format!("/v1/players/me/availability/windows/{}", window_id))
+        .delete_auth(&format!(
+            "/v1/players/me/availability/windows/{}",
+            window_id
+        ))
         .await;
 
     response.assert_status(StatusCode::NO_CONTENT);
 
     // Verify it's gone by trying to delete again (should get 404)
     let response = app
-        .delete_auth(&format!("/v1/players/me/availability/windows/{}", window_id))
+        .delete_auth(&format!(
+            "/v1/players/me/availability/windows/{}",
+            window_id
+        ))
         .await;
 
     response.assert_status(StatusCode::NOT_FOUND);
@@ -622,4 +584,144 @@ async fn test_availability_window_invalid_time_range() {
         response.status == StatusCode::BAD_REQUEST
             || response.status == StatusCode::INTERNAL_SERVER_ERROR
     );
+}
+
+// ============================================================================
+// PROPOSAL NEGOTIATION COMPLETION: accept + counter-propose
+// ============================================================================
+
+#[tokio::test]
+async fn test_accept_schedule_proposal() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "accept-proposal-test").await;
+
+    // Dev user (participant 1) proposes two times
+    let time1 = chrono::Utc::now() + chrono::Duration::hours(24);
+    let time2 = chrono::Utc::now() + chrono::Duration::hours(48);
+    let response = app
+        .post_json(
+            &format!(
+                "/v1/tournaments/{}/matches/{}/schedule/propose",
+                tournament_id, match_id
+            ),
+            &json!({ "proposed_times": [time1.to_rfc3339(), time2.to_rfc3339()] }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let proposal_id = body["data"]["id"].as_str().unwrap().to_string();
+    // Echo the stored time back — the DB truncates sub-microsecond precision
+    // and accept requires an exact match against a proposed time.
+    let stored_time = body["data"]["proposed_times"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Player 2 (the opponent) accepts one of the proposed times
+    let response = app
+        .post_json_with_token(
+            &format!(
+                "/v1/tournaments/{}/matches/{}/schedule/accept",
+                tournament_id, match_id
+            ),
+            &json!({
+                "proposal_id": proposal_id,
+                "selected_time": stored_time
+            }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Acceptance schedules the match at the selected time
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "scheduled");
+    assert!(body["data"]["scheduled_at"].is_string());
+
+    // The proposal is no longer active
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{}/matches/{}/schedule/active",
+            tournament_id, match_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"].is_null());
+}
+
+#[tokio::test]
+async fn test_counter_propose_schedule() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "counter-proposal-test").await;
+
+    // Dev user proposes
+    let time1 = chrono::Utc::now() + chrono::Duration::hours(24);
+    let response = app
+        .post_json(
+            &format!(
+                "/v1/tournaments/{}/matches/{}/schedule/propose",
+                tournament_id, match_id
+            ),
+            &json!({ "proposed_times": [time1.to_rfc3339()] }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let original_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Player 2 counters with a different time
+    let counter_time = chrono::Utc::now() + chrono::Duration::hours(72);
+    let response = app
+        .post_json_with_token(
+            &format!(
+                "/v1/tournaments/{}/matches/{}/schedule/counter",
+                tournament_id, match_id
+            ),
+            &json!({
+                "original_proposal_id": original_id,
+                "proposed_times": [counter_time.to_rfc3339()]
+            }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let counter_id = body["data"]["id"].as_str().unwrap().to_string();
+    assert_ne!(counter_id, original_id);
+    assert_eq!(body["data"]["status"], "pending");
+    let stored_counter_time = body["data"]["proposed_times"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The counter is now the active proposal
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{}/matches/{}/schedule/active",
+            tournament_id, match_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"].as_str().unwrap(), counter_id);
+
+    // Dev user accepts the counter — negotiation completes
+    let response = app
+        .post_json(
+            &format!(
+                "/v1/tournaments/{}/matches/{}/schedule/accept",
+                tournament_id, match_id
+            ),
+            &json!({
+                "proposal_id": counter_id,
+                "selected_time": stored_counter_time
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "scheduled");
 }

@@ -162,6 +162,19 @@ pub async fn create_tournament_with_matches(
     app: &TestApp,
     slug: &str,
 ) -> (String, String, String, String) {
+    let (tournament_id, match_id, reg1, reg2, _player2_token) =
+        create_tournament_with_matches_and_opponent(app, slug).await;
+    (tournament_id, match_id, reg1, reg2)
+}
+
+/// Like [`create_tournament_with_matches`], but also returns a JWT for the
+/// second participant so tests can act as the opponent (e.g. respond to
+/// schedule proposals made by the dev user).
+/// Returns (tournament_id, match_id, reg1, reg2, player2_token).
+pub async fn create_tournament_with_matches_and_opponent(
+    app: &TestApp,
+    slug: &str,
+) -> (String, String, String, String, String) {
     let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create tournament with min_participants: 2
@@ -246,5 +259,12 @@ pub async fn create_tournament_with_matches(
     assign_role_to_user(app.pool(), dev_user_id, "platform_admin").await;
     transition_match_to_ready(app, &tournament_id, &match_id).await;
 
-    (tournament_id, match_id, reg1, reg2)
+    let player2_token = create_test_token(
+        user2_id,
+        player2_id,
+        &format!("player2_{}", slug),
+        TEST_JWT_SECRET,
+    );
+
+    (tournament_id, match_id, reg1, reg2, player2_token)
 }

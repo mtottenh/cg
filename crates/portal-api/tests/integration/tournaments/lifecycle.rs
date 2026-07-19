@@ -76,7 +76,10 @@ async fn test_open_registration() {
 
     // Open registration
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/open-registration", tournament_id))
+        .post_auth(&format!(
+            "/v1/tournaments/{}/open-registration",
+            tournament_id
+        ))
         .await;
 
     response.assert_status(StatusCode::OK);
@@ -287,4 +290,158 @@ async fn test_create_round_robin_tournament() {
 
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["format"], "round_robin");
+}
+
+// ============================================================================
+// LIFECYCLE END: close/reopen registration, cancel, complete, finalize
+// ============================================================================
+
+/// Create a tournament via the API and walk it to the given lifecycle stage.
+/// Returns the tournament ID.
+async fn create_tournament_in_registration(app: &TestApp, slug: &str) -> String {
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": format!("Lifecycle {}", slug),
+                "slug": slug,
+                "format": "single_elimination",
+                "participant_type": "individual",
+                "min_participants": 2,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "live",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    app.post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .await
+        .assert_status(StatusCode::OK);
+    app.post_auth(&format!(
+        "/v1/tournaments/{}/open-registration",
+        tournament_id
+    ))
+    .await
+    .assert_status(StatusCode::OK);
+
+    tournament_id
+}
+
+#[tokio::test]
+async fn test_close_and_reopen_registration() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament_in_registration(&app, "close-reopen-test").await;
+
+    // Close registration → scheduled
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{}/close-registration",
+            tournament_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "scheduled");
+
+    // Reopen → back to registration
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{}/reopen-registration",
+            tournament_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "registration");
+}
+
+#[tokio::test]
+async fn test_cancel_tournament() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament_in_registration(&app, "cancel-test").await;
+
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/cancel", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "cancelled");
+
+    // Cancelled is terminal — restarting registration must fail.
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{}/open-registration",
+            tournament_id
+        ))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_complete_and_finalize_tournament() {
+    let app = TestApp::new().await;
+    // create_tournament_with_matches drives the tournament to in_progress
+    // (registrations approved, seeded, started, bracket generated).
+    let (tournament_id, _match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "complete-finalize-test").await;
+
+    // Complete
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/complete", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "completed");
+
+    // Finalize
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/finalize", tournament_id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "finalized");
+
+    // Finalized is terminal — completing again must fail.
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/complete", tournament_id))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_complete_from_draft_rejected() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": "Draft Complete Test",
+                "slug": "draft-complete-test",
+                "format": "single_elimination",
+                "participant_type": "individual",
+                "min_participants": 2,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "live",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{}/complete", tournament_id))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
 }

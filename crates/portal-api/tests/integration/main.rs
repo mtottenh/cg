@@ -4,6 +4,7 @@ mod common;
 
 mod auth;
 mod bans;
+mod demo_evidence;
 mod demos;
 mod dispute;
 mod evidence;

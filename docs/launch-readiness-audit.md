@@ -141,3 +141,20 @@ is the highest-risk untested happy path.
   team logo/banner upload tests.
 - Bump `rust-version` to 1.88; add scanner to docker-compose for dev parity.
 - Scanner unit tests (currently zero; only covered via scanner_e2e).
+
+## Decision log — sqlx compile-time query migration (2026-07-19)
+
+Assessed and **deliberately deferred**. The workspace has ~610 runtime
+`sqlx::query`/`query_as::<_, T>` call sites and exactly one macro call;
+converting them is a multi-day mechanical project with real regression risk
+against a currently-green 500+ test suite, and the schema is still moving
+weekly (audit item I3 already recommended waiting for stabilisation).
+
+Mitigations in place instead:
+- CI runs the FULL integration suite against a freshly-migrated schema on
+  every push/PR — schema drift fails within one CI round instead of hiding
+  (this is exactly how the portal-db fixture drift was caught and fixed).
+- The hand-written test-fixture SQL that had rotted has been repaired.
+
+Revisit when the migration cadence slows; the `.sqlx` offline scaffolding is
+already in place for that day.

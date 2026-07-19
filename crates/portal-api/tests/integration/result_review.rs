@@ -307,3 +307,54 @@ async fn test_admin_endpoints_require_auth() {
         .await;
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
+
+// ============================================================================
+// ACKNOWLEDGE AUTHORIZATION TESTS
+// ============================================================================
+
+/// The acknowledging caller must belong to the registration they acknowledge
+/// for (or be an admin). Previously any authenticated user could acknowledge
+/// for any registration.
+#[tokio::test]
+async fn test_acknowledge_requires_registration_binding() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, reg1, reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "review-ack-authz")
+            .await;
+
+    let outsider = portal_test::builders::UserBuilder::new()
+        .username("review_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = portal_test::helpers::create_test_token(
+        outsider.id,
+        outsider.id,
+        "review_outsider",
+        portal_test::helpers::TEST_JWT_SECRET,
+    );
+
+    // Outsider acknowledging for a participant registration is rejected
+    // before the review lookup. Accept 401 or 403 while the NotAuthorized
+    // status-code mapping is in flight.
+    let response = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/result-review/acknowledge?registration_id={reg1}"),
+            &outsider_token,
+        )
+        .await;
+    assert!(
+        response.status == StatusCode::FORBIDDEN || response.status == StatusCode::UNAUTHORIZED,
+        "Outsider acknowledge should be rejected, got {}",
+        response.status
+    );
+
+    // A participant bound to their own registration passes the auth gate and
+    // falls through to 404 (no review exists for this match) — not 403.
+    let response = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/result-review/acknowledge?registration_id={reg2}"),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
+}

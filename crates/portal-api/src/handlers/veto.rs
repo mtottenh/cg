@@ -89,38 +89,7 @@ pub async fn create_veto_session(
     let request_id = get_request_id(&headers);
 
     // Verify user is a match participant (via veto authorization) or tournament admin
-    let match_ = state
-        .tournament_match_repo
-        .find_by_id(match_id)
-        .await?
-        .ok_or_else(|| ApiError::not_found(format!("Match {match_id} not found")))?;
-
-    let is_participant = if let Some(p1) = match_.participant1_registration_id {
-        state
-            .veto_authorization_service
-            .can_perform_veto_action(p1, auth.user_id, auth.player_id)
-            .await
-            .is_ok()
-    } else {
-        false
-    } || if let Some(p2) = match_.participant2_registration_id {
-        state
-            .veto_authorization_service
-            .can_perform_veto_action(p2, auth.user_id, auth.player_id)
-            .await
-            .is_ok()
-    } else {
-        false
-    };
-
-    if !is_participant {
-        perm_checker
-            .require_permission(
-                &auth,
-                portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
-            )
-            .await?;
-    }
+    let match_ = require_veto_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
     let veto_format = resolve_veto_format(&req.veto_format_id, &state)?;
 
@@ -234,7 +203,8 @@ pub async fn get_veto_session(
         (status = 200, description = "Coin flip recorded", body = DataResponse<VetoSessionResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 404, description = "Veto session not found", body = ApiError),
+        (status = 403, description = "Not a match participant or admin", body = ApiError),
+        (status = 404, description = "Match or veto session not found", body = ApiError),
         (status = 409, description = "Coin flip already recorded", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -242,12 +212,16 @@ pub async fn get_veto_session(
 )]
 pub async fn record_coin_flip(
     State(state): State<VetoState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
     Json(req): Json<RecordCoinFlipRequest>,
 ) -> ApiResult<Json<DataResponse<VetoSessionResponse>>> {
     let request_id = get_request_id(&headers);
+
+    // Same gate as `create_veto_session`: match participant or tournament admin.
+    require_veto_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
     let winner_registration_id: TournamentRegistrationId = req
         .winner_registration_id
@@ -290,7 +264,8 @@ pub async fn record_coin_flip(
         (status = 200, description = "Veto session started", body = DataResponse<VetoSessionResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 404, description = "Veto session not found", body = ApiError),
+        (status = 403, description = "Not a match participant or admin", body = ApiError),
+        (status = 404, description = "Match or veto session not found", body = ApiError),
         (status = 409, description = "Session already started", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -298,11 +273,15 @@ pub async fn record_coin_flip(
 )]
 pub async fn start_veto_session(
     State(state): State<VetoState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<VetoSessionResponse>>> {
     let request_id = get_request_id(&headers);
+
+    // Same gate as `create_veto_session`: match participant or tournament admin.
+    require_veto_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
     // Get session by match
     let session_state = state.veto_service.get_session_state(match_id).await?;
@@ -510,6 +489,55 @@ pub async fn select_side(
 // =============================================================================
 // HELPERS
 // =============================================================================
+
+/// Require that the caller may manage the veto lifecycle for `match_id`.
+///
+/// Allowed when the caller can act for either participant registration
+/// (captain / owner / delegate / individual player, via the veto
+/// authorization service) or holds the tournament admin permission.
+/// Returns the loaded match for further use.
+async fn require_veto_participant_or_admin(
+    state: &VetoState,
+    perm_checker: &PermissionChecker,
+    auth: &AuthenticatedUser,
+    match_id: TournamentMatchId,
+) -> ApiResult<portal_domain::entities::TournamentMatch> {
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("Match {match_id} not found")))?;
+
+    let mut is_participant = false;
+    for reg_id in [
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if state
+            .veto_authorization_service
+            .can_perform_veto_action(reg_id, auth.user_id, auth.player_id)
+            .await
+            .is_ok()
+        {
+            is_participant = true;
+            break;
+        }
+    }
+
+    if !is_participant {
+        perm_checker
+            .require_permission(
+                auth,
+                portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+            )
+            .await?;
+    }
+
+    Ok(match_)
+}
 
 /// Best-effort enrichment of map display names and image URLs from the game's map catalog.
 async fn enrich_map_metadata(

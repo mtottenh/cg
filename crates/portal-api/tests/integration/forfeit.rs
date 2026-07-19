@@ -2,6 +2,7 @@
 
 use crate::common::TestApp;
 use axum::http::StatusCode;
+use portal_test::prelude::*;
 use serde_json::json;
 
 // ============================================================================
@@ -148,6 +149,80 @@ async fn test_withdraw_requires_auth() {
         .await;
 
     response.assert_status(StatusCode::UNAUTHORIZED);
+}
+
+// ============================================================================
+// WITHDRAW AUTHORIZATION TESTS
+// ============================================================================
+
+/// A user with no relationship to a registration must not be able to
+/// withdraw it (previously any authenticated user could withdraw anyone).
+#[tokio::test]
+async fn test_withdraw_by_outsider_rejected() {
+    let app = TestApp::new().await;
+    let (tournament_id, _match_id, reg1, _reg2) =
+        crate::tournaments::create_tournament_with_matches(&app, "withdraw-outsider").await;
+
+    let outsider = UserBuilder::new()
+        .username("withdraw_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = create_test_token(
+        outsider.id,
+        outsider.id,
+        "withdraw_outsider",
+        TEST_JWT_SECRET,
+    );
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/registrations/{reg1}/withdraw"),
+            &json!({ "reason": "Malicious withdrawal attempt" }),
+            &outsider_token,
+        )
+        .await;
+
+    // Accept 401 or 403 while the NotAuthorized status-code mapping is in flight.
+    assert!(
+        response.status == StatusCode::FORBIDDEN || response.status == StatusCode::UNAUTHORIZED,
+        "Outsider withdrawal should be rejected, got {}",
+        response.status
+    );
+
+    // The registration must be untouched — the owner can still withdraw it.
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/registrations/{reg1}/withdraw"),
+            &json!({ "reason": "Legitimate withdrawal by registrant" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+}
+
+/// The participant who owns the registration can still withdraw themselves.
+#[tokio::test]
+async fn test_withdraw_by_participant_succeeds() {
+    let app = TestApp::new().await;
+    let (tournament_id, _match_id, _reg1, reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(
+            &app,
+            "withdraw-participant",
+        )
+        .await;
+
+    // Player 2 is a plain participant (no admin role) withdrawing their own
+    // registration.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/registrations/{reg2}/withdraw"),
+            &json!({ "reason": "Cannot continue the tournament" }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["registration_id"], reg2);
 }
 
 // ============================================================================

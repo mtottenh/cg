@@ -769,3 +769,162 @@ async fn test_admin_list_disputes_filters_work() {
     let response = app.get_auth("/v1/admin/disputes?status=bogus").await;
     response.assert_status(StatusCode::BAD_REQUEST);
 }
+
+// ============================================================================
+// DISPUTE AUTHORIZATION TESTS
+// ============================================================================
+
+/// Force a match into `completed` status directly (the full result-claim
+/// flow is not what these tests exercise).
+async fn complete_match_row(app: &TestApp, match_id: &str) {
+    sqlx::query("UPDATE tournament_matches SET status = 'completed' WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(match_id).unwrap())
+        .execute(app.pool())
+        .await
+        .expect("complete match row");
+}
+
+fn dispute_test_token(user_id: uuid::Uuid, username: &str) -> String {
+    portal_test::helpers::create_test_token(
+        user_id,
+        user_id,
+        username,
+        portal_test::helpers::TEST_JWT_SECRET,
+    )
+}
+
+/// Only a member of the disputing registration (or an admin) may raise a
+/// dispute for it.
+#[tokio::test]
+async fn test_raise_dispute_registration_binding() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, reg1, reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "dispute-authz")
+            .await;
+    complete_match_row(&app, &match_id).await;
+
+    let outsider = portal_test::builders::UserBuilder::new()
+        .username("dispute_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = dispute_test_token(outsider.id, "dispute_outsider");
+
+    // An outsider cannot dispute on behalf of a participant registration.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/dispute"),
+            &json!({
+                "registration_id": reg2,
+                "reason": "wrong_score",
+                "description": "Fabricated dispute from a non-participant account.",
+                "evidence_ids": []
+            }),
+            &outsider_token,
+        )
+        .await;
+    // Accept 401 or 403 while the NotAuthorized status-code mapping is in flight.
+    assert!(
+        response.status == StatusCode::FORBIDDEN || response.status == StatusCode::UNAUTHORIZED,
+        "Outsider dispute should be rejected, got {}",
+        response.status
+    );
+
+    // A participant cannot dispute pretending to be the OTHER registration.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/dispute"),
+            &json!({
+                "registration_id": reg1,
+                "reason": "wrong_score",
+                "description": "Impersonating the opposing registration for a dispute.",
+                "evidence_ids": []
+            }),
+            &player2_token,
+        )
+        .await;
+    assert!(
+        response.status == StatusCode::FORBIDDEN || response.status == StatusCode::UNAUTHORIZED,
+        "Cross-registration dispute should be rejected, got {}",
+        response.status
+    );
+
+    // The participant CAN dispute as their own registration.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/dispute"),
+            &json!({
+                "registration_id": reg2,
+                "reason": "wrong_score",
+                "description": "The score reported was incorrect. We won 2-1, not 1-2.",
+                "evidence_ids": []
+            }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+}
+
+/// Only dispute participants (or admins) may post participant messages.
+#[tokio::test]
+async fn test_add_dispute_message_requires_participant() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _reg1, reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "dispute-msg-authz")
+            .await;
+    complete_match_row(&app, &match_id).await;
+
+    // Player 2 raises a dispute.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/dispute"),
+            &json!({
+                "registration_id": reg2,
+                "reason": "wrong_score",
+                "description": "The score reported was incorrect. We won 2-1, not 1-2.",
+                "evidence_ids": []
+            }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let dispute_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // An outsider cannot post to the thread.
+    let outsider = portal_test::builders::UserBuilder::new()
+        .username("dispute_msg_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = dispute_test_token(outsider.id, "dispute_msg_outsider");
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/disputes/{dispute_id}/messages"),
+            &json!({ "message": "Interloper message", "evidence_ids": [] }),
+            &outsider_token,
+        )
+        .await;
+    assert!(
+        response.status == StatusCode::FORBIDDEN || response.status == StatusCode::UNAUTHORIZED,
+        "Outsider dispute message should be rejected, got {}",
+        response.status
+    );
+
+    // The dispute participant can post.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/disputes/{dispute_id}/messages"),
+            &json!({ "message": "Here is our additional evidence.", "evidence_ids": [] }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // An admin (dev token) can also post via the participant endpoint.
+    let response = app
+        .post_json(
+            &format!("/v1/disputes/{dispute_id}/messages"),
+            &json!({ "message": "Admin note on the thread.", "evidence_ids": [] }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+}

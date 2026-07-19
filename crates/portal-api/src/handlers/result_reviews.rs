@@ -93,6 +93,7 @@ pub async fn get_result_review(
 pub async fn acknowledge_result_review(
     State(state): State<ResultReviewState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
     Query(params): Query<AcknowledgeParams>,
@@ -103,6 +104,36 @@ pub async fn acknowledge_result_review(
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
+
+    // The caller must belong to the registration they acknowledge for —
+    // directly as the registered player, or as an active member of the
+    // registration's team-season. Tournament admins may acknowledge on
+    // behalf of a captain.
+    if !perm_checker
+        .has_admin_override(&auth, portal_core::ScopeType::Tournament)
+        .await
+    {
+        let registration = state
+            .registration_service
+            .get_registration(registration_id)
+            .await?;
+
+        let is_registered_player = registration.player_id == Some(auth.player_id);
+        let is_team_member = if let Some(ts_id) = registration.team_season_id {
+            state
+                .league_team_service
+                .is_member(ts_id, auth.player_id)
+                .await?
+        } else {
+            false
+        };
+
+        if !is_registered_player && !is_team_member {
+            return Err(ApiError::forbidden(
+                "Not authorized to acknowledge for this registration",
+            ));
+        }
+    }
 
     // Get the review first
     let review = state

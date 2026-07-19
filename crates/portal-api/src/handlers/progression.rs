@@ -91,7 +91,10 @@ pub async fn revert_progression(
 
     // Require admin permission
     perm_checker
-        .require_permission(&auth, "tournament.admin")
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     state
@@ -136,7 +139,10 @@ pub async fn reapply_progression(
 
     // Require admin permission
     perm_checker
-        .require_permission(&auth, "tournament.admin")
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let new_winner: TournamentRegistrationId = req
@@ -189,7 +195,10 @@ pub async fn process_progression(
 
     // Require admin permission
     perm_checker
-        .require_permission(&auth, "tournament.admin")
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let winner_registration_id: TournamentRegistrationId = req

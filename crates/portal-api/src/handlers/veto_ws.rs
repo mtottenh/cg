@@ -361,7 +361,10 @@ async fn authenticate_user(
     if connection.is_none()
         && state
             .permission_service
-            .has_permission(user_id, "tournament.manage")
+            .has_permission(
+                user_id,
+                portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+            )
             .await
             .unwrap_or(false)
     {

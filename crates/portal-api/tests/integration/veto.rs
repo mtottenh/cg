@@ -178,8 +178,9 @@ async fn test_veto_start_endpoint_exists() {
         StatusCode::METHOD_NOT_ALLOWED,
         "POST /veto/start endpoint should exist"
     );
-    // Returns 500 for session not found
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // The participant/admin gate now resolves the match first: 404 for a
+    // nonexistent match (previously a 500 from the session lookup).
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -203,8 +204,9 @@ async fn test_veto_coin_flip_endpoint_exists() {
         StatusCode::METHOD_NOT_ALLOWED,
         "POST /veto/coin-flip endpoint should exist"
     );
-    // Returns 500 for session not found
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // The participant/admin gate now resolves the match first: 404 for a
+    // nonexistent match (previously a 500 from the session lookup).
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -551,7 +553,7 @@ async fn test_veto_action_as_regular_member_unauthorized() {
         )
         .await;
 
-    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_status(StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -568,7 +570,7 @@ async fn test_veto_action_as_spectator_unauthorized() {
         )
         .await;
 
-    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_status(StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -585,9 +587,9 @@ async fn test_veto_action_wrong_team_turn() {
         )
         .await;
 
-    // Should fail - either unauthorized or bad request (wrong turn)
+    // Should fail - either forbidden or bad request (wrong turn)
     assert!(
-        response.status == StatusCode::UNAUTHORIZED || response.status == StatusCode::BAD_REQUEST,
+        response.status == StatusCode::FORBIDDEN || response.status == StatusCode::BAD_REQUEST,
         "Team B should not be able to act on Team A's turn. Status: {}",
         response.status
     );
@@ -670,4 +672,83 @@ async fn test_individual_registration_player_can_perform_veto_action() {
             .len()
             - 1
     );
+}
+
+// ============================================================================
+// VETO LIFECYCLE AUTHORIZATION (start / coin flip)
+// ============================================================================
+
+/// `start_veto_session` and `record_coin_flip` are gated the same way as
+/// `create_veto_session`: match participant (via veto authorization) or
+/// tournament admin. Previously both endpoints accepted any authenticated
+/// user.
+#[tokio::test]
+async fn test_veto_start_and_coin_flip_require_participant_or_admin() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _reg1, reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "veto-authz-test")
+            .await;
+
+    let outsider = UserBuilder::new()
+        .username("veto_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token =
+        create_test_token(outsider.id, outsider.id, "veto_outsider", TEST_JWT_SECRET);
+
+    // Outsider cannot create the session.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/veto"),
+            &json!({ "veto_format_id": "bo1_veto" }),
+            &outsider_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Admin (dev token) creates the session.
+    app.post_json(
+        &format!("/v1/matches/{match_id}/veto"),
+        &json!({ "veto_format_id": "bo1_veto" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    // Outsider cannot start the session.
+    let response = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/veto/start"),
+            &outsider_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // A participant can start it.
+    let response = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/veto/start"),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Outsider cannot record the coin flip.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/veto/coin-flip"),
+            &json!({ "winner_registration_id": reg2, "winner_goes_first": true }),
+            &outsider_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // A participant can record the coin flip.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/veto/coin-flip"),
+            &json!({ "winner_registration_id": reg2, "winner_goes_first": true }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
 }

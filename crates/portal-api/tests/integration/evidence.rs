@@ -661,3 +661,154 @@ async fn test_add_link_evidence_missing_url() {
 
     response.assert_status(StatusCode::BAD_REQUEST);
 }
+
+// ============================================================================
+// EVIDENCE AUTHORIZATION TESTS
+// ============================================================================
+
+/// Create a fresh non-participant user and JWT.
+fn evidence_outsider_token(user_id: Uuid, username: &str) -> String {
+    create_test_token(user_id, user_id, username, TEST_JWT_SECRET)
+}
+
+/// Non-participants must not be able to initiate uploads or attach link
+/// evidence (previously the participant lookup error was swallowed).
+#[tokio::test]
+async fn test_evidence_mutations_by_nonparticipant_rejected() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _reg1, _reg2, _player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "evidence-authz")
+            .await;
+
+    let outsider = UserBuilder::new()
+        .username("evidence_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = evidence_outsider_token(outsider.id, "evidence_outsider");
+
+    // Initiate upload as a non-participant is rejected.
+    // Accept 401 or 403 while the NotAuthorized status-code mapping is in flight.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/upload"),
+            &json!({
+                "evidence_type": "demo",
+                "file_name": "sneaky.dem",
+                "file_size_bytes": 1024,
+                "mime_type": "application/octet-stream"
+            }),
+            &outsider_token,
+        )
+        .await;
+    assert!(
+        response.status == StatusCode::FORBIDDEN || response.status == StatusCode::UNAUTHORIZED,
+        "Outsider initiate_upload should be rejected, got {}",
+        response.status
+    );
+
+    // Adding link evidence as a non-participant is rejected.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/link"),
+            &json!({
+                "evidence_type": "video",
+                "url": "https://example.com/fake-vod",
+                "name": "Fake VOD"
+            }),
+            &outsider_token,
+        )
+        .await;
+    assert!(
+        response.status == StatusCode::FORBIDDEN || response.status == StatusCode::UNAUTHORIZED,
+        "Outsider add_link should be rejected, got {}",
+        response.status
+    );
+}
+
+/// Participants can attach link evidence; only the uploader (or a match
+/// participant / admin) can delete it — an outsider cannot.
+#[tokio::test]
+async fn test_evidence_delete_authorization() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _reg1, _reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "evidence-delete")
+            .await;
+
+    // Participant (player 2) adds link evidence.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/link"),
+            &json!({
+                "evidence_type": "video",
+                "url": "https://example.com/match-vod",
+                "name": "Match VOD"
+            }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let evidence_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // An outsider cannot delete it.
+    let outsider = UserBuilder::new()
+        .username("evidence_deleter")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = evidence_outsider_token(outsider.id, "evidence_deleter");
+    let response = app
+        .delete_with_token(
+            &format!("/v1/matches/{match_id}/evidence/{evidence_id}"),
+            &outsider_token,
+        )
+        .await;
+    assert!(
+        response.status == StatusCode::FORBIDDEN || response.status == StatusCode::UNAUTHORIZED,
+        "Outsider delete should be rejected, got {}",
+        response.status
+    );
+
+    // The uploader can delete their own evidence.
+    let response = app
+        .delete_with_token(
+            &format!("/v1/matches/{match_id}/evidence/{evidence_id}"),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+}
+
+/// A (non-participant) tournament admin may attach evidence on behalf of a
+/// match; the evidence is then attributed to no registration.
+#[tokio::test]
+async fn test_evidence_add_link_as_admin_nonparticipant() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _reg1, _reg2, _player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "evidence-admin")
+            .await;
+
+    let admin = UserBuilder::new()
+        .username("evidence_admin")
+        .build_persisted(app.pool())
+        .await;
+    assign_role_to_user(app.pool(), admin.id, "platform_admin").await;
+    let admin_token = evidence_outsider_token(admin.id, "evidence_admin");
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/link"),
+            &json!({
+                "evidence_type": "video",
+                "url": "https://example.com/admin-vod",
+                "name": "Admin-attached VOD"
+            }),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body["data"]["uploaded_by_registration_id"].is_null(),
+        "Admin-attached evidence should not be attributed to a registration"
+    );
+}

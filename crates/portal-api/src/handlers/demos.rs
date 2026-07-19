@@ -672,7 +672,8 @@ pub async fn get_pending_demos(
 )]
 pub async fn get_demos_for_match(
     State(state): State<DemoState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<String>,
     Query(query): Query<GetDemosForMatchQuery>,
@@ -682,10 +683,29 @@ pub async fn get_demos_for_match(
         .parse::<TournamentMatchId>()
         .map_err(|_| ApiError::bad_request("Invalid match ID"))?;
 
-    let demos_with_data = state
+    let mut demos_with_data = state
         .demo_service
         .get_match_demos_with_data(match_id, query.include_stats, query.game_number)
         .await?;
+
+    // Same visibility rule as `authorize_demo_read`: hidden demos are only
+    // listed for tournament admins and for players who appear in the demo.
+    if !perm.has_admin_override(&auth, ScopeType::Tournament).await {
+        let mut visible = Vec::with_capacity(demos_with_data.len());
+        for d in demos_with_data {
+            if d.demo.is_visible() {
+                visible.push(d);
+                continue;
+            }
+            // `d.players` may have been stripped (include_stats=false), so
+            // resolve the roster explicitly for the hidden-demo check.
+            let players = state.demo_service.get_demo_players(d.demo.id).await?;
+            if players.iter().any(|p| p.player_id == Some(auth.player_id)) {
+                visible.push(d);
+            }
+        }
+        demos_with_data = visible;
+    }
 
     let responses: Vec<DemoMatchLinkWithDemoResponse> = demos_with_data
         .into_iter()

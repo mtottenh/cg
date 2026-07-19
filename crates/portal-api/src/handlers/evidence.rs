@@ -13,12 +13,12 @@ use crate::dto::responses::{
     UploadInfoResponse, ValidationResultResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::EvidenceState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
-use portal_core::{EvidenceId, TournamentMatchId};
+use portal_core::{EvidenceId, ScopeType, TournamentMatchId};
 use portal_domain::entities::evidence::{MatchEvidenceContext, ParticipantContext};
 use portal_domain::entities::result_claim::GameResult as DomainGameResult;
 use portal_domain::repositories::TournamentMatchRepository;
@@ -59,6 +59,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 pub async fn initiate_upload(
     State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<InitiateUploadRequest>,
@@ -73,6 +74,13 @@ pub async fn initiate_upload(
     // Build human-readable S3 key prefix from league/tournament slugs
     let s3_key_prefix = build_evidence_key_prefix(&state, match_id, evidence_type).await;
 
+    // Admins may attach evidence on behalf of a match without being a
+    // participant; everyone else must belong to one of the match's
+    // registrations (enforced by the service).
+    let acting_as_admin = perm_checker
+        .has_admin_override(&auth, ScopeType::Tournament)
+        .await;
+
     let upload_info = state
         .evidence_service
         .initiate_upload(
@@ -84,6 +92,7 @@ pub async fn initiate_upload(
             req.file_size_bytes,
             req.mime_type,
             auth.user_id,
+            acting_as_admin,
         )
         .await?;
 
@@ -161,6 +170,7 @@ pub async fn complete_upload(
 pub async fn add_link_evidence(
     State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<AddLinkEvidenceRequest>,
@@ -172,6 +182,13 @@ pub async fn add_link_evidence(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid evidence type (must be video or link)"))?;
 
+    // Admins may attach evidence on behalf of a match without being a
+    // participant; everyone else must belong to one of the match's
+    // registrations (enforced by the service).
+    let acting_as_admin = perm_checker
+        .has_admin_override(&auth, ScopeType::Tournament)
+        .await;
+
     let evidence = state
         .evidence_service
         .add_link(
@@ -182,6 +199,7 @@ pub async fn add_link_evidence(
             req.name,
             req.description,
             auth.user_id,
+            acting_as_admin,
         )
         .await?;
 
@@ -364,12 +382,27 @@ pub async fn get_access_url(
 pub async fn delete_evidence(
     State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     Path((match_id, evidence_id)): Path<(TournamentMatchId, EvidenceId)>,
 ) -> ApiResult<StatusCode> {
+    // Only the uploader, a participant of the evidence's match, or a
+    // tournament admin may delete evidence (enforced by the service; the
+    // admin bit is resolved here).
+    let acting_as_admin = perm_checker
+        .has_admin_override(&auth, ScopeType::Tournament)
+        .await;
+
     // Before deleting, check if there's a corresponding demo_match_link to clean up.
     // Both `link_discovered` (catalog: prefix) and `link_demo` (with demo_id) store
     // `catalog_demo_id` in the evidence metadata.
     let evidence = state.evidence_service.get_evidence(evidence_id).await?;
+
+    // Authorize before any side effects (the demo unlink below mutates state).
+    state
+        .evidence_service
+        .delete_evidence(evidence_id, auth.user_id, acting_as_admin)
+        .await?;
+
     if let Some(demo_id_str) = evidence
         .plugin_metadata
         .get("catalog_demo_id")
@@ -382,11 +415,6 @@ pub async fn delete_evidence(
             .unlink_from_match(demo_id, match_id)
             .await;
     }
-
-    state
-        .evidence_service
-        .delete_evidence(evidence_id, auth.user_id)
-        .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1142,19 +1170,17 @@ const LOCAL_EVIDENCE_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// or set to `local`.
 ///
 /// Defenses:
-/// * **Authentication required** — the caller must hold a valid JWT. The
-///   prior implementation accepted any unauthenticated `PUT /uploads/*path`,
-///   which let anyone write arbitrary bytes to the server's filesystem.
+/// * **Capability-URL auth (no bearer token)** — this endpoint emulates an
+///   S3 presigned PUT, and clients upload to it exactly as they would to S3:
+///   with NO `Authorization` header (attaching one to a real presigned URL
+///   breaks SigV4, so the frontend rightly never sends it). The capability
+///   model is the same as a presigned URL's: the path embeds a
+///   server-generated UUIDv7 that only the (authenticated and authorized)
+///   `initiate_upload` caller was told. Dev-only — hard-disabled in S3 mode.
 /// * **Path traversal rejected** — absolute paths, `..` components, and
 ///   non-UTF-8 paths are refused outright. After joining we canonicalize the
 ///   parent directory and verify it stays inside `state.uploads_path`.
 /// * **Size capped** — bodies above [`LOCAL_EVIDENCE_MAX_BYTES`] are rejected.
-// No bearer auth: this endpoint emulates an S3 presigned PUT, and clients
-// upload to it exactly as they would to S3 — with NO Authorization header
-// (attaching one to a real presigned URL breaks SigV4, so the frontend
-// rightly never sends it). The capability model is the same as a presigned
-// URL's: the path embeds a server-generated UUIDv7 that only the
-// initiate-upload caller was told. Dev-only — hard-disabled in S3 mode.
 pub async fn local_evidence_upload(
     State(state): State<EvidenceState>,
     axum::extract::Path(path): axum::extract::Path<String>,

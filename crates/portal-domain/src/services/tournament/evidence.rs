@@ -137,7 +137,12 @@ where
     ///
     /// `s3_key_prefix` — optional human-readable prefix built by the handler from
     /// league/tournament slugs. Falls back to UUID-based key if `None`.
+    ///
+    /// `acting_as_admin` — set by the handler when the caller holds the
+    /// tournament admin permission; only then may a non-participant attach
+    /// evidence (attributed to no registration).
     #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn initiate_upload(
         &self,
         match_id: TournamentMatchId,
@@ -148,6 +153,7 @@ where
         file_size_bytes: i64,
         mime_type: String,
         uploaded_by: UserId,
+        acting_as_admin: bool,
     ) -> Result<EvidenceUploadInfo, DomainError> {
         // Validate file size
         if file_size_bytes > self.config.max_file_size_bytes {
@@ -164,8 +170,11 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        // Find user's registration
-        let registration_id = self.find_user_registration(&match_, uploaded_by).await.ok();
+        // Find user's registration. Non-participants may only attach evidence
+        // when the handler has verified the tournament admin permission.
+        let registration_id = self
+            .resolve_uploader_registration(&match_, uploaded_by, acting_as_admin)
+            .await?;
 
         // Generate S3 key — use human-readable prefix if provided, else UUID-based
         let extension = file_name.rsplit('.').next().unwrap_or("bin");
@@ -284,7 +293,12 @@ where
     }
 
     /// Add an external link as evidence.
+    ///
+    /// `acting_as_admin` — set by the handler when the caller holds the
+    /// tournament admin permission; only then may a non-participant attach
+    /// evidence (attributed to no registration).
     #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn add_link(
         &self,
         match_id: TournamentMatchId,
@@ -294,6 +308,7 @@ where
         name: String,
         description: Option<String>,
         added_by: UserId,
+        acting_as_admin: bool,
     ) -> Result<Evidence, DomainError> {
         // Validate evidence type allows URL storage
         if !matches!(evidence_type, EvidenceType::Video | EvidenceType::Link) {
@@ -309,8 +324,11 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        // Find user's registration
-        let registration_id = self.find_user_registration(&match_, added_by).await.ok();
+        // Find user's registration. Non-participants may only attach evidence
+        // when the handler has verified the tournament admin permission.
+        let registration_id = self
+            .resolve_uploader_registration(&match_, added_by, acting_as_admin)
+            .await?;
 
         // Calculate expiration
         let expires_at = Utc::now() + ChronoDuration::days(self.config.default_retention_days);
@@ -449,17 +467,32 @@ where
     }
 
     /// Delete evidence.
+    ///
+    /// Only the original uploader, a participant of the evidence's match, or
+    /// an admin (`acting_as_admin`, verified by the handler) may delete.
     #[instrument(skip(self))]
     pub async fn delete_evidence(
         &self,
         evidence_id: EvidenceId,
         deleted_by: UserId,
+        acting_as_admin: bool,
     ) -> Result<(), DomainError> {
         let evidence = self
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
             .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
+
+        // Authorization: uploader, match participant, or admin.
+        if !acting_as_admin && evidence.uploaded_by_user_id != Some(deleted_by) {
+            let match_ = self
+                .match_repo
+                .find_by_id(evidence.match_id)
+                .await?
+                .ok_or(DomainError::TournamentMatchNotFound(evidence.match_id))?;
+            // Propagates NotAuthorized when the caller is not a participant.
+            self.find_user_registration(&match_, deleted_by).await?;
+        }
 
         // Delete from storage if S3
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
@@ -556,6 +589,25 @@ where
     // =========================================================================
     // INTERNAL HELPERS
     // =========================================================================
+
+    /// Resolve the registration to attribute an upload/link to.
+    ///
+    /// Participants get their own registration. Non-participants are rejected
+    /// with `NotAuthorized` unless the handler verified the tournament admin
+    /// permission (`acting_as_admin`), in which case the evidence is attached
+    /// without a registration attribution.
+    async fn resolve_uploader_registration(
+        &self,
+        match_: &crate::entities::TournamentMatch,
+        user_id: UserId,
+        acting_as_admin: bool,
+    ) -> Result<Option<TournamentRegistrationId>, DomainError> {
+        match self.find_user_registration(match_, user_id).await {
+            Ok(reg_id) => Ok(Some(reg_id)),
+            Err(DomainError::NotAuthorized(_)) if acting_as_admin => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 
     async fn find_user_registration(
         &self,

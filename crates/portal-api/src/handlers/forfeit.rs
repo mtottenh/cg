@@ -50,15 +50,42 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 pub async fn withdraw_from_tournament(
     State(state): State<ForfeitState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((tournament_id, registration_id)): Path<(TournamentId, TournamentRegistrationId)>,
     ValidatedJson(req): ValidatedJson<WithdrawFromTournamentRequest>,
 ) -> ApiResult<Json<DataResponse<WithdrawalResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // Authorization: the forfeit service validates that user_id is associated with
-    // this registration (owns it or is team captain). If not the owner, require
-    // tournament participant management permission as a fallback.
+    // Authorization: the caller must be bound to the registration they are
+    // withdrawing — either they registered it, they are the registered
+    // player, or they are an active member of the registration's
+    // team-season. Anyone else needs the tournament admin permission.
+    let registration = state
+        .registration_service
+        .get_registration(registration_id)
+        .await?;
+
+    let is_registrant = registration.registered_by == auth.user_id;
+    let is_registered_player = registration.player_id == Some(auth.player_id);
+    let is_team_member = if let Some(ts_id) = registration.team_season_id {
+        state
+            .league_team_service
+            .is_member(ts_id, auth.player_id)
+            .await?
+    } else {
+        false
+    };
+
+    if !is_registrant && !is_registered_player && !is_team_member {
+        perm_checker
+            .require_permission(
+                &auth,
+                portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+            )
+            .await?;
+    }
+
     let results = state
         .forfeit_service
         .withdraw_from_tournament(tournament_id, registration_id, req.reason, auth.user_id)

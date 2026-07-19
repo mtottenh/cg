@@ -59,6 +59,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 pub async fn raise_dispute(
     State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<RaiseDisputeRequest>,
@@ -73,6 +74,33 @@ pub async fn raise_dispute(
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
+
+    // The caller must belong to the registration they claim to dispute for —
+    // directly as the registered player, or as an active member of the
+    // registration's team-season. Tournament admins may dispute on behalf of
+    // a registration.
+    if !perm.has_admin_override(&auth, ScopeType::Tournament).await {
+        let registration = state
+            .registration_service
+            .get_registration(registration_id)
+            .await?;
+
+        let is_registered_player = registration.player_id == Some(auth.player_id);
+        let is_team_member = if let Some(ts_id) = registration.team_season_id {
+            state
+                .league_team_service
+                .is_member(ts_id, auth.player_id)
+                .await?
+        } else {
+            false
+        };
+
+        if !is_registered_player && !is_team_member {
+            return Err(ApiError::forbidden(
+                "Not authorized to raise a dispute for this registration",
+            ));
+        }
+    }
 
     let reason: DisputeReason = req
         .reason
@@ -180,11 +208,21 @@ pub async fn get_match_dispute(
 pub async fn add_dispute_message(
     State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<AddDisputeMessageRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<DisputeMessageResponse>>)> {
     let request_id = get_request_id(&headers);
+
+    // Same standing rule as `get_dispute`: only dispute participants (or
+    // admins) may post to the thread as a participant.
+    let dispute = state.dispute_service.get_dispute(dispute_id).await?;
+    if !perm.has_admin_override(&auth, ScopeType::Tournament).await
+        && !is_dispute_participant(&state, &dispute, &auth).await?
+    {
+        return Err(ApiError::forbidden("Not a participant in this dispute"));
+    }
 
     let evidence_ids: Vec<EvidenceId> = req
         .evidence_ids

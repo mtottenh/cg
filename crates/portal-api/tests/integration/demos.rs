@@ -1050,3 +1050,75 @@ async fn test_get_demo_download() {
         .await;
     response.assert_status(StatusCode::NOT_FOUND);
 }
+
+// ============================================================================
+// MATCH DEMO LISTING VISIBILITY
+// ============================================================================
+
+/// Hidden demos must not leak through the match demo listing: only admins
+/// (and players appearing in the demo) see them.
+#[tokio::test]
+async fn test_hidden_demos_filtered_from_match_listing() {
+    let app = TestApp::new().await;
+    // Helper assigns platform_admin to the dev user, so admin demo-catalog
+    // endpoints work with the dev token.
+    let (_tournament_id, match_id, _reg1, _reg2) =
+        crate::tournaments::create_tournament_with_matches(&app, "hidden-demo-match").await;
+
+    let demo_id = catalog_single_demo(&app, "demos/hidden_match_demo.dem").await;
+
+    // Link the demo to the match.
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/link"),
+            &json!({ "match_id": match_id }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // Hide the demo.
+    app.post_json(
+        &format!("/v1/admin/demos/{demo_id}/visibility"),
+        &json!({ "is_hidden": true }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // Admin (dev token) still sees the hidden demo in the match listing.
+    let response = app.get_auth(&format!("/v1/matches/{match_id}/demos")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+
+    // A regular user (not in the demo) does not.
+    let viewer = UserBuilder::new()
+        .username("match-demo-viewer")
+        .build_persisted(app.pool())
+        .await;
+    let viewer_token =
+        create_test_token(viewer.id, viewer.id, "match-demo-viewer", TEST_JWT_SECRET);
+    let response = app
+        .get_with_token(&format!("/v1/matches/{match_id}/demos"), &viewer_token)
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        0,
+        "Hidden demo should be filtered for non-admins"
+    );
+
+    // Unhide — the regular user sees it again.
+    app.post_json(
+        &format!("/v1/admin/demos/{demo_id}/visibility"),
+        &json!({ "is_hidden": false }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let response = app
+        .get_with_token(&format!("/v1/matches/{match_id}/demos"), &viewer_token)
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+}

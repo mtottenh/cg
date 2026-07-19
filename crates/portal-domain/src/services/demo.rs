@@ -22,32 +22,49 @@ use crate::repositories::demo::{
     CreateDemo, CreateDemoMatchLink, CreateDemoPlayer, DemoMatchLinkRepository,
     DemoMatchLinkWithData, DemoPlayerRepository, DemoRepository,
 };
+use crate::repositories::tournament::{MatchLinkCandidate, TournamentMatchRepository};
+
+/// Minimum steam-ID-overlap confidence required to auto-link a demo.
+const AUTO_LINK_MIN_CONFIDENCE: f32 = 0.6;
+/// Time window (hours) around the demo's match date for candidate matches.
+const AUTO_LINK_WINDOW_HOURS: i64 = 24;
+/// Cap on candidate matches considered per demo.
+const AUTO_LINK_CANDIDATE_LIMIT: i64 = 100;
 
 /// Service for managing the demo catalog.
 #[derive(Clone)]
-pub struct DemoService<DR, DMLR, DPR>
+pub struct DemoService<DR, DMLR, DPR, TMR>
 where
     DR: DemoRepository,
     DMLR: DemoMatchLinkRepository,
     DPR: DemoPlayerRepository,
+    TMR: TournamentMatchRepository,
 {
     demo_repo: Arc<DR>,
     link_repo: Arc<DMLR>,
     player_repo: Arc<DPR>,
+    match_repo: Arc<TMR>,
 }
 
-impl<DR, DMLR, DPR> DemoService<DR, DMLR, DPR>
+impl<DR, DMLR, DPR, TMR> DemoService<DR, DMLR, DPR, TMR>
 where
     DR: DemoRepository,
     DMLR: DemoMatchLinkRepository,
     DPR: DemoPlayerRepository,
+    TMR: TournamentMatchRepository,
 {
     /// Create a new demo service.
-    pub fn new(demo_repo: Arc<DR>, link_repo: Arc<DMLR>, player_repo: Arc<DPR>) -> Self {
+    pub fn new(
+        demo_repo: Arc<DR>,
+        link_repo: Arc<DMLR>,
+        player_repo: Arc<DPR>,
+        match_repo: Arc<TMR>,
+    ) -> Self {
         Self {
             demo_repo,
             link_repo,
             player_repo,
+            match_repo,
         }
     }
 
@@ -153,6 +170,27 @@ where
         if !player_creates.is_empty() {
             self.player_repo.create_batch(id, player_creates).await?;
         }
+
+        // Resolve demo player identities (steam_id -> players.steam_id_64).
+        // Non-fatal: stats are already persisted.
+        match self.player_repo.resolve_player_links(id).await {
+            Ok(resolved) if resolved > 0 => {
+                info!(demo_id = %id, resolved, "Resolved demo player identities");
+            }
+            Ok(_) => {}
+            Err(e) => warn!(demo_id = %id, error = %e, "Failed to resolve demo player identities"),
+        }
+
+        // Attempt to auto-link the demo to a tournament match. Non-fatal:
+        // a failed pass must never fail stats ingestion.
+        let demo = match self.try_auto_link(&demo).await {
+            Ok(Some(updated)) => updated,
+            Ok(None) => demo,
+            Err(e) => {
+                warn!(demo_id = %id, error = %e, "Demo auto-link pass failed");
+                demo
+            }
+        };
 
         info!(demo_id = %id, "Saved demo stats");
         Ok(demo)
@@ -325,6 +363,166 @@ where
     }
 
     // =========================================================================
+    // Auto-Linking
+    // =========================================================================
+
+    /// Attempt to auto-link a demo to a tournament match.
+    ///
+    /// Extracts the demo's player Steam IDs (top-level `player_summaries`
+    /// keys of the stats JSON) and match date, fetches candidate matches for
+    /// the same game within [`AUTO_LINK_WINDOW_HOURS`] of the match date, and
+    /// scores each candidate by Steam-ID overlap:
+    ///
+    /// ```text
+    /// confidence = overlapping_steam_ids / total_demo_players  (capped at 1.0)
+    /// ```
+    ///
+    /// The best candidate with confidence >= [`AUTO_LINK_MIN_CONFIDENCE`] is
+    /// linked (`link_type = auto_matched`), idempotently, and the demo is
+    /// stamped with the match's tournament (and its league, if any).
+    ///
+    /// Returns the updated demo when a link was made, `None` otherwise.
+    #[instrument(skip(self, demo), fields(demo_id = %demo.id))]
+    async fn try_auto_link(&self, demo: &Demo) -> Result<Option<Demo>, DomainError> {
+        let Some(stats) = demo.stats_json.as_ref() else {
+            return Ok(None);
+        };
+
+        let demo_steam_ids: std::collections::HashSet<&str> = stats
+            .get("player_summaries")
+            .and_then(serde_json::Value::as_object)
+            .map(|summaries| summaries.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+
+        if demo_steam_ids.is_empty() {
+            return Ok(None);
+        }
+
+        let match_date = stats
+            .get("match_date")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.to_utc())
+            .or_else(|| demo.metadata.as_ref().and_then(|m| m.match_date));
+
+        let Some(match_date) = match_date else {
+            return Ok(None);
+        };
+
+        let candidates = self
+            .match_repo
+            .list_auto_link_candidates(
+                demo.game_id,
+                match_date,
+                AUTO_LINK_WINDOW_HOURS,
+                AUTO_LINK_CANDIDATE_LIMIT,
+            )
+            .await?;
+
+        let mut best: Option<(&MatchLinkCandidate, f32)> = None;
+        for candidate in &candidates {
+            let overlap = candidate
+                .steam_ids
+                .iter()
+                .filter(|sid| demo_steam_ids.contains(sid.as_str()))
+                .count();
+            let confidence = (overlap as f32 / demo_steam_ids.len() as f32).min(1.0);
+            if confidence >= AUTO_LINK_MIN_CONFIDENCE
+                && best.is_none_or(|(_, best_confidence)| confidence > best_confidence)
+            {
+                best = Some((candidate, confidence));
+            }
+        }
+
+        let Some((candidate, confidence)) = best else {
+            return Ok(None);
+        };
+
+        // Idempotent: tolerate an existing link (manual or from a prior pass).
+        if self
+            .link_repo
+            .find_by_demo_and_match(demo.id, candidate.match_id)
+            .await?
+            .is_none()
+        {
+            self.link_repo
+                .create(CreateDemoMatchLink {
+                    demo_id: demo.id,
+                    match_id: candidate.match_id,
+                    game_number: None,
+                    link_type: DemoLinkType::AutoMatched,
+                    confidence_score: Some(confidence),
+                    linked_by_user_id: None,
+                })
+                .await?;
+        }
+
+        // Stamp the demo's organization: the match's tournament, and its
+        // league when set (keep any pre-existing league association).
+        let league_id = candidate.league_id.or(demo.league_id);
+        let updated = self
+            .demo_repo
+            .associate(demo.id, league_id, Some(candidate.tournament_id))
+            .await?;
+
+        info!(
+            demo_id = %demo.id,
+            match_id = %candidate.match_id,
+            tournament_id = %candidate.tournament_id,
+            confidence,
+            "Auto-linked demo to tournament match"
+        );
+
+        Ok(Some(updated))
+    }
+
+    /// Run the auto-link pass over ready demos with stats but no match links.
+    ///
+    /// Bounded batch backfill for demos ingested before auto-linking existed
+    /// (or whose match was scheduled after stats came in). Also resolves demo
+    /// player identities as part of the pass. Per-demo failures are logged
+    /// and counted as skipped.
+    #[instrument(skip(self))]
+    pub async fn process_unlinked_demos(
+        &self,
+        limit: i64,
+    ) -> Result<ProcessUnlinkedResult, DomainError> {
+        let demos = self.demo_repo.find_ready_unlinked(limit).await?;
+
+        let mut result = ProcessUnlinkedResult {
+            examined: 0,
+            linked: 0,
+            skipped: 0,
+        };
+
+        for demo in demos {
+            result.examined += 1;
+
+            if let Err(e) = self.player_repo.resolve_player_links(demo.id).await {
+                warn!(demo_id = %demo.id, error = %e, "Failed to resolve demo player identities");
+            }
+
+            match self.try_auto_link(&demo).await {
+                Ok(Some(_)) => result.linked += 1,
+                Ok(None) => result.skipped += 1,
+                Err(e) => {
+                    warn!(demo_id = %demo.id, error = %e, "Demo auto-link pass failed");
+                    result.skipped += 1;
+                }
+            }
+        }
+
+        info!(
+            examined = result.examined,
+            linked = result.linked,
+            skipped = result.skipped,
+            "Processed unlinked demos"
+        );
+
+        Ok(result)
+    }
+
+    // =========================================================================
     // Player Queries
     // =========================================================================
 
@@ -470,6 +668,17 @@ where
         info!(demo_id = %id, "Deleted demo and all associated data");
         Ok(())
     }
+}
+
+/// Counters from a backfill pass over unlinked demos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessUnlinkedResult {
+    /// Demos examined in this batch.
+    pub examined: i64,
+    /// Demos that were auto-linked to a match.
+    pub linked: i64,
+    /// Demos examined but not linked (no confident candidate, or errored).
+    pub skipped: i64,
 }
 
 /// Result of cataloging a demo.

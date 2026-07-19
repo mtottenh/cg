@@ -131,6 +131,10 @@ pub fn routes() -> Router<AppState> {
         .route("/demos/{id}/associate", post(demos::associate_demo))
         .route("/demos/{id}/link", post(demos::link_demo_to_match))
         .route(
+            "/demos/process-unlinked",
+            post(demos::process_unlinked_demos),
+        )
+        .route(
             "/demos/{demo_id}/link/{match_id}",
             delete(demos::unlink_demo_from_match),
         )

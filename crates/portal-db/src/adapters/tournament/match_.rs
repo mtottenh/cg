@@ -8,12 +8,13 @@ use crate::entities::tournament::TournamentMatchRow;
 use crate::transaction::DbTransaction;
 use portal_core::types::TournamentMatchStatus;
 use portal_core::{
-    DomainError, PlayerId, TournamentBracketId, TournamentId, TournamentMatchId,
+    DomainError, GameId, LeagueId, PlayerId, TournamentBracketId, TournamentId, TournamentMatchId,
     TournamentRegistrationId, TournamentStageId, UserId,
 };
 use portal_domain::entities::tournament::TournamentMatch;
 use portal_domain::repositories::tournament::{
-    CreateTournamentMatch, ParticipantSlot, TournamentMatchRepository, UpdateTournamentMatch,
+    CreateTournamentMatch, MatchLinkCandidate, ParticipantSlot, TournamentMatchRepository,
+    UpdateTournamentMatch,
 };
 
 /// `PostgreSQL` implementation of `TournamentMatchRepository`.
@@ -955,6 +956,87 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
 
         Ok(())
     }
+
+    async fn list_auto_link_candidates(
+        &self,
+        game_id: GameId,
+        match_date: DateTime<Utc>,
+        window_hours: i64,
+        limit: i64,
+    ) -> Result<Vec<MatchLinkCandidate>, DomainError> {
+        // One round trip: candidate matches within the time window, each with
+        // the Steam IDs of its participants (individual registration player,
+        // or active team-season members for team registrations).
+        let rows = sqlx::query_as::<_, MatchLinkCandidateRow>(
+            r"
+            WITH candidates AS (
+                SELECT m.id AS match_id,
+                       m.tournament_id,
+                       t.league_id,
+                       m.participant1_registration_id AS reg1,
+                       m.participant2_registration_id AS reg2
+                FROM tournament_matches m
+                JOIN tournaments t ON t.id = m.tournament_id
+                WHERE t.game_id = $1
+                  AND m.participant1_registration_id IS NOT NULL
+                  AND m.participant2_registration_id IS NOT NULL
+                  AND (
+                      (m.scheduled_at IS NOT NULL
+                       AND m.scheduled_at >= $2 - $3 * INTERVAL '1 hour'
+                       AND m.scheduled_at <= $2 + $3 * INTERVAL '1 hour')
+                      OR
+                      (m.scheduled_at IS NULL
+                       AND COALESCE(t.started_at, t.starts_at) IS NOT NULL
+                       AND COALESCE(t.started_at, t.starts_at) - $3 * INTERVAL '1 hour' <= $2
+                       AND COALESCE(t.completed_at, t.ends_at, NOW()) + $3 * INTERVAL '1 hour' >= $2)
+                  )
+                LIMIT $4
+            )
+            SELECT c.match_id,
+                   c.tournament_id,
+                   c.league_id,
+                   COALESCE(
+                       array_agg(DISTINCT p.steam_id_64::text)
+                           FILTER (WHERE p.steam_id_64 IS NOT NULL),
+                       '{}'
+                   ) AS steam_ids
+            FROM candidates c
+            JOIN tournament_registrations r
+              ON r.id IN (c.reg1, c.reg2)
+            LEFT JOIN league_team_members ltm
+              ON ltm.team_season_id = r.team_season_id AND ltm.status = 'active'
+            LEFT JOIN players p
+              ON p.id = COALESCE(r.player_id, ltm.player_id)
+            GROUP BY c.match_id, c.tournament_id, c.league_id
+            ",
+        )
+        .bind(game_id.as_uuid())
+        .bind(match_date)
+        .bind(window_hours)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| MatchLinkCandidate {
+                match_id: TournamentMatchId::from_uuid(row.match_id),
+                tournament_id: TournamentId::from_uuid(row.tournament_id),
+                league_id: row.league_id.map(LeagueId::from_uuid),
+                steam_ids: row.steam_ids,
+            })
+            .collect())
+    }
+}
+
+/// Row shape for [`TournamentMatchRepository::list_auto_link_candidates`].
+#[derive(Debug, sqlx::FromRow)]
+struct MatchLinkCandidateRow {
+    match_id: uuid::Uuid,
+    tournament_id: uuid::Uuid,
+    league_id: Option<uuid::Uuid>,
+    steam_ids: Vec<String>,
 }
 
 // =============================================================================

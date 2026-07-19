@@ -13,6 +13,7 @@
 pub mod error;
 pub mod games;
 pub mod manager;
+pub mod stats;
 pub mod traits;
 pub mod types;
 
@@ -24,6 +25,7 @@ pub use games::{
 };
 pub use manager::PluginManager;
 pub use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
+pub use stats::{StatDefinition, StatFact, StatValueType};
 pub use traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier, TournamentPlugin};
 pub use types::{
     DemoMetadata, DiscoveredEvidence, DisplayStat, EvidenceStorage, EvidenceType,

@@ -729,6 +729,38 @@ pub trait TournamentMatchRepository: Send + Sync {
         winner_progresses_to: Option<TournamentMatchId>,
         loser_progresses_to: Option<TournamentMatchId>,
     ) -> Result<(), DomainError>;
+
+    /// List candidate matches for demo auto-linking.
+    ///
+    /// Returns matches (with both registrations present) for the given game
+    /// whose `scheduled_at` lies within `window_hours` of `match_date`. When
+    /// `scheduled_at` is null, the match qualifies if `match_date` falls
+    /// inside the tournament's running window (start .. completion, padded by
+    /// `window_hours`); matches whose tournament has no start time are
+    /// skipped. Each candidate carries the Steam IDs of its participants —
+    /// the registration's player for individual entries, the active team
+    /// members for team entries — so the caller can score overlap in a
+    /// single round trip.
+    async fn list_auto_link_candidates(
+        &self,
+        game_id: GameId,
+        match_date: DateTime<Utc>,
+        window_hours: i64,
+        limit: i64,
+    ) -> Result<Vec<MatchLinkCandidate>, DomainError>;
+}
+
+/// A candidate tournament match for demo auto-linking.
+#[derive(Debug, Clone)]
+pub struct MatchLinkCandidate {
+    /// The candidate match.
+    pub match_id: TournamentMatchId,
+    /// The tournament the match belongs to.
+    pub tournament_id: TournamentId,
+    /// The tournament's league, if any.
+    pub league_id: Option<LeagueId>,
+    /// Steam IDs (steam64 as strings) of the match participants.
+    pub steam_ids: Vec<String>,
 }
 
 /// Participant slot (1 or 2).

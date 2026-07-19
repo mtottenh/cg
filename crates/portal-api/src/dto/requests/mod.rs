@@ -29,8 +29,9 @@ pub use ban::{CreateBanRequest, LiftBanRequest, ListBansQuery};
 pub use demo::{
     AssociateDemoRequest, BatchCatalogDemoEntry, BatchCatalogDemosRequest, CatalogDemoRequest,
     CategorizeDemoRequest, DemoPlayerInputDto, GetDemosForMatchQuery, LinkDemoToMatchRequest,
-    ListDemosQuery, MarkDemoFailedRequest, PendingDemosQuery, SetDemoNotesRequest,
-    SetDemoVisibilityRequest, SubmitDemoStatsRequest, UnlinkDemoFromMatchRequest,
+    ListDemosQuery, MarkDemoFailedRequest, PendingDemosQuery, ProcessUnlinkedDemosQuery,
+    SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
+    UnlinkDemoFromMatchRequest,
 };
 pub use dispute::{
     AddDisputeMessageRequest, AdminDisputeMessageRequest, AssignDisputeRequest, ListDisputesQuery,

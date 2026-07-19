@@ -72,7 +72,7 @@ pub trait DisputeRepository: Send + Sync + 'static {
     /// wanting the classic queue view pass `[Pending, UnderReview]`.
     async fn list_filtered(
         &self,
-        statuses: Option<&[DisputeStatus]>,
+        statuses: Option<Vec<DisputeStatus>>,
         tournament_id: Option<TournamentId>,
         match_id: Option<TournamentMatchId>,
         priority: Option<DisputePriority>,

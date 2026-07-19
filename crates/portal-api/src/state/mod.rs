@@ -151,8 +151,12 @@ pub type AppDisputeService = DisputeService<
     PgTournamentMatchRepository,
     PgResultClaimRepository,
 >;
-pub type AppDemoService =
-    DemoService<PgDemoRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository>;
+pub type AppDemoService = DemoService<
+    PgDemoRepository,
+    PgDemoMatchLinkRepository,
+    PgDemoPlayerRepository,
+    PgTournamentMatchRepository,
+>;
 pub type AppResultReviewService =
     ResultReviewService<PgResultReviewRepository, PgTournamentMatchRepository>;
 pub type AppStandingsService =
@@ -639,6 +643,7 @@ impl AppState {
             Arc::clone(&demo_repo),
             Arc::clone(&demo_match_link_repo),
             Arc::clone(&demo_player_repo),
+            Arc::clone(&tournament_match_repo),
         );
 
         // Create result review service

@@ -255,7 +255,7 @@ impl DisputeRepository for PgDisputeRepository {
 
     async fn list_filtered(
         &self,
-        statuses: Option<&[DisputeStatus]>,
+        statuses: Option<Vec<DisputeStatus>>,
         tournament_id: Option<TournamentId>,
         match_id: Option<TournamentMatchId>,
         priority: Option<DisputePriority>,
@@ -305,8 +305,9 @@ impl DisputeRepository for PgDisputeRepository {
         let mut count_builder = sqlx::query(&count_query);
         let mut items_builder = sqlx::query_as::<_, DisputeRow>(&items_query);
 
-        let status_strings: Option<Vec<String>> =
-            statuses.map(|list| list.iter().map(ToString::to_string).collect());
+        let status_strings: Option<Vec<String>> = statuses
+            .as_ref()
+            .map(|list| list.iter().map(ToString::to_string).collect());
         if let Some(list) = &status_strings {
             count_builder = count_builder.bind(list.clone());
             items_builder = items_builder.bind(list.clone());

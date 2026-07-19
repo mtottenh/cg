@@ -268,6 +268,27 @@ impl From<DemoPlayerStats> for DemoPlayerStatsResponse {
     }
 }
 
+/// Response for the unlinked-demo backfill pass.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProcessUnlinkedDemosResponse {
+    /// Demos examined in this batch.
+    pub examined: i64,
+    /// Demos that were auto-linked to a match.
+    pub linked: i64,
+    /// Demos examined but not linked.
+    pub skipped: i64,
+}
+
+impl From<portal_domain::services::ProcessUnlinkedResult> for ProcessUnlinkedDemosResponse {
+    fn from(result: portal_domain::services::ProcessUnlinkedResult) -> Self {
+        Self {
+            examined: result.examined,
+            linked: result.linked,
+            skipped: result.skipped,
+        }
+    }
+}
+
 /// Response for demo status counts (admin dashboard).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DemoStatusCountsResponse {

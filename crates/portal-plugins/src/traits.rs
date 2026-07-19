@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{RatingError, StatsError};
+use crate::stats::{StatDefinition, StatFact};
 use portal_core::MatchFormat;
 use portal_core::types::evidence::{
     DemoFileMetadata, DiscoveredEvidenceData, EvidenceStorage, EvidenceValidationResult,
@@ -470,6 +471,28 @@ pub trait TournamentPlugin: GamePlugin {
     /// Get the default side selection mode for this game.
     fn default_side_selection_mode(&self) -> SideSelectionMode {
         SideSelectionMode::Knife
+    }
+
+    // ========================================================================
+    // Award Stats
+    // ========================================================================
+
+    /// Get the stat catalog for this game.
+    ///
+    /// Award templates reference stats by `key`; the catalog drives UI pickers.
+    /// Extraction (`extract_stat_facts`) may emit additional open-set keys
+    /// (e.g. per-weapon kills) beyond what's listed here.
+    fn stat_definitions(&self) -> Vec<StatDefinition> {
+        vec![]
+    }
+
+    /// Extract per-player stat facts from a demo's stats JSON.
+    ///
+    /// Returns an EAV-shaped fact list keyed by Steam ID. Games that don't
+    /// support fact extraction return an empty list.
+    fn extract_stat_facts(&self, stats_json: &Value) -> Vec<StatFact> {
+        let _ = stats_json;
+        vec![]
     }
 }
 

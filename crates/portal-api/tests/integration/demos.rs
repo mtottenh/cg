@@ -1122,3 +1122,272 @@ async fn test_hidden_demos_filtered_from_match_listing() {
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
 }
+
+// ============================================================================
+// CATEGORY E: DEMO -> TOURNAMENT MATCH AUTO-LINKING
+// ============================================================================
+
+/// Set a player's `steam_id_64` from a tournament registration ID.
+async fn set_registration_steam_id(app: &TestApp, registration_id: &str, steam_id: i64) {
+    let reg_uuid = uuid::Uuid::parse_str(registration_id).unwrap();
+    sqlx::query(
+        "UPDATE players SET steam_id_64 = $1
+         WHERE id = (SELECT player_id FROM tournament_registrations WHERE id = $2)",
+    )
+    .bind(steam_id)
+    .bind(reg_uuid)
+    .execute(app.pool())
+    .await
+    .expect("failed to set steam_id_64");
+}
+
+/// Build a minimal Cs2DemoStats-shaped stats submission body whose
+/// `raw_stats.player_summaries` is keyed by the given Steam IDs.
+fn auto_link_stats_body(steam_ids: &[&str], match_date: &str) -> serde_json::Value {
+    let mut player_summaries = serde_json::Map::new();
+    let mut players = Vec::new();
+    for (i, sid) in steam_ids.iter().enumerate() {
+        player_summaries.insert(
+            (*sid).to_string(),
+            json!({
+                "player_id": sid,
+                "player_name": format!("Player{}", i + 1),
+                "team": { "team_id": 1, "team_name": "TeamA", "team_side": "CT" },
+                "kills": 10, "deaths": 5, "assists": 2,
+                "headshot_kills": 4, "damage_dealt": 800,
+                "adr": 80.0, "hs_percentage": 40.0
+            }),
+        );
+        players.push(json!({
+            "steam_id": sid,
+            "player_name": format!("Player{}", i + 1),
+            "team_name": "TeamA",
+            "stats": { "kills": 10, "deaths": 5 }
+        }));
+    }
+    json!({
+        "map_name": "de_dust2",
+        "match_date": match_date,
+        "team1_name": "TeamA",
+        "team2_name": "TeamB",
+        "team1_score": 13,
+        "team2_score": 7,
+        "total_rounds": 20,
+        "raw_stats": {
+            "map": "de_dust2",
+            "match_date": match_date,
+            "player_summaries": player_summaries
+        },
+        "players": players
+    })
+}
+
+/// Full flow: stats submission auto-links the demo to a scheduled match with
+/// full-overlap confidence, stamps the tournament, and resolves player IDs.
+#[tokio::test]
+async fn test_auto_link_demo_on_stats_submission() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, reg1, reg2, _token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "auto-link-flow")
+            .await;
+
+    // Schedule the match at time T (helper already made the dev user admin).
+    let t = chrono::Utc::now() + chrono::Duration::hours(1);
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+        &json!({ "scheduled_at": t.to_rfc3339() }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // Give both participants Steam IDs.
+    set_registration_steam_id(&app, &reg1, 76_561_198_000_000_101).await;
+    set_registration_steam_id(&app, &reg2, 76_561_198_000_000_102).await;
+
+    // Catalog a demo and submit stats featuring exactly those players.
+    let demo_id = catalog_single_demo(&app, "demos/auto_link_flow.dem").await;
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/stats"),
+            &auto_link_stats_body(&["76561198000000101", "76561198000000102"], &t.to_rfc3339()),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+
+    // The returned demo is stamped with the tournament.
+    assert_eq!(body["data"]["tournament_id"], tournament_id);
+
+    // An auto_matched link with confidence 1.0 exists.
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/links")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let links = body["data"].as_array().unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0]["match_id"], match_id);
+    assert_eq!(links[0]["link_type"], "auto_matched");
+    let confidence = links[0]["confidence_score"].as_f64().unwrap();
+    assert!(
+        (confidence - 1.0).abs() < 1e-6,
+        "expected confidence 1.0, got {confidence}"
+    );
+
+    // Demo players were resolved to portal player accounts.
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/players")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let players = body["data"].as_array().unwrap();
+    assert_eq!(players.len(), 2);
+    for player in players {
+        assert!(
+            player["player_id"].is_string(),
+            "demo player {} should be resolved to a portal player",
+            player["steam_id"]
+        );
+    }
+}
+
+/// Negative: no Steam-ID overlap between demo and match participants — no link.
+#[tokio::test]
+async fn test_auto_link_no_steam_id_overlap() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, reg1, reg2, _token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "auto-link-no-ovl")
+            .await;
+
+    let t = chrono::Utc::now() + chrono::Duration::hours(1);
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+        &json!({ "scheduled_at": t.to_rfc3339() }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    set_registration_steam_id(&app, &reg1, 76_561_198_000_000_201).await;
+    set_registration_steam_id(&app, &reg2, 76_561_198_000_000_202).await;
+
+    // Demo features entirely different players.
+    let demo_id = catalog_single_demo(&app, "demos/auto_link_no_overlap.dem").await;
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/stats"),
+            &auto_link_stats_body(&["76561198000000901", "76561198000000902"], &t.to_rfc3339()),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"]["tournament_id"].is_null());
+
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/links")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"].as_array().unwrap().is_empty());
+}
+
+/// Negative: match date far outside the 24h window around the scheduled
+/// time — no link, even with full Steam-ID overlap.
+#[tokio::test]
+async fn test_auto_link_outside_time_window() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, reg1, reg2, _token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "auto-link-window")
+            .await;
+
+    let t = chrono::Utc::now() + chrono::Duration::hours(1);
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+        &json!({ "scheduled_at": t.to_rfc3339() }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    set_registration_steam_id(&app, &reg1, 76_561_198_000_000_301).await;
+    set_registration_steam_id(&app, &reg2, 76_561_198_000_000_302).await;
+
+    // Same players, but the demo was played 10 days after the match slot.
+    let far_away = t + chrono::Duration::days(10);
+    let demo_id = catalog_single_demo(&app, "demos/auto_link_window.dem").await;
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/stats"),
+            &auto_link_stats_body(
+                &["76561198000000301", "76561198000000302"],
+                &far_away.to_rfc3339(),
+            ),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"]["tournament_id"].is_null());
+
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/links")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"].as_array().unwrap().is_empty());
+}
+
+/// Backfill: stats submitted before any match existed stay unlinked; once the
+/// match is created and scheduled, `POST /v1/admin/demos/process-unlinked`
+/// links the demo.
+#[tokio::test]
+async fn test_process_unlinked_backfill() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    // Catalog + submit stats while no matches exist yet.
+    let t = chrono::Utc::now() + chrono::Duration::hours(1);
+    let demo_id = catalog_single_demo(&app, "demos/auto_link_backfill.dem").await;
+    app.post_json(
+        &format!("/v1/admin/demos/{demo_id}/stats"),
+        &auto_link_stats_body(&["76561198000000401", "76561198000000402"], &t.to_rfc3339()),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // Nothing to link against yet.
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/links")).await;
+    let body: serde_json::Value = response.json();
+    assert!(body["data"].as_array().unwrap().is_empty());
+
+    // Now create the tournament, schedule its match, and wire up Steam IDs.
+    let (tournament_id, match_id, reg1, reg2, _token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "auto-link-backfill")
+            .await;
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+        &json!({ "scheduled_at": t.to_rfc3339() }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    set_registration_steam_id(&app, &reg1, 76_561_198_000_000_401).await;
+    set_registration_steam_id(&app, &reg2, 76_561_198_000_000_402).await;
+
+    // Run the backfill pass.
+    let response = app.post_auth("/v1/admin/demos/process-unlinked").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["examined"], 1);
+    assert_eq!(body["data"]["linked"], 1);
+    assert_eq!(body["data"]["skipped"], 0);
+
+    // The link now exists and the demo is stamped.
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/links")).await;
+    let body: serde_json::Value = response.json();
+    let links = body["data"].as_array().unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0]["match_id"], match_id);
+    assert_eq!(links[0]["link_type"], "auto_matched");
+
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}")).await;
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["tournament_id"], tournament_id);
+}
+
+/// The backfill endpoint is admin-gated.
+#[tokio::test]
+async fn test_process_unlinked_requires_admin() {
+    let app = TestApp::new().await;
+
+    let response = app.post_auth("/v1/admin/demos/process-unlinked").await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}

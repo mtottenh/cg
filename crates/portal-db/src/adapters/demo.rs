@@ -389,6 +389,27 @@ impl DemoRepository for PgDemoRepository {
         rows.into_iter().map(demo_row_to_domain).collect()
     }
 
+    async fn find_ready_unlinked(&self, limit: i64) -> Result<Vec<Demo>, DomainError> {
+        let rows = sqlx::query_as::<_, DemoRow>(
+            r"
+            SELECT d.* FROM demos d
+            WHERE d.status = 'ready'
+              AND d.stats_json IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM demo_match_links l WHERE l.demo_id = d.id
+              )
+            ORDER BY d.discovered_at ASC
+            LIMIT $1
+            ",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("Failed to find unlinked demos: {e}")))?;
+
+        rows.into_iter().map(demo_row_to_domain).collect()
+    }
+
     async fn count_by_status(&self) -> Result<Vec<(DemoStatus, i64)>, DomainError> {
         let rows = sqlx::query_as::<_, (String, i64)>(
             r"SELECT status, COUNT(*) FROM demos GROUP BY status",
@@ -855,6 +876,28 @@ impl DemoPlayerRepository for PgDemoPlayerRepository {
         .map_err(|e| DomainError::internal(format!("Failed to link demo player: {e}")))?;
 
         Ok(player_row_to_domain(row))
+    }
+
+    async fn resolve_player_links(&self, demo_id: DemoId) -> Result<u64, DomainError> {
+        // The numeric guard makes the ::bigint cast safe for arbitrary
+        // steam_id strings and lets the players.steam_id_64 index be used.
+        let result = sqlx::query(
+            r"
+            UPDATE demo_players dp
+            SET player_id = p.id
+            FROM players p
+            WHERE dp.demo_id = $1
+              AND dp.player_id IS NULL
+              AND dp.steam_id ~ '^[0-9]{1,19}$'
+              AND p.steam_id_64 = dp.steam_id::bigint
+            ",
+        )
+        .bind(demo_id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("Failed to resolve demo player links: {e}")))?;
+
+        Ok(result.rows_affected())
     }
 
     async fn delete_by_demo(&self, demo_id: DemoId) -> Result<(), DomainError> {

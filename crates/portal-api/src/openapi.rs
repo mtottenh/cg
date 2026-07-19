@@ -35,7 +35,7 @@ use crate::dto::responses::demo::{
     BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoDownloadResponse, DemoListResponse,
     DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse, DemoPlayerResponse,
     DemoPlayerStatsResponse as DemoCatalogPlayerStatsResponse, DemoResponse,
-    DemoStatusCountsResponse, DemoValidationResultResponse,
+    DemoStatusCountsResponse, DemoValidationResultResponse, ProcessUnlinkedDemosResponse,
 };
 use crate::dto::responses::{
     AccessUrlResponse, AdvancementResponse, AvailabilityOverrideResponse,
@@ -357,6 +357,7 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::mark_demo_stats_failed,
         demos::delete_demo,
         demos::set_demo_notes,
+        demos::process_unlinked_demos,
         // Result reviews
         result_reviews::get_result_review,
         result_reviews::acknowledge_result_review,
@@ -629,6 +630,7 @@ use utoipa_swagger_ui::SwaggerUi;
             MarkDemoFailedRequest,
             SetDemoNotesRequest,
             DemoDownloadResponse,
+            ProcessUnlinkedDemosResponse,
             // Steam Tracking
             crate::handlers::steam_tracking::RegisterSteamTrackingRequest,
             crate::handlers::steam_tracking::UpdateSteamTrackingRequest,

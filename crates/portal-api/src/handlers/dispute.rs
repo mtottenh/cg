@@ -19,7 +19,9 @@ use axum::http::{HeaderMap, StatusCode};
 use portal_core::{
     DisputeId, EvidenceId, ResultClaimId, ScopeType, TournamentMatchId, TournamentRegistrationId,
 };
-use portal_domain::entities::dispute::{AuthorType, Dispute, DisputePriority, DisputeReason};
+use portal_domain::entities::dispute::{
+    AuthorType, Dispute, DisputePriority, DisputeReason, DisputeStatus,
+};
 use portal_domain::repositories::tournament::TournamentMatchRepository;
 
 /// Extract request ID from headers.
@@ -394,7 +396,7 @@ pub async fn admin_list_disputes(
     let status = query
         .status
         .as_deref()
-        .map(str::parse::<portal_domain::entities::dispute::DisputeStatus>)
+        .map(str::parse::<DisputeStatus>)
         .transpose()
         .map_err(|_| ApiError::bad_request("Invalid status value"))?;
     let tournament_id = query
@@ -416,7 +418,6 @@ pub async fn admin_list_disputes(
     // Default view (no explicit status) stays the actionable queue —
     // pending + under_review — matching the admin UI's expectations.
     // Explicit filters reach every status, including resolved/cancelled.
-    use portal_domain::entities::dispute::DisputeStatus;
     let status_list: Option<Vec<DisputeStatus>> = match status {
         Some(s) => Some(vec![s]),
         None => Some(vec![DisputeStatus::Pending, DisputeStatus::UnderReview]),
@@ -424,7 +425,7 @@ pub async fn admin_list_disputes(
     let (disputes, total) = state
         .dispute_service
         .list_disputes(
-            status_list.as_deref(),
+            status_list,
             tournament_id,
             match_id,
             priority,

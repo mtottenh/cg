@@ -11,6 +11,7 @@
 pub mod demo_client;
 pub mod demo_stats;
 pub mod evidence_validator;
+pub mod stats;
 
 pub use demo_client::{Cs2DemoClient, validate_base_url as validate_demo_service_url};
 pub use demo_stats::Cs2DemoStats;
@@ -883,6 +884,14 @@ impl TournamentPlugin for Cs2Plugin {
     fn default_side_selection_mode(&self) -> SideSelectionMode {
         SideSelectionMode::PickerChoice
     }
+
+    fn stat_definitions(&self) -> Vec<crate::stats::StatDefinition> {
+        stats::stat_catalog()
+    }
+
+    fn extract_stat_facts(&self, stats_json: &Value) -> Vec<crate::stats::StatFact> {
+        stats::extract_facts(stats_json)
+    }
 }
 
 // ============================================================================
@@ -1297,6 +1306,14 @@ impl TournamentPlugin for Cs2PluginWithEvidence {
     fn default_side_selection_mode(&self) -> SideSelectionMode {
         self.inner.default_side_selection_mode()
     }
+
+    fn stat_definitions(&self) -> Vec<crate::stats::StatDefinition> {
+        self.inner.stat_definitions()
+    }
+
+    fn extract_stat_facts(&self, stats_json: &Value) -> Vec<crate::stats::StatFact> {
+        self.inner.extract_stat_facts(stats_json)
+    }
 }
 
 #[async_trait::async_trait]
@@ -1568,6 +1585,23 @@ mod tests {
         // At Purple tier (15,000), K=150, so change should be ~75
         let winner = winner_change.unwrap();
         assert!(winner.new_rating - winner.old_rating > 50); // Should gain meaningful rating
+    }
+
+    #[test]
+    fn test_stat_surface_exposed_via_tournament_plugin() {
+        // The registered plugin type is Cs2PluginWithEvidence; consumers reach
+        // the stat surface through GamePlugin::as_tournament_plugin.
+        let plugin = Cs2PluginWithEvidence::new();
+        let tournament = plugin
+            .as_tournament_plugin()
+            .expect("cs2 supports tournaments");
+
+        let catalog = tournament.stat_definitions();
+        assert!(!catalog.is_empty());
+        assert!(catalog.iter().any(|d| d.key == "headshot_kills"));
+
+        // Unparseable JSON extracts to no facts rather than erroring.
+        assert!(tournament.extract_stat_facts(&json!({})).is_empty());
     }
 
     #[test]

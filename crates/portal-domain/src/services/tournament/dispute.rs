@@ -584,7 +584,7 @@ where
     #[instrument(skip(self))]
     pub async fn list_disputes(
         &self,
-        statuses: Option<&[DisputeStatus]>,
+        statuses: Option<Vec<DisputeStatus>>,
         tournament_id: Option<TournamentId>,
         match_id: Option<TournamentMatchId>,
         priority: Option<DisputePriority>,

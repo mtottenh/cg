@@ -17,7 +17,7 @@ pub mod user;
 
 pub use audit::{AuditService, ChangeContext, ChangeDetector, FieldChange};
 pub use ban::BanService;
-pub use demo::{CatalogResult, DemoPlayerInput, DemoService};
+pub use demo::{CatalogResult, DemoPlayerInput, DemoService, ProcessUnlinkedResult};
 pub use discovered_match::DiscoveredMatchService;
 pub use eligibility_service::EligibilityService;
 pub use league::LeagueService;

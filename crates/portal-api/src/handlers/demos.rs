@@ -4,12 +4,13 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AssociateDemoRequest, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
     GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest,
-    PendingDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
+    PendingDemosQuery, ProcessUnlinkedDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest,
+    SubmitDemoStatsRequest,
 };
 use crate::dto::responses::{
     BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoDownloadResponse, DemoListResponse,
     DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoPlayerResponse, DemoResponse,
-    DemoStatusCountsResponse,
+    DemoStatusCountsResponse, ProcessUnlinkedDemosResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
@@ -651,6 +652,55 @@ pub async fn get_pending_demos(
     let responses: Vec<DemoResponse> = demos.into_iter().map(DemoResponse::from).collect();
 
     Ok(Json(DataResponse::new(responses, request_id)))
+}
+
+/// Run the auto-link pass over demos with stats but no match links.
+///
+/// Bounded batch backfill: examines up to `limit` ready demos that have no
+/// `demo_match_links` rows, resolves their player identities, and attempts
+/// to auto-link each to a tournament match by Steam-ID overlap within a
+/// time window.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/demos/process-unlinked",
+    params(
+        ("limit" = Option<i64>, Query, description = "Maximum number of demos to examine (default 100, max 500)"),
+    ),
+    responses(
+        (status = 200, description = "Backfill pass results", body = DataResponse<ProcessUnlinkedDemosResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn process_unlinked_demos(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Query(query): Query<ProcessUnlinkedDemosQuery>,
+) -> ApiResult<Json<DataResponse<ProcessUnlinkedDemosResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    // Check admin permission
+    let is_admin = state
+        .permission_service
+        .is_admin(auth.user_id)
+        .await
+        .unwrap_or(false);
+
+    if !is_admin {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+
+    let result = state.demo_service.process_unlinked_demos(limit).await?;
+
+    Ok(Json(DataResponse::new(
+        ProcessUnlinkedDemosResponse::from(result),
+        request_id,
+    )))
 }
 
 /// Get demos linked to a match.

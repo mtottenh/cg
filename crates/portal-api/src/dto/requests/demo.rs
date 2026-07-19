@@ -114,6 +114,13 @@ pub struct PendingDemosQuery {
     pub limit: Option<i64>,
 }
 
+/// Query parameters for the unlinked-demo backfill pass.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+pub struct ProcessUnlinkedDemosQuery {
+    /// Maximum number of demos to examine in this batch (default 100, max 500).
+    pub limit: Option<i64>,
+}
+
 /// Query parameters for getting demos linked to a match.
 #[derive(Debug, Clone, Deserialize, IntoParams, ToSchema)]
 pub struct GetDemosForMatchQuery {

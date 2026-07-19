@@ -79,6 +79,11 @@ pub trait DemoRepository: Send + Sync {
     /// Find demos pending stats processing.
     async fn find_pending_processing(&self, limit: i64) -> Result<Vec<Demo>, DomainError>;
 
+    /// Find ready demos (stats present) with no match links, oldest first.
+    ///
+    /// Feeds the auto-link backfill pass.
+    async fn find_ready_unlinked(&self, limit: i64) -> Result<Vec<Demo>, DomainError>;
+
     /// Count demos by status (for admin dashboard).
     async fn count_by_status(&self) -> Result<Vec<(DemoStatus, i64)>, DomainError>;
 
@@ -211,6 +216,12 @@ pub trait DemoPlayerRepository: Send + Sync {
         id: DemoPlayerId,
         player_id: PlayerId,
     ) -> Result<DemoPlayer, DomainError>;
+
+    /// Resolve unlinked demo player rows to portal player accounts by
+    /// matching `steam_id` against `players.steam_id_64`.
+    ///
+    /// Returns the number of rows that were linked.
+    async fn resolve_player_links(&self, demo_id: DemoId) -> Result<u64, DomainError>;
 
     /// Delete all player entries for a demo.
     async fn delete_by_demo(&self, demo_id: DemoId) -> Result<(), DomainError>;

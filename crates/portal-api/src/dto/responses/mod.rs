@@ -35,7 +35,7 @@ pub use demo::{
     BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoDownloadResponse,
     DemoIdListResponse, DemoListResponse, DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse,
     DemoMetadataResponse, DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse,
-    DemoValidationResultResponse, DemoWithPlayersResponse,
+    DemoValidationResultResponse, DemoWithPlayersResponse, ProcessUnlinkedDemosResponse,
 };
 pub use dispute::{
     DisputeListResponse, DisputeMessageResponse, DisputeResolutionResponse,

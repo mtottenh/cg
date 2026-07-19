@@ -47,6 +47,40 @@ services:
       postgres:
         condition: service_healthy
 
+  # Demo-ingest daemon (dev parity with the systemd deployment). Disabled by
+  # default because it needs a service API key with demos.* permissions:
+  #   1. create one:  cargo run -p portal-cli -- api-key create portal-scanner \
+  #                     --permissions demos.catalog,demos.read,demos.stats
+  #   2. put it in .env as SCANNER_PORTAL_API_KEY (or portal-scanner.credentials.dev)
+  #   3. start with:  docker compose --profile scanner up -d
+  # Points at the local MinIO bucket by default; set SCANNER_* vars in .env to
+  # target Linode object storage instead.
+  scanner:
+    build: .
+    container_name: portal-scanner
+    profiles: ["scanner"]
+    entrypoint: ["portal-scanner"]
+    environment:
+      PORTAL_API_URL: http://api:3000
+      # The scanner binary itself panics with a clear message when these are
+      # empty — do not use :? here, it breaks `docker compose config` for
+      # everyone even with the profile inactive.
+      PORTAL_API_KEY: ${SCANNER_PORTAL_API_KEY:-}
+      SCANNER_GAME_ID: ${SCANNER_GAME_ID:-}
+      SCANNER_S3_BUCKET: ${SCANNER_S3_BUCKET:-portal-demos}
+      SCANNER_S3_PREFIX: ${SCANNER_S3_PREFIX:-}
+      SCANNER_S3_ENDPOINT: ${SCANNER_S3_ENDPOINT:-http://minio:9000}
+      SCANNER_S3_REGION: ${SCANNER_S3_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${SCANNER_AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${SCANNER_AWS_SECRET_ACCESS_KEY:-minioadmin}
+      CS2_DEMO_SERVICE_URL: ${CS2_DEMO_SERVICE_URL:-https://demos.cs210mans.uk}
+      RUST_LOG: portal_scanner=info
+    depends_on:
+      api:
+        condition: service_started
+      minio:
+        condition: service_healthy
+
   minio:
     image: minio/minio:latest
     container_name: portal-minio

@@ -27,7 +27,7 @@ COPY .sqlx ./.sqlx
 
 # Build release binaries
 ENV SQLX_OFFLINE=true
-RUN cargo build --release -p portal-app -p portal-cli
+RUN cargo build --release -p portal-app -p portal-cli -p portal-scanner
 
 # Runtime image
 FROM debian:bookworm-slim
@@ -44,6 +44,7 @@ RUN apt-get update && apt-get install -y \
 # (see crates/portal-app/Cargo.toml `[[bin]] name = "portal"`).
 COPY --from=builder /app/target/release/portal /usr/local/bin/
 COPY --from=builder /app/target/release/portal-cli /usr/local/bin/
+COPY --from=builder /app/target/release/portal-scanner /usr/local/bin/
 
 # Copy migrations for runtime
 COPY migrations /app/migrations

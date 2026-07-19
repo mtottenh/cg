@@ -18,6 +18,21 @@ fn validate_username(username: &str) -> Result<(), validator::ValidationError> {
     }
 }
 
+/// Reject emails in the reserved Steam placeholder domain.
+///
+/// `steam_<id64>@steam.invalid` addresses are derivable from public
+/// SteamID64s and are used internally to provision Steam sign-in accounts.
+/// Letting a registration claim one would let the registrant capture that
+/// Steam user's first sign-in (pre-registration account takeover).
+fn validate_email_not_reserved(email: &str) -> Result<(), validator::ValidationError> {
+    if portal_domain::services::is_reserved_placeholder_email(email) {
+        let mut err = validator::ValidationError::new("reserved_email_domain");
+        err.message = Some("Email addresses in the steam.invalid domain are reserved".into());
+        return Err(err);
+    }
+    Ok(())
+}
+
 /// Request body for user registration.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct RegisterRequest {
@@ -29,6 +44,7 @@ pub struct RegisterRequest {
 
     /// Email address.
     #[validate(email(message = "Invalid email address"))]
+    #[validate(custom(function = "validate_email_not_reserved"))]
     #[schema(example = "john@example.com")]
     pub email: String,
 

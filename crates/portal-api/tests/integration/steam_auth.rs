@@ -509,3 +509,90 @@ async fn test_steam_login_heals_placeholder_display_name() {
         "a non-placeholder display name must never be auto-overwritten"
     );
 }
+
+// ===========================================
+// Pre-registration takeover (launch blocker #1 regression)
+// ===========================================
+
+/// An attacker who pre-registers a *local* account owning the victim's
+/// deterministic `steam_<id64>@steam.invalid` placeholder address must
+/// NOT capture the victim's first Steam sign-in. The recovery branch is
+/// restricted to accounts the Steam flow itself provisioned.
+#[tokio::test]
+async fn test_prereg_local_account_cannot_capture_steam_signin() {
+    let app = TestApp::new_with_steam_verifier(MockSteamVerifier::valid()).await;
+
+    // Attacker claims the victim's placeholder email with a
+    // password-controlled local account (inserted directly — the register
+    // API now rejects @steam.invalid, this simulates legacy bad data).
+    let attacker = portal_test::builders::UserBuilder::new()
+        .username("attacker_prereg")
+        .email(format!("steam_{TEST_STEAM_ID}@steam.invalid"))
+        .build_persisted(app.pool())
+        .await;
+
+    // Victim signs in through Steam for the first time.
+    let response = app
+        .get(&callback_uri(TEST_STEAM_ID, &default_return_to()))
+        .await;
+
+    // The sign-in must NOT be linked to the attacker's account. With the
+    // placeholder email unavailable, the flow errors (Conflict) instead
+    // of silently recovering the attacker's account.
+    assert_ne!(
+        response.status,
+        StatusCode::FOUND,
+        "sign-in must not succeed against a pre-registered local account"
+    );
+
+    // The attacker's account was not linked to the victim's SteamID.
+    let (auth_provider,): (String,) =
+        sqlx::query_as("SELECT auth_provider FROM users WHERE id = $1")
+            .bind(attacker.id)
+            .fetch_one(app.pool())
+            .await
+            .expect("attacker user row");
+    assert_eq!(auth_provider, "local");
+
+    let (linked,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM players WHERE steam_id_64 = $1")
+        .bind(TEST_STEAM_ID)
+        .fetch_one(app.pool())
+        .await
+        .expect("count");
+    assert_eq!(
+        linked, 0,
+        "victim's SteamID64 must not be attached to any pre-registered account"
+    );
+}
+
+/// A banned Steam-provisioned account must not be recoverable through the
+/// placeholder-email branch either.
+#[tokio::test]
+async fn test_steam_placeholder_recovery_rejects_banned_account() {
+    let app = TestApp::new_with_steam_verifier(MockSteamVerifier::valid()).await;
+
+    // A partially provisioned steam account (user row only, no player) that
+    // has since been banned.
+    let user = portal_test::builders::UserBuilder::new()
+        .username(format!("steam_{TEST_STEAM_ID}"))
+        .email(format!("steam_{TEST_STEAM_ID}@steam.invalid"))
+        .banned()
+        .build_persisted(app.pool())
+        .await;
+    sqlx::query("UPDATE users SET auth_provider = 'steam', password_hash = NULL WHERE id = $1")
+        .bind(user.id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+    // Remove the player row to force the email-recovery branch.
+    sqlx::query("DELETE FROM players WHERE user_id = $1")
+        .bind(user.id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    let response = app
+        .get(&callback_uri(TEST_STEAM_ID, &default_return_to()))
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}

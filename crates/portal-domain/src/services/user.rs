@@ -7,9 +7,25 @@ use crate::jwt::generate_access_token;
 use crate::repositories::{
     CreatePlayer, CreateUser, PlayerRepository, UpdatePlayer, UserRepository,
 };
-use portal_core::{DomainError, PlayerId, UserId};
+use portal_core::{DomainError, FieldError, PlayerId, UserId, ValidationError};
 use std::sync::Arc;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
+
+/// Reserved placeholder-email domain used for Steam-provisioned accounts
+/// (`steam_<id64>@steam.invalid`). The address is derivable from a public
+/// SteamID64, so it must never be claimable through registration or any
+/// other user-supplied email path — otherwise an attacker could pre-register
+/// a victim's placeholder address and capture their first Steam sign-in.
+const STEAM_PLACEHOLDER_EMAIL_DOMAIN: &str = "@steam.invalid";
+
+/// Whether an email address lies in the reserved Steam placeholder domain.
+#[must_use]
+pub fn is_reserved_placeholder_email(email: &str) -> bool {
+    email
+        .trim()
+        .to_ascii_lowercase()
+        .ends_with(STEAM_PLACEHOLDER_EMAIL_DOMAIN)
+}
 
 /// Command for registering a new user.
 #[derive(Debug, Clone)]
@@ -158,6 +174,20 @@ where
         &self,
         cmd: RegisterUserCommand,
     ) -> Result<(User, Player), DomainError> {
+        // Reject reserved Steam placeholder addresses outright (defense in
+        // depth — the API DTO validation also rejects them). Allowing one
+        // through would let the registrant capture a Steam user's first
+        // sign-in via the email-recovery branch of `login_with_steam`.
+        if is_reserved_placeholder_email(&cmd.email) {
+            return Err(DomainError::Validation(ValidationError::field(
+                FieldError::new(
+                    "email",
+                    "email addresses in the reserved steam.invalid domain cannot be registered",
+                    "reserved_domain",
+                ),
+            )));
+        }
+
         // Check if username is already taken
         if self.user_repo.username_exists(&cmd.username).await? {
             return Err(DomainError::Conflict(format!(
@@ -266,6 +296,33 @@ where
         // on the next sign-in instead of conflicting forever.
         let email = format!("steam_{steam_id_64}@steam.invalid");
         if let Some(user) = self.user_repo.find_by_email(&email).await? {
+            // Recovery is strictly for accounts *this* flow provisioned.
+            // The placeholder address is derivable from a public SteamID64,
+            // so a non-steam owner of it means someone claimed the address
+            // through another path (pre-registration account takeover).
+            // We error rather than provision a fresh account: the email
+            // column is unique, so a fresh account with the rightful
+            // placeholder address is impossible, and registration now
+            // rejects @steam.invalid — this state is legacy bad data that
+            // needs an admin, not a silent link to an attacker's account.
+            if user.auth_provider != "steam" {
+                warn!(
+                    user_id = %user.id,
+                    steam_id_64,
+                    auth_provider = %user.auth_provider,
+                    "Steam placeholder email is owned by a non-steam account; refusing recovery"
+                );
+                return Err(DomainError::Conflict(
+                    "Steam sign-in could not be completed for this account; contact support"
+                        .to_string(),
+                ));
+            }
+            if user.status != UserStatus::Active {
+                return Err(DomainError::Forbidden(format!(
+                    "account is {}",
+                    user.status
+                )));
+            }
             let player = self
                 .recover_partial_steam_account(&user, steam_id_64)
                 .await?;

@@ -34,4 +34,6 @@ pub use player_game_profile::PlayerGameProfileService;
 pub use steam_tracking::SteamTrackingService;
 pub use system_settings::SystemSettingsService;
 pub use tournament::{BracketGenerator, GeneratedBracket, TournamentService};
-pub use user::{AuthResult, LoginCommand, RegisterUserCommand, UserService};
+pub use user::{
+    AuthResult, LoginCommand, RegisterUserCommand, UserService, is_reserved_placeholder_email,
+};

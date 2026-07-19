@@ -603,3 +603,38 @@ async fn test_missing_auth_header_rejected() {
     let response = app.get("/v1/users/me").await;
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn test_register_rejects_reserved_steam_placeholder_email() {
+    let app = TestApp::new().await;
+
+    // steam_<id64>@steam.invalid is derivable from a public SteamID64 and
+    // reserved for Steam-provisioned accounts — registering it would let
+    // an attacker capture that Steam user's first sign-in.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/register",
+            &json!({
+                "username": "steamsquatter",
+                "email": "steam_76561197960287930@steam.invalid",
+                "password": "SecurePass123!",
+                "display_name": "Steam Squatter"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    // Case variations are rejected too.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/register",
+            &json!({
+                "username": "steamsquatter2",
+                "email": "steam_76561197960287930@STEAM.INVALID",
+                "password": "SecurePass123!",
+                "display_name": "Steam Squatter"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}

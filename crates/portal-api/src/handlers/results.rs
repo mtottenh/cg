@@ -220,6 +220,7 @@ pub async fn list_result_claims(
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Cannot confirm own claim", body = ApiError),
         (status = 404, description = "Claim not found", body = ApiError),
+        (status = 409, description = "Claim already resolved (e.g. concurrent confirm)", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "results"

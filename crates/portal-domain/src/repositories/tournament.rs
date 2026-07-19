@@ -934,6 +934,15 @@ pub trait TournamentStandingsRepository: Send + Sync {
         standing: UpdateTournamentStanding,
     ) -> Result<TournamentStanding, DomainError>;
 
+    /// Reverse a previously applied [`Self::update_after_match`] delta
+    /// (decrements `matches_played` and subtracts every delta). Used by
+    /// the admin revert/reapply progression path so an overturned result
+    /// does not leave its points behind.
+    async fn revert_after_match(
+        &self,
+        standing: UpdateTournamentStanding,
+    ) -> Result<TournamentStanding, DomainError>;
+
     /// Recalculate positions for a bracket.
     async fn recalculate_positions(
         &self,
@@ -1179,6 +1188,11 @@ pub trait ResultClaimRepository: Send + Sync {
     ) -> Result<ResultClaim, DomainError>;
 
     /// Update result claim status.
+    ///
+    /// Guarded transition: only a claim that is currently `pending` can
+    /// move (dispute/cancel/supersede all act on pending claims).
+    /// Returns [`DomainError::Conflict`] when the claim was already
+    /// resolved by a concurrent confirm/dispute/cancel.
     async fn update_status(
         &self,
         id: ResultClaimId,
@@ -1186,6 +1200,9 @@ pub trait ResultClaimRepository: Send + Sync {
     ) -> Result<ResultClaim, DomainError>;
 
     /// Confirm a result claim.
+    ///
+    /// Guarded on `status = 'pending'`; returns
+    /// [`DomainError::Conflict`] if the claim was already resolved.
     async fn confirm(
         &self,
         id: ResultClaimId,
@@ -1209,6 +1226,13 @@ pub trait ResultClaimRepository: Send + Sync {
     /// claim marked Confirmed but the match still Pending, which
     /// dangled FK targets for the bracket progression saga. See audit
     /// item I5.
+    ///
+    /// The claim UPDATE is guarded on `status = 'pending'`: when two
+    /// confirms race, exactly one wins and the other receives
+    /// [`DomainError::Conflict`] (nothing is written for the loser —
+    /// the whole transaction rolls back). This is what prevents the
+    /// completion saga from running twice and double-counting
+    /// round-robin/swiss standings.
     async fn confirm_and_apply_to_match(
         &self,
         id: ResultClaimId,

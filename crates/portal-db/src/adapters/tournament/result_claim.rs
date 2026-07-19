@@ -205,19 +205,25 @@ impl ResultClaimRepository for PgResultClaimRepository {
         id: ResultClaimId,
         status: ClaimStatus,
     ) -> Result<ResultClaim, DomainError> {
+        // Guarded transition: every caller moves a claim *out of*
+        // pending (dispute, cancel). Racing a concurrent confirm must
+        // lose cleanly instead of overwriting a resolved claim.
         let row = sqlx::query_as::<_, ResultClaimRow>(
             r"
             UPDATE result_claims
             SET status = $2, updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND status = 'pending'
             RETURNING *
             ",
         )
         .bind(id.as_uuid())
         .bind(status.to_string())
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(format!("Failed to update result claim status: {e}")))?;
+        .map_err(|e| DomainError::Internal(format!("Failed to update result claim status: {e}")))?
+        .ok_or_else(|| {
+            DomainError::Conflict("Result claim has already been resolved".to_string())
+        })?;
 
         row_to_domain(row)
     }
@@ -238,7 +244,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
                 confirmed_by_user_id = $3,
                 was_auto_confirmed = $4,
                 updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND status = 'pending'
             RETURNING *
             ",
         )
@@ -246,9 +252,12 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(confirmed_by_registration_id.as_uuid())
         .bind(confirmed_by_user_id.as_uuid())
         .bind(was_auto)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(format!("Failed to confirm result claim: {e}")))?;
+        .map_err(|e| DomainError::Internal(format!("Failed to confirm result claim: {e}")))?
+        .ok_or_else(|| {
+            DomainError::Conflict("Result claim has already been resolved".to_string())
+        })?;
 
         row_to_domain(row)
     }
@@ -279,6 +288,11 @@ impl ResultClaimRepository for PgResultClaimRepository {
             .await
             .map_err(|e| DomainError::Internal(format!("Failed to begin transaction: {e}")))?;
 
+        // Status guard: only a pending claim can be confirmed. When two
+        // confirms (or a confirm and the auto-confirm sweep) race, the
+        // loser matches zero rows, the transaction rolls back with a
+        // Conflict, and the completion saga never runs twice — which is
+        // what protects round-robin/swiss standings from double deltas.
         let claim_row = sqlx::query_as::<_, ResultClaimRow>(
             r"
             UPDATE result_claims
@@ -288,7 +302,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
                 confirmed_by_user_id = $3,
                 was_auto_confirmed = $4,
                 updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND status = 'pending'
             RETURNING *
             ",
         )
@@ -296,9 +310,12 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(confirmed_by_registration_id.as_uuid())
         .bind(confirmed_by_user_id.as_uuid())
         .bind(was_auto)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| DomainError::Internal(format!("Failed to confirm result claim: {e}")))?;
+        .map_err(|e| DomainError::Internal(format!("Failed to confirm result claim: {e}")))?
+        .ok_or_else(|| {
+            DomainError::Conflict("Result claim has already been resolved".to_string())
+        })?;
 
         sqlx::query(
             r"

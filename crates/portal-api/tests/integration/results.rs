@@ -1235,3 +1235,277 @@ async fn test_demo_link_auto_matched_with_confidence_score() {
 
     response.assert_status(StatusCode::CREATED);
 }
+
+// ============================================================================
+// CONCURRENT CONFIRM TESTS (launch blocker #6 regression)
+// ============================================================================
+
+/// Create a started round-robin tournament (2 players: dev + opponent),
+/// with its single match in `in_progress`.
+/// Returns (tournament_id, match_id, p1_reg, p2_reg, opponent_token, bracket_id).
+pub async fn create_rr_match_in_progress(
+    app: &TestApp,
+    slug: &str,
+) -> (String, String, String, String, String, Uuid) {
+    let game_id = get_game_id(app.pool(), "cs2").await;
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id.to_string(),
+                "name": format!("RR Confirm Test {}", slug),
+                "slug": slug,
+                "format": "round_robin",
+                "participant_type": "individual",
+                "min_participants": 2,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "self_scheduled",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let tournament_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{tournament_id}/open-registration"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Dev registers themselves; opponent registered directly.
+    let reg1 = register_player(app, &tournament_id, "Player1").await;
+    approve_registration(app, &tournament_id, &reg1).await;
+    let (user2_id, player2_id) =
+        crate::tournaments::create_test_player(app, &format!("rrp2_{slug}")).await;
+    let _reg2 = crate::tournaments::insert_test_registration(
+        app,
+        &tournament_id,
+        player2_id,
+        user2_id,
+        "Player2",
+    )
+    .await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
+            &json!({ "algorithm": "random" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Single RR match for 2 participants.
+    let response = app
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let match_data = &body["data"].as_array().unwrap()[0];
+    let match_id = match_data["id"].as_str().unwrap().to_string();
+    let p1_reg = match_data["participant1_registration_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let p2_reg = match_data["participant2_registration_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let dev_user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    assign_role_to_user(app.pool(), dev_user_id, "platform_admin").await;
+    transition_match_to_ready(app, &tournament_id, &match_id).await;
+    transition_match_to_in_progress(app, &tournament_id, &match_id).await;
+
+    let opponent_token = create_test_token(
+        user2_id,
+        player2_id,
+        &format!("rrp2_{slug}"),
+        TEST_JWT_SECRET,
+    );
+
+    let (bracket_id,): (Uuid,) =
+        sqlx::query_as("SELECT bracket_id FROM tournament_matches WHERE id = $1")
+            .bind(Uuid::parse_str(&match_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+
+    (
+        tournament_id,
+        match_id,
+        p1_reg,
+        p2_reg,
+        opponent_token,
+        bracket_id,
+    )
+}
+
+/// Two concurrent confirms of the same claim must complete the match and
+/// count standings exactly once — one racer wins, the other gets a
+/// Conflict (or fails the pending pre-check), and only one completion
+/// saga runs.
+#[tokio::test]
+async fn test_concurrent_confirms_count_standings_once() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, p1_reg, p2_reg, opponent_token, bracket_id) =
+        create_rr_match_in_progress(&app, "rr-concurrent-confirm").await;
+
+    // Dev (participant 1's registrant) claims a 2-0 win for participant 1.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Opponent fires two confirms concurrently.
+    let confirm_uri = format!("/v1/matches/{match_id}/result/{claim_id}/confirm");
+    let (r1, r2) = tokio::join!(
+        app.post_with_token(&confirm_uri, &opponent_token),
+        app.post_with_token(&confirm_uri, &opponent_token),
+    );
+
+    let successes = [r1.status, r2.status]
+        .iter()
+        .filter(|s| **s == StatusCode::OK)
+        .count();
+    assert_eq!(
+        successes, 1,
+        "exactly one confirm must win ({:?} / {:?})",
+        r1.status, r2.status
+    );
+    for status in [r1.status, r2.status] {
+        assert!(
+            status == StatusCode::OK
+                || status == StatusCode::CONFLICT
+                || status == StatusCode::BAD_REQUEST,
+            "loser must fail with conflict/invalid-state, got {status}"
+        );
+    }
+
+    // Standings counted exactly once: winner 1-0 with 3 points, loser 0-1
+    // with 0 points, one match played each.
+    let rows: Vec<(Uuid, i32, i32, i32)> = sqlx::query_as(
+        "SELECT registration_id, matches_played, matches_won, points
+         FROM tournament_standings WHERE bracket_id = $1",
+    )
+    .bind(bracket_id)
+    .fetch_all(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    for (reg_id, played, won, points) in &rows {
+        assert_eq!(*played, 1, "matches_played must be counted once");
+        if reg_id.to_string() == p1_reg {
+            assert_eq!((*won, *points), (1, 3), "winner counted once");
+        } else {
+            assert_eq!(reg_id.to_string(), p2_reg);
+            assert_eq!((*won, *points), (0, 0), "loser counted once");
+        }
+    }
+
+    // Exactly one completion saga ran for the match.
+    let (sagas,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM saga_executions WHERE match_id = $1 AND saga_type = 'match_completion'",
+    )
+    .bind(Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(sagas, 1, "the completion saga must run exactly once");
+}
+
+/// Deterministic proof of the DB-level guard: once a claim is resolved,
+/// the guarded UPDATEs match zero rows and surface Conflict, regardless
+/// of request interleaving.
+#[tokio::test]
+async fn test_resolved_claim_updates_conflict_at_repo_level() {
+    use portal_domain::repositories::tournament::ResultClaimRepository as _;
+
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, p1_reg, _p2_reg, opponent_token, _bracket_id) =
+        create_rr_match_in_progress(&app, "rr-repo-guard").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Confirm once through the API.
+    let response = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/result/{claim_id}/confirm"),
+            &opponent_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // A second confirm (as would happen if two racers both passed the
+    // service-level pending pre-check) hits the status guard and gets
+    // Conflict — nothing is written.
+    let repo = portal_db::PgResultClaimRepository::new(app.pool().clone());
+    let claim_uuid: portal_core::ResultClaimId = claim_id.parse().unwrap();
+    let p1_reg_id: portal_core::TournamentRegistrationId = p1_reg.parse().unwrap();
+    let match_uuid: portal_core::TournamentMatchId = match_id.parse().unwrap();
+    let user_id = portal_core::UserId::new();
+
+    let err = repo
+        .confirm_and_apply_to_match(
+            claim_uuid, p1_reg_id, user_id, false, match_uuid, p1_reg_id, p1_reg_id, 2, 0,
+        )
+        .await
+        .expect_err("second confirm must be rejected");
+    assert!(
+        matches!(err, portal_core::DomainError::Conflict(_)),
+        "expected Conflict, got {err:?}"
+    );
+
+    // Status transitions out of pending are equally guarded.
+    let err = repo
+        .update_status(
+            claim_uuid,
+            portal_domain::entities::result_claim::ClaimStatus::Disputed,
+        )
+        .await
+        .expect_err("disputing a resolved claim must be rejected");
+    assert!(matches!(err, portal_core::DomainError::Conflict(_)));
+}

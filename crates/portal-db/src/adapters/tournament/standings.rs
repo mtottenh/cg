@@ -113,6 +113,45 @@ impl TournamentStandingsRepository for PgTournamentStandingsRepository {
         Ok(TournamentStanding::from(row))
     }
 
+    async fn revert_after_match(
+        &self,
+        update: UpdateTournamentStanding,
+    ) -> Result<TournamentStanding, DomainError> {
+        let now = Utc::now();
+
+        // Exact inverse of update_after_match: same deltas, subtracted.
+        let row = sqlx::query_as::<_, TournamentStandingRow>(
+            r"
+            UPDATE tournament_standings SET
+                matches_played = matches_played - 1,
+                matches_won = matches_won - $3,
+                matches_lost = matches_lost - $4,
+                matches_drawn = matches_drawn - $5,
+                game_wins = game_wins - $6,
+                game_losses = game_losses - $7,
+                game_differential = game_differential - ($6 - $7),
+                points = points - $8,
+                updated_at = $9
+            WHERE bracket_id = $1 AND registration_id = $2
+            RETURNING *
+            ",
+        )
+        .bind(update.bracket_id.as_uuid())
+        .bind(update.registration_id.as_uuid())
+        .bind(update.matches_won_delta)
+        .bind(update.matches_lost_delta)
+        .bind(update.matches_drawn_delta)
+        .bind(update.game_wins_delta)
+        .bind(update.game_losses_delta)
+        .bind(update.points_delta)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentStanding::from(row))
+    }
+
     async fn recalculate_positions(
         &self,
         bracket_id: TournamentBracketId,

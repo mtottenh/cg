@@ -20,7 +20,7 @@ use crate::entities::tournament::{
 use crate::repositories::tournament::{
     CreateTournamentBracket, ParticipantSlot, TournamentBracketRepository,
     TournamentMatchRepository, TournamentRegistrationRepository, TournamentStageRepository,
-    TournamentStandingsRepository,
+    TournamentStandingsRepository, UpdateTournamentStanding,
 };
 
 use super::bracket_generator::groups;
@@ -323,6 +323,13 @@ where
     }
 
     /// Update standings after a match.
+    ///
+    /// Persists the same delta-based updates the match-completion saga
+    /// uses (`update_after_match`), then re-ranks. The previous version
+    /// mutated an in-memory `Vec` and only called
+    /// `recalculate_positions`, which re-ranked *unchanged* stored
+    /// points — the admin/dispute-reapply path returned standings the
+    /// database never contained.
     async fn update_standings(
         &self,
         bracket: &TournamentBracket,
@@ -330,56 +337,54 @@ where
         winner_id: TournamentRegistrationId,
         loser_id: TournamentRegistrationId,
     ) -> Result<Vec<TournamentStanding>, DomainError> {
-        // Get or create standings for both participants
-        let mut standings = self.standing_repo.list_by_bracket(bracket.id).await?;
+        let (winner_delta, loser_delta) =
+            Self::standings_deltas(bracket, match_, winner_id, loser_id);
 
-        // Find and update winner standing
-        if let Some(winner_standing) = standings
-            .iter_mut()
-            .find(|s| s.registration_id == winner_id)
+        self.standing_repo.update_after_match(winner_delta).await?;
+        self.standing_repo.update_after_match(loser_delta).await?;
+
+        // Re-rank on the freshly persisted points and return the
+        // standings exactly as stored.
+        self.standing_repo.recalculate_positions(bracket.id).await
+    }
+
+    /// Build the winner/loser standings deltas for a match result —
+    /// shared between apply (`update_after_match`) and revert
+    /// (`revert_after_match`) so they always mirror each other.
+    fn standings_deltas(
+        bracket: &TournamentBracket,
+        match_: &TournamentMatch,
+        winner_id: TournamentRegistrationId,
+        loser_id: TournamentRegistrationId,
+    ) -> (UpdateTournamentStanding, UpdateTournamentStanding) {
+        let (winner_score, loser_score) = if match_.participant1_registration_id == Some(winner_id)
         {
-            winner_standing.matches_played += 1;
-            winner_standing.matches_won += 1;
-            winner_standing.game_wins += match_.participant1_score.max(match_.participant2_score);
-            winner_standing.game_losses += match_.participant1_score.min(match_.participant2_score);
-            winner_standing.game_differential =
-                winner_standing.game_wins - winner_standing.game_losses;
-            winner_standing.points += 3; // 3 points for win
+            (match_.participant1_score, match_.participant2_score)
+        } else {
+            (match_.participant2_score, match_.participant1_score)
+        };
 
-            // Update head-to-head
-            winner_standing.head_to_head.record_win(loser_id);
-        }
-
-        // Find and update loser standing
-        if let Some(loser_standing) = standings.iter_mut().find(|s| s.registration_id == loser_id) {
-            loser_standing.matches_played += 1;
-            loser_standing.matches_lost += 1;
-            loser_standing.game_wins += match_.participant1_score.min(match_.participant2_score);
-            loser_standing.game_losses += match_.participant1_score.max(match_.participant2_score);
-            loser_standing.game_differential =
-                loser_standing.game_wins - loser_standing.game_losses;
-            // 0 points for loss
-
-            // Update head-to-head
-            loser_standing.head_to_head.record_loss(winner_id);
-        }
-
-        // Recalculate positions
-        standings.sort_by(|a, b| {
-            // Sort by points desc, then game differential desc, then head-to-head
-            b.points
-                .cmp(&a.points)
-                .then_with(|| b.game_differential.cmp(&a.game_differential))
-        });
-
-        for (i, standing) in standings.iter_mut().enumerate() {
-            standing.position = (i + 1) as i32;
-        }
-
-        // Persist updates via recalculate_positions
-        self.standing_repo.recalculate_positions(bracket.id).await?;
-
-        Ok(standings)
+        let winner_delta = UpdateTournamentStanding {
+            bracket_id: bracket.id,
+            registration_id: winner_id,
+            matches_won_delta: 1,
+            matches_lost_delta: 0,
+            matches_drawn_delta: 0,
+            game_wins_delta: winner_score,
+            game_losses_delta: loser_score,
+            points_delta: 3, // 3 points for a win
+        };
+        let loser_delta = UpdateTournamentStanding {
+            bracket_id: bracket.id,
+            registration_id: loser_id,
+            matches_won_delta: 0,
+            matches_lost_delta: 1,
+            matches_drawn_delta: 0,
+            game_wins_delta: loser_score,
+            game_losses_delta: winner_score,
+            points_delta: 0,
+        };
+        (winner_delta, loser_delta)
     }
 
     /// Find matches that are now ready to start.
@@ -851,9 +856,36 @@ where
     }
 
     /// Revert progression for a match (used when result is overturned).
+    ///
+    /// For round-robin/swiss brackets this subtracts the recorded
+    /// result's standings deltas (the exact inverse of what
+    /// `update_standings` applied), so a subsequent reapply with a
+    /// different winner does not double-count. Elimination-bracket slot
+    /// clearing still needs dedicated infrastructure and is logged only.
     #[instrument(skip(self))]
     pub async fn revert_progression(&self, match_id: TournamentMatchId) -> Result<(), DomainError> {
         let match_ = self.get_match(match_id).await?;
+        let bracket = self.get_bracket(match_.bracket_id).await?;
+
+        // Subtract the previously persisted standings deltas, derived
+        // from the winner/loser recorded on the match row.
+        if matches!(
+            bracket.bracket_type,
+            BracketType::RoundRobin | BracketType::Swiss
+        ) && let (Some(winner_id), Some(loser_id)) =
+            (match_.winner_registration_id, match_.loser_registration_id)
+        {
+            let (winner_delta, loser_delta) =
+                Self::standings_deltas(&bracket, &match_, winner_id, loser_id);
+            self.standing_repo.revert_after_match(winner_delta).await?;
+            self.standing_repo.revert_after_match(loser_delta).await?;
+            self.standing_repo.recalculate_positions(bracket.id).await?;
+            info!(
+                match_id = %match_id,
+                winner = %winner_id,
+                "Reverted standings deltas for recorded result"
+            );
+        }
 
         // If winner advanced, we need to clear that participant from the target match
         // This is a complex operation that may require additional repository methods

@@ -16,6 +16,7 @@ mod leagues;
 mod lifecycle_automation;
 mod match_completion_saga;
 mod players;
+mod progression;
 mod result_review;
 mod results;
 mod roles;

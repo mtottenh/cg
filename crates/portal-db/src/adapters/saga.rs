@@ -109,7 +109,20 @@ impl SagaExecutionRepository for PgSagaExecutionRepository {
         .bind(saga.max_retries)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(format!("Failed to create saga: {e}")))?;
+        .map_err(|e| {
+            // Partial unique index uq_saga_executions_live_per_match:
+            // another live saga of this type already exists for the match
+            // (e.g. two racing confirms). Surface as Conflict so callers
+            // return 409 instead of double-running the completion.
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.constraint() == Some("uq_saga_executions_live_per_match")
+            {
+                return DomainError::Conflict(
+                    "A completion is already in progress for this match".to_string(),
+                );
+            }
+            DomainError::Internal(format!("Failed to create saga: {e}"))
+        })?;
 
         row_to_saga(row)
     }

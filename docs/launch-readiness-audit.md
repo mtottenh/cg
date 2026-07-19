@@ -4,6 +4,15 @@ Scope: test-coverage inventory (backend + frontend e2e) and the critical path to
 live today with team creation, tournament setup, bracket generation, match setup,
 evidence upload, and demo parsing.
 
+> **Status update (same day):** the critical path below has been executed.
+> Backend: 455 → 470+ integration tests, all green (`cargo test -p portal-api
+> --features test-utils`). Frontend e2e: 197 passed / 0 failed / 21
+> legitimately-gated skips (was: 1 failure + ~60 silent skips from broken
+> seeding). CI now runs tests on every push/PR; the scanner ships in the
+> Docker image and has an opt-in compose profile. The external demo service
+> answered 200 (~3 s) from this machine. Remaining "should do" items are
+> listed at the bottom and are unchanged.
+
 ## Ground truth established today
 
 - **Plain `cargo test` runs ZERO integration tests.** The integration target declares

@@ -36,6 +36,8 @@ pub enum VetoAuthorizationRole {
     Delegate,
     /// User is a tournament admin.
     TournamentAdmin,
+    /// User is the registered player of an individual registration.
+    Player,
 }
 
 // =============================================================================
@@ -105,12 +107,24 @@ where
             .await?
             .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
 
-        // Get team_season_id (required for team registrations)
-        let team_season_id = registration.team_season_id.ok_or_else(|| {
-            DomainError::NotAuthorized(
-                "Individual registrations do not support veto delegation".to_string(),
-            )
-        })?;
+        // Individual registrations have no team_season: the registered
+        // player acts for themself (admins can always act). Previously this
+        // was a hard error, which made veto unusable in individual
+        // tournaments.
+        let Some(team_season_id) = registration.team_season_id else {
+            if self.is_tournament_admin(user_id).await? {
+                debug!("User authorized as tournament admin (individual registration)");
+                return Ok(VetoAuthorizationRole::TournamentAdmin);
+            }
+            if registration.player_id == Some(player_id) {
+                debug!("User authorized as the registered player");
+                return Ok(VetoAuthorizationRole::Player);
+            }
+            return Err(DomainError::NotAuthorized(
+                "Only the registered player can perform veto actions for an individual registration"
+                    .to_string(),
+            ));
+        };
 
         // Check authorization in order of precedence
         // 1. Tournament admin (can always act)

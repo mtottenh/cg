@@ -1149,9 +1149,14 @@ const LOCAL_EVIDENCE_MAX_BYTES: usize = 64 * 1024 * 1024;
 ///   non-UTF-8 paths are refused outright. After joining we canonicalize the
 ///   parent directory and verify it stays inside `state.uploads_path`.
 /// * **Size capped** — bodies above [`LOCAL_EVIDENCE_MAX_BYTES`] are rejected.
+// No bearer auth: this endpoint emulates an S3 presigned PUT, and clients
+// upload to it exactly as they would to S3 — with NO Authorization header
+// (attaching one to a real presigned URL breaks SigV4, so the frontend
+// rightly never sends it). The capability model is the same as a presigned
+// URL's: the path embeds a server-generated UUIDv7 that only the
+// initiate-upload caller was told. Dev-only — hard-disabled in S3 mode.
 pub async fn local_evidence_upload(
     State(state): State<EvidenceState>,
-    _auth: AuthenticatedUser,
     axum::extract::Path(path): axum::extract::Path<String>,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {

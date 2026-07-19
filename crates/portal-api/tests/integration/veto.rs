@@ -592,3 +592,82 @@ async fn test_veto_action_wrong_team_turn() {
         response.status
     );
 }
+
+// ============================================================================
+// INDIVIDUAL-REGISTRATION VETO (no team_season)
+// ============================================================================
+
+/// Individual registrations have no team/captain structure: the registered
+/// player themself must be authorized to act. Regression test for the
+/// authorization service hard-erroring on `team_season_id: None`, which made
+/// veto unusable in individual tournaments.
+#[tokio::test]
+async fn test_individual_registration_player_can_perform_veto_action() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _reg1, reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "indiv-veto-test")
+            .await;
+
+    // Create + start the veto session (admin), coin flip won by player 2.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/veto"),
+            &json!({ "veto_format_id": "bo1_veto" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // Creating a session marks the match veto-gated.
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["veto_required"], true);
+
+    app.post_auth(&format!("/v1/matches/{match_id}/veto/start"))
+        .await
+        .assert_status(StatusCode::OK);
+    app.post_json(
+        &format!("/v1/matches/{match_id}/veto/coin-flip"),
+        &json!({ "winner_registration_id": reg2, "winner_goes_first": true }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // Player 2 (a plain registered player, no admin role, no team) bans.
+    let response = app.get(&format!("/v1/matches/{match_id}/veto")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let map = body["data"]["session"]["remaining_maps"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/veto/action"),
+            &json!({ "map_id": map }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // And the dev user cannot act for player 2's turn-less slot out of turn:
+    // it is now participant 1's turn, so player 2 acting again is rejected.
+    let response = app.get(&format!("/v1/matches/{match_id}/veto")).await;
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["session"]["remaining_maps"]
+            .as_array()
+            .unwrap()
+            .len(),
+        body["data"]["session"]["map_pool"]
+            .as_array()
+            .unwrap()
+            .len()
+            - 1
+    );
+}

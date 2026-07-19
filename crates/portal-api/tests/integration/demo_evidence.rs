@@ -454,7 +454,7 @@ async fn test_live_demo_stats_service_roundtrip() {
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["map_name"], "de_nuke");
-    let total =
-        body["data"]["team1_score"].as_i64().unwrap() + body["data"]["team2_score"].as_i64().unwrap();
+    let total = body["data"]["team1_score"].as_i64().unwrap()
+        + body["data"]["team2_score"].as_i64().unwrap();
     assert_eq!(total, 14, "de_nuke demo finished 13-1");
 }

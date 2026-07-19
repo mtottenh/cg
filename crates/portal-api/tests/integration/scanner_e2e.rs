@@ -18,7 +18,9 @@ use portal_test::prelude::*;
 use tokio::sync::RwLock;
 
 use crate::common::TestApp;
-use crate::common::minio::{create_bucket_and_upload, create_s3_client, start_minio};
+use crate::common::minio::{
+    create_bucket, create_bucket_and_upload, create_s3_client, start_minio,
+};
 
 // ============================================================================
 // TEST INFRASTRUCTURE
@@ -392,13 +394,8 @@ async fn test_scanner_e2e_multiple_demos() {
     let (_minio, minio_endpoint) = start_minio().await;
     let s3_client = create_s3_client(&minio_endpoint).await;
 
-    // Create bucket and upload 3 different stubs
-    s3_client
-        .create_bucket()
-        .bucket(BUCKET_NAME)
-        .send()
-        .await
-        .expect("Failed to create bucket");
+    // Create bucket (retry-hardened helper) and upload 3 different stubs
+    create_bucket(&s3_client, BUCKET_NAME).await;
 
     for name in &[
         "demos/match_001.dem.bz2",

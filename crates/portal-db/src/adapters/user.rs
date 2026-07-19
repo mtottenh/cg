@@ -22,6 +22,7 @@ impl From<UserRow> for User {
             username: row.username,
             email: row.email,
             email_verified: row.email_verified,
+            auth_provider: row.auth_provider,
             status: row.status.parse().unwrap_or_default(),
             locale: row.locale.unwrap_or_else(|| "en-US".to_string()),
             timezone: row.timezone.unwrap_or_else(|| "UTC".to_string()),
@@ -40,6 +41,7 @@ impl From<UserRow> for UserWithCredentials {
             username: row.username,
             email: row.email,
             password_hash: row.password_hash,
+            auth_provider: row.auth_provider,
             status: row.status.parse().unwrap_or(DomainUserStatus::Active),
         }
     }
@@ -125,8 +127,8 @@ impl UserRepository for PgUserRepository {
         let user = match cmd.id {
             Some(id) => sqlx::query_as::<_, UserRow>(
                 r"
-                    INSERT INTO users (id, username, email, password_hash)
-                    VALUES ($1, $2, $3, $4)
+                    INSERT INTO users (id, username, email, password_hash, auth_provider)
+                    VALUES ($1, $2, $3, $4, $5)
                     RETURNING *
                     ",
             )
@@ -134,19 +136,21 @@ impl UserRepository for PgUserRepository {
             .bind(&cmd.username)
             .bind(cmd.email.to_lowercase())
             .bind(&cmd.password_hash)
+            .bind(&cmd.auth_provider)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?,
             None => sqlx::query_as::<_, UserRow>(
                 r"
-                    INSERT INTO users (username, email, password_hash)
-                    VALUES ($1, $2, $3)
+                    INSERT INTO users (username, email, password_hash, auth_provider)
+                    VALUES ($1, $2, $3, $4)
                     RETURNING *
                     ",
             )
             .bind(&cmd.username)
             .bind(cmd.email.to_lowercase())
             .bind(&cmd.password_hash)
+            .bind(&cmd.auth_provider)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?,

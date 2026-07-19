@@ -19,6 +19,7 @@ mod players;
 mod result_review;
 mod results;
 mod roles;
+mod steam_auth;
 mod steam_tracking;
 mod tournaments;
 mod users;

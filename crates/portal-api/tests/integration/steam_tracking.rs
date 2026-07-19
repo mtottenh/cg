@@ -92,6 +92,7 @@ async fn raw_request(app: &TestApp, req: Request<Body>) -> TestResponse {
     let response = app.app.clone().oneshot(req).await.expect("request failed");
 
     let status = response.status();
+    let headers = response.headers().clone();
     let body = response
         .into_body()
         .collect()
@@ -100,7 +101,11 @@ async fn raw_request(app: &TestApp, req: Request<Body>) -> TestResponse {
         .to_bytes()
         .to_vec();
 
-    TestResponse { status, body }
+    TestResponse {
+        status,
+        headers,
+        body,
+    }
 }
 
 async fn api_key_get(app: &TestApp, uri: &str, api_key: &str) -> TestResponse {

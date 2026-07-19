@@ -114,6 +114,7 @@ impl UserBuilder {
             email_verified_at: if self.email_verified { Some(now) } else { None },
             password_hash: self.password_hash,
             password_changed_at: None,
+            auth_provider: "local".to_string(),
             two_factor_enabled: self.two_factor_enabled,
             two_factor_secret: None,
             two_factor_backup_codes: None,

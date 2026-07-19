@@ -28,6 +28,7 @@ pub mod middleware;
 pub mod openapi;
 pub mod routes;
 pub mod state;
+pub mod steam_openid;
 pub mod websocket;
 
 pub use app::create_app;

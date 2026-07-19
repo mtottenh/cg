@@ -216,6 +216,7 @@ async fn api_key_request(
         .await
         .expect("request failed");
     let status = response.status();
+    let headers = response.headers().clone();
     let body = response
         .into_body()
         .collect()
@@ -223,7 +224,11 @@ async fn api_key_request(
         .unwrap()
         .to_bytes()
         .to_vec();
-    TestResponse { status, body }
+    TestResponse {
+        status,
+        headers,
+        body,
+    }
 }
 
 #[tokio::test]

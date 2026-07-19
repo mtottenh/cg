@@ -54,6 +54,7 @@ use super::{
     AppSystemSettingsService, AppTournamentService, AppUserService, AppVetoAuthorizationService,
     AppVetoLobbyChatService, AppVetoService, TokenConfig,
 };
+use crate::steam_openid::{SteamAuthConfig, SteamOpenIdVerifier};
 use crate::websocket::VetoLobbyManager;
 use portal_plugins::PluginManager;
 
@@ -84,6 +85,10 @@ pub struct AuthState {
     pub role_repo: RoleRepository,
     /// Access + refresh token expiry configuration.
     pub token_config: TokenConfig,
+    /// Steam OpenID verifier (outbound `check_authentication` seam).
+    pub steam_verifier: Arc<dyn SteamOpenIdVerifier>,
+    /// Steam sign-in configuration (public/frontend URLs, optional API key).
+    pub steam_auth_config: SteamAuthConfig,
 }
 
 impl FromRef<AppState> for AuthState {
@@ -95,6 +100,8 @@ impl FromRef<AppState> for AuthState {
             refresh_token_repo: Arc::clone(&s.refresh_token_repo),
             role_repo: s.role_repo.clone(),
             token_config: s.token_config.clone(),
+            steam_verifier: Arc::clone(&s.steam_verifier),
+            steam_auth_config: s.steam_auth_config.clone(),
         }
     }
 }

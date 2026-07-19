@@ -28,10 +28,10 @@
 //! * `PORTAL_AUTH_RATE_BURST` — burst size (requests)
 //! * `PORTAL_AUTH_RATE_PER_SECOND` — sustained rate (requests per second)
 
-use crate::handlers::auth;
+use crate::handlers::{auth, steam_auth};
 use crate::state::AppState;
 use axum::Router;
-use axum::routing::post;
+use axum::routing::{get, post};
 use std::sync::Arc;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
@@ -68,5 +68,9 @@ pub fn routes() -> Router<AppState> {
         .route("/register", post(auth::register))
         .route("/login", post(auth::login))
         .route("/refresh", post(auth::refresh))
+        // Steam OpenID sign-in shares the same per-IP limiter — the
+        // callback reaches the account store just like login does.
+        .route("/steam/login", get(steam_auth::steam_login))
+        .route("/steam/callback", get(steam_auth::steam_callback))
         .layer(governor)
 }

@@ -45,8 +45,11 @@ pub struct CreateUser {
     pub username: String,
     /// Email address.
     pub email: String,
-    /// Hashed password.
-    pub password_hash: String,
+    /// Hashed password. `None` for provider-authenticated accounts
+    /// (e.g. Steam) which have no usable password.
+    pub password_hash: Option<String>,
+    /// Authentication provider: `"local"` or `"steam"`.
+    pub auth_provider: String,
 }
 
 /// Filters for player search queries.

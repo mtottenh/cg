@@ -385,6 +385,11 @@ pub enum DomainError {
     #[error("invalid credentials")]
     InvalidCredentials,
 
+    /// The account is registered with a different authentication provider
+    /// (e.g. password login attempted against a Steam-only account).
+    #[error("account uses '{0}' sign-in")]
+    WrongAuthProvider(String),
+
     /// The player is already a member of this team.
     #[error("player is already a member of this team")]
     AlreadyTeamMember,

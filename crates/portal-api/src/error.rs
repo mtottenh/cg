@@ -225,6 +225,9 @@ impl From<DomainError> for ApiError {
                 Self::unauthorized("Refresh token has been revoked")
             }
             DomainError::InvalidCredentials => Self::unauthorized("Invalid credentials"),
+            DomainError::WrongAuthProvider(provider) => Self::bad_request(format!(
+                "This account uses {provider} sign-in. Please sign in through {provider}."
+            )),
 
             // Conflict errors
             DomainError::AlreadyTeamMember => {

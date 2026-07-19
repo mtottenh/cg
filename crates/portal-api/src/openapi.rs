@@ -69,7 +69,7 @@ use crate::error::{ApiError, FieldErrorDto};
 use crate::handlers::{
     admin, auth, availability, awards, bans, demos, dispute, evidence, forfeit, games,
     league_teams, leagues, player_game_profiles, players, progression, result_reviews, results,
-    roles, steam_tracking, tournaments, uploads, users, veto, veto_delegates,
+    roles, steam_auth, steam_tracking, tournaments, uploads, users, veto, veto_delegates,
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -119,6 +119,8 @@ use utoipa_swagger_ui::SwaggerUi;
         auth::register,
         auth::login,
         auth::refresh,
+        steam_auth::steam_login,
+        steam_auth::steam_callback,
         // Games
         games::list_games,
         games::get_game,

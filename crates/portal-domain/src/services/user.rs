@@ -4,7 +4,9 @@ use crate::auth::{hash_password, verify_dummy_for_timing, verify_password};
 use crate::entities::user::UserStatus;
 use crate::entities::{Player, User};
 use crate::jwt::generate_access_token;
-use crate::repositories::{CreatePlayer, CreateUser, PlayerRepository, UserRepository};
+use crate::repositories::{
+    CreatePlayer, CreateUser, PlayerRepository, UpdatePlayer, UserRepository,
+};
 use portal_core::{DomainError, PlayerId, UserId};
 use std::sync::Arc;
 use tracing::{info, instrument};
@@ -188,7 +190,8 @@ where
                 id: Some(user_id),
                 username: cmd.username,
                 email: cmd.email,
-                password_hash,
+                password_hash: Some(password_hash),
+                auth_provider: "local".to_string(),
             })
             .await?;
 
@@ -205,6 +208,172 @@ where
         info!(user_id = %user.id, player_id = %player.id, "User registered");
 
         Ok((user, player))
+    }
+
+    /// Find or create the account backing a verified Steam sign-in.
+    ///
+    /// Called *after* the Steam OpenID assertion has been verified (the
+    /// caller owns that; this service never talks to Steam). Matches an
+    /// existing player by `steam_id_64`; when none exists, provisions a
+    /// new user (auth\_provider `steam`, no usable password) plus player
+    /// with the `steam_id_64` set.
+    ///
+    /// Returns `(user, player, created)` where `created` is true when a
+    /// new account was provisioned (the caller grants the default role).
+    #[instrument(skip(self, persona_name))]
+    pub async fn login_with_steam(
+        &self,
+        steam_id_64: i64,
+        persona_name: Option<&str>,
+    ) -> Result<(User, Player, bool), DomainError> {
+        // Existing player with this SteamID64 → that account wins,
+        // regardless of how it was originally created (local accounts
+        // that linked their Steam ID included).
+        if let Some(player) = self.player_repo.find_by_steam_id_64(steam_id_64).await? {
+            let user = self.get_user(player.user_id).await?;
+            if user.status != UserStatus::Active {
+                return Err(DomainError::Forbidden(format!(
+                    "account is {}",
+                    user.status
+                )));
+            }
+            self.user_repo.update_last_login(user.id).await?;
+            return Ok((user, player, false));
+        }
+
+        // Placeholder email — Steam's OpenID flow provides no email. The
+        // address is deterministic per SteamID64 so a partially-created
+        // account (user row inserted, player insert failed) is recovered
+        // on the next sign-in instead of conflicting forever.
+        let email = format!("steam_{steam_id_64}@steam.invalid");
+        if let Some(user) = self.user_repo.find_by_email(&email).await? {
+            let player = self
+                .recover_partial_steam_account(&user, steam_id_64)
+                .await?;
+            self.user_repo.update_last_login(user.id).await?;
+            return Ok((user, player, false));
+        }
+
+        let username = self
+            .derive_available_username(persona_name, steam_id_64)
+            .await?;
+        let (user_id, player_id) = make_shared_account_ids();
+
+        let user = self
+            .user_repo
+            .create(CreateUser {
+                id: Some(user_id),
+                username,
+                email,
+                password_hash: None,
+                auth_provider: "steam".to_string(),
+            })
+            .await?;
+
+        // Display name: the Steam persona verbatim (truncated to the
+        // 32-char column) when we have it, else the generated username.
+        let display_name = persona_name
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map_or_else(|| user.username.clone(), |p| p.chars().take(32).collect());
+
+        let player = self
+            .player_repo
+            .create(CreatePlayer {
+                id: player_id,
+                user_id,
+                display_name,
+            })
+            .await?;
+
+        // Stamp the SteamID64 on the player (sets both steam_id and
+        // steam_id_64 columns).
+        let player = self
+            .player_repo
+            .update(
+                player.id,
+                UpdatePlayer {
+                    steam_id: Some(steam_id_64.to_string()),
+                    steam_id_64: Some(steam_id_64),
+                    ..UpdatePlayer::default()
+                },
+            )
+            .await?;
+
+        self.user_repo.update_last_login(user.id).await?;
+        info!(user_id = %user.id, steam_id_64, "User provisioned via Steam sign-in");
+
+        Ok((user, player, true))
+    }
+
+    /// Finish provisioning an account whose user row exists but whose
+    /// player row is missing or lacks the SteamID64 (a previous Steam
+    /// sign-in died between the two inserts).
+    async fn recover_partial_steam_account(
+        &self,
+        user: &User,
+        steam_id_64: i64,
+    ) -> Result<Player, DomainError> {
+        let update = UpdatePlayer {
+            steam_id: Some(steam_id_64.to_string()),
+            steam_id_64: Some(steam_id_64),
+            ..UpdatePlayer::default()
+        };
+        if let Some(player) = self.player_repo.find_by_user_id(user.id).await? {
+            return self.player_repo.update(player.id, update).await;
+        }
+        let player = self
+            .player_repo
+            .create(CreatePlayer {
+                id: PlayerId::from(user.id.as_uuid()),
+                user_id: user.id,
+                display_name: user.username.clone(),
+            })
+            .await?;
+        self.player_repo.update(player.id, update).await
+    }
+
+    /// Derive a username satisfying the platform constraint
+    /// (`^[a-zA-Z0-9_-]{3,32}$`, unique) from a Steam persona name,
+    /// falling back to `steam_<id64>` and numeric suffixes on collision.
+    async fn derive_available_username(
+        &self,
+        persona_name: Option<&str>,
+        steam_id_64: i64,
+    ) -> Result<String, DomainError> {
+        let mut candidates: Vec<String> = Vec::new();
+        if let Some(persona) = persona_name {
+            let sanitized: String = persona
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                .take(32)
+                .collect();
+            if sanitized.len() >= 3 {
+                candidates.push(sanitized);
+            }
+        }
+        candidates.push(format!("steam_{steam_id_64}"));
+
+        for base in &candidates {
+            if !self.user_repo.username_exists(base).await? {
+                return Ok(base.clone());
+            }
+            for n in 2..=9u32 {
+                let suffix = format!("_{n}");
+                let head: String = base
+                    .chars()
+                    .take(32_usize.saturating_sub(suffix.len()))
+                    .collect();
+                let candidate = format!("{head}{suffix}");
+                if !self.user_repo.username_exists(&candidate).await? {
+                    return Ok(candidate);
+                }
+            }
+        }
+
+        Err(DomainError::Conflict(
+            "could not derive an available username for Steam account".to_string(),
+        ))
     }
 
     /// Authenticate a user and return an access token.
@@ -235,6 +404,15 @@ where
                 "account is {}",
                 user_creds.status
             )));
+        }
+
+        // Provider-authenticated accounts (e.g. Steam) have no usable
+        // password. Tell the user to use the right sign-in method instead
+        // of a generic "invalid credentials".
+        if user_creds.auth_provider != "local" {
+            return Err(DomainError::WrongAuthProvider(
+                user_creds.auth_provider.clone(),
+            ));
         }
 
         // Verify password. Same dummy-verify treatment for users without a

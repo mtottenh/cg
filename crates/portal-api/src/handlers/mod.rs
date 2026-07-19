@@ -19,6 +19,7 @@ pub mod progression;
 pub mod result_reviews;
 pub mod results;
 pub mod roles;
+pub mod steam_auth;
 pub mod steam_tracking;
 pub mod tournaments;
 pub mod uploads;

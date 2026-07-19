@@ -20,6 +20,7 @@ use crate::adapters::{
     ReviewCreatorAdapter, StatsUpdaterAdapter,
 };
 use crate::adapters::{EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceStorageAdapter};
+use crate::steam_openid::{HttpSteamOpenIdVerifier, SteamAuthConfig, SteamOpenIdVerifier};
 use crate::websocket::VetoLobbyManager;
 use portal_db::{
     ActionItemRepository, DbPool, GameRepository, PermissionRepository, PgApiKeyRepository,
@@ -308,6 +309,10 @@ pub struct AppState {
     pub refresh_token_repo: Arc<PgRefreshTokenRepository>,
     /// Token expiry configuration.
     pub token_config: TokenConfig,
+    /// Steam OpenID verifier (outbound check_authentication seam).
+    pub steam_verifier: Arc<dyn SteamOpenIdVerifier>,
+    /// Steam sign-in configuration (public/frontend URLs, optional API key).
+    pub steam_auth_config: SteamAuthConfig,
 }
 
 /// Token expiry configuration.
@@ -777,6 +782,8 @@ impl AppState {
             uploads_path,
             refresh_token_repo,
             token_config: TokenConfig::default(),
+            steam_verifier: Arc::new(HttpSteamOpenIdVerifier::new()),
+            steam_auth_config: SteamAuthConfig::from_env(),
         }
     }
 
@@ -784,6 +791,24 @@ impl AppState {
     #[must_use]
     pub fn with_token_config(mut self, config: TokenConfig) -> Self {
         self.token_config = config;
+        self
+    }
+
+    /// Replace the Steam OpenID verifier.
+    ///
+    /// Integration tests inject a double here so the Steam callback
+    /// handler can be exercised without any network access.
+    #[must_use]
+    pub fn with_steam_verifier(mut self, verifier: Arc<dyn SteamOpenIdVerifier>) -> Self {
+        self.steam_verifier = verifier;
+        self
+    }
+
+    /// Replace the Steam sign-in configuration (public/frontend URLs,
+    /// optional Steam Web API key).
+    #[must_use]
+    pub fn with_steam_auth_config(mut self, config: SteamAuthConfig) -> Self {
+        self.steam_auth_config = config;
         self
     }
 

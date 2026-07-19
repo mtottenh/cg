@@ -5,15 +5,17 @@ pub mod ws;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
 use portal_api::adapters::{EvidenceStorageBackend, S3EvidenceStorageAdapter};
 use portal_api::app::create_app;
 use portal_api::state::AppState;
+use portal_api::steam_openid::SteamOpenIdVerifier;
 use portal_db::DbPool;
 use portal_test::database::TestDb;
 use serde::de::DeserializeOwned;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower::util::ServiceExt;
 
 /// Test application wrapper.
@@ -57,6 +59,25 @@ impl TestApp {
 
         let db = TestDb::new().await;
         let state = AppState::new(db.pool.clone(), "test-jwt-secret").await;
+        let app = Self::with_connect_info(create_app(state));
+
+        Self {
+            app,
+            db,
+            server_addr: None,
+        }
+    }
+
+    /// Create a test application with an injected Steam OpenID verifier
+    /// double, so the Steam sign-in callback can be exercised without
+    /// network access.
+    pub async fn new_with_steam_verifier(verifier: Arc<dyn SteamOpenIdVerifier>) -> Self {
+        Self::init_tracing();
+
+        let db = TestDb::new().await;
+        let state = AppState::new(db.pool.clone(), "test-jwt-secret")
+            .await
+            .with_steam_verifier(verifier);
         let app = Self::with_connect_info(create_app(state));
 
         Self {
@@ -442,10 +463,12 @@ impl TestApp {
             .expect("request failed");
 
         let status = response.status();
+        let headers = response.headers().clone();
         let body = response.into_body().collect().await.unwrap().to_bytes();
 
         TestResponse {
             status,
+            headers,
             body: body.to_vec(),
         }
     }
@@ -454,10 +477,19 @@ impl TestApp {
 /// Test response wrapper.
 pub struct TestResponse {
     pub status: StatusCode,
+    pub headers: HeaderMap,
     pub body: Vec<u8>,
 }
 
 impl TestResponse {
+    /// Get a response header value as a string (None if absent).
+    pub fn header(&self, name: &str) -> Option<String> {
+        self.headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(std::string::ToString::to_string)
+    }
+
     /// Get the response body as a string.
     pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).to_string()

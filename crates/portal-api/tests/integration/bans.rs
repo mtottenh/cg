@@ -781,3 +781,218 @@ async fn test_get_user_ban_history_invalid_user_id() {
     let response = app.get_auth("/v1/admin/users/not-a-uuid/bans").await;
     response.assert_status(StatusCode::BAD_REQUEST);
 }
+
+// ============================================================================
+// BAN ENFORCEMENT TESTS (launch blocker #2 / #5 regression)
+// ============================================================================
+
+/// Register a user via the API and return (`user_id`, `refresh_token`).
+async fn register_user_with_refresh(app: &TestApp, username: &str) -> (String, String) {
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/register",
+            &json!({
+                "username": username,
+                "email": format!("{}@example.com", username),
+                "password": "SecurePass123!",
+                "display_name": username
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    (
+        body["data"]["user"]["id"].as_str().unwrap().to_string(),
+        body["data"]["refresh_token"].as_str().unwrap().to_string(),
+    )
+}
+
+/// A platform ban created through the admin API must be enforced
+/// immediately: the user's status flips to banned (password login fails)
+/// and every refresh token is revoked (token refresh fails). Lifting the
+/// ban restores login.
+#[tokio::test]
+async fn test_platform_ban_via_api_blocks_login_and_refresh() {
+    let app = TestApp::new().await;
+    grant_admin_permission(&app).await;
+
+    let (user_id, refresh_token) = register_user_with_refresh(&app, "enforced_ban_user").await;
+
+    // Sanity: login works before the ban.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/login",
+            &json!({
+                "username_or_email": "enforced_ban_user",
+                "password": "SecurePass123!"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Ban via the admin API.
+    let response = app
+        .post_json(
+            "/v1/admin/bans",
+            &json!({
+                "user_id": user_id,
+                "ban_type": "platform",
+                "reason": "Enforcement regression test"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let ban_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // users.status flipped to banned.
+    let (status, status_reason): (String, Option<String>) =
+        sqlx::query_as("SELECT status, status_reason FROM users WHERE id = $1")
+            .bind(Uuid::parse_str(&user_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "banned", "platform ban must set users.status");
+    assert_eq!(
+        status_reason.as_deref(),
+        Some("Enforcement regression test")
+    );
+
+    // Password login rejected.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/login",
+            &json!({
+                "username_or_email": "enforced_ban_user",
+                "password": "SecurePass123!"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Token refresh rejected — the token chain was revoked by the ban.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/refresh",
+            &json!({ "refresh_token": refresh_token }),
+        )
+        .await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+
+    // Lift the ban: status restored, login works again.
+    let response = app
+        .post_json(
+            &format!("/v1/admin/bans/{ban_id}/lift"),
+            &json!({ "reason": "Appeal accepted" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM users WHERE id = $1")
+        .bind(Uuid::parse_str(&user_id).unwrap())
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        status, "active",
+        "lifting the last platform ban restores status"
+    );
+
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/login",
+            &json!({
+                "username_or_email": "enforced_ban_user",
+                "password": "SecurePass123!"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+}
+
+/// Scoped (non-platform) bans must not touch account status or sessions.
+#[tokio::test]
+async fn test_scoped_ban_does_not_flip_account_status() {
+    let app = TestApp::new().await;
+    grant_admin_permission(&app).await;
+
+    let (user_id, refresh_token) = register_user_with_refresh(&app, "scoped_ban_user").await;
+
+    let response = app
+        .post_json(
+            "/v1/admin/bans",
+            &json!({
+                "user_id": user_id,
+                "ban_type": "chat",
+                "reason": "Toxic chat"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM users WHERE id = $1")
+        .bind(Uuid::parse_str(&user_id).unwrap())
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(status, "active", "chat ban must not change account status");
+
+    // Refresh still works.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/refresh",
+            &json!({ "refresh_token": refresh_token }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+}
+
+/// Even a user whose status was flipped outside the ban API (e.g. via the
+/// CLI) must not be able to keep a session alive by rotating refresh
+/// tokens, and the attempted refresh must kill the token chain.
+#[tokio::test]
+async fn test_refresh_rejected_for_banned_user_and_chain_revoked() {
+    let app = TestApp::new().await;
+
+    let (user_id, refresh_token) = register_user_with_refresh(&app, "cli_banned_user").await;
+
+    // Simulate a CLI ban: set status directly, without revoking tokens.
+    sqlx::query("UPDATE users SET status = 'banned' WHERE id = $1")
+        .bind(Uuid::parse_str(&user_id).unwrap())
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    // Refresh must be rejected with 403 (account not active).
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/refresh",
+            &json!({ "refresh_token": refresh_token.as_str() }),
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Every token for the user is now revoked.
+    let (live,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(Uuid::parse_str(&user_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        live, 0,
+        "refresh for a banned account must revoke the chain"
+    );
+
+    // Replaying the same token stays rejected.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/refresh",
+            &json!({ "refresh_token": refresh_token }),
+        )
+        .await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+}

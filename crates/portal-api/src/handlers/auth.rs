@@ -16,6 +16,7 @@ use axum::http::{HeaderMap, StatusCode};
 use chrono::{Duration, Utc};
 use portal_core::DomainError;
 use portal_db::NewUserRole;
+use portal_domain::entities::user::UserStatus;
 use portal_domain::repositories::refresh_token::RefreshTokenRepository;
 use portal_domain::services::{LoginCommand, RegisterUserCommand};
 use portal_domain::{
@@ -189,6 +190,7 @@ pub async fn login(
     responses(
         (status = 200, description = "Token refreshed successfully", body = DataResponse<LoginResponse>),
         (status = 401, description = "Invalid or expired refresh token", body = ApiError),
+        (status = 403, description = "Account is not active (banned/suspended)", body = ApiError),
     ),
     tag = "auth"
 )]
@@ -253,6 +255,24 @@ pub async fn refresh(
 
     // Look up user to get current info for the new JWT
     let user = state.user_service.get_user(stored.user_id.into()).await?;
+
+    // Account-status gate: a banned/suspended user must not be able to
+    // keep a session alive by rotating refresh tokens. Kill the whole
+    // chain so residual access is capped at the access-token lifetime.
+    if user.status != UserStatus::Active {
+        if let Err(e) = state
+            .refresh_token_repo
+            .revoke_all_for_user(stored.user_id)
+            .await
+        {
+            tracing::error!(
+                error = %e,
+                user_id = %stored.user_id,
+                "failed to revoke tokens for non-active account on refresh"
+            );
+        }
+        return Err(DomainError::Forbidden(format!("account is {}", user.status)).into());
+    }
 
     // Look up player for the user
     let player = state

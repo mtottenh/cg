@@ -1,5 +1,6 @@
 //! User and Player repository traits.
 
+use crate::entities::user::UserStatus;
 use crate::entities::{Player, SocialLinks, User, UserWithCredentials};
 use async_trait::async_trait;
 use portal_core::{DomainError, GameId, PlayerId, UserId};
@@ -34,6 +35,18 @@ pub trait UserRepository: Send + Sync {
 
     /// Update the last login timestamp for a user.
     async fn update_last_login(&self, id: UserId) -> Result<(), DomainError>;
+
+    /// Update a user's account status (with an optional reason).
+    ///
+    /// Used by ban enforcement (platform bans set `banned`, lifting the
+    /// last active platform ban restores `active`). Login and token
+    /// refresh both gate on this column.
+    async fn update_status(
+        &self,
+        id: UserId,
+        status: UserStatus,
+        reason: Option<&str>,
+    ) -> Result<(), DomainError>;
 }
 
 /// Data for creating a new user.

@@ -207,6 +207,36 @@ impl UserRepository for PgUserRepository {
 
         Ok(())
     }
+
+    async fn update_status(
+        &self,
+        id: UserId,
+        status: DomainUserStatus,
+        reason: Option<&str>,
+    ) -> Result<(), DomainError> {
+        let result = sqlx::query(
+            r"
+            UPDATE users
+            SET status = $2,
+                status_reason = $3,
+                status_changed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(status.to_string())
+        .bind(reason)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(DomainError::UserNotFound(id));
+        }
+
+        Ok(())
+    }
 }
 
 // =============================================================================

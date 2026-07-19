@@ -1,26 +1,45 @@
 //! Ban service with business logic.
 
-use crate::entities::{Ban, BanFilters, CreateBanCommand, LiftBanCommand};
-use crate::repositories::{BanRepository, PaginatedBans};
+use crate::entities::user::UserStatus;
+use crate::entities::{Ban, BanFilters, BanType, CreateBanCommand, LiftBanCommand};
+use crate::repositories::refresh_token::RefreshTokenRepository;
+use crate::repositories::{BanRepository, PaginatedBans, UserRepository};
 use portal_core::{BanId, DomainError, UserId};
 use std::sync::Arc;
 use tracing::{info, instrument};
 
 /// Service for ban-related business logic.
-pub struct BanService<BR>
+///
+/// Platform-scoped bans are *enforced* here, not just recorded: creating
+/// one flips `users.status` to `banned` and revokes every refresh token
+/// for the user (so residual access is capped at the access-token
+/// lifetime), mirroring the CLI ban path. Lifting the last active
+/// platform ban restores `active`. Scoped bans (league/tournament/chat/
+/// matchmaking) only write the bans table, as before.
+pub struct BanService<BR, UR, RT>
 where
     BR: BanRepository,
+    UR: UserRepository,
+    RT: RefreshTokenRepository,
 {
     ban_repo: Arc<BR>,
+    user_repo: Arc<UR>,
+    refresh_token_repo: Arc<RT>,
 }
 
-impl<BR> BanService<BR>
+impl<BR, UR, RT> BanService<BR, UR, RT>
 where
     BR: BanRepository,
+    UR: UserRepository,
+    RT: RefreshTokenRepository,
 {
     /// Create a new ban service.
-    pub const fn new(ban_repo: Arc<BR>) -> Self {
-        Self { ban_repo }
+    pub const fn new(ban_repo: Arc<BR>, user_repo: Arc<UR>, refresh_token_repo: Arc<RT>) -> Self {
+        Self {
+            ban_repo,
+            user_repo,
+            refresh_token_repo,
+        }
     }
 
     /// Get a ban by ID.
@@ -34,9 +53,13 @@ where
 
     /// Create a new ban.
     ///
+    /// Platform bans additionally set the user's account status to
+    /// `banned` and revoke all their refresh tokens, so the ban takes
+    /// effect immediately (login and token refresh both gate on
+    /// `users.status`).
+    ///
     /// # Arguments
     /// * `cmd` - The ban creation command
-    /// * `issued_by` - The admin issuing the ban
     #[instrument(skip(self, cmd), fields(user_id = %cmd.user_id, ban_type = %cmd.ban_type))]
     pub async fn create_ban(&self, cmd: CreateBanCommand) -> Result<Ban, DomainError> {
         // Business rule: Can't create a ban if user already has an active ban of the same type
@@ -64,10 +87,31 @@ where
         let ban = self.ban_repo.create(cmd).await?;
         info!(ban_id = %ban.id, user_id = %ban.user_id, ban_type = %ban.ban_type, "Ban created");
 
+        // Enforce platform bans immediately. Ordering matters: the ban row
+        // is committed first, so a failure here leaves an over-restrictive
+        // record (visible, liftable) rather than an unenforced ban.
+        if ban.ban_type == BanType::Platform && ban.is_active() {
+            self.user_repo
+                .update_status(ban.user_id, UserStatus::Banned, Some(&ban.reason))
+                .await?;
+            self.refresh_token_repo
+                .revoke_all_for_user(ban.user_id.as_uuid())
+                .await?;
+            info!(
+                ban_id = %ban.id,
+                user_id = %ban.user_id,
+                "Platform ban enforced: status set to banned, refresh tokens revoked"
+            );
+        }
+
         Ok(ban)
     }
 
     /// Lift (revoke) a ban early.
+    ///
+    /// Lifting the last active platform ban restores the user's account
+    /// status to `active` (only when the account is currently `banned` —
+    /// a CLI/admin suspension is never clobbered).
     #[instrument(skip(self))]
     pub async fn lift_ban(&self, cmd: LiftBanCommand) -> Result<Ban, DomainError> {
         // Verify ban exists
@@ -91,6 +135,34 @@ where
             .await?;
 
         info!(ban_id = %ban.id, lifted_by = %cmd.lifted_by, "Ban lifted");
+
+        // Restore account status when no active platform ban remains.
+        if ban.ban_type == BanType::Platform {
+            let still_platform_banned = self
+                .ban_repo
+                .get_active_for_user(ban.user_id)
+                .await?
+                .iter()
+                .any(|b| b.ban_type == BanType::Platform && b.is_active());
+
+            if !still_platform_banned {
+                let user = self
+                    .user_repo
+                    .find_by_id(ban.user_id)
+                    .await?
+                    .ok_or(DomainError::UserNotFound(ban.user_id))?;
+                if user.status == UserStatus::Banned {
+                    self.user_repo
+                        .update_status(ban.user_id, UserStatus::Active, cmd.lift_reason.as_deref())
+                        .await?;
+                    info!(
+                        ban_id = %ban.id,
+                        user_id = %ban.user_id,
+                        "Platform ban lifted: account status restored to active"
+                    );
+                }
+            }
+        }
 
         Ok(ban)
     }
@@ -125,13 +197,17 @@ where
     }
 }
 
-impl<BR> Clone for BanService<BR>
+impl<BR, UR, RT> Clone for BanService<BR, UR, RT>
 where
     BR: BanRepository,
+    UR: UserRepository,
+    RT: RefreshTokenRepository,
 {
     fn clone(&self) -> Self {
         Self {
             ban_repo: Arc::clone(&self.ban_repo),
+            user_repo: Arc::clone(&self.user_repo),
+            refresh_token_repo: Arc::clone(&self.refresh_token_repo),
         }
     }
 }

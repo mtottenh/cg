@@ -9,7 +9,7 @@ use portal_core::{
 };
 use portal_domain::entities::dispute::{
     AuthorType, Dispute, DisputeMessage, DisputePriority, DisputeReason, DisputeResolution,
-    ResolutionType,
+    DisputeStatus, ResolutionType,
 };
 use portal_domain::repositories::dispute::{
     CreateDispute, CreateDisputeMessage, DisputeMessageRepository, DisputeRepository, UpdateDispute,
@@ -243,6 +243,90 @@ impl DisputeRepository for PgDisputeRepository {
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
+        let total: i64 = count_row.get("count");
+
+        let disputes = items_builder
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok((disputes.into_iter().map(Dispute::from).collect(), total))
+    }
+
+    async fn list_filtered(
+        &self,
+        status: Option<DisputeStatus>,
+        tournament_id: Option<TournamentId>,
+        match_id: Option<TournamentMatchId>,
+        priority: Option<DisputePriority>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Dispute>, i64), DomainError> {
+        // Dynamic filters; unlike find_pending, no status is hard-coded —
+        // `status: None` really does mean every status.
+        let mut conditions = Vec::new();
+        let mut param_count = 0;
+
+        if status.is_some() {
+            param_count += 1;
+            conditions.push(format!("d.status = ${param_count}"));
+        }
+        if tournament_id.is_some() {
+            param_count += 1;
+            conditions.push(format!("m.tournament_id = ${param_count}"));
+        }
+        if match_id.is_some() {
+            param_count += 1;
+            conditions.push(format!("d.match_id = ${param_count}"));
+        }
+        if priority.is_some() {
+            param_count += 1;
+            conditions.push(format!("d.priority = ${param_count}"));
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+
+        let count_query = format!(
+            "SELECT COUNT(*) as count FROM disputes d \
+             JOIN tournament_matches m ON d.match_id = m.id{where_clause}"
+        );
+        let items_query = format!(
+            "SELECT d.* FROM disputes d \
+             JOIN tournament_matches m ON d.match_id = m.id{where_clause} \
+             ORDER BY d.priority DESC, d.created_at DESC LIMIT ${} OFFSET ${}",
+            param_count + 1,
+            param_count + 2
+        );
+
+        let mut count_builder = sqlx::query(&count_query);
+        let mut items_builder = sqlx::query_as::<_, DisputeRow>(&items_query);
+
+        if let Some(s) = &status {
+            count_builder = count_builder.bind(s.to_string());
+            items_builder = items_builder.bind(s.to_string());
+        }
+        if let Some(tid) = &tournament_id {
+            count_builder = count_builder.bind(tid.as_uuid());
+            items_builder = items_builder.bind(tid.as_uuid());
+        }
+        if let Some(mid) = &match_id {
+            count_builder = count_builder.bind(mid.as_uuid());
+            items_builder = items_builder.bind(mid.as_uuid());
+        }
+        if let Some(p) = &priority {
+            count_builder = count_builder.bind(p.to_string());
+            items_builder = items_builder.bind(p.to_string());
+        }
+        items_builder = items_builder.bind(limit).bind(offset);
+
+        let count_row = count_builder
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
         let total: i64 = count_row.get("count");
 
         let disputes = items_builder

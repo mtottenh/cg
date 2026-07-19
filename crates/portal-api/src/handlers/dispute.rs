@@ -353,13 +353,31 @@ pub async fn admin_list_disputes(
         .map(str::parse::<DisputePriority>)
         .transpose()
         .map_err(|_| ApiError::bad_request("Invalid priority value"))?;
+    let status = query
+        .status
+        .as_deref()
+        .map(str::parse::<portal_domain::entities::dispute::DisputeStatus>)
+        .transpose()
+        .map_err(|_| ApiError::bad_request("Invalid status value"))?;
+    let tournament_id = query
+        .tournament_id
+        .as_deref()
+        .map(str::parse::<portal_core::TournamentId>)
+        .transpose()
+        .map_err(|_| ApiError::bad_request("Invalid tournament_id"))?;
+    let match_id = query
+        .match_id
+        .as_deref()
+        .map(str::parse::<TournamentMatchId>)
+        .transpose()
+        .map_err(|_| ApiError::bad_request("Invalid match_id"))?;
 
     let limit = i64::from(query.page_size);
     let offset = i64::from((query.page - 1) * query.page_size);
 
     let (disputes, total) = state
         .dispute_service
-        .get_pending_disputes(None, priority, limit, offset)
+        .list_disputes(status, tournament_id, match_id, priority, limit, offset)
         .await?;
 
     let response = DisputeListResponse {

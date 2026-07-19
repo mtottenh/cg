@@ -676,3 +676,96 @@ async fn test_resolve_double_dq_notes_too_short() {
 
     response.assert_status(StatusCode::BAD_REQUEST);
 }
+
+// ============================================================================
+// ADMIN LIST FILTERS
+// ============================================================================
+
+/// Insert a dispute row directly (the filter tests need multiple statuses,
+/// which the HTTP flow can't fabricate quickly).
+async fn insert_dispute_row(
+    app: &TestApp,
+    match_id: &str,
+    reg_id: &str,
+    status: &str,
+) -> uuid::Uuid {
+    let id = uuid::Uuid::now_v7();
+    let dev_user_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    // 'resolved' rows must carry a resolution_type (check constraint).
+    sqlx::query(
+        r"INSERT INTO disputes (id, match_id, disputed_by_registration_id, disputed_by_user_id,
+                                reason, description, status, resolution_type, resolved_at,
+                                resolved_by_user_id)
+          VALUES ($1, $2, $3, $4, 'wrong_score', 'admin list filter test dispute', $5,
+                  CASE WHEN $5 = 'resolved' THEN 'upheld' END,
+                  CASE WHEN $5 = 'resolved' THEN NOW() END,
+                  CASE WHEN $5 = 'resolved' THEN $4 END)",
+    )
+    .bind(id)
+    .bind(uuid::Uuid::parse_str(match_id).unwrap())
+    .bind(uuid::Uuid::parse_str(reg_id).unwrap())
+    .bind(dev_user_id)
+    .bind(status)
+    .execute(app.pool())
+    .await
+    .expect("insert dispute row");
+    id
+}
+
+/// The admin list previously ignored every filter it accepted — status,
+/// match_id, tournament_id were server-side no-ops and resolved disputes
+/// vanished from the queue forever. This locks in the fixed behavior.
+#[tokio::test]
+async fn test_admin_list_disputes_filters_work() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, reg1, _) =
+        crate::tournaments::create_tournament_with_matches(&app, "dispute-filter-test").await;
+
+    let resolved_id = insert_dispute_row(&app, &match_id, &reg1, "resolved").await;
+    let pending_id = insert_dispute_row(&app, &match_id, &reg1, "pending").await;
+
+    // status=resolved returns the resolved dispute (previously impossible).
+    let response = app
+        .get_auth("/v1/admin/disputes?status=resolved&page=1&page_size=50")
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let ids: Vec<&str> = body["data"]["disputes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&resolved_id.to_string().as_str()));
+    assert!(!ids.contains(&pending_id.to_string().as_str()));
+
+    // match_id filter narrows to this match's disputes only.
+    let response = app
+        .get_auth(&format!(
+            "/v1/admin/disputes?match_id={match_id}&page=1&page_size=50"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["disputes"].as_array().unwrap().len(), 2);
+
+    // tournament_id filter also works.
+    let response = app
+        .get_auth(&format!(
+            "/v1/admin/disputes?tournament_id={tournament_id}&status=pending&page=1&page_size=50"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let ids: Vec<&str> = body["data"]["disputes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![pending_id.to_string().as_str()]);
+
+    // Garbage filter values are rejected, not ignored.
+    let response = app.get_auth("/v1/admin/disputes?status=bogus").await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}

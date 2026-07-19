@@ -579,6 +579,24 @@ where
             .await
     }
 
+    /// List disputes with optional filters; `status: None` means all
+    /// statuses, so resolved and cancelled disputes remain reachable from
+    /// the admin queue.
+    #[instrument(skip(self))]
+    pub async fn list_disputes(
+        &self,
+        status: Option<DisputeStatus>,
+        tournament_id: Option<TournamentId>,
+        match_id: Option<TournamentMatchId>,
+        priority: Option<DisputePriority>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Dispute>, i64), DomainError> {
+        self.dispute_repo
+            .list_filtered(status, tournament_id, match_id, priority, limit, offset)
+            .await
+    }
+
     /// Get dispute with full thread.
     #[instrument(skip(self))]
     pub async fn get_dispute_with_thread(

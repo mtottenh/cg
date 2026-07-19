@@ -67,6 +67,19 @@ pub trait DisputeRepository: Send + Sync + 'static {
         offset: i64,
     ) -> Result<(Vec<Dispute>, i64), DomainError>;
 
+    /// List disputes with optional filters. Unlike [`Self::find_pending`],
+    /// `status: None` means ALL statuses — resolved and cancelled disputes
+    /// stay reachable from the admin queue.
+    async fn list_filtered(
+        &self,
+        status: Option<DisputeStatus>,
+        tournament_id: Option<TournamentId>,
+        match_id: Option<TournamentMatchId>,
+        priority: Option<DisputePriority>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Dispute>, i64), DomainError>;
+
     /// Update a dispute.
     async fn update(&self, id: DisputeId, data: UpdateDispute) -> Result<Dispute, DomainError>;
 

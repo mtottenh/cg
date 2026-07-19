@@ -67,12 +67,12 @@ pub trait DisputeRepository: Send + Sync + 'static {
         offset: i64,
     ) -> Result<(Vec<Dispute>, i64), DomainError>;
 
-    /// List disputes with optional filters. Unlike [`Self::find_pending`],
-    /// `status: None` means ALL statuses — resolved and cancelled disputes
-    /// stay reachable from the admin queue.
+    /// List disputes with optional filters. `statuses: None` means ALL
+    /// statuses — resolved and cancelled disputes stay reachable; callers
+    /// wanting the classic queue view pass `[Pending, UnderReview]`.
     async fn list_filtered(
         &self,
-        status: Option<DisputeStatus>,
+        statuses: Option<&[DisputeStatus]>,
         tournament_id: Option<TournamentId>,
         match_id: Option<TournamentMatchId>,
         priority: Option<DisputePriority>,

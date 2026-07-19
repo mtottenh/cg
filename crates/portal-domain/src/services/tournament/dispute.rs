@@ -579,13 +579,12 @@ where
             .await
     }
 
-    /// List disputes with optional filters; `status: None` means all
-    /// statuses, so resolved and cancelled disputes remain reachable from
-    /// the admin queue.
+    /// List disputes with optional filters; `statuses: None` means all
+    /// statuses, so resolved and cancelled disputes remain reachable.
     #[instrument(skip(self))]
     pub async fn list_disputes(
         &self,
-        status: Option<DisputeStatus>,
+        statuses: Option<&[DisputeStatus]>,
         tournament_id: Option<TournamentId>,
         match_id: Option<TournamentMatchId>,
         priority: Option<DisputePriority>,
@@ -593,7 +592,7 @@ where
         offset: i64,
     ) -> Result<(Vec<Dispute>, i64), DomainError> {
         self.dispute_repo
-            .list_filtered(status, tournament_id, match_id, priority, limit, offset)
+            .list_filtered(statuses, tournament_id, match_id, priority, limit, offset)
             .await
     }
 

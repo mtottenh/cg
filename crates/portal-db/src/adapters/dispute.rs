@@ -255,7 +255,7 @@ impl DisputeRepository for PgDisputeRepository {
 
     async fn list_filtered(
         &self,
-        status: Option<DisputeStatus>,
+        statuses: Option<&[DisputeStatus]>,
         tournament_id: Option<TournamentId>,
         match_id: Option<TournamentMatchId>,
         priority: Option<DisputePriority>,
@@ -267,9 +267,9 @@ impl DisputeRepository for PgDisputeRepository {
         let mut conditions = Vec::new();
         let mut param_count = 0;
 
-        if status.is_some() {
+        if statuses.is_some() {
             param_count += 1;
-            conditions.push(format!("d.status = ${param_count}"));
+            conditions.push(format!("d.status = ANY(${param_count})"));
         }
         if tournament_id.is_some() {
             param_count += 1;
@@ -305,9 +305,11 @@ impl DisputeRepository for PgDisputeRepository {
         let mut count_builder = sqlx::query(&count_query);
         let mut items_builder = sqlx::query_as::<_, DisputeRow>(&items_query);
 
-        if let Some(s) = &status {
-            count_builder = count_builder.bind(s.to_string());
-            items_builder = items_builder.bind(s.to_string());
+        let status_strings: Option<Vec<String>> =
+            statuses.map(|list| list.iter().map(ToString::to_string).collect());
+        if let Some(list) = &status_strings {
+            count_builder = count_builder.bind(list.clone());
+            items_builder = items_builder.bind(list.clone());
         }
         if let Some(tid) = &tournament_id {
             count_builder = count_builder.bind(tid.as_uuid());

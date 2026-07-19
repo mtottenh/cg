@@ -739,7 +739,8 @@ async fn test_admin_list_disputes_filters_work() {
     assert!(ids.contains(&resolved_id.to_string().as_str()));
     assert!(!ids.contains(&pending_id.to_string().as_str()));
 
-    // match_id filter narrows to this match's disputes only.
+    // match_id filter narrows to this match's disputes; without an explicit
+    // status the default queue view applies (pending + under_review only).
     let response = app
         .get_auth(&format!(
             "/v1/admin/disputes?match_id={match_id}&page=1&page_size=50"
@@ -747,7 +748,27 @@ async fn test_admin_list_disputes_filters_work() {
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
-    assert_eq!(body["data"]["disputes"].as_array().unwrap().len(), 2);
+    let default_ids: Vec<&str> = body["data"]["disputes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_str().unwrap())
+        .collect();
+    assert!(default_ids.contains(&pending_id.to_string().as_str()));
+    assert!(
+        !default_ids.contains(&resolved_id.to_string().as_str()),
+        "default queue view must not include resolved disputes"
+    );
+
+    // With status=resolved + match_id both filters compose.
+    let response = app
+        .get_auth(&format!(
+            "/v1/admin/disputes?match_id={match_id}&status=resolved&page=1&page_size=50"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["disputes"].as_array().unwrap().len(), 1);
 
     // tournament_id filter also works.
     let response = app

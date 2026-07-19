@@ -413,9 +413,24 @@ pub async fn admin_list_disputes(
     let limit = i64::from(query.page_size);
     let offset = i64::from((query.page - 1) * query.page_size);
 
+    // Default view (no explicit status) stays the actionable queue —
+    // pending + under_review — matching the admin UI's expectations.
+    // Explicit filters reach every status, including resolved/cancelled.
+    use portal_domain::entities::dispute::DisputeStatus;
+    let status_list: Option<Vec<DisputeStatus>> = match status {
+        Some(s) => Some(vec![s]),
+        None => Some(vec![DisputeStatus::Pending, DisputeStatus::UnderReview]),
+    };
     let (disputes, total) = state
         .dispute_service
-        .list_disputes(status, tournament_id, match_id, priority, limit, offset)
+        .list_disputes(
+            status_list.as_deref(),
+            tournament_id,
+            match_id,
+            priority,
+            limit,
+            offset,
+        )
         .await?;
 
     let response = DisputeListResponse {

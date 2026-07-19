@@ -143,9 +143,16 @@ button + e2e ~½ day, re-image + ansible converge ~½ day.
 
 ## 5. Open items
 
-1. **Needs sudo on the box:** confirm/dump the prod postgres volume
-   (`sudo podman ps -a; sudo podman volume ls`). Everything else in §3 works
-   from `players.csv` alone.
+1. **Prod DB probably doesn't exist on this box.** Follow-up findings:
+   podman (root *and* rootless) fails to initialize storage — the `overlay`
+   kernel module isn't loaded (post-reboot), so no containers can have been
+   running since. The only rootless volume (`backend_postgres_test_data`) is
+   8 KB / empty, there's no native postgres, no dumps in home, and Caddy has
+   been proxying `/api/*` to a dead port. `players.csv` (root-owned,
+   2025-03-02) looks like the surviving export and is sufficient for the §3
+   migration. Definitive check (needs sudo):
+   `sudo find / -xdev -name PG_VERSION` — any surviving postgres data dir
+   will contain one.
 2. Decide ELO import target (rating-history snapshot vs archive-only).
 3. Rotate the two exposed secrets at cutover (§1).
 4. Ansible gaps listed in §2.

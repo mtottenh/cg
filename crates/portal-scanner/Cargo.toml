@@ -64,11 +64,14 @@ files and batch-registers them with the portal API."""
 depends = "$auto, ca-certificates"
 section = "net"
 priority = "optional"
+# cargo-deb resolves asset source paths relative to THIS crate's dir
+# (crates/portal-scanner/), so dist/ paths are crate-relative;
+# target/release/ is special-cased to the workspace target dir.
 assets = [
     ["target/release/portal-scanner", "usr/bin/portal-scanner", "755"],
-    ["crates/portal-scanner/dist/portal-scanner.env.example", "etc/portal/scanner.env.example", "0644"],
-    ["crates/portal-scanner/dist/portal-scanner.service", "lib/systemd/system/portal-scanner.service", "0644"],
+    ["dist/portal-scanner.env.example", "etc/portal/scanner.env.example", "0644"],
+    ["dist/portal-scanner.service", "lib/systemd/system/portal-scanner.service", "0644"],
 ]
-maintainer-scripts = "crates/portal-scanner/dist/maintainer-scripts"
+maintainer-scripts = "dist/maintainer-scripts"
 conf-files = ["/etc/portal/scanner.env"]
 systemd-units = { unit-name = "portal-scanner", enable = true, start = true, restart-after-upgrade = true }

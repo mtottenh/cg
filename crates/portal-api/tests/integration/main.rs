@@ -3,6 +3,7 @@
 mod common;
 
 mod auth;
+mod awards;
 mod bans;
 mod demo_evidence;
 mod demos;

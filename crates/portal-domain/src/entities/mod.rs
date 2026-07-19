@@ -5,6 +5,7 @@
 pub mod api_key;
 pub mod audit;
 pub mod availability;
+pub mod award;
 pub mod ban;
 pub mod demo;
 pub mod demo_validation;
@@ -39,6 +40,10 @@ pub use availability::{
     AvailabilityOverride, AvailabilityWindow, CreateAvailabilityOverride, CreateAvailabilityWindow,
     CreateSuggestedTime, DateAvailability, OverrideType, SuggestedTime, SuggestionStatus, TimeSlot,
     UpdateAvailabilityWindow,
+};
+pub use award::{
+    Award, AwardResult, AwardScopeType, AwardStatus, AwardSubjectType, AwardTemplate, MinQualifier,
+    MinQualifierType, StatAggregation, StatDirection,
 };
 pub use ban::{Ban, BanFilters, BanType, CreateBanCommand, LiftBanCommand};
 pub use demo::{

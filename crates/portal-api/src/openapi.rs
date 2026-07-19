@@ -65,9 +65,9 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, FieldErrorDto};
 use crate::handlers::{
-    admin, auth, availability, bans, demos, dispute, evidence, forfeit, games, league_teams,
-    leagues, player_game_profiles, players, progression, result_reviews, results, roles,
-    steam_tracking, tournaments, uploads, users, veto, veto_delegates,
+    admin, auth, availability, awards, bans, demos, dispute, evidence, forfeit, games,
+    league_teams, leagues, player_game_profiles, players, progression, result_reviews, results,
+    roles, steam_tracking, tournaments, uploads, users, veto, veto_delegates,
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -365,6 +365,24 @@ use utoipa_swagger_ui::SwaggerUi;
         result_reviews::get_result_review_by_id,
         result_reviews::approve_result_review,
         result_reviews::reject_result_review,
+        // Awards + leaderboards
+        awards::list_tournament_awards,
+        awards::create_tournament_award,
+        awards::update_tournament_award,
+        awards::void_tournament_award,
+        awards::get_tournament_award_standings,
+        awards::finalize_tournament_award,
+        awards::list_season_awards,
+        awards::create_season_award,
+        awards::update_season_award,
+        awards::void_season_award,
+        awards::get_season_award_standings,
+        awards::finalize_season_award,
+        awards::get_tournament_leaderboard,
+        awards::get_season_leaderboard,
+        awards::get_stat_catalog,
+        awards::list_award_templates,
+        awards::get_player_awards,
     ),
     components(
         schemas(
@@ -644,6 +662,19 @@ use utoipa_swagger_ui::SwaggerUi;
             crate::dto::responses::ResultReviewListResponse,
             crate::dto::responses::AcknowledgmentResponse,
             crate::dto::responses::UnrecognizedPlayerResponse,
+            // Awards + leaderboards
+            crate::dto::requests::CreateAwardRequest,
+            crate::dto::requests::UpdateAwardRequest,
+            crate::dto::requests::LeaderboardQueryParams,
+            crate::dto::requests::StandingsQueryParams,
+            crate::dto::responses::AwardResponse,
+            crate::dto::responses::AwardTemplateResponse,
+            crate::dto::responses::AwardResultResponse,
+            crate::dto::responses::AwardStandingsResponse,
+            crate::dto::responses::FinalizedAwardResponse,
+            crate::dto::responses::LeaderboardEntryResponse,
+            crate::dto::responses::PlayerTrophyResponse,
+            crate::dto::responses::StatCatalogEntryResponse,
         )
     ),
     tags(
@@ -672,7 +703,8 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "disputes", description = "Dispute workflow and admin resolution"),
         (name = "demos", description = "Demo file catalog and browsing"),
         (name = "result_reviews", description = "Result review and validation discrepancy handling"),
-        (name = "steam_tracking", description = "CS2 Steam match tracking registration")
+        (name = "steam_tracking", description = "CS2 Steam match tracking registration"),
+        (name = "awards", description = "Tournament/season awards, stat leaderboards, and trophy cases")
     ),
     modifiers(&SecurityAddon)
 )]

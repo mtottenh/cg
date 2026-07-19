@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod auth;
 pub mod availability;
+pub mod awards;
 pub mod bans;
 pub mod demos;
 pub mod dispute;

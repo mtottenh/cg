@@ -632,6 +632,35 @@ pub async fn complete_tournament(
         .complete_tournament(tournament_id)
         .await?;
 
+    // Completion snapshots the tournament's active awards into permanent
+    // podium results. Non-fatal: an award failure must never roll back a
+    // completed tournament; organizers can re-run the manual finalize
+    // endpoint for any award that failed here.
+    match state
+        .award_service
+        .finalize_scope_awards(
+            portal_domain::entities::award::AwardScopeType::Tournament,
+            tournament_id.as_uuid(),
+        )
+        .await
+    {
+        Ok(finalized) if finalized > 0 => {
+            tracing::info!(
+                tournament_id = %tournament_id,
+                finalized,
+                "Auto-finalized tournament awards on completion"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(
+                tournament_id = %tournament_id,
+                error = %e,
+                "Failed to auto-finalize tournament awards on completion"
+            );
+        }
+    }
+
     Ok(Json(DataResponse::new(
         TournamentResponse::from(tournament),
         request_id,

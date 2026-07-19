@@ -4,6 +4,7 @@ pub mod action_item;
 pub mod admin;
 pub mod auth;
 pub mod availability;
+pub mod award;
 pub mod ban;
 pub mod demo;
 pub mod dispute;
@@ -29,6 +30,11 @@ pub use auth::{LoginResponse, RegisterResponse};
 pub use availability::{
     AvailabilityOverrideResponse, AvailabilityWindowResponse, DateAvailabilityResponse,
     SuggestedTimeResponse, TimeSlotResponse,
+};
+pub use award::{
+    AwardResponse, AwardResultResponse, AwardStandingsResponse, AwardTemplateResponse,
+    FinalizedAwardResponse, LeaderboardEntryResponse, PlayerTrophyResponse,
+    StatCatalogEntryResponse,
 };
 pub use ban::{BanListResponse, BanResponse, PaginationMetaResponse};
 pub use demo::{

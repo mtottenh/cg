@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod availability;
+pub mod award;
 pub mod ban;
 pub mod demo;
 pub mod dispute;
@@ -24,6 +25,9 @@ pub use auth::{LoginRequest, RefreshTokenRequest, RegisterRequest};
 pub use availability::{
     CreateAvailabilityOverrideRequest, CreateAvailabilityWindowRequest, GenerateSuggestionsRequest,
     GetAvailabilityQuery, UpdateAvailabilityWindowRequest,
+};
+pub use award::{
+    CreateAwardRequest, LeaderboardQueryParams, StandingsQueryParams, UpdateAwardRequest,
 };
 pub use ban::{CreateBanRequest, LiftBanRequest, ListBansQuery};
 pub use demo::{

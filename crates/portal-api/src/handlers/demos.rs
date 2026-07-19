@@ -936,15 +936,86 @@ pub async fn submit_demo_stats(
         })
         .collect();
 
+    let raw_stats = request.raw_stats.clone();
     let demo = state
         .demo_service
         .save_demo_stats(demo_id, metadata, request.raw_stats, players)
         .await?;
 
+    // Project EAV stat facts from the raw stats via the game plugin.
+    // Non-fatal: the canonical stats are already persisted.
+    extract_and_store_stat_facts(
+        &state.game_repo,
+        &state.plugin_manager,
+        &state.demo_stats_repo,
+        demo_id,
+        demo.game_id,
+        &raw_stats,
+    )
+    .await;
+
     Ok(Json(DataResponse::new(
         DemoResponse::from(demo),
         request_id,
     )))
+}
+
+/// Extract EAV stat facts from a demo's raw stats JSON through the game's
+/// plugin and replace the demo's `demo_player_stats` rows.
+///
+/// Best-effort by design: fact rows are a derived projection of the
+/// already-persisted `stats_json`, so any failure here is logged and
+/// swallowed — stats ingestion must never fail because of it. Player
+/// identities are resolved in SQL inside `replace_for_demo`.
+pub(crate) async fn extract_and_store_stat_facts(
+    game_repo: &portal_db::GameRepository,
+    plugin_manager: &portal_plugins::PluginManager,
+    demo_stats_repo: &portal_db::PgDemoPlayerStatsRepository,
+    demo_id: DemoId,
+    game_id: GameId,
+    raw_stats: &serde_json::Value,
+) {
+    use portal_domain::repositories::{
+        CURRENT_EXTRACTOR_VERSION, DemoPlayerStatsRepository, DemoStatFact,
+    };
+
+    let plugin_id = match game_repo.find_by_id(game_id.as_uuid()).await {
+        Ok(Some(game)) => game.plugin_id,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(demo_id = %demo_id, error = %e, "Stat-fact extraction: game lookup failed");
+            return;
+        }
+    };
+    let Some(plugin) = plugin_manager.get(&plugin_id) else {
+        return;
+    };
+    let Some(tournament_plugin) = plugin.as_tournament_plugin() else {
+        return;
+    };
+
+    let facts: Vec<DemoStatFact> = tournament_plugin
+        .extract_stat_facts(raw_stats)
+        .into_iter()
+        .map(|f| DemoStatFact {
+            steam_id: f.steam_id,
+            player_id: None,
+            stat_key: f.stat_key,
+            value: f.value,
+        })
+        .collect();
+
+    match demo_stats_repo
+        .replace_for_demo(demo_id, CURRENT_EXTRACTOR_VERSION, facts)
+        .await
+    {
+        Ok(inserted) => {
+            tracing::debug!(demo_id = %demo_id, inserted, "Extracted demo stat facts");
+        }
+        Err(e) => {
+            tracing::warn!(demo_id = %demo_id, error = %e, "Failed to store demo stat facts");
+        }
+    }
 }
 
 /// Mark a demo's stats processing as failed.

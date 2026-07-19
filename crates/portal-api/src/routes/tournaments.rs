@@ -1,6 +1,6 @@
 //! Tournament routes.
 
-use crate::handlers::{availability, dispute, forfeit, tournaments};
+use crate::handlers::{availability, awards, dispute, forfeit, tournaments};
 use crate::state::AppState;
 use axum::Router;
 use axum::routing::{delete, get, patch, post};
@@ -193,5 +193,26 @@ pub fn routes() -> Router<AppState> {
             get(tournaments::get_tournament_map_pool)
                 .put(tournaments::set_tournament_map_pool)
                 .delete(tournaments::delete_tournament_map_pool),
+        )
+        // Awards + leaderboards
+        .route(
+            "/{tournament_id}/awards",
+            get(awards::list_tournament_awards).post(awards::create_tournament_award),
+        )
+        .route(
+            "/{tournament_id}/awards/{award_id}",
+            patch(awards::update_tournament_award).delete(awards::void_tournament_award),
+        )
+        .route(
+            "/{tournament_id}/awards/{award_id}/standings",
+            get(awards::get_tournament_award_standings),
+        )
+        .route(
+            "/{tournament_id}/awards/{award_id}/finalize",
+            post(awards::finalize_tournament_award),
+        )
+        .route(
+            "/{tournament_id}/leaderboards",
+            get(awards::get_tournament_leaderboard),
         )
 }

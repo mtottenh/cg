@@ -512,6 +512,23 @@ define_id!(
     PlayerMatchHistoryId
 );
 
+// Awards
+define_id!(
+    /// Unique identifier for an award template (per-game default catalog).
+    AwardTemplateId
+);
+
+define_id!(
+    /// Unique identifier for an award instance scoped to a tournament or
+    /// league season.
+    AwardId
+);
+
+define_id!(
+    /// Unique identifier for a finalized award result (podium row).
+    AwardResultId
+);
+
 // =============================================================================
 // String-based Slugs
 // =============================================================================

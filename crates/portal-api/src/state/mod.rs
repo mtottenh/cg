@@ -9,9 +9,9 @@
 pub mod substates;
 
 pub use substates::{
-    AdminState, AuthState, AvailabilityState, BanState, DemoState, DisputeState, EvidenceState,
-    ForfeitState, GamesState, InternalState, LeagueTeamState, LeaguesState, PlayerState,
-    ProgressionState, ResultReviewState, ResultState, RolesState, SteamTrackingState,
+    AdminState, AuthState, AvailabilityState, AwardsState, BanState, DemoState, DisputeState,
+    EvidenceState, ForfeitState, GamesState, InternalState, LeagueTeamState, LeaguesState,
+    PlayerState, ProgressionState, ResultReviewState, ResultState, RolesState, SteamTrackingState,
     TournamentState, UploadsState, UsersState, VetoDelegatesState, VetoState, VetoWsState,
 };
 
@@ -23,25 +23,26 @@ use crate::adapters::{EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceSt
 use crate::websocket::VetoLobbyManager;
 use portal_db::{
     ActionItemRepository, DbPool, GameRepository, PermissionRepository, PgApiKeyRepository,
-    PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgBanRepository,
-    PgDemoMatchLinkRepository, PgDemoPlayerRepository, PgDemoRepository,
-    PgDiscoveredMatchRepository, PgDisputeMessageRepository, PgDisputeRepository,
-    PgEvidenceRepository, PgForfeitRecordRepository, PgLeagueInvitationRepository,
-    PgLeagueMemberRepository, PgLeagueRepository, PgLeagueSeasonParticipantRepository,
-    PgLeagueSeasonRepository, PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository,
-    PgLeagueTeamRepository, PgLeagueTeamSeasonRepository, PgMatchStatusLogRepository,
-    PgPermissionRepository, PgPlayerGameProfileRepository, PgPlayerMatchHistoryRepository,
-    PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository, PgPlayerRepository,
-    PgProgressionLogRepository, PgRefreshTokenRepository, PgResultClaimRepository,
-    PgResultReviewRepository, PgSagaExecutionRepository, PgScheduleProposalRepository,
-    PgSteamTrackingRepository, PgSuggestedTimeRepository, PgTournamentBracketRepository,
-    PgTournamentMapPoolRepository, PgTournamentMatchRepository, PgTournamentRegistrationRepository,
-    PgTournamentRepository, PgTournamentStageRepository, PgTournamentStandingsRepository,
-    PgUserRepository, PgVetoActionRepository, PgVetoDelegateRepository,
-    PgVetoLobbyMessageRepository, PgVetoSessionRepository, RoleRepository, StatsRepository,
+    PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgAwardRepository,
+    PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
+    PgDemoPlayerStatsRepository, PgDemoRepository, PgDiscoveredMatchRepository,
+    PgDisputeMessageRepository, PgDisputeRepository, PgEvidenceRepository,
+    PgForfeitRecordRepository, PgLeagueInvitationRepository, PgLeagueMemberRepository,
+    PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
+    PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
+    PgLeagueTeamSeasonRepository, PgMatchStatusLogRepository, PgPermissionRepository,
+    PgPlayerGameProfileRepository, PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository,
+    PgPlayerRatingHistoryRepository, PgPlayerRepository, PgProgressionLogRepository,
+    PgRefreshTokenRepository, PgResultClaimRepository, PgResultReviewRepository,
+    PgSagaExecutionRepository, PgScheduleProposalRepository, PgSteamTrackingRepository,
+    PgSuggestedTimeRepository, PgTournamentBracketRepository, PgTournamentMapPoolRepository,
+    PgTournamentMatchRepository, PgTournamentRegistrationRepository, PgTournamentRepository,
+    PgTournamentStageRepository, PgTournamentStandingsRepository, PgUserRepository,
+    PgVetoActionRepository, PgVetoDelegateRepository, PgVetoLobbyMessageRepository,
+    PgVetoSessionRepository, RoleRepository, StatsRepository,
 };
 use portal_domain::services::{
-    BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
+    AwardService, BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
     LeagueSeasonService, LeagueService, LeagueTeamInvitationService, LeagueTeamService,
     PermissionService, PlayerGameProfileService, PlayerService, SteamTrackingService,
     TournamentService, UserService,
@@ -157,6 +158,7 @@ pub type AppDemoService = DemoService<
     PgDemoPlayerRepository,
     PgTournamentMatchRepository,
 >;
+pub type AppAwardService = AwardService<PgAwardRepository, PgDemoPlayerStatsRepository>;
 pub type AppResultReviewService =
     ResultReviewService<PgResultReviewRepository, PgTournamentMatchRepository>;
 pub type AppStandingsService =
@@ -247,6 +249,10 @@ pub struct AppState {
     pub dispute_service: AppDisputeService,
     /// Demo catalog service for browsing and categorizing demos.
     pub demo_service: AppDemoService,
+    /// Demo stat-fact (EAV) repository — extraction at ingest + leaderboards.
+    pub demo_stats_repo: Arc<PgDemoPlayerStatsRepository>,
+    /// Award service (templates, instances, standings, finalization).
+    pub award_service: AppAwardService,
     /// Result review service for validation discrepancy handling.
     pub result_review_service: AppResultReviewService,
     /// Veto lobby chat service for real-time chat messages.
@@ -646,6 +652,11 @@ impl AppState {
             Arc::clone(&tournament_match_repo),
         );
 
+        // Create demo stat-fact repository + award service
+        let demo_stats_repo = Arc::new(PgDemoPlayerStatsRepository::new(db_pool.clone()));
+        let award_repo = Arc::new(PgAwardRepository::new(db_pool.clone()));
+        let award_service = AwardService::new(award_repo, Arc::clone(&demo_stats_repo));
+
         // Create result review service
         let result_review_repo = Arc::new(PgResultReviewRepository::new(db_pool.clone()));
         let result_review_service = ResultReviewService::new(
@@ -732,6 +743,8 @@ impl AppState {
             forfeit_service,
             dispute_service,
             demo_service,
+            demo_stats_repo,
+            award_service,
             result_review_service,
             veto_lobby_chat_service,
             veto_authorization_service,

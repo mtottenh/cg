@@ -6,8 +6,10 @@
 mod api_key;
 mod audit;
 mod availability;
+mod award;
 mod ban;
 mod demo;
+mod demo_stats;
 mod discovered_match;
 mod dispute;
 mod evidence;
@@ -33,8 +35,10 @@ pub use audit::PgEntityChangeRepository;
 pub use availability::{
     PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgSuggestedTimeRepository,
 };
+pub use award::PgAwardRepository;
 pub use ban::PgBanRepository;
 pub use demo::{PgDemoMatchLinkRepository, PgDemoPlayerRepository, PgDemoRepository};
+pub use demo_stats::PgDemoPlayerStatsRepository;
 pub use discovered_match::PgDiscoveredMatchRepository;
 pub use dispute::{PgDisputeMessageRepository, PgDisputeRepository};
 pub use evidence::PgEvidenceRepository;

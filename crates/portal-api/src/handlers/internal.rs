@@ -888,10 +888,23 @@ pub async fn internal_submit_demo_stats(
         })
         .collect();
 
+    let raw_stats = request.raw_stats.clone();
     let demo = state
         .demo_service
         .save_demo_stats(demo_id, metadata, request.raw_stats, players)
         .await?;
+
+    // Project EAV stat facts from the raw stats via the game plugin.
+    // Non-fatal: the canonical stats are already persisted.
+    super::demos::extract_and_store_stat_facts(
+        &state.game_repo,
+        &state.plugin_manager,
+        &state.demo_stats_repo,
+        demo_id,
+        demo.game_id,
+        &raw_stats,
+    )
+    .await;
 
     Ok(Json(DataResponse::new(
         DemoResponse::from(demo),

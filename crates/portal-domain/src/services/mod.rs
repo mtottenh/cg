@@ -1,6 +1,7 @@
 //! Domain services containing business logic.
 
 pub mod audit;
+pub mod award;
 pub mod ban;
 pub mod demo;
 pub mod discovered_match;
@@ -16,6 +17,7 @@ pub mod tournament;
 pub mod user;
 
 pub use audit::{AuditService, ChangeContext, ChangeDetector, FieldChange};
+pub use award::{AwardService, CreateCustomAwardCommand, competition_ranks};
 pub use ban::BanService;
 pub use demo::{CatalogResult, DemoPlayerInput, DemoService, ProcessUnlinkedResult};
 pub use discovered_match::DiscoveredMatchService;

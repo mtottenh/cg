@@ -6,8 +6,10 @@
 pub mod api_key;
 pub mod audit;
 pub mod availability;
+pub mod award;
 pub mod ban;
 pub mod demo;
+pub mod demo_stats;
 pub mod discovered_match;
 pub mod dispute;
 pub mod evidence;
@@ -34,10 +36,17 @@ pub use audit::{CreateEntityChange, EntityChangeRepository};
 pub use availability::{
     AvailabilityOverrideRepository, AvailabilityWindowRepository, SuggestedTimeRepository,
 };
+pub use award::{
+    AwardRepository, CreateAward, CreateAwardResult, PlayerTrophy, UpdateAwardPresentation,
+};
 pub use ban::{BanRepository, PaginatedBans, PaginationMeta};
 pub use demo::{
     CreateDemo, CreateDemoMatchLink, CreateDemoPlayer, DemoMatchLinkRepository,
     DemoMatchLinkWithData, DemoPlayerRepository, DemoRepository,
+};
+pub use demo_stats::{
+    CURRENT_EXTRACTOR_VERSION, DemoPlayerStatsRepository, DemoStatFact, LeaderboardEntry,
+    LeaderboardQuery, LeaderboardScope,
 };
 pub use discovered_match::{CreateDiscoveredMatch, DiscoveredMatchRepository};
 pub use dispute::{

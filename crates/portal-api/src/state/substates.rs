@@ -37,14 +37,14 @@ use std::sync::Arc;
 use axum::extract::FromRef;
 use portal_db::{
     ActionItemRepository, GameRepository, PermissionRepository, PgApiKeyRepository,
-    PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository,
-    PgRefreshTokenRepository, PgTournamentMapPoolRepository, PgTournamentMatchRepository,
-    RoleRepository, StatsRepository,
+    PgDemoPlayerStatsRepository, PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository,
+    PgPlayerRatingHistoryRepository, PgRefreshTokenRepository, PgTournamentMapPoolRepository,
+    PgTournamentMatchRepository, RoleRepository, StatsRepository,
 };
 use portal_storage::StorageBackend;
 
 use super::{
-    AppAvailabilityService, AppBanService, AppCheckInService, AppDemoService,
+    AppAvailabilityService, AppAwardService, AppBanService, AppCheckInService, AppDemoService,
     AppDiscoveredMatchService, AppDisputeService, AppEligibilityService, AppEvidenceService,
     AppForfeitService, AppLeagueSeasonParticipantService, AppLeagueSeasonService, AppLeagueService,
     AppLeagueTeamInvitationService, AppLeagueTeamService, AppMatchLifecycleService,
@@ -412,6 +412,9 @@ pub struct TournamentState {
     /// Role repository — `create_tournament` grants the creator the
     /// `tournament_admin` scoped role.
     pub role_repo: RoleRepository,
+    /// Award service — `complete_tournament` auto-finalizes the
+    /// tournament's active awards.
+    pub award_service: AppAwardService,
 }
 
 impl FromRef<AppState> for TournamentState {
@@ -433,6 +436,47 @@ impl FromRef<AppState> for TournamentState {
             game_repo: s.game_repo.clone(),
             plugin_manager: Arc::clone(&s.plugin_manager),
             role_repo: s.role_repo.clone(),
+            award_service: s.award_service.clone(),
+        }
+    }
+}
+
+/// State slice used by award + leaderboard handlers (`handlers/awards.rs`).
+///
+/// Awards hang off several scopes, so the slice carries the resolvers each
+/// path needs: `tournament_service` (tournament scope → game + lock
+/// status), `league_season_service` + `league_service` (season scope →
+/// league for RBAC and its game), `game_repo` + `plugin_manager` (slug
+/// resolution and stat-catalog validation), and `player_service` (trophy
+/// case 404s on unknown players).
+#[derive(Clone)]
+pub struct AwardsState {
+    /// Award service (templates, instances, standings, finalization).
+    pub award_service: AppAwardService,
+    /// Tournament service (resolve tournament scope).
+    pub tournament_service: AppTournamentService,
+    /// League season service (resolve season scope).
+    pub league_season_service: AppLeagueSeasonService,
+    /// League service (season scope → league game).
+    pub league_service: AppLeagueService,
+    /// Game repository (slug → game, plugin id).
+    pub game_repo: GameRepository,
+    /// Plugin manager (stat catalog + create-time stat-key validation).
+    pub plugin_manager: Arc<PluginManager>,
+    /// Player service (trophy-case player existence check).
+    pub player_service: AppPlayerService,
+}
+
+impl FromRef<AppState> for AwardsState {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            award_service: s.award_service.clone(),
+            tournament_service: s.tournament_service.clone(),
+            league_season_service: s.league_season_service.clone(),
+            league_service: s.league_service.clone(),
+            game_repo: s.game_repo.clone(),
+            plugin_manager: Arc::clone(&s.plugin_manager),
+            player_service: s.player_service.clone(),
         }
     }
 }
@@ -602,6 +646,10 @@ pub struct DemoState {
     pub permission_service: AppPermissionService,
     /// Game repository (validate game_id on catalog_demo).
     pub game_repo: GameRepository,
+    /// Plugin manager (stat-fact extraction on stats submission).
+    pub plugin_manager: Arc<PluginManager>,
+    /// Demo stat-fact repository (EAV projection written at ingest).
+    pub demo_stats_repo: Arc<PgDemoPlayerStatsRepository>,
 }
 
 impl FromRef<AppState> for DemoState {
@@ -611,6 +659,8 @@ impl FromRef<AppState> for DemoState {
             cs2_demo_base_url: s.cs2_demo_base_url.clone(),
             permission_service: s.permission_service.clone(),
             game_repo: s.game_repo.clone(),
+            plugin_manager: Arc::clone(&s.plugin_manager),
+            demo_stats_repo: Arc::clone(&s.demo_stats_repo),
         }
     }
 }
@@ -813,6 +863,10 @@ pub struct InternalState {
     pub match_history_repo: Arc<PgPlayerMatchHistoryRepository>,
     /// MM-stats repository (enricher accumulates aggregate stats).
     pub mm_stats_repo: Arc<PgPlayerMmStatsRepository>,
+    /// Plugin manager (stat-fact extraction on stats submission).
+    pub plugin_manager: Arc<PluginManager>,
+    /// Demo stat-fact repository (EAV projection written at ingest).
+    pub demo_stats_repo: Arc<PgDemoPlayerStatsRepository>,
 }
 
 impl FromRef<AppState> for InternalState {
@@ -829,6 +883,8 @@ impl FromRef<AppState> for InternalState {
             rating_history_repo: Arc::clone(&s.rating_history_repo),
             match_history_repo: Arc::clone(&s.match_history_repo),
             mm_stats_repo: Arc::clone(&s.mm_stats_repo),
+            plugin_manager: Arc::clone(&s.plugin_manager),
+            demo_stats_repo: Arc::clone(&s.demo_stats_repo),
         }
     }
 }

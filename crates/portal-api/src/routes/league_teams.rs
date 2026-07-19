@@ -6,7 +6,7 @@
 //! - `/league-team-seasons` - Seasonal roster management
 //! - `/league-team-invitations` - Invitation management
 
-use crate::handlers::{league_teams, uploads};
+use crate::handlers::{awards, league_teams, uploads};
 use crate::state::AppState;
 use axum::Router;
 use axum::routing::{delete, get, patch, post};
@@ -28,6 +28,27 @@ pub fn season_routes() -> Router<AppState> {
         .route(
             "/{season_id}/teams/register",
             post(league_teams::register_team_for_season),
+        )
+        // Awards + leaderboards
+        .route(
+            "/{season_id}/awards",
+            get(awards::list_season_awards).post(awards::create_season_award),
+        )
+        .route(
+            "/{season_id}/awards/{award_id}",
+            patch(awards::update_season_award).delete(awards::void_season_award),
+        )
+        .route(
+            "/{season_id}/awards/{award_id}/standings",
+            get(awards::get_season_award_standings),
+        )
+        .route(
+            "/{season_id}/awards/{award_id}/finalize",
+            post(awards::finalize_season_award),
+        )
+        .route(
+            "/{season_id}/leaderboards",
+            get(awards::get_season_leaderboard),
         )
 }
 

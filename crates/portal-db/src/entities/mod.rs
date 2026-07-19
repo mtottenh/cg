@@ -9,6 +9,7 @@
 mod api_key;
 mod audit;
 mod availability;
+mod award;
 mod demo;
 mod discovered_match;
 mod dispute;
@@ -33,6 +34,7 @@ mod veto_lobby_message;
 pub use api_key::ApiKeyRow;
 pub use audit::{EntityChangeRow, NewEntityChange};
 pub use availability::{AvailabilityOverrideRow, AvailabilityWindowRow, SuggestedTimeRow};
+pub use award::{AwardResultRow, AwardRow, AwardTemplateRow};
 pub use demo::{
     DemoMatchLinkRow, DemoPlayerRow, DemoRow, NewDemo, NewDemoMatchLink, NewDemoPlayer,
     UpdateDemoStats,

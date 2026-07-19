@@ -1,6 +1,6 @@
 //! Player routes.
 
-use crate::handlers::{player_game_profiles, players, steam_tracking, uploads};
+use crate::handlers::{awards, player_game_profiles, players, steam_tracking, uploads};
 use crate::state::AppState;
 use axum::Router;
 use axum::routing::{get, post};
@@ -25,6 +25,7 @@ pub fn routes() -> Router<AppState> {
                 .delete(steam_tracking::delete_tracking),
         )
         .route("/{player_id}", get(players::get_player))
+        .route("/{player_id}/awards", get(awards::get_player_awards))
         .route(
             "/{player_id}/games",
             get(player_game_profiles::list_player_game_profiles),

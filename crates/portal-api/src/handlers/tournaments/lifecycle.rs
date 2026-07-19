@@ -13,13 +13,14 @@ use crate::dto::requests::{
 };
 use crate::dto::responses::{TournamentResponse, TournamentSummaryResponse};
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::TournamentState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::TournamentId;
 use portal_core::types::TournamentStatus;
+use portal_core::{ScopeType, permissions};
 use portal_domain::repositories::tournament::TournamentFilters;
 
 // =============================================================================
@@ -61,6 +62,29 @@ pub async fn create_tournament(
         .tournament_service
         .create_tournament(cmd, auth.user_id)
         .await?;
+
+    // Grant the creator full control over their new tournament via the
+    // `tournament_admin` scoped role. A tournament nobody controls is worse
+    // than a failed create, so a grant failure fails the whole request.
+    state
+        .role_repo
+        .assign_scoped_role(
+            auth.user_id.as_uuid(),
+            "tournament_admin",
+            ScopeType::Tournament,
+            tournament.id.as_uuid(),
+            None,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                tournament_id = %tournament.id,
+                user_id = %auth.user_id,
+                "failed to grant tournament_admin role to tournament creator"
+            );
+            ApiError::internal("Failed to grant tournament admin role to creator")
+        })?;
 
     Ok((
         StatusCode::CREATED,
@@ -240,6 +264,7 @@ pub async fn list_tournaments(
         (status = 200, description = "Tournament updated", body = DataResponse<TournamentResponse>),
         (status = 400, description = "Validation error or tournament already started", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -247,12 +272,21 @@ pub async fn list_tournaments(
 )]
 pub async fn update_tournament(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<UpdateTournamentRequest>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            permissions::tournament::SETTINGS_MANAGE,
+        )
+        .await?;
 
     // Guard: eligibility restrictions cannot be changed once registration has opened
     let wants_eligibility_change = req.eligibility_restrictions.is_some()
@@ -300,6 +334,7 @@ pub async fn update_tournament(
         (status = 200, description = "Tournament published", body = DataResponse<TournamentResponse>),
         (status = 400, description = "Tournament cannot be published", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -307,11 +342,20 @@ pub async fn update_tournament(
 )]
 pub async fn publish_tournament(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            permissions::tournament::SETTINGS_MANAGE,
+        )
+        .await?;
 
     let tournament = state
         .tournament_service
@@ -335,6 +379,7 @@ pub async fn publish_tournament(
         (status = 200, description = "Registration opened", body = DataResponse<TournamentResponse>),
         (status = 400, description = "Cannot open registration", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -342,11 +387,20 @@ pub async fn publish_tournament(
 )]
 pub async fn open_registration(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            permissions::tournament::SETTINGS_MANAGE,
+        )
+        .await?;
 
     let tournament = state
         .tournament_service
@@ -370,6 +424,7 @@ pub async fn open_registration(
         (status = 200, description = "Tournament started", body = DataResponse<TournamentResponse>),
         (status = 400, description = "Tournament cannot be started", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -377,11 +432,20 @@ pub async fn open_registration(
 )]
 pub async fn start_tournament(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            permissions::tournament::SETTINGS_MANAGE,
+        )
+        .await?;
 
     let tournament = state
         .tournament_service
@@ -405,6 +469,7 @@ pub async fn start_tournament(
         (status = 200, description = "Registration closed", body = DataResponse<TournamentResponse>),
         (status = 400, description = "Cannot close registration", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -412,11 +477,20 @@ pub async fn start_tournament(
 )]
 pub async fn close_registration(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            permissions::tournament::SETTINGS_MANAGE,
+        )
+        .await?;
 
     let tournament = state
         .tournament_service
@@ -440,6 +514,7 @@ pub async fn close_registration(
         (status = 200, description = "Registration reopened", body = DataResponse<TournamentResponse>),
         (status = 400, description = "Cannot reopen registration", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -447,11 +522,20 @@ pub async fn close_registration(
 )]
 pub async fn reopen_registration(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            permissions::tournament::SETTINGS_MANAGE,
+        )
+        .await?;
 
     let tournament = state
         .tournament_service
@@ -475,6 +559,7 @@ pub async fn reopen_registration(
         (status = 200, description = "Tournament cancelled", body = DataResponse<TournamentResponse>),
         (status = 400, description = "Cannot cancel tournament", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -482,11 +567,20 @@ pub async fn reopen_registration(
 )]
 pub async fn cancel_tournament(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            permissions::tournament::SETTINGS_MANAGE,
+        )
+        .await?;
 
     let tournament = state
         .tournament_service
@@ -510,6 +604,7 @@ pub async fn cancel_tournament(
         (status = 200, description = "Tournament completed", body = DataResponse<TournamentResponse>),
         (status = 400, description = "Cannot complete tournament", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -517,11 +612,20 @@ pub async fn cancel_tournament(
 )]
 pub async fn complete_tournament(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            permissions::tournament::SETTINGS_MANAGE,
+        )
+        .await?;
 
     let tournament = state
         .tournament_service
@@ -545,6 +649,7 @@ pub async fn complete_tournament(
         (status = 200, description = "Tournament finalized", body = DataResponse<TournamentResponse>),
         (status = 400, description = "Cannot finalize tournament", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -552,11 +657,20 @@ pub async fn complete_tournament(
 )]
 pub async fn finalize_tournament(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            permissions::tournament::SETTINGS_MANAGE,
+        )
+        .await?;
 
     let tournament = state
         .tournament_service

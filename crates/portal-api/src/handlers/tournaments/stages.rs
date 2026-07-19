@@ -9,7 +9,7 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::CreateTournamentStageRequest;
 use crate::dto::responses::TournamentStageResponse;
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::TournamentState;
 use axum::Json;
 use axum::extract::{Path, State};
@@ -28,6 +28,7 @@ use portal_core::TournamentId;
         (status = 201, description = "Stage created", body = DataResponse<TournamentStageResponse>),
         (status = 400, description = "Validation error or tournament started", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -35,12 +36,21 @@ use portal_core::TournamentId;
 )]
 pub async fn create_stage(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<CreateTournamentStageRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<TournamentStageResponse>>)> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            portal_core::permissions::tournament::SETTINGS_MANAGE,
+        )
+        .await?;
 
     let cmd = req.into_command(tournament_id)?;
 

@@ -409,6 +409,9 @@ pub struct TournamentState {
     pub game_repo: GameRepository,
     /// Plugin manager (veto side-selection defaults).
     pub plugin_manager: Arc<PluginManager>,
+    /// Role repository — `create_tournament` grants the creator the
+    /// `tournament_admin` scoped role.
+    pub role_repo: RoleRepository,
 }
 
 impl FromRef<AppState> for TournamentState {
@@ -429,6 +432,7 @@ impl FromRef<AppState> for TournamentState {
             tournament_map_pool_repo: Arc::clone(&s.tournament_map_pool_repo),
             game_repo: s.game_repo.clone(),
             plugin_manager: Arc::clone(&s.plugin_manager),
+            role_repo: s.role_repo.clone(),
         }
     }
 }
@@ -502,6 +506,10 @@ pub struct ResultReviewState {
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
     /// Match completion saga (review approval can advance a stalled match).
     pub match_completion_saga: super::AppMatchCompletionSaga,
+    /// Registration service (bind the acknowledging caller to the registration).
+    pub registration_service: AppRegistrationService,
+    /// League-team service (team-season membership checks for acknowledgment).
+    pub league_team_service: AppLeagueTeamService,
 }
 
 impl FromRef<AppState> for ResultReviewState {
@@ -510,6 +518,8 @@ impl FromRef<AppState> for ResultReviewState {
             result_review_service: s.result_review_service.clone(),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             match_completion_saga: s.match_completion_saga.clone(),
+            registration_service: s.registration_service.clone(),
+            league_team_service: s.league_team_service.clone(),
         }
     }
 }
@@ -519,12 +529,18 @@ impl FromRef<AppState> for ResultReviewState {
 pub struct ForfeitState {
     /// Forfeit service.
     pub forfeit_service: AppForfeitService,
+    /// Registration service (bind the withdrawing caller to the registration).
+    pub registration_service: AppRegistrationService,
+    /// League-team service (team-season membership checks for withdrawal).
+    pub league_team_service: AppLeagueTeamService,
 }
 
 impl FromRef<AppState> for ForfeitState {
     fn from_ref(s: &AppState) -> Self {
         Self {
             forfeit_service: s.forfeit_service.clone(),
+            registration_service: s.registration_service.clone(),
+            league_team_service: s.league_team_service.clone(),
         }
     }
 }

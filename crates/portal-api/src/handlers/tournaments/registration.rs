@@ -19,7 +19,7 @@ use crate::dto::requests::{
 };
 use crate::dto::responses::{CheckInStatusResponse, TournamentRegistrationResponse};
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::TournamentState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -52,6 +52,35 @@ pub struct RegistrationPath {
 }
 
 // =============================================================================
+
+/// Require `tournament.participants.manage` on the tournament that owns
+/// the given registration.
+///
+/// The check deliberately resolves the tournament from the registration
+/// row rather than trusting the `tournament_id` path segment — otherwise
+/// an admin of tournament A could act on a registration belonging to
+/// tournament B by crafting the URL.
+async fn require_registration_manage(
+    state: &TournamentState,
+    auth: &AuthenticatedUser,
+    perm_checker: &PermissionChecker,
+    registration_id: portal_core::TournamentRegistrationId,
+) -> ApiResult<()> {
+    let registration = state
+        .registration_service
+        .get_registration(registration_id)
+        .await?;
+
+    perm_checker
+        .require_tournament_permission(
+            auth,
+            registration.tournament_id.as_uuid(),
+            portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+        )
+        .await?;
+
+    Ok(())
+}
 
 /// Register a team for a tournament.
 #[utoipa::path(
@@ -318,6 +347,7 @@ pub async fn withdraw(
         (status = 200, description = "Registration approved", body = DataResponse<TournamentRegistrationResponse>),
         (status = 400, description = "Cannot approve", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Registration not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -325,7 +355,8 @@ pub async fn withdraw(
 )]
 pub async fn approve_registration(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(path): Path<RegistrationPath>,
 ) -> ApiResult<Json<DataResponse<TournamentRegistrationResponse>>> {
@@ -335,6 +366,8 @@ pub async fn approve_registration(
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
+
+    require_registration_manage(&state, &auth, &perm_checker, registration_id).await?;
 
     let registration = state
         .registration_service
@@ -360,6 +393,7 @@ pub async fn approve_registration(
         (status = 200, description = "Registration rejected", body = DataResponse<TournamentRegistrationResponse>),
         (status = 400, description = "Cannot reject", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Registration not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -367,7 +401,8 @@ pub async fn approve_registration(
 )]
 pub async fn reject_registration(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(path): Path<RegistrationPath>,
     ValidatedJson(req): ValidatedJson<crate::dto::requests::RejectRegistrationRequest>,
@@ -378,6 +413,8 @@ pub async fn reject_registration(
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
+
+    require_registration_manage(&state, &auth, &perm_checker, registration_id).await?;
 
     let registration = state
         .registration_service
@@ -403,6 +440,7 @@ pub async fn reject_registration(
         (status = 200, description = "Participant disqualified", body = DataResponse<TournamentRegistrationResponse>),
         (status = 400, description = "Cannot disqualify", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Registration not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -410,7 +448,8 @@ pub async fn reject_registration(
 )]
 pub async fn disqualify(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(path): Path<RegistrationPath>,
     ValidatedJson(req): ValidatedJson<crate::dto::requests::DisqualifyRequest>,
@@ -421,6 +460,8 @@ pub async fn disqualify(
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
+
+    require_registration_manage(&state, &auth, &perm_checker, registration_id).await?;
 
     let registration = state
         .registration_service
@@ -482,6 +523,7 @@ pub async fn get_check_in_status(
         (status = 200, description = "Participant checked in", body = DataResponse<TournamentRegistrationResponse>),
         (status = 400, description = "Cannot check in", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Registration not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -490,6 +532,7 @@ pub async fn get_check_in_status(
 pub async fn admin_check_in(
     State(state): State<TournamentState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(path): Path<RegistrationPath>,
 ) -> ApiResult<Json<DataResponse<TournamentRegistrationResponse>>> {
@@ -499,6 +542,8 @@ pub async fn admin_check_in(
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
+
+    require_registration_manage(&state, &auth, &perm_checker, registration_id).await?;
 
     let registration = state
         .checkin_service
@@ -522,6 +567,7 @@ pub async fn admin_check_in(
         (status = 200, description = "No-shows processed", body = DataResponse<Vec<TournamentRegistrationResponse>>),
         (status = 400, description = "Cannot process no-shows", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -529,11 +575,20 @@ pub async fn admin_check_in(
 )]
 pub async fn process_no_shows(
     State(state): State<TournamentState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<Json<DataResponse<Vec<TournamentRegistrationResponse>>>> {
     let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+        )
+        .await?;
 
     let no_shows = state
         .checkin_service

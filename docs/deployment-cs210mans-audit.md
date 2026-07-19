@@ -76,6 +76,18 @@ auth_type steam|email, password_hash bcrypt nullable, current_elo,
 highest_elo)`. Every account has a Steam ID; only `email`-type accounts have
 passwords (bcrypt via passlib).
 
+**Confirmed from the recovered prod DB** (root-podman volume
+`backend_postgres_data`, extracted 2026-07-19, dump at
+`C:\Users\Max\cs210mans_db.dump.sql` — contains emails + a password hash, do
+NOT commit): **90 players** (89 steam-auth, exactly 1 email+bcrypt account:
+`gwoody`), **10 teams** with 72 roster entries in "Season 2", and **zero**
+tournaments/fixtures/results/pugs/bans — no competition history exists to
+migrate. The DB is newer than `players.csv` (12 players joined after the CSV
+export; latest 2026-01-07, i.e. the site was live until the January reboot
+broke podman). **Migrate from the dump, not the CSV.** Also preserve the
+`backend_logo_store` / `backend_map_store` volumes (team logos, map images)
+from `/var/lib/containers/storage/volumes/` for the team import.
+
 Ours: `users` (argon2id password) 1:1 `players` (`steam_id_64` set-once).
 
 Plan, in order of preference per account type:

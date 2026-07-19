@@ -44,7 +44,7 @@ impl BracketGenerator {
             return Err(DomainError::InsufficientParticipants);
         }
 
-        let is_odd = n % 2 != 0;
+        let is_odd = !n.is_multiple_of(2);
         let bye_participant = if is_odd {
             Some(participants[n - 1].registration_id)
         } else {
@@ -155,7 +155,7 @@ impl BracketGenerator {
 
         // Handle bye for odd count
         let mut bye_participant = None;
-        if sorted.len() % 2 != 0 {
+        if !sorted.len().is_multiple_of(2) {
             // Find the lowest-ranked participant who hasn't had a bye yet
             for i in (0..sorted.len()).rev() {
                 if !sorted[i].had_bye {

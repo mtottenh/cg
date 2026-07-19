@@ -50,33 +50,29 @@ impl GroupsConfig {
     ) -> Result<Self, DomainError> {
         let group_count = settings
             .get("group_count")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .unwrap_or_else(|| (participant_count / 4).max(2));
+            .and_then(serde_json::Value::as_u64)
+            .map_or_else(|| (participant_count / 4).max(2), |v| v as usize);
 
         let advance_per_group = settings
             .get("advance_per_group")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .unwrap_or(2);
+            .and_then(serde_json::Value::as_u64)
+            .map_or(2, |v| v as usize);
 
         let group_format = settings
             .get("group_format")
             .and_then(|v| v.as_str())
-            .map(|s| match s {
+            .map_or(GroupStageFormat::RoundRobin, |s| match s {
                 "swiss" => GroupStageFormat::Swiss,
                 _ => GroupStageFormat::RoundRobin,
-            })
-            .unwrap_or(GroupStageFormat::RoundRobin);
+            });
 
         let playoff_format = settings
             .get("playoff_format")
             .and_then(|v| v.as_str())
-            .map(|s| match s {
+            .map_or(PlayoffFormat::SingleElimination, |s| match s {
                 "double_elimination" => PlayoffFormat::DoubleElimination,
                 _ => PlayoffFormat::SingleElimination,
-            })
-            .unwrap_or(PlayoffFormat::SingleElimination);
+            });
 
         if group_count < 2 {
             return Err(DomainError::InvalidState(
@@ -141,7 +137,7 @@ pub fn distribute_into_groups(
         // Odd rows go right-to-left (K-1, K-2, ..., 0)
         let row = i / group_count;
         let col = i % group_count;
-        let group_idx = if row % 2 == 0 {
+        let group_idx = if row.is_multiple_of(2) {
             col
         } else {
             group_count - 1 - col

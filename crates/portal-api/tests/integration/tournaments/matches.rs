@@ -9,8 +9,7 @@ async fn test_get_match_status() {
     // Get match status
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/status",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/status"
         ))
         .await;
 
@@ -31,8 +30,7 @@ async fn test_get_match_status_history_empty() {
     // Get match status history (should be empty for a new match)
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/status-history",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/status-history"
         ))
         .await;
 
@@ -54,10 +52,7 @@ async fn test_schedule_match() {
 
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339()
             }),
@@ -80,10 +75,7 @@ async fn test_match_check_in() {
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339()
             }),
@@ -94,10 +86,7 @@ async fn test_match_check_in() {
     // Check in to the match
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/check-in",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/check-in"),
             &json!({
                 "registration_id": reg1
             }),
@@ -121,10 +110,7 @@ async fn test_forfeit_match() {
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339()
             }),
@@ -135,10 +121,7 @@ async fn test_forfeit_match() {
     // Forfeit the match
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/forfeit",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/forfeit"),
             &json!({
                 "registration_id": reg1,
                 "reason": "Cannot attend the match"
@@ -162,10 +145,7 @@ async fn test_admin_match_transition() {
     // Admin transition to cancelled status
     let response = app
         .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/transition",
-                tournament_id, match_id
-            ),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
             &json!({
                 "to_status": "cancelled",
                 "override_reason": "Tournament cancelled due to technical issues"
@@ -190,10 +170,7 @@ async fn test_get_match_status_history_after_transitions() {
     let scheduled_time = chrono::Utc::now() + chrono::Duration::hours(1);
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339()
             }),
@@ -204,8 +181,7 @@ async fn test_get_match_status_history_after_transitions() {
     // Get match status history
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/status-history",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/status-history"
         ))
         .await;
 
@@ -237,8 +213,7 @@ async fn test_match_status_not_found() {
     // Try to get status for a non-existent match
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/00000000-0000-0000-0000-000000000000/status",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/matches/00000000-0000-0000-0000-000000000000/status"
         ))
         .await;
 

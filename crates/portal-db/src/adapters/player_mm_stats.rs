@@ -72,9 +72,9 @@ impl PlayerMmStatsRepository for PgPlayerMmStatsRepository {
         game_id: GameId,
         stats: &AccumulateMatchStats,
     ) -> Result<PlayerMmStats, DomainError> {
-        let win_inc: i32 = if stats.is_win { 1 } else { 0 };
-        let loss_inc: i32 = if stats.is_loss { 1 } else { 0 };
-        let draw_inc: i32 = if stats.is_draw { 1 } else { 0 };
+        let win_inc: i32 = i32::from(stats.is_win);
+        let loss_inc: i32 = i32::from(stats.is_loss);
+        let draw_inc: i32 = i32::from(stats.is_draw);
 
         let row = sqlx::query_as::<_, PlayerMmStatsRow>(
             r"

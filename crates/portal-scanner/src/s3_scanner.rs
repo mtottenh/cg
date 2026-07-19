@@ -39,7 +39,11 @@ pub async fn list_demo_files(
         for obj in resp.contents() {
             let key = obj.key().unwrap_or_default();
             // Only include demo files (.dem.bz2 or .dem)
-            if key.ends_with(".dem.bz2") || key.ends_with(".dem") {
+            if key.ends_with(".dem.bz2")
+                || std::path::Path::new(key)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("dem"))
+            {
                 objects.push(S3Object {
                     key: key.to_string(),
                     size: obj.size().unwrap_or(0),

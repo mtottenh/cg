@@ -367,7 +367,7 @@ async fn test_list_bans_filter_by_user() {
 
     // Filter by user1
     let response = app
-        .get_auth(&format!("/v1/admin/bans?user_id={}", user1_id))
+        .get_auth(&format!("/v1/admin/bans?user_id={user1_id}"))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -423,7 +423,7 @@ async fn test_list_bans_pagination() {
 
     // Create multiple users and bans
     for i in 0..5 {
-        let user_id = create_test_user(&app, &format!("pagination_user_{}", i)).await;
+        let user_id = create_test_user(&app, &format!("pagination_user_{i}")).await;
         app.post_json(
             "/v1/admin/bans",
             &json!({
@@ -475,7 +475,7 @@ async fn test_get_ban_by_id() {
     let ban_id = create_body["data"]["id"].as_str().unwrap();
 
     // Get the ban
-    let response = app.get_auth(&format!("/v1/admin/bans/{}", ban_id)).await;
+    let response = app.get_auth(&format!("/v1/admin/bans/{ban_id}")).await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
@@ -534,7 +534,7 @@ async fn test_lift_ban() {
     // Lift the ban
     let response = app
         .post_json(
-            &format!("/v1/admin/bans/{}/lift", ban_id),
+            &format!("/v1/admin/bans/{ban_id}/lift"),
             &json!({
                 "reason": "User appealed successfully"
             }),
@@ -573,7 +573,7 @@ async fn test_lift_ban_without_reason() {
     let ban_id = create_body["data"]["id"].as_str().unwrap();
 
     let response = app
-        .post_json(&format!("/v1/admin/bans/{}/lift", ban_id), &json!({}))
+        .post_json(&format!("/v1/admin/bans/{ban_id}/lift"), &json!({}))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -630,7 +630,7 @@ async fn test_get_user_ban_history() {
 
     // Get ban history
     let response = app
-        .get_auth(&format!("/v1/admin/users/{}/bans", user_id))
+        .get_auth(&format!("/v1/admin/users/{user_id}/bans"))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -652,7 +652,7 @@ async fn test_get_user_ban_history_empty() {
     let user_id = create_test_user(&app, "clean_user").await;
 
     let response = app
-        .get_auth(&format!("/v1/admin/users/{}/bans", user_id))
+        .get_auth(&format!("/v1/admin/users/{user_id}/bans"))
         .await;
     response.assert_status(StatusCode::OK);
 

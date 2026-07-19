@@ -340,9 +340,11 @@ impl S3EvidenceClient for S3Storage {
 
         Ok(ObjectMetadata {
             content_length: response.content_length().unwrap_or(0),
-            content_type: response.content_type().map(|s| s.to_string()),
+            content_type: response
+                .content_type()
+                .map(std::string::ToString::to_string),
             last_modified,
-            etag: response.e_tag().map(|s| s.to_string()),
+            etag: response.e_tag().map(std::string::ToString::to_string),
         })
     }
 

@@ -451,11 +451,11 @@ async fn lift_ban(repo: &BanRepository, id: Uuid, reason: Option<&str>) -> Resul
         std::process::exit(1);
     }
 
-    if let Some(ends) = ban.ends_at {
-        if ends < Utc::now() {
-            error("Ban has already expired");
-            std::process::exit(1);
-        }
+    if let Some(ends) = ban.ends_at
+        && ends < Utc::now()
+    {
+        error("Ban has already expired");
+        std::process::exit(1);
     }
 
     // Lift the ban

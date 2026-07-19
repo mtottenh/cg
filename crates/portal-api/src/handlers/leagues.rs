@@ -39,7 +39,7 @@ async fn check_league_entry_requirements(
     }
 
     let messages: Vec<String> = violations.iter().map(|v| v.message.clone()).collect();
-    Err(ApiError::bad_request(&format!(
+    Err(ApiError::bad_request(format!(
         "You do not meet the entry requirements: {}",
         messages.join("; ")
     )))

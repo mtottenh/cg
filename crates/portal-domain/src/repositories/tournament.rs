@@ -530,6 +530,16 @@ pub trait TournamentMatchRepository: Send + Sync {
         status: TournamentMatchStatus,
     ) -> Result<TournamentMatch, DomainError>;
 
+    /// Set whether the match requires a map veto before play.
+    ///
+    /// Flipped on when a veto session is created for the match — nothing at
+    /// bracket-generation time sets it, so this is the only writer.
+    async fn set_veto_required(
+        &self,
+        id: TournamentMatchId,
+        veto_required: bool,
+    ) -> Result<TournamentMatch, DomainError>;
+
     /// Transition every match in `ids` from Pending → Ready in one
     /// statement.
     ///

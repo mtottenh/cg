@@ -30,12 +30,11 @@ async fn create_team_tournament(app: &TestApp, slug: &str) -> String {
     let created: serde_json::Value = response.json();
     let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
 
-    app.post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await
         .assert_status(StatusCode::OK);
     app.post_auth(&format!(
-        "/v1/tournaments/{}/open-registration",
-        tournament_id
+        "/v1/tournaments/{tournament_id}/open-registration"
     ))
     .await
     .assert_status(StatusCode::OK);
@@ -100,7 +99,7 @@ async fn test_register_team_happy_path() {
 
     let response = app
         .post_json_with_token(
-            &format!("/v1/tournaments/{}/registrations/team", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/registrations/team"),
             &json!({
                 "team_season_id": team_season_id,
                 "participant_name": "The Happy Team"
@@ -117,7 +116,7 @@ async fn test_register_team_happy_path() {
 
     // The registration shows up in the tournament's registration list.
     let response = app
-        .get_auth(&format!("/v1/tournaments/{}/registrations", tournament_id))
+        .get_auth(&format!("/v1/tournaments/{tournament_id}/registrations"))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
@@ -137,7 +136,7 @@ async fn test_register_team_twice_conflicts() {
         "participant_name": "Dup Team"
     });
     app.post_json_with_token(
-        &format!("/v1/tournaments/{}/registrations/team", tournament_id),
+        &format!("/v1/tournaments/{tournament_id}/registrations/team"),
         &body,
         &captain_token,
     )
@@ -146,7 +145,7 @@ async fn test_register_team_twice_conflicts() {
 
     let response = app
         .post_json_with_token(
-            &format!("/v1/tournaments/{}/registrations/team", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/registrations/team"),
             &body,
             &captain_token,
         )
@@ -185,7 +184,7 @@ async fn test_register_team_before_registration_opens_rejected() {
 
     let response = app
         .post_json_with_token(
-            &format!("/v1/tournaments/{}/registrations/team", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/registrations/team"),
             &json!({
                 "team_season_id": team_season_id,
                 "participant_name": "Too Early Team"
@@ -207,8 +206,7 @@ async fn test_withdraw_registration() {
     // Withdraw
     let response = app
         .delete_auth(&format!(
-            "/v1/tournaments/{}/registrations/{}",
-            tournament_id, registration_id
+            "/v1/tournaments/{tournament_id}/registrations/{registration_id}"
         ))
         .await;
 
@@ -234,10 +232,7 @@ async fn test_get_check_in_status() {
 
     // Get check-in status
     let response = app
-        .get(&format!(
-            "/v1/tournaments/{}/check-in-status",
-            tournament_id
-        ))
+        .get(&format!("/v1/tournaments/{tournament_id}/check-in-status"))
         .await;
 
     response.assert_status(StatusCode::OK);

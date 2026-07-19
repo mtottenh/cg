@@ -230,15 +230,15 @@ pub async fn list_evidence(
     };
 
     // Apply filters
-    if let Some(ref et) = query.evidence_type {
-        if let Ok(parsed) = et.parse::<portal_domain::entities::evidence::EvidenceType>() {
-            evidence.retain(|e| e.evidence_type == parsed);
-        }
+    if let Some(ref et) = query.evidence_type
+        && let Ok(parsed) = et.parse::<portal_domain::entities::evidence::EvidenceType>()
+    {
+        evidence.retain(|e| e.evidence_type == parsed);
     }
-    if let Some(ref st) = query.status {
-        if let Ok(parsed) = st.parse::<portal_domain::entities::evidence::EvidenceStatus>() {
-            evidence.retain(|e| e.status == parsed);
-        }
+    if let Some(ref st) = query.status
+        && let Ok(parsed) = st.parse::<portal_domain::entities::evidence::EvidenceStatus>()
+    {
+        evidence.retain(|e| e.status == parsed);
     }
     if !query.include_discovered {
         evidence.retain(|e| {
@@ -374,14 +374,13 @@ pub async fn delete_evidence(
         .plugin_metadata
         .get("catalog_demo_id")
         .and_then(|v| v.as_str())
+        && let Ok(demo_id) = demo_id_str.parse::<portal_core::DemoId>()
     {
-        if let Ok(demo_id) = demo_id_str.parse::<portal_core::DemoId>() {
-            // Best-effort: ignore errors if the link was already removed
-            let _ = state
-                .demo_service
-                .unlink_from_match(demo_id, match_id)
-                .await;
-        }
+        // Best-effort: ignore errors if the link was already removed
+        let _ = state
+            .demo_service
+            .unlink_from_match(demo_id, match_id)
+            .await;
     }
 
     state
@@ -494,6 +493,9 @@ pub async fn link_discovered_evidence(
     Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<LinkDiscoveredEvidenceRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<EvidenceResponse>>)> {
+    use portal_domain::entities::evidence::{DiscoveredEvidence, EvidenceStorage, EvidenceType};
+    use portal_domain::services::tournament::EvidencePluginClient;
+
     let request_id = get_request_id(&headers);
 
     // Check if this is a catalog-based discovery (external_id starts with "catalog:")
@@ -518,9 +520,6 @@ pub async fn link_discovered_evidence(
             .await?;
 
         // Build DiscoveredEvidence from the catalog demo
-        use portal_domain::entities::evidence::{
-            DiscoveredEvidence, EvidenceStorage, EvidenceType,
-        };
         let discovered = DiscoveredEvidence {
             external_id: req.external_id,
             evidence_type: EvidenceType::Demo,
@@ -560,7 +559,6 @@ pub async fn link_discovered_evidence(
         .ok_or_else(|| ApiError::bad_request("Game plugin does not support evidence"))?;
 
     // Discover evidence via plugin, then find the one with matching external_id
-    use portal_domain::services::tournament::EvidencePluginClient;
     let discovered_list = adapter
         .discover_evidence(&context)
         .await
@@ -827,17 +825,20 @@ async fn build_evidence_context(
 
         if let Some(pid) = reg.player_id {
             player_ids.push(pid);
-            if let Ok(player) = state.player_service.get_player(pid).await {
-                if let Some(sid) = &player.steam_id {
-                    steam_ids.push(sid.clone());
-                }
+            if let Ok(player) = state.player_service.get_player(pid).await
+                && let Some(sid) = &player.steam_id
+            {
+                steam_ids.push(sid.clone());
             }
         }
 
         participants.push(ParticipantContext {
             registration_id: reg_id.as_uuid(),
             name: reg.participant_name,
-            player_ids: player_ids.iter().map(|id| id.as_uuid()).collect(),
+            player_ids: player_ids
+                .iter()
+                .map(portal_core::PlayerId::as_uuid)
+                .collect(),
             steam_ids,
         });
     }
@@ -1057,6 +1058,8 @@ pub async fn link_demo(
     Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<LinkDemoRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<EvidenceResponse>>)> {
+    use portal_domain::entities::evidence::{DiscoveredEvidence, EvidenceStorage, EvidenceType};
+
     let request_id = get_request_id(&headers);
 
     let cs2_plugin = create_cs2_plugin(&state);
@@ -1068,7 +1071,6 @@ pub async fn link_demo(
         .map_err(|_| ApiError::not_found(format!("Demo not found: {}", req.demo_name)))?;
 
     // Build DiscoveredEvidence with proper Demo type
-    use portal_domain::entities::evidence::{DiscoveredEvidence, EvidenceStorage, EvidenceType};
     let discovered = DiscoveredEvidence {
         external_id: format!("demo:{}", req.demo_name),
         evidence_type: EvidenceType::Demo,

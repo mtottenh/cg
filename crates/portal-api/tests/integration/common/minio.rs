@@ -49,13 +49,22 @@ pub async fn create_s3_client(endpoint: &str) -> aws_sdk_s3::Client {
 }
 
 /// Create an S3 bucket.
+///
+/// Retries transient connection failures: freshly-started MinIO containers
+/// intermittently reset the first connection under machine load, which was
+/// the single recurring flake in this suite.
 pub async fn create_bucket(s3_client: &aws_sdk_s3::Client, bucket: &str) {
-    s3_client
-        .create_bucket()
-        .bucket(bucket)
-        .send()
-        .await
-        .expect("Failed to create S3 bucket");
+    let mut last_err = None;
+    for attempt in 0..5 {
+        match s3_client.create_bucket().bucket(bucket).send().await {
+            Ok(_) => return,
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_millis(300 * (attempt + 1))).await;
+            }
+        }
+    }
+    panic!("Failed to create S3 bucket after retries: {last_err:?}");
 }
 
 /// Create a bucket and upload a stub file.
@@ -70,12 +79,4 @@ pub async fn create_bucket_and_upload(s3_client: &aws_sdk_s3::Client, bucket: &s
         .send()
         .await
         .expect("Failed to upload stub");
-}
-
-/// Check if an object exists in the bucket.
-pub async fn object_exists(s3_client: &aws_sdk_s3::Client, bucket: &str, key: &str) -> bool {
-    match s3_client.head_object().bucket(bucket).key(key).send().await {
-        Ok(_) => true,
-        Err(_) => false,
-    }
 }

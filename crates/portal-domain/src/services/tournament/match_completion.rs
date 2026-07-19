@@ -269,15 +269,14 @@ where
             }
             Err(e) => {
                 // Attempt compensation if needed
-                if self.should_compensate(&execution) {
-                    if let Err(comp_err) = self.compensate(&saga_coordinator, &mut execution).await
-                    {
-                        error!(
-                            saga_id = %execution.id,
-                            error = %comp_err,
-                            "Compensation failed"
-                        );
-                    }
+                if self.should_compensate(&execution)
+                    && let Err(comp_err) = self.compensate(&saga_coordinator, &mut execution).await
+                {
+                    error!(
+                        saga_id = %execution.id,
+                        error = %comp_err,
+                        "Compensation failed"
+                    );
                 }
                 saga_coordinator
                     .fail_saga(&mut execution, &e.to_string())
@@ -335,15 +334,14 @@ where
                 Ok(SagaResult::success(execution, output))
             }
             Err(e) => {
-                if self.should_compensate(&execution) {
-                    if let Err(comp_err) = self.compensate(&saga_coordinator, &mut execution).await
-                    {
-                        error!(
-                            saga_id = %execution.id,
-                            error = %comp_err,
-                            "Compensation failed"
-                        );
-                    }
+                if self.should_compensate(&execution)
+                    && let Err(comp_err) = self.compensate(&saga_coordinator, &mut execution).await
+                {
+                    error!(
+                        saga_id = %execution.id,
+                        error = %comp_err,
+                        "Compensation failed"
+                    );
                 }
                 saga_coordinator
                     .fail_saga(&mut execution, &e.to_string())
@@ -400,7 +398,7 @@ where
             .match_repo
             .find_by_id(input.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(input.match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
 
         self.run_progression_steps_inner(saga_coordinator, execution, input, &match_)
             .await
@@ -487,7 +485,7 @@ where
             .match_repo
             .find_by_id(input.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(input.match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
 
         // Validate match is in valid state for completion.
         // The match may already be completed (by confirm_claim) — that's OK,
@@ -652,7 +650,7 @@ where
             .bracket_repo
             .find_by_id(match_.bracket_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentBracketNotFound(match_.bracket_id))?;
+            .ok_or(DomainError::TournamentBracketNotFound(match_.bracket_id))?;
 
         saga_coordinator
             .complete_step(execution, STEP_NAME, None)
@@ -674,7 +672,7 @@ where
             .match_repo
             .find_by_id(input.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(input.match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
 
         // If the match is already completed (e.g., by confirm_claim), skip
         if match_.status == TournamentMatchStatus::Completed {
@@ -963,14 +961,14 @@ where
             .into_iter()
             .flatten()
         {
-            if let Some(target) = self.match_repo.find_by_id(target_id).await? {
-                if target.status == TournamentMatchStatus::Pending && target.has_both_participants()
-                {
-                    self.match_repo
-                        .update_status(target_id, TournamentMatchStatus::Ready)
-                        .await?;
-                    newly_ready.push(target_id.to_string());
-                }
+            if let Some(target) = self.match_repo.find_by_id(target_id).await?
+                && target.status == TournamentMatchStatus::Pending
+                && target.has_both_participants()
+            {
+                self.match_repo
+                    .update_status(target_id, TournamentMatchStatus::Ready)
+                    .await?;
+                newly_ready.push(target_id.to_string());
             }
         }
 
@@ -1195,7 +1193,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
         Ok(match_.tournament_id)
     }
 
@@ -1215,25 +1213,23 @@ where
             .match_repo
             .find_by_id(target_match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(target_match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(target_match_id))?;
 
         // Check which slot expects input from this match
         // Check participant 1 source
         if let Some(MatchParticipantSource::WinnerOf(pos) | MatchParticipantSource::LoserOf(pos)) =
             &target_match.participant1_source
+            && pos == &source_match.bracket_position
         {
-            if pos == &source_match.bracket_position {
-                return Ok(ParticipantSlot::One);
-            }
+            return Ok(ParticipantSlot::One);
         }
 
         // Check participant 2 source
         if let Some(MatchParticipantSource::WinnerOf(pos) | MatchParticipantSource::LoserOf(pos)) =
             &target_match.participant2_source
+            && pos == &source_match.bracket_position
         {
-            if pos == &source_match.bracket_position {
-                return Ok(ParticipantSlot::Two);
-            }
+            return Ok(ParticipantSlot::Two);
         }
 
         // Default to slot 1 if neither slot is assigned (shouldn't happen in well-formed brackets)

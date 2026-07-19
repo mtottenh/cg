@@ -87,7 +87,7 @@ where
         self.user_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::UserNotFound(id))
+            .ok_or(DomainError::UserNotFound(id))
     }
 
     /// Get the current authenticated user.
@@ -224,12 +224,9 @@ where
         // Find user by username or email. If they don't exist, spend the
         // same Argon2 work as a real verify so an attacker can't enumerate
         // accounts via response timing.
-        let user_creds = match self.user_repo.find_for_auth(&cmd.username_or_email).await? {
-            Some(c) => c,
-            None => {
-                verify_dummy_for_timing().await?;
-                return Err(DomainError::InvalidCredentials);
-            }
+        let Some(user_creds) = self.user_repo.find_for_auth(&cmd.username_or_email).await? else {
+            verify_dummy_for_timing().await?;
+            return Err(DomainError::InvalidCredentials);
         };
 
         // Check if account is active
@@ -243,12 +240,9 @@ where
         // Verify password. Same dummy-verify treatment for users without a
         // password hash (e.g. social-only accounts) so the existence of such
         // accounts isn't observable via timing either.
-        let password_hash = match user_creds.password_hash.clone() {
-            Some(h) => h,
-            None => {
-                verify_dummy_for_timing().await?;
-                return Err(DomainError::InvalidCredentials);
-            }
+        let Some(password_hash) = user_creds.password_hash.clone() else {
+            verify_dummy_for_timing().await?;
+            return Err(DomainError::InvalidCredentials);
         };
 
         let is_valid = verify_password(cmd.password, password_hash).await?;

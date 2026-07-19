@@ -184,11 +184,8 @@ impl BracketGenerator {
         let mut lb_match_number = 1;
         let mut cross_bracket_links = Vec::new();
 
-        let mut lb_round_match_counts: Vec<usize> = Vec::new();
-
         for lb_round in 1..=lb_rounds {
             let matches_in_round = Self::lb_matches_in_round(lb_round, wb_rounds);
-            lb_round_match_counts.push(matches_in_round);
 
             for match_idx in 0..matches_in_round {
                 let bracket_position = format!("LR{lb_round}M{}", match_idx + 1);
@@ -230,13 +227,12 @@ impl BracketGenerator {
         let lr1_match_count = Self::lb_matches_in_round(1, wb_rounds);
 
         let cross_seed_map = Self::cross_seed_wr1_to_lr1(wr1_match_count, lr1_match_count);
-        for (wr1_match_idx, lr1_match_idx, slot) in &cross_seed_map {
+        for (wr1_match_idx, lr1_match_idx, _) in &cross_seed_map {
             cross_bracket_links.push(CrossBracketLink {
                 source_bracket_position: format!("WR1M{}", wr1_match_idx + 1),
                 target_bracket_position: format!("LR1M{}", lr1_match_idx + 1),
                 link_type: CrossLinkType::LoserDropsTo,
             });
-            let _slot = *slot;
         }
 
         for wb_round in 2..=wb_rounds {
@@ -492,18 +488,18 @@ mod tests {
     fn test_double_elimination_cross_bracket_links() {
         let result = create_de_result(8);
 
-        let loser_drops: Vec<_> = result
+        let loser_drops = result
             .cross_bracket_links
             .iter()
             .filter(|l| l.link_type == CrossLinkType::LoserDropsTo)
-            .collect();
+            .count();
         let winner_advances: Vec<_> = result
             .cross_bracket_links
             .iter()
             .filter(|l| l.link_type == CrossLinkType::WinnerAdvancesTo)
             .collect();
 
-        assert_eq!(loser_drops.len(), 7);
+        assert_eq!(loser_drops, 7);
         assert_eq!(winner_advances.len(), 2);
 
         let gf_sources: Vec<_> = winner_advances

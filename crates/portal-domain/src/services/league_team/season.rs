@@ -41,7 +41,7 @@ where
         self.season_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::LeagueSeasonNotFound(id))
+            .ok_or(DomainError::LeagueSeasonNotFound(id))
     }
 
     /// Get a season by league and slug.
@@ -81,7 +81,7 @@ where
             .league_repo
             .find_by_id(cmd.league_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueNotFound(cmd.league_id))?;
+            .ok_or(DomainError::LeagueNotFound(cmd.league_id))?;
 
         // Check slug uniqueness within the league
         if self
@@ -134,12 +134,13 @@ where
         let season = self.get_season(id).await?;
 
         // Check slug uniqueness if changing
-        if let Some(ref slug) = cmd.slug {
-            if slug != &season.slug && self.season_repo.slug_exists(season.league_id, slug).await? {
-                return Err(DomainError::Conflict(format!(
-                    "season slug '{slug}' is already taken in this league"
-                )));
-            }
+        if let Some(ref slug) = cmd.slug
+            && slug != &season.slug
+            && self.season_repo.slug_exists(season.league_id, slug).await?
+        {
+            return Err(DomainError::Conflict(format!(
+                "season slug '{slug}' is already taken in this league"
+            )));
         }
 
         let updated = self

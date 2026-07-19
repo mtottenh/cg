@@ -7,7 +7,7 @@ async fn test_get_seeding_empty() {
 
     // Get seeding (should be empty)
     let response = app
-        .get(&format!("/v1/tournaments/{}/seeding", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/seeding"))
         .await;
 
     response.assert_status(StatusCode::OK);
@@ -34,7 +34,7 @@ async fn test_auto_seed_random() {
     // Auto-seed with random algorithm
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({
                 "algorithm": "random"
             }),
@@ -81,7 +81,7 @@ async fn test_manual_seed() {
     // Manual seed with explicit seeding order
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/manual", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/manual"),
             &json!({
                 "seeds": [
                     { "registration_id": reg1, "seed": 2 },
@@ -130,7 +130,7 @@ async fn test_clear_seeding() {
     // Auto-seed the participants
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({ "algorithm": "random" }),
         )
         .await;
@@ -138,7 +138,7 @@ async fn test_clear_seeding() {
 
     // Verify seeding is not empty
     let response = app
-        .get(&format!("/v1/tournaments/{}/seeding", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/seeding"))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
@@ -146,13 +146,13 @@ async fn test_clear_seeding() {
 
     // Clear seeding
     let response = app
-        .delete_auth(&format!("/v1/tournaments/{}/seeding", tournament_id))
+        .delete_auth(&format!("/v1/tournaments/{tournament_id}/seeding"))
         .await;
     response.assert_status(StatusCode::NO_CONTENT);
 
     // Verify seeding is empty after clearing
     let response = app
-        .get(&format!("/v1/tournaments/{}/seeding", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/seeding"))
         .await;
     response.assert_status(StatusCode::OK);
 

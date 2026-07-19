@@ -137,14 +137,15 @@ pub async fn match_check_in(
         .await?;
 
     // Auto-create veto session when match transitions to PickBan
-    if match_.status == TournamentMatchStatus::PickBan && match_.veto_required {
-        if let Err(e) = auto_create_veto_session(&state, &match_).await {
-            tracing::warn!(
-                match_id = %match_id,
-                error = ?e,
-                "Failed to auto-create veto session on pick_ban transition"
-            );
-        }
+    if match_.status == TournamentMatchStatus::PickBan
+        && match_.veto_required
+        && let Err(e) = auto_create_veto_session(&state, &match_).await
+    {
+        tracing::warn!(
+            match_id = %match_id,
+            error = ?e,
+            "Failed to auto-create veto session on pick_ban transition"
+        );
     }
 
     Ok(Json(DataResponse::new(
@@ -293,14 +294,15 @@ pub async fn admin_match_transition(
         .await?;
 
     // Auto-create veto session when admin transitions to PickBan
-    if match_.status == TournamentMatchStatus::PickBan && match_.veto_required {
-        if let Err(e) = auto_create_veto_session(&state, &match_).await {
-            tracing::warn!(
-                match_id = %match_id,
-                error = ?e,
-                "Failed to auto-create veto session on admin pick_ban transition"
-            );
-        }
+    if match_.status == TournamentMatchStatus::PickBan
+        && match_.veto_required
+        && let Err(e) = auto_create_veto_session(&state, &match_).await
+    {
+        tracing::warn!(
+            match_id = %match_id,
+            error = ?e,
+            "Failed to auto-create veto session on admin pick_ban transition"
+        );
     }
 
     Ok(Json(DataResponse::new(

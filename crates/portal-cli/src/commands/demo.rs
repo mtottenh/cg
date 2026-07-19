@@ -11,6 +11,46 @@ use crate::output::{
     OutputFormat, error, format_optional, format_timestamp, format_uuid, info, output_list, success,
 };
 
+/// Row shape for `demo list`:
+/// (id, file_name, category, status, is_hidden, created_at, map_name).
+type DemoListRow = (
+    uuid::Uuid,
+    String,
+    String,
+    String,
+    bool,
+    chrono::DateTime<chrono::Utc>,
+    Option<String>,
+);
+
+/// Row shape for `demo get` basic info:
+/// (id, file_name, s3_bucket, s3_key, file_size_bytes, category, status, is_hidden, created_at).
+type DemoBasicRow = (
+    uuid::Uuid,
+    String,
+    String,
+    String,
+    Option<i64>,
+    String,
+    String,
+    bool,
+    chrono::DateTime<chrono::Utc>,
+);
+
+/// Row shape for `demo get` match metadata:
+/// (map_name, team1_name, team2_name, team1_score, team2_score).
+type DemoMatchInfoRow = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i32>,
+    Option<i32>,
+);
+
+/// Row shape for `demo players`:
+/// (steam_id, player_name, team_name, kills, deaths, assists, adr, hs_percentage).
+type DemoPlayerRow = (String, String, Option<String>, i32, i32, i32, f64, f64);
+
 /// Demo management commands.
 #[derive(Args)]
 pub struct DemoCommand {
@@ -188,6 +228,9 @@ async fn list_demos(
     limit: i64,
     format: OutputFormat,
 ) -> Result<()> {
+    // Writing to a `String` is infallible, so the `write!` results are ignored.
+    use std::fmt::Write as _;
+
     // Build and execute query
     let mut query = String::from(
         r"
@@ -202,33 +245,26 @@ async fn list_demos(
         query.push_str(" AND d.game_id = $1::uuid");
     }
     if let Some(cat) = category {
-        query.push_str(&format!(" AND d.category = '{cat}'"));
+        let _ = write!(query, " AND d.category = '{cat}'");
     }
     if let Some(s) = status {
-        query.push_str(&format!(" AND d.status = '{s}'"));
+        let _ = write!(query, " AND d.status = '{s}'");
     }
     if let Some(m) = map {
-        query.push_str(&format!(" AND d.metadata->>'map_name' ILIKE '%{m}%'"));
+        let _ = write!(query, " AND d.metadata->>'map_name' ILIKE '%{m}%'");
     }
     if let Some(sid) = steam_id {
-        query.push_str(&format!(
+        let _ = write!(
+            query,
             " AND EXISTS (SELECT 1 FROM demo_players dp WHERE dp.demo_id = d.id AND dp.steam_id = '{sid}')"
-        ));
+        );
     }
     if !include_hidden {
         query.push_str(" AND d.is_hidden = false");
     }
-    query.push_str(&format!(" ORDER BY d.created_at DESC LIMIT {limit}"));
+    let _ = write!(query, " ORDER BY d.created_at DESC LIMIT {limit}");
 
-    let rows: Vec<(
-        uuid::Uuid,
-        String,
-        String,
-        String,
-        bool,
-        chrono::DateTime<chrono::Utc>,
-        Option<String>,
-    )> = if let Some(g) = game {
+    let rows: Vec<DemoListRow> = if let Some(g) = game {
         let game_uuid: uuid::Uuid = g.parse().context("Invalid game ID")?;
         sqlx::query_as(&query)
             .bind(game_uuid)
@@ -268,17 +304,7 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
     // Query basic info (max 16 columns for sqlx tuples)
-    let basic: Option<(
-        uuid::Uuid,
-        String,
-        String,
-        String,
-        Option<i64>,
-        String,
-        String,
-        bool,
-        chrono::DateTime<chrono::Utc>,
-    )> = sqlx::query_as(
+    let basic: Option<DemoBasicRow> = sqlx::query_as(
         r"
         SELECT id, file_name, s3_bucket, s3_key, file_size_bytes,
                category, status, is_hidden, created_at
@@ -292,13 +318,7 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
     .context("Failed to fetch demo")?;
 
     // Query match info separately
-    let match_info: Option<(
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i32>,
-        Option<i32>,
-    )> = sqlx::query_as(
+    let match_info: Option<DemoMatchInfoRow> = sqlx::query_as(
         r"
             SELECT metadata->>'map_name',
                    metadata->>'team1_name',
@@ -369,7 +389,7 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
 async fn get_demo_players(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
-    let rows: Vec<(String, String, Option<String>, i32, i32, i32, f64, f64)> = sqlx::query_as(
+    let rows: Vec<DemoPlayerRow> = sqlx::query_as(
         r"
         SELECT steam_id, player_name, team_name, kills, deaths, assists, adr, hs_percentage
         FROM demo_players

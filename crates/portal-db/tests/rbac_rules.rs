@@ -17,14 +17,14 @@ use uuid::Uuid;
 
 async fn create_test_user(pool: &DbPool, suffix: &str) -> Uuid {
     let user = sqlx::query_as::<_, (Uuid,)>(
-        r#"
+        r"
         INSERT INTO users (username, email, password_hash)
         VALUES ($1, $2, 'hash')
         RETURNING id
-        "#,
+        ",
     )
-    .bind(format!("rbacrulesuser{}", suffix))
-    .bind(format!("rbacrules{}@example.com", suffix))
+    .bind(format!("rbacrulesuser{suffix}"))
+    .bind(format!("rbacrules{suffix}@example.com"))
     .fetch_one(pool)
     .await
     .unwrap();
@@ -33,14 +33,14 @@ async fn create_test_user(pool: &DbPool, suffix: &str) -> Uuid {
 
 async fn create_test_permission(pool: &DbPool, name: &str) -> Uuid {
     let perm = sqlx::query_as::<_, (Uuid,)>(
-        r#"
+        r"
         INSERT INTO permissions (name, display_name, category)
         VALUES ($1, $2, 'test')
         RETURNING id
-        "#,
+        ",
     )
     .bind(name)
-    .bind(format!("{} Permission", name))
+    .bind(format!("{name} Permission"))
     .fetch_one(pool)
     .await
     .unwrap();
@@ -55,7 +55,7 @@ async fn create_role_with_permission(
 ) -> (Uuid, Uuid) {
     let new_role = NewRole {
         name: role_name.to_string(),
-        display_name: format!("{} Role", role_name),
+        display_name: format!("{role_name} Role"),
         description: None,
         category: "custom".to_string(),
         priority: 5,
@@ -231,11 +231,11 @@ async fn test_system_roles_cannot_be_deleted() {
 
     // Create a system role directly in DB
     let system_role_id: (Uuid,) = sqlx::query_as(
-        r#"
+        r"
         INSERT INTO roles (name, display_name, category, priority, is_system)
         VALUES ('system_admin', 'System Admin', 'system', 100, TRUE)
         RETURNING id
-        "#,
+        ",
     )
     .fetch_one(&db.pool)
     .await
@@ -289,7 +289,7 @@ async fn test_roles_ordered_by_priority() {
     for (name, priority) in [("low_role", 1), ("high_role", 100), ("mid_role", 50)] {
         let new_role = NewRole {
             name: name.to_string(),
-            display_name: format!("{} Role", name),
+            display_name: format!("{name} Role"),
             description: None,
             category: "custom".to_string(),
             priority,

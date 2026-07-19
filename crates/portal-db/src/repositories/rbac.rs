@@ -821,14 +821,14 @@ mod tests {
     // Helper to create a test user
     async fn create_test_user(pool: &DbPool, suffix: &str) -> Uuid {
         let user = sqlx::query_as::<_, (Uuid,)>(
-            r#"
+            r"
             INSERT INTO users (username, email, password_hash)
             VALUES ($1, $2, 'hash')
             RETURNING id
-            "#,
+            ",
         )
-        .bind(format!("rbacuser{}", suffix))
-        .bind(format!("rbac{}@example.com", suffix))
+        .bind(format!("rbacuser{suffix}"))
+        .bind(format!("rbac{suffix}@example.com"))
         .fetch_one(pool)
         .await
         .unwrap();
@@ -838,14 +838,14 @@ mod tests {
     // Helper to create a test permission
     async fn create_test_permission(pool: &DbPool, name: &str) -> Uuid {
         let perm = sqlx::query_as::<_, (Uuid,)>(
-            r#"
+            r"
             INSERT INTO permissions (name, display_name, category)
             VALUES ($1, $2, 'test')
             RETURNING id
-            "#,
+            ",
         )
         .bind(name)
-        .bind(format!("{} Permission", name))
+        .bind(format!("{name} Permission"))
         .fetch_one(pool)
         .await
         .unwrap();
@@ -907,8 +907,8 @@ mod tests {
 
         for i in 1..=3 {
             let new_role = NewRole {
-                name: format!("list_role_{}", i),
-                display_name: format!("List Role {}", i),
+                name: format!("list_role_{i}"),
+                display_name: format!("List Role {i}"),
                 description: None,
                 category: "custom".to_string(),
                 priority: i,
@@ -1037,8 +1037,8 @@ mod tests {
 
         for i in 1..=2 {
             let new_role = NewRole {
-                name: format!("user_role_{}", i),
-                display_name: format!("User Role {}", i),
+                name: format!("user_role_{i}"),
+                display_name: format!("User Role {i}"),
                 description: None,
                 category: "custom".to_string(),
                 priority: i,

@@ -83,10 +83,10 @@ impl TournamentMapPoolRepository for PgTournamentMapPoolRepository {
         stage_id: Option<TournamentStageId>,
     ) -> Result<Option<TournamentMapPool>, DomainError> {
         // First try stage-specific pool, then fall back to tournament default
-        if let Some(stage_id) = stage_id {
-            if let Some(pool) = self.find_by_stage(stage_id).await? {
-                return Ok(Some(pool));
-            }
+        if let Some(stage_id) = stage_id
+            && let Some(pool) = self.find_by_stage(stage_id).await?
+        {
+            return Ok(Some(pool));
         }
 
         self.find_by_tournament(tournament_id).await

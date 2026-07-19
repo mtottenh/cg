@@ -125,7 +125,7 @@ where
         self.tournament_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::TournamentNotFound(id))
+            .ok_or(DomainError::TournamentNotFound(id))
     }
 
     /// Get a tournament by slug.
@@ -153,12 +153,13 @@ where
         }
 
         // Check slug uniqueness if changing
-        if let Some(ref new_slug) = cmd.slug {
-            if new_slug != &tournament.slug && self.tournament_repo.slug_exists(new_slug).await? {
-                return Err(DomainError::Conflict(format!(
-                    "Tournament with slug '{new_slug}' already exists"
-                )));
-            }
+        if let Some(ref new_slug) = cmd.slug
+            && new_slug != &tournament.slug
+            && self.tournament_repo.slug_exists(new_slug).await?
+        {
+            return Err(DomainError::Conflict(format!(
+                "Tournament with slug '{new_slug}' already exists"
+            )));
         }
 
         self.tournament_repo
@@ -500,7 +501,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         let tournament = self.get_tournament(registration.tournament_id).await?;
 
@@ -562,7 +563,7 @@ where
             TournamentFormat::DoubleElimination => StageFormat::DoubleElimination,
             TournamentFormat::RoundRobin => StageFormat::RoundRobin,
             TournamentFormat::Swiss => StageFormat::Swiss,
-            _ => StageFormat::SingleElimination,
+            TournamentFormat::GroupsAndPlayoffs => StageFormat::SingleElimination,
         };
 
         let stages = self.stage_repo.list_by_tournament(id).await?;
@@ -989,9 +990,8 @@ where
         let max_rounds = tournament
             .format_settings
             .get("max_rounds")
-            .and_then(|v| v.as_i64())
-            .map(|v| v as i32)
-            .unwrap_or_else(|| (n as f64).log2().ceil() as i32);
+            .and_then(serde_json::Value::as_i64)
+            .map_or_else(|| (n as f64).log2().ceil() as i32, |v| v as i32);
 
         // Create bracket entry
         let bracket = self
@@ -1548,7 +1548,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         if match_.tournament_id != tournament_id {
             return Err(DomainError::TournamentMatchNotFound(match_id));

@@ -82,7 +82,7 @@ pub enum ServerMessage {
 
 /// Connect to the veto WebSocket endpoint.
 pub async fn connect_veto_ws(addr: SocketAddr, match_id: &str) -> WsStream {
-    let url = format!("ws://{}/v1/ws/veto/{}", addr, match_id);
+    let url = format!("ws://{addr}/v1/ws/veto/{match_id}");
     let (ws_stream, _) = connect_async(&url)
         .await
         .expect("Failed to connect to WebSocket");
@@ -172,34 +172,16 @@ pub async fn ws_next_message(ws: &mut WsStream) -> Option<ServerMessage> {
     let result = timeout(Duration::from_secs(5), ws.next())
         .await
         .ok()?
-        .and_then(|r| r.ok())?;
+        .and_then(std::result::Result::ok)?;
 
     Some(parse_server_message(&result))
-}
-
-/// Wait for a specific message type (with timeout).
-pub async fn ws_wait_for<F>(ws: &mut WsStream, predicate: F) -> Option<ServerMessage>
-where
-    F: Fn(&ServerMessage) -> bool,
-{
-    let start = std::time::Instant::now();
-    let timeout_duration = Duration::from_secs(5);
-
-    while start.elapsed() < timeout_duration {
-        if let Some(msg) = ws_next_message(ws).await {
-            if predicate(&msg) {
-                return Some(msg);
-            }
-        }
-    }
-    None
 }
 
 fn parse_server_message(msg: &Message) -> ServerMessage {
     match msg {
         Message::Text(text) => serde_json::from_str(text)
-            .unwrap_or_else(|e| panic!("Failed to parse server message: {}\nRaw: {}", e, text)),
+            .unwrap_or_else(|e| panic!("Failed to parse server message: {e}\nRaw: {text}")),
         Message::Ping(_) => ServerMessage::Pong, // Treat ping as pong for simplicity
-        other => panic!("Unexpected message type: {:?}", other),
+        other => panic!("Unexpected message type: {other:?}"),
     }
 }

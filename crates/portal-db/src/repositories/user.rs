@@ -500,7 +500,7 @@ impl PlayerGameProfileRepository {
             ",
         )
         .bind(new_profile.player_id)
-        .bind(&new_profile.game_id)
+        .bind(new_profile.game_id)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| RepositoryError::from_sqlx_error(e, "player game profile"))?;
@@ -724,8 +724,8 @@ mod tests {
         // Create multiple users
         for i in 1..=5 {
             let new_user = NewUser {
-                username: format!("listuser{}", i),
-                email: format!("list{}@example.com", i),
+                username: format!("listuser{i}"),
+                email: format!("list{i}@example.com"),
                 password_hash: None,
             };
             repo.create(new_user).await.unwrap();
@@ -802,8 +802,8 @@ mod tests {
 
     async fn create_test_user(repo: &UserRepository, suffix: &str) -> UserRow {
         let new_user = NewUser {
-            username: format!("playeruser{}", suffix),
-            email: format!("player{}@example.com", suffix),
+            username: format!("playeruser{suffix}"),
+            email: format!("player{suffix}@example.com"),
             password_hash: None,
         };
         repo.create(new_user).await.unwrap()
@@ -869,10 +869,10 @@ mod tests {
 
         // Create multiple players
         for i in 1..=3 {
-            let user = create_test_user(&user_repo, &format!("search{}", i)).await;
+            let user = create_test_user(&user_repo, &format!("search{i}")).await;
             let new_player = NewPlayer {
                 user_id: user.id,
-                display_name: format!("SearchPlayer{}", i),
+                display_name: format!("SearchPlayer{i}"),
                 avatar_url: None,
                 country_code: None,
             };
@@ -931,7 +931,7 @@ mod tests {
         let user = create_test_user(user_repo, suffix).await;
         let new_player = NewPlayer {
             user_id: user.id,
-            display_name: format!("Player{}", suffix),
+            display_name: format!("Player{suffix}"),
             avatar_url: None,
             country_code: None,
         };
@@ -941,21 +941,23 @@ mod tests {
 
     async fn create_test_game(pool: &DbPool, slug: &str) -> Uuid {
         let game_id = Uuid::now_v7();
-        sqlx::query(
-            r#"
+        // fetch_one + RETURNING: on slug conflict the existing row keeps its
+        // own id, so returning the locally generated uuid would violate FKs.
+        let (game_id,): (Uuid,) = sqlx::query_as(
+            r"
             INSERT INTO games (id, slug, display_name, short_name, plugin_id, plugin_version,
                               team_size_min, team_size_max, team_size_default)
             VALUES ($1, $2, $3, $4, $5, '1.0.0', 1, 5, 5)
             ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug
             RETURNING id
-            "#,
+            ",
         )
         .bind(game_id)
         .bind(slug)
-        .bind(format!("{} Game", slug))
+        .bind(format!("{slug} Game"))
         .bind(slug)
-        .bind(format!("{}_plugin", slug))
-        .execute(pool)
+        .bind(format!("{slug}_plugin"))
+        .fetch_one(pool)
         .await
         .unwrap();
         game_id

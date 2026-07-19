@@ -129,7 +129,7 @@ pub async fn register_tracking(
         .player_service
         .get_player(user.player_id)
         .await
-        .map_err(|e| ApiError::from(e))?;
+        .map_err(ApiError::from)?;
 
     let steam_id_64 = player
         .steam_id

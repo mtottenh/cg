@@ -710,7 +710,7 @@ async fn create_cs2_tournament_with_match(app: &TestApp, slug: &str) -> TestMatc
 
     // Register player 2 via builder
     let user2 = UserBuilder::new()
-        .username(&format!("player2_{slug}"))
+        .username(format!("player2_{slug}"))
         .build_persisted(app.pool())
         .await;
 

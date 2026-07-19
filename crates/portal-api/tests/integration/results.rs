@@ -16,10 +16,7 @@ async fn transition_match_to_in_progress(app: &TestApp, tournament_id: &str, mat
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app
         .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/schedule",
-                tournament_id, match_id
-            ),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339(),
                 "reason": "Test setup: scheduling match for result submission tests"
@@ -32,8 +29,7 @@ async fn transition_match_to_in_progress(app: &TestApp, tournament_id: &str, mat
     let response = app
         .post_json(
             &format!(
-                "/v1/admin/tournaments/{}/matches/{}/transition",
-                tournament_id, match_id
+                "/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"
             ),
             &json!({
                 "to_status": "in_progress",
@@ -48,7 +44,7 @@ async fn transition_match_to_in_progress(app: &TestApp, tournament_id: &str, mat
 async fn register_player(app: &TestApp, tournament_id: &str, participant_name: &str) -> String {
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/registrations/player", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
             &json!({
                 "participant_name": participant_name
             }),
@@ -64,8 +60,7 @@ async fn register_player(app: &TestApp, tournament_id: &str, participant_name: &
 async fn approve_registration(app: &TestApp, tournament_id: &str, registration_id: &str) {
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/registrations/{}/approve",
-            tournament_id, registration_id
+            "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -110,15 +105,14 @@ async fn create_tournament_with_matches(app: &TestApp, slug: &str) -> TestMatchI
 
     // Publish
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Open registration
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/open-registration",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/open-registration"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -129,7 +123,7 @@ async fn create_tournament_with_matches(app: &TestApp, slug: &str) -> TestMatchI
 
     // Create second player using UserBuilder and register using TournamentRegistrationBuilder
     let user2 = UserBuilder::new()
-        .username(&format!("player2_{}", slug))
+        .username(format!("player2_{slug}"))
         .build_persisted(app.pool())
         .await;
 
@@ -145,7 +139,7 @@ async fn create_tournament_with_matches(app: &TestApp, slug: &str) -> TestMatchI
     // Auto-seed
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({ "algorithm": "random" }),
         )
         .await;
@@ -153,13 +147,13 @@ async fn create_tournament_with_matches(app: &TestApp, slug: &str) -> TestMatchI
 
     // Start tournament (creates matches)
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Get matches to find the match ID and participant info
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -381,7 +375,7 @@ async fn test_result_endpoints_exist() {
     let match_id = "00000000-0000-0000-0000-000000000000";
 
     // Verify GET /result endpoint exists (doesn't return METHOD_NOT_ALLOWED)
-    let response = app.get(&format!("/v1/matches/{}/result", match_id)).await;
+    let response = app.get(&format!("/v1/matches/{match_id}/result")).await;
     assert_ne!(
         response.status,
         StatusCode::METHOD_NOT_ALLOWED,
@@ -390,7 +384,7 @@ async fn test_result_endpoints_exist() {
 
     // Verify GET /result/history endpoint exists
     let response = app
-        .get(&format!("/v1/matches/{}/result/history", match_id))
+        .get(&format!("/v1/matches/{match_id}/result/history"))
         .await;
     assert_ne!(
         response.status,
@@ -401,7 +395,7 @@ async fn test_result_endpoints_exist() {
     // Verify POST /result endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!("/v1/matches/{}/result", match_id),
+            &format!("/v1/matches/{match_id}/result"),
             &json!({
                 "claimed_winner_registration_id": "00000000-0000-0000-0000-000000000001",
                 "participant1_score": 2,
@@ -426,10 +420,7 @@ async fn test_result_confirm_dispute_endpoints_exist() {
 
     // Verify confirm endpoint exists (authenticated)
     let response = app
-        .post_auth(&format!(
-            "/v1/matches/{}/result/{}/confirm",
-            match_id, claim_id
-        ))
+        .post_auth(&format!("/v1/matches/{match_id}/result/{claim_id}/confirm"))
         .await;
     assert_ne!(
         response.status,
@@ -440,7 +431,7 @@ async fn test_result_confirm_dispute_endpoints_exist() {
     // Verify dispute endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!("/v1/matches/{}/result/{}/dispute", match_id, claim_id),
+            &format!("/v1/matches/{match_id}/result/{claim_id}/dispute"),
             &json!({
                 "reason": "Test reason",
                 "evidence_ids": []

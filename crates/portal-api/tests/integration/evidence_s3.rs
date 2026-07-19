@@ -15,7 +15,7 @@ use portal_test::prelude::*;
 use serde_json::json;
 
 use crate::common::TestApp;
-use crate::common::minio::{create_bucket, create_s3_client, object_exists, start_minio};
+use crate::common::minio::{create_bucket, create_s3_client, start_minio};
 
 const EVIDENCE_BUCKET: &str = "test-evidence";
 
@@ -57,14 +57,13 @@ async fn create_tournament_with_match(app: &TestApp, slug: &str) -> TestMatchInf
     let tournament_uuid: uuid::Uuid = tournament_id.parse().unwrap();
 
     // Publish
-    app.post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await
         .assert_status(StatusCode::OK);
 
     // Open registration
     app.post_auth(&format!(
-        "/v1/tournaments/{}/open-registration",
-        tournament_id
+        "/v1/tournaments/{tournament_id}/open-registration"
     ))
     .await
     .assert_status(StatusCode::OK);
@@ -72,7 +71,7 @@ async fn create_tournament_with_match(app: &TestApp, slug: &str) -> TestMatchInf
     // Register player 1 (dev user)
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/registrations/player", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
             &json!({ "participant_name": "Player1" }),
         )
         .await;
@@ -82,15 +81,14 @@ async fn create_tournament_with_match(app: &TestApp, slug: &str) -> TestMatchInf
 
     // Approve registration 1
     app.post_auth(&format!(
-        "/v1/tournaments/{}/registrations/{}/approve",
-        tournament_id, reg1
+        "/v1/tournaments/{tournament_id}/registrations/{reg1}/approve"
     ))
     .await
     .assert_status(StatusCode::OK);
 
     // Register player 2 (via builder)
     let user2 = UserBuilder::new()
-        .username(&format!("s3_player2_{}", slug))
+        .username(format!("s3_player2_{slug}"))
         .build_persisted(app.pool())
         .await;
 
@@ -105,19 +103,19 @@ async fn create_tournament_with_match(app: &TestApp, slug: &str) -> TestMatchInf
 
     // Seed and start
     app.post_json(
-        &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+        &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
         &json!({ "algorithm": "random" }),
     )
     .await
     .assert_status(StatusCode::OK);
 
-    app.post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await
         .assert_status(StatusCode::OK);
 
     // Get match info
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -173,8 +171,7 @@ async fn test_evidence_upload_s3_full_flow() {
     // upload_url should be a presigned S3 URL pointing at MinIO
     assert!(
         upload_url.contains(&minio_endpoint.replace("http://", "")),
-        "Presigned URL should point to MinIO, got: {}",
-        upload_url
+        "Presigned URL should point to MinIO, got: {upload_url}"
     );
 
     // 2. Verify evidence is pending (GET detail should show pending status)
@@ -361,8 +358,7 @@ async fn test_evidence_upload_s3_complete_without_file() {
     let detail = body["detail"].as_str().unwrap_or("");
     assert!(
         detail.contains("not found in storage") || detail.contains("file not found"),
-        "Error should mention missing file, got: {}",
-        detail
+        "Error should mention missing file, got: {detail}"
     );
 }
 
@@ -398,8 +394,7 @@ async fn test_evidence_upload_s3_human_readable_key() {
     // Format: {tournament-slug}/evidence/demos/R{round}M{match}/...
     assert!(
         upload_url.contains("s3-slug-keys") && upload_url.contains("/evidence/demos/"),
-        "Presigned URL should contain tournament slug and evidence type dir.\nGot: {}",
-        upload_url
+        "Presigned URL should contain tournament slug and evidence type dir.\nGot: {upload_url}"
     );
 }
 

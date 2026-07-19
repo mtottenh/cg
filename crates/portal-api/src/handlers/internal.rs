@@ -418,14 +418,14 @@ pub async fn submit_enriched(
         .map_err(ApiError::from)?;
 
     // Process demo rank ratings (non-fatal — log and continue on error)
-    if let Some(ratings) = req.player_ratings {
-        if let Err(e) = process_demo_ratings(&state, &discovered, &ratings).await {
-            tracing::warn!(
-                match_id = %discovered.id,
-                error = %e,
-                "Failed to process demo ratings (non-fatal)"
-            );
-        }
+    if let Some(ratings) = req.player_ratings
+        && let Err(e) = process_demo_ratings(&state, &discovered, &ratings).await
+    {
+        tracing::warn!(
+            match_id = %discovered.id,
+            error = %e,
+            "Failed to process demo ratings (non-fatal)"
+        );
     }
 
     // Process per-player match stats from GC data (non-fatal)
@@ -539,15 +539,13 @@ async fn process_match_stats(
     use portal_domain::repositories::player_match_history::CreatePlayerMatchHistory;
     use portal_domain::repositories::player_mm_stats::AccumulateMatchStats;
 
-    let gc_data = match &discovered.gc_data {
-        Some(data) => data,
-        None => return Ok(()),
+    let Some(gc_data) = &discovered.gc_data else {
+        return Ok(());
     };
 
     // gc_data is a JSON array of MatchInfo; we want the first entry
-    let match_info = match gc_data.get(0) {
-        Some(m) => m,
-        None => return Ok(()),
+    let Some(match_info) = gc_data.get(0) else {
+        return Ok(());
     };
 
     let players = match match_info.get("players").and_then(|p| p.as_array()) {
@@ -558,13 +556,8 @@ async fn process_match_stats(
     let team_scores: Vec<i64> = match_info
         .get("team_scores")
         .and_then(|ts| ts.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+        .map(|arr| arr.iter().filter_map(serde_json::Value::as_i64).collect())
         .unwrap_or_default();
-
-    let match_result_val = match_info
-        .get("match_result")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
 
     let match_time = match_info
         .get("match_time")
@@ -574,7 +567,7 @@ async fn process_match_stats(
 
     let duration = match_info
         .get("match_duration_secs")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .unwrap_or(0) as i32;
 
     // Map: prefer demo-extracted map_name, fall back to gc_data
@@ -590,7 +583,10 @@ async fn process_match_stats(
     // Each player carries a `team` field (1 or 2) set by the enricher from
     // the original protobuf position (indices 0–4 → team 1, 5–9 → team 2).
     for player_val in players {
-        let account_id = match player_val.get("account_id").and_then(|v| v.as_u64()) {
+        let account_id = match player_val
+            .get("account_id")
+            .and_then(serde_json::Value::as_u64)
+        {
             Some(id) if id > 0 => id as u32,
             _ => continue,
         };
@@ -608,7 +604,10 @@ async fn process_match_stats(
         };
 
         // Determine team from the explicit `team` field set during GC extraction.
-        let team = player_val.get("team").and_then(|v| v.as_u64()).unwrap_or(1) as u8;
+        let team = player_val
+            .get("team")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1) as u8;
         let is_team1 = team == 1;
 
         let (player_team_score, opponent_score) = if team_scores.len() >= 2 {
@@ -621,46 +620,47 @@ async fn process_match_stats(
             (0, 0)
         };
 
-        let match_result_str = if player_team_score > opponent_score {
-            "win"
-        } else if player_team_score < opponent_score {
-            "loss"
-        } else {
-            "draw"
+        let match_result_str = match player_team_score.cmp(&opponent_score) {
+            std::cmp::Ordering::Greater => "win",
+            std::cmp::Ordering::Less => "loss",
+            std::cmp::Ordering::Equal => "draw",
         };
 
         let kills = player_val
             .get("kills")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .unwrap_or(0) as i32;
         let deaths = player_val
             .get("deaths")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .unwrap_or(0) as i32;
         let assists = player_val
             .get("assists")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .unwrap_or(0) as i32;
         let score = player_val
             .get("score")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .unwrap_or(0) as i32;
         let headshots = player_val
             .get("headshots")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .unwrap_or(0) as i32;
-        let mvps = player_val.get("mvps").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let mvps = player_val
+            .get("mvps")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0) as i32;
         let entry_3k = player_val
             .get("entry_3k")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .unwrap_or(0) as i32;
         let entry_4k = player_val
             .get("entry_4k")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .unwrap_or(0) as i32;
         let entry_5k = player_val
             .get("entry_5k")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .unwrap_or(0) as i32;
 
         // Insert match history (idempotent via UNIQUE)

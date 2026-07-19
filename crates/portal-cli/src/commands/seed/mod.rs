@@ -406,7 +406,7 @@ async fn seed_premier_league_application(
     user_id: uuid::Uuid,
     message: Option<&str>,
 ) -> Result<()> {
-    let id = scenario::seed_uuid(&format!("premier_app:{}", user_id));
+    let id = scenario::seed_uuid(&format!("premier_app:{user_id}"));
     sqlx::query(
         r"INSERT INTO league_invitations (id, league_id, user_id, invitation_type, status, message)
           VALUES ($1, $2, $3, 'application', 'pending', $4)
@@ -489,7 +489,7 @@ async fn seed_tournament(
     created_by: uuid::Uuid,
 ) -> Result<()> {
     sqlx::query(
-        r#"INSERT INTO tournaments (
+        r"INSERT INTO tournaments (
             id, game_id, league_id, season_id,
             name, slug, description,
             format, format_settings, participant_type, team_size,
@@ -508,7 +508,7 @@ async fn seed_tournament(
             'forfeit', '{}',
             'registration', $5
           )
-          ON CONFLICT DO NOTHING"#,
+          ON CONFLICT DO NOTHING",
     )
     .bind(scenario::tournament_id())
     .bind(game_id)
@@ -523,7 +523,7 @@ async fn seed_tournament(
 
 async fn seed_tournament_stage(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     sqlx::query(
-        r#"INSERT INTO tournament_stages (
+        r"INSERT INTO tournament_stages (
             id, tournament_id,
             name, stage_order,
             format, format_settings,
@@ -538,7 +538,7 @@ async fn seed_tournament_stage(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -
             'bo1', 'standard',
             'pending'
           )
-          ON CONFLICT DO NOTHING"#,
+          ON CONFLICT DO NOTHING",
     )
     .bind(scenario::tournament_stage_id())
     .bind(scenario::tournament_id())
@@ -639,7 +639,7 @@ async fn seed_tournament_2(
     created_by: uuid::Uuid,
 ) -> Result<()> {
     sqlx::query(
-        r#"INSERT INTO tournaments (
+        r"INSERT INTO tournaments (
             id, game_id, league_id, season_id,
             name, slug, description,
             format, format_settings, participant_type, team_size,
@@ -659,7 +659,7 @@ async fn seed_tournament_2(
             'forfeit', '{}',
             'in_progress', $5, NOW() - INTERVAL '2 days'
           )
-          ON CONFLICT DO NOTHING"#,
+          ON CONFLICT DO NOTHING",
     )
     .bind(scenario::tournament_2_id())
     .bind(game_id)
@@ -674,7 +674,7 @@ async fn seed_tournament_2(
 
 async fn seed_tournament_2_stage(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     sqlx::query(
-        r#"INSERT INTO tournament_stages (
+        r"INSERT INTO tournament_stages (
             id, tournament_id,
             name, stage_order,
             format, format_settings,
@@ -689,7 +689,7 @@ async fn seed_tournament_2_stage(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>)
             'bo3', 'standard',
             'active'
           )
-          ON CONFLICT DO NOTHING"#,
+          ON CONFLICT DO NOTHING",
     )
     .bind(scenario::tournament_2_stage_id())
     .bind(scenario::tournament_2_id())
@@ -701,7 +701,7 @@ async fn seed_tournament_2_stage(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>)
 
 async fn seed_tournament_2_bracket(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     sqlx::query(
-        r#"INSERT INTO tournament_brackets (
+        r"INSERT INTO tournament_brackets (
             id, stage_id, tournament_id,
             name, bracket_type,
             total_rounds, current_round,
@@ -712,7 +712,7 @@ async fn seed_tournament_2_bracket(tx: &mut sqlx::Transaction<'_, sqlx::Postgres
             2, 1,
             'active'
           )
-          ON CONFLICT DO NOTHING"#,
+          ON CONFLICT DO NOTHING",
     )
     .bind(scenario::tournament_2_bracket_id())
     .bind(scenario::tournament_2_stage_id())
@@ -736,9 +736,9 @@ const CS2_MAP_POOL: &[&str] = &[
 
 async fn seed_tournament_2_map_pool(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     sqlx::query(
-        r#"INSERT INTO tournament_map_pools (id, tournament_id, maps, veto_format_id)
+        r"INSERT INTO tournament_map_pools (id, tournament_id, maps, veto_format_id)
           VALUES ($1, $2, $3, 'bo3_veto')
-          ON CONFLICT DO NOTHING"#,
+          ON CONFLICT DO NOTHING",
     )
     .bind(scenario::tournament_2_map_pool_id())
     .bind(scenario::tournament_2_id())
@@ -780,12 +780,12 @@ async fn seed_tournament_2_registrations_and_matches(
         .with_context(|| format!("Failed to find team_season for {team_key}"))?;
 
         sqlx::query(
-            r#"INSERT INTO tournament_registrations (
+            r"INSERT INTO tournament_registrations (
                 id, tournament_id, team_season_id,
                 participant_name, registered_by,
                 status, seed, seed_rating
               ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)
-              ON CONFLICT DO NOTHING"#,
+              ON CONFLICT DO NOTHING",
         )
         .bind(scenario::tournament_2_registration_id(team_key))
         .bind(tournament_id)
@@ -873,14 +873,14 @@ async fn seed_tournament_2_registrations_and_matches(
 
     // Veto session for R1M1 (coin_flip phase — waiting for coin flip)
     sqlx::query(
-        r#"INSERT INTO veto_sessions (
+        r"INSERT INTO veto_sessions (
             id, match_id, veto_format_id, map_pool, remaining_maps,
             status, current_action_number, timeout_seconds, started_at
           ) VALUES (
             $1, $2, 'bo3_veto', $3, $3,
             'coin_flip', 1, 30, NOW()
           )
-          ON CONFLICT DO NOTHING"#,
+          ON CONFLICT DO NOTHING",
     )
     .bind(scenario::tournament_2_veto_session_id("R1M1"))
     .bind(scenario::tournament_2_match_id("R1M1"))

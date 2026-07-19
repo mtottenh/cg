@@ -119,12 +119,8 @@ pub type AppAvailabilityService = AvailabilityService<
     PgTournamentMatchRepository,
     PgTournamentRegistrationRepository,
 >;
-pub type AppVetoService = VetoService<
-    PgVetoSessionRepository,
-    PgVetoActionRepository,
-    PgTournamentMatchRepository,
-    PgTournamentRegistrationRepository,
->;
+pub type AppVetoService =
+    VetoService<PgVetoSessionRepository, PgVetoActionRepository, PgTournamentMatchRepository>;
 pub type AppResultService = ResultService<
     PgResultClaimRepository,
     PgTournamentMatchRepository,
@@ -398,13 +394,10 @@ impl AppState {
         // https and point at a non-private, non-loopback host. An invalid
         // value hard-fails startup rather than silently letting the demo
         // plugin issue SSRF-adjacent requests.
-        let cs2_demo_base_url = match std::env::var("CS2_DEMO_SERVICE_URL").ok() {
-            Some(raw) => Some(
-                portal_plugins::validate_demo_service_url(&raw)
-                    .expect("CS2_DEMO_SERVICE_URL failed validation"),
-            ),
-            None => None,
-        };
+        let cs2_demo_base_url = std::env::var("CS2_DEMO_SERVICE_URL").ok().map(|raw| {
+            portal_plugins::validate_demo_service_url(&raw)
+                .expect("CS2_DEMO_SERVICE_URL failed validation")
+        });
         let plugin_manager = Arc::new(portal_plugins::create_plugin_manager_with_config(
             cs2_demo_base_url.clone(),
         ));
@@ -549,7 +542,6 @@ impl AppState {
             Arc::clone(&veto_session_repo),
             Arc::clone(&veto_action_repo),
             Arc::clone(&tournament_match_repo),
-            Arc::clone(&tournament_registration_repo),
         )
         .with_format_provider(format_provider)
         .with_side_provider(side_provider);

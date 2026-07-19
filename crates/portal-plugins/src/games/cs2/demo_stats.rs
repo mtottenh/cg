@@ -394,7 +394,7 @@ mod tests {
             PlayerState {
                 player_id: 76561198000000001,
                 player_name: "Player1".to_string(),
-                team: team_alpha.clone(),
+                team: team_alpha,
                 starting_money: 800,
             },
         );
@@ -403,7 +403,7 @@ mod tests {
             PlayerState {
                 player_id: 76561198000000002,
                 player_name: "Player2".to_string(),
-                team: team_beta.clone(),
+                team: team_beta,
                 starting_money: 800,
             },
         );

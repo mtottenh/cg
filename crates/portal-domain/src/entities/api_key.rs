@@ -53,7 +53,7 @@ impl ApiKey {
     /// Check if the key is currently valid (active and not expired).
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.is_active && self.expires_at.map_or(true, |exp| exp > Utc::now())
+        self.is_active && self.expires_at.is_none_or(|exp| exp > Utc::now())
     }
 
     /// Check if this key has a specific permission.

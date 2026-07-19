@@ -339,14 +339,13 @@ async fn test_add_and_remove_permission() {
     add_resp.assert_status(StatusCode::OK);
 
     let add_body: serde_json::Value = add_resp.json();
-    let perm_names: Vec<&str> = add_body["data"]["permissions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|p| p["id"].as_str())
-        .collect();
     assert!(
-        perm_names.contains(&perm_id.as_str()),
+        add_body["data"]["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["id"].as_str())
+            .any(|id| id == perm_id.as_str()),
         "permission should be added"
     );
 
@@ -357,14 +356,13 @@ async fn test_add_and_remove_permission() {
     remove_resp.assert_status(StatusCode::OK);
 
     let remove_body: serde_json::Value = remove_resp.json();
-    let perm_ids_after: Vec<&str> = remove_body["data"]["permissions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|p| p["id"].as_str())
-        .collect();
     assert!(
-        !perm_ids_after.contains(&perm_id.as_str()),
+        !remove_body["data"]["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["id"].as_str())
+            .any(|id| id == perm_id.as_str()),
         "permission should be removed"
     );
 }
@@ -428,12 +426,11 @@ async fn test_get_user_roles() {
 
     let body: serde_json::Value = response.json();
     let roles = body["data"].as_array().unwrap();
-    let role_names: Vec<&str> = roles
-        .iter()
-        .filter_map(|r| r["role"]["name"].as_str())
-        .collect();
     assert!(
-        role_names.contains(&"moderator"),
+        roles
+            .iter()
+            .filter_map(|r| r["role"]["name"].as_str())
+            .any(|name| name == "moderator"),
         "should include the assigned moderator role"
     );
 }
@@ -473,12 +470,11 @@ async fn test_revoke_role_from_user() {
 
     let body: serde_json::Value = get_resp.json();
     let roles = body["data"].as_array().unwrap();
-    let role_names: Vec<&str> = roles
-        .iter()
-        .filter_map(|r| r["role"]["name"].as_str())
-        .collect();
     assert!(
-        !role_names.contains(&"moderator"),
+        !roles
+            .iter()
+            .filter_map(|r| r["role"]["name"].as_str())
+            .any(|name| name == "moderator"),
         "moderator role should be revoked"
     );
 }

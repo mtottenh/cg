@@ -113,7 +113,7 @@ async fn test_get_tournament_by_id() {
     let tournament_id = created["data"]["id"].as_str().unwrap();
 
     // Get by ID
-    let response = app.get(&format!("/v1/tournaments/{}", tournament_id)).await;
+    let response = app.get(&format!("/v1/tournaments/{tournament_id}")).await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
@@ -227,9 +227,7 @@ async fn test_list_tournaments_filter_by_game() {
     response.assert_status(StatusCode::CREATED);
 
     // Filter by game
-    let response = app
-        .get(&format!("/v1/tournaments?game_id={}", game_id))
-        .await;
+    let response = app.get(&format!("/v1/tournaments?game_id={game_id}")).await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
@@ -272,7 +270,7 @@ async fn test_update_tournament() {
     // Update tournament
     let response = app
         .patch_json(
-            &format!("/v1/tournaments/{}", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}"),
             &json!({
                 "name": "Updated Name",
                 "description": "Updated description",

@@ -441,7 +441,7 @@ where
         self.match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))
     }
 
     /// Log a status transition.

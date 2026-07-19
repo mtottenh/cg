@@ -12,10 +12,7 @@ async fn test_propose_schedule() {
 
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/propose",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
             &json!({
                 "proposed_times": [
                     proposed_time1.to_rfc3339(),
@@ -43,8 +40,7 @@ async fn test_get_active_proposal() {
     // Initially no active proposal
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/schedule/active",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
         ))
         .await;
 
@@ -56,10 +52,7 @@ async fn test_get_active_proposal() {
     let proposed_time = chrono::Utc::now() + chrono::Duration::hours(24);
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/propose",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
             &json!({
                 "proposed_times": [proposed_time.to_rfc3339()]
             }),
@@ -70,8 +63,7 @@ async fn test_get_active_proposal() {
     // Now should have an active proposal
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/schedule/active",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
         ))
         .await;
 
@@ -95,10 +87,7 @@ async fn test_reject_schedule_proposal() {
     let proposed_time = chrono::Utc::now() + chrono::Duration::hours(24);
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/propose",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
             &json!({
                 "proposed_times": [proposed_time.to_rfc3339()]
             }),
@@ -113,10 +102,7 @@ async fn test_reject_schedule_proposal() {
     // This should fail because you cannot respond to your own proposal
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/reject",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/reject"),
             &json!({
                 "proposal_id": proposal_id
             }),
@@ -144,8 +130,7 @@ async fn test_get_proposal_history() {
     // Initially empty history
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/schedule/history",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/history"
         ))
         .await;
 
@@ -157,10 +142,7 @@ async fn test_get_proposal_history() {
     let proposed_time = chrono::Utc::now() + chrono::Duration::hours(24);
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/propose",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
             &json!({
                 "proposed_times": [proposed_time.to_rfc3339()]
             }),
@@ -171,8 +153,7 @@ async fn test_get_proposal_history() {
     // Now history should have one entry
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/schedule/history",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/history"
         ))
         .await;
 
@@ -193,10 +174,7 @@ async fn test_admin_schedule_match() {
 
     let response = app
         .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/schedule",
-                tournament_id, match_id
-            ),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339(),
                 "notes": "Scheduled by admin for tournament finals"
@@ -296,7 +274,7 @@ async fn test_update_availability_window() {
     // Update the window
     let response = app
         .patch_json(
-            &format!("/v1/players/me/availability/windows/{}", window_id),
+            &format!("/v1/players/me/availability/windows/{window_id}"),
             &json!({
                 "start_time": "09:00:00",
                 "is_preferred": true
@@ -334,20 +312,14 @@ async fn test_delete_availability_window() {
 
     // Delete the window
     let response = app
-        .delete_auth(&format!(
-            "/v1/players/me/availability/windows/{}",
-            window_id
-        ))
+        .delete_auth(&format!("/v1/players/me/availability/windows/{window_id}"))
         .await;
 
     response.assert_status(StatusCode::NO_CONTENT);
 
     // Verify it's gone by trying to delete again (should get 404)
     let response = app
-        .delete_auth(&format!(
-            "/v1/players/me/availability/windows/{}",
-            window_id
-        ))
+        .delete_auth(&format!("/v1/players/me/availability/windows/{window_id}"))
         .await;
 
     response.assert_status(StatusCode::NOT_FOUND);
@@ -432,8 +404,7 @@ async fn test_delete_availability_override() {
     // Delete the override
     let response = app
         .delete_auth(&format!(
-            "/v1/players/me/availability/overrides/{}",
-            override_id
+            "/v1/players/me/availability/overrides/{override_id}"
         ))
         .await;
 
@@ -482,8 +453,7 @@ async fn test_get_public_player_availability() {
     // Query public availability for that player (no auth needed)
     let response = app
         .get(&format!(
-            "/v1/players/{}/availability/date?date=2025-01-15",
-            player_id
+            "/v1/players/{player_id}/availability/date?date=2025-01-15"
         ))
         .await;
 
@@ -502,10 +472,7 @@ async fn test_generate_time_suggestions() {
     // Generate suggestions for the match
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/suggestions/generate",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/suggestions/generate"),
             &json!({
                 "start_date": "2025-01-13",
                 "end_date": "2025-01-20",
@@ -530,8 +497,7 @@ async fn test_get_match_suggestions() {
     // Initially should be empty (no auth needed for read)
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/suggestions",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/suggestions"
         ))
         .await;
 
@@ -601,10 +567,7 @@ async fn test_accept_schedule_proposal() {
     let time2 = chrono::Utc::now() + chrono::Duration::hours(48);
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/propose",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
             &json!({ "proposed_times": [time1.to_rfc3339(), time2.to_rfc3339()] }),
         )
         .await;
@@ -621,10 +584,7 @@ async fn test_accept_schedule_proposal() {
     // Player 2 (the opponent) accepts one of the proposed times
     let response = app
         .post_json_with_token(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/accept",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept"),
             &json!({
                 "proposal_id": proposal_id,
                 "selected_time": stored_time
@@ -642,8 +602,7 @@ async fn test_accept_schedule_proposal() {
     // The proposal is no longer active
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/schedule/active",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -661,10 +620,7 @@ async fn test_counter_propose_schedule() {
     let time1 = chrono::Utc::now() + chrono::Duration::hours(24);
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/propose",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
             &json!({ "proposed_times": [time1.to_rfc3339()] }),
         )
         .await;
@@ -676,10 +632,7 @@ async fn test_counter_propose_schedule() {
     let counter_time = chrono::Utc::now() + chrono::Duration::hours(72);
     let response = app
         .post_json_with_token(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/counter",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/counter"),
             &json!({
                 "original_proposal_id": original_id,
                 "proposed_times": [counter_time.to_rfc3339()]
@@ -700,8 +653,7 @@ async fn test_counter_propose_schedule() {
     // The counter is now the active proposal
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/schedule/active",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -711,10 +663,7 @@ async fn test_counter_propose_schedule() {
     // Dev user accepts the counter — negotiation completes
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/schedule/accept",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept"),
             &json!({
                 "proposal_id": counter_id,
                 "selected_time": stored_counter_time

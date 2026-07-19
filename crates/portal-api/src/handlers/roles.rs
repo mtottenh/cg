@@ -274,10 +274,10 @@ pub async fn delete_role(
     if !deleted {
         // Could be not found or is_system = true
         let role = state.role_repo.find_by_id(role_uuid).await.ok().flatten();
-        if let Some(r) = role {
-            if r.is_system {
-                return Err(ApiError::bad_request("Cannot delete system role"));
-            }
+        if let Some(r) = role
+            && r.is_system
+        {
+            return Err(ApiError::bad_request("Cannot delete system role"));
         }
         return Err(ApiError::not_found("Role not found"));
     }

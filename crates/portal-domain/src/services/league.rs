@@ -50,7 +50,7 @@ where
         self.league_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::LeagueNotFound(id))
+            .ok_or(DomainError::LeagueNotFound(id))
     }
 
     /// Get a league by slug.
@@ -521,10 +521,10 @@ where
         }
 
         // Check expiration
-        if let Some(expires_at) = invitation.expires_at {
-            if expires_at < chrono::Utc::now() {
-                return Err(DomainError::InvitationExpired);
-            }
+        if let Some(expires_at) = invitation.expires_at
+            && expires_at < chrono::Utc::now()
+        {
+            return Err(DomainError::InvitationExpired);
         }
 
         // Update invitation status

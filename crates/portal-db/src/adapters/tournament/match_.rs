@@ -185,6 +185,30 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         Ok(TournamentMatch::from(row))
     }
 
+    async fn set_veto_required(
+        &self,
+        id: TournamentMatchId,
+        veto_required: bool,
+    ) -> Result<TournamentMatch, DomainError> {
+        let now = Utc::now();
+
+        let row = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            UPDATE tournament_matches SET veto_required = $2, updated_at = $3
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(veto_required)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentMatch::from(row))
+    }
+
     async fn mark_pending_as_ready_bulk(
         &self,
         ids: &[TournamentMatchId],
@@ -200,7 +224,10 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         // forfeited) are silently skipped by the WHERE clause — we
         // don't want to accidentally un-progress them.
         let now = Utc::now();
-        let uuids: Vec<uuid::Uuid> = ids.iter().map(|id| id.as_uuid()).collect();
+        let uuids: Vec<uuid::Uuid> = ids
+            .iter()
+            .map(portal_core::TournamentMatchId::as_uuid)
+            .collect();
 
         let result = sqlx::query(
             r"

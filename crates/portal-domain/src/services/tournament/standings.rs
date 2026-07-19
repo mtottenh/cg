@@ -261,10 +261,10 @@ where
             };
 
             // Add opponent's points
-            if let Some(opp_id) = opponent_id {
-                if let Some(opp_standing) = standings.iter().find(|s| s.registration_id == opp_id) {
-                    buchholz += f64::from(opp_standing.points);
-                }
+            if let Some(opp_id) = opponent_id
+                && let Some(opp_standing) = standings.iter().find(|s| s.registration_id == opp_id)
+            {
+                buchholz += f64::from(opp_standing.points);
             }
         }
 

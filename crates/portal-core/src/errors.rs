@@ -598,8 +598,8 @@ mod tests {
 
         let length = FieldError::length("tag", 2, 5);
         assert_eq!(length.code, "length");
-        assert!(length.message.contains("2"));
-        assert!(length.message.contains("5"));
+        assert!(length.message.contains('2'));
+        assert!(length.message.contains('5'));
     }
 
     #[test]

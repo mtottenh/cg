@@ -661,9 +661,9 @@ impl FromRef<AppState> for EvidenceState {
 
 /// State slice used by REST veto handlers (`handlers/veto.rs`).
 ///
-/// `veto_authorization_service` gates pick/ban actions (captain +
-/// delegates only). `tournament_service` + `tournament_map_pool_repo`
-/// + `game_repo` support the auto-session-start path that runs when
+/// `veto_authorization_service` gates pick/ban actions (captain and
+/// delegates only). `tournament_service`, `tournament_map_pool_repo`,
+/// and `game_repo` support the auto-session-start path that runs when
 /// a match transitions to PickBan — we rebuild the map pool and
 /// side-selection mode from tournament config there.
 #[derive(Clone)]

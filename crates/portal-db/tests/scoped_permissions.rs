@@ -18,14 +18,14 @@ use uuid::Uuid;
 
 async fn create_test_user(pool: &DbPool, suffix: &str) -> Uuid {
     let user = sqlx::query_as::<_, (Uuid,)>(
-        r#"
+        r"
         INSERT INTO users (username, email, password_hash)
         VALUES ($1, $2, 'hash')
         RETURNING id
-        "#,
+        ",
     )
-    .bind(format!("scopeduser{}", suffix))
-    .bind(format!("scoped{}@example.com", suffix))
+    .bind(format!("scopeduser{suffix}"))
+    .bind(format!("scoped{suffix}@example.com"))
     .fetch_one(pool)
     .await
     .expect("Failed to create test user");
@@ -38,10 +38,7 @@ async fn get_role_id(pool: &DbPool, role_name: &str) -> Uuid {
         .bind(role_name)
         .fetch_one(pool)
         .await
-        .expect(&format!(
-            "Role '{}' should exist from migrations",
-            role_name
-        ));
+        .unwrap_or_else(|_| panic!("Role '{role_name}' should exist from migrations"));
     role.0
 }
 
@@ -330,7 +327,7 @@ async fn test_team_role_permission_hierarchy() {
             .user_has_scoped_permission(UserId::from(captain_id), perm, Some(&scope))
             .await
             .unwrap();
-        assert!(has, "Captain should have {}", perm);
+        assert!(has, "Captain should have {perm}");
     }
 
     // Officer should have roster and play, but not settings, roles, or delete

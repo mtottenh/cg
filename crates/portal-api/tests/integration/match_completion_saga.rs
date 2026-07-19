@@ -21,10 +21,7 @@ async fn transition_match_to_in_progress(app: &TestApp, tournament_id: &str, mat
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app
         .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/schedule",
-                tournament_id, match_id
-            ),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339(),
                 "reason": "Test setup"
@@ -35,10 +32,7 @@ async fn transition_match_to_in_progress(app: &TestApp, tournament_id: &str, mat
 
     let response = app
         .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/transition",
-                tournament_id, match_id
-            ),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
             &json!({
                 "to_status": "in_progress",
                 "override_reason": "Test setup"
@@ -52,7 +46,7 @@ async fn transition_match_to_in_progress(app: &TestApp, tournament_id: &str, mat
 async fn register_player(app: &TestApp, tournament_id: &str, participant_name: &str) -> String {
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/registrations/player", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
             &json!({ "participant_name": participant_name }),
         )
         .await;
@@ -66,8 +60,7 @@ async fn register_player(app: &TestApp, tournament_id: &str, participant_name: &
 async fn approve_registration(app: &TestApp, tournament_id: &str, registration_id: &str) {
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/registrations/{}/approve",
-            tournament_id, registration_id
+            "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -126,14 +119,13 @@ async fn create_4player_tournament(app: &TestApp, slug: &str) -> FourPlayerTourn
     let tournament_uuid: Uuid = tournament_id.parse().unwrap();
 
     // Publish
-    app.post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await
         .assert_status(StatusCode::OK);
 
     // Open registration
     app.post_auth(&format!(
-        "/v1/tournaments/{}/open-registration",
-        tournament_id
+        "/v1/tournaments/{tournament_id}/open-registration"
     ))
     .await
     .assert_status(StatusCode::OK);
@@ -145,7 +137,7 @@ async fn create_4player_tournament(app: &TestApp, slug: &str) -> FourPlayerTourn
 
     // Players 2-4 via builders (UserBuilder creates both user + player with same UUID)
     let user2 = UserBuilder::new()
-        .username(&format!("player2_{}", slug))
+        .username(format!("player2_{slug}"))
         .build_persisted(app.pool())
         .await;
     let _reg2 = TournamentRegistrationBuilder::new()
@@ -158,7 +150,7 @@ async fn create_4player_tournament(app: &TestApp, slug: &str) -> FourPlayerTourn
         .await;
 
     let user3 = UserBuilder::new()
-        .username(&format!("player3_{}", slug))
+        .username(format!("player3_{slug}"))
         .build_persisted(app.pool())
         .await;
     let _reg3 = TournamentRegistrationBuilder::new()
@@ -171,7 +163,7 @@ async fn create_4player_tournament(app: &TestApp, slug: &str) -> FourPlayerTourn
         .await;
 
     let user4 = UserBuilder::new()
-        .username(&format!("player4_{}", slug))
+        .username(format!("player4_{slug}"))
         .build_persisted(app.pool())
         .await;
     let _reg4 = TournamentRegistrationBuilder::new()
@@ -185,20 +177,20 @@ async fn create_4player_tournament(app: &TestApp, slug: &str) -> FourPlayerTourn
 
     // Auto-seed
     app.post_json(
-        &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+        &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
         &json!({ "algorithm": "random" }),
     )
     .await
     .assert_status(StatusCode::OK);
 
     // Start tournament (creates bracket + matches)
-    app.post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await
         .assert_status(StatusCode::OK);
 
     // Get matches
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -312,7 +304,7 @@ async fn submit_claim(
 
     let response = app
         .post_json(
-            &format!("/v1/matches/{}/result", match_id),
+            &format!("/v1/matches/{match_id}/result"),
             &json!({
                 "claimed_winner_registration_id": winner_reg_id,
                 "participant1_score": p1_score,
@@ -359,7 +351,7 @@ async fn confirm_claim_as_user(
     let token = create_test_token(user_id, player_id, "confirmer", TEST_JWT_SECRET);
     let response = app
         .post_json_with_token(
-            &format!("/v1/matches/{}/result/{}/confirm", match_id, claim_id),
+            &format!("/v1/matches/{match_id}/result/{claim_id}/confirm"),
             &json!({}),
             &token,
         )
@@ -561,7 +553,7 @@ async fn test_confirm_with_mismatched_demo_creates_review() {
     );
     assert_eq!(
         data["review_pending"],
-        Some(true).map(serde_json::Value::from).unwrap(),
+        serde_json::Value::from(true),
         "Review should be pending"
     );
 
@@ -663,7 +655,7 @@ async fn test_approve_review_resumes_progression() {
     // Admin approves the review → should resume progression
     let approve_response = app
         .post_json(
-            &format!("/v1/admin/result-reviews/{}/approve", review_id),
+            &format!("/v1/admin/result-reviews/{review_id}/approve"),
             &json!({ "notes": "Scores verified manually, approving" }),
         )
         .await;
@@ -756,7 +748,7 @@ async fn test_reject_review_reverts_match() {
     // Admin rejects the review → match should revert to in_progress
     let reject_response = app
         .post_json(
-            &format!("/v1/admin/result-reviews/{}/reject", review_id),
+            &format!("/v1/admin/result-reviews/{review_id}/reject"),
             &json!({ "notes": "Demo evidence shows different result" }),
         )
         .await;

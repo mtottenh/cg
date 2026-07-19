@@ -390,8 +390,8 @@ impl PlayerRepository for PgPlayerRepository {
             param_index += 1;
         }
         if cmd.looking_for_team.is_some() {
+            // Last clause: param_index is not read again, so no increment.
             set_clauses.push(format!("looking_for_team = ${param_index}"));
-            param_index += 1;
         }
 
         if set_clauses.is_empty() {
@@ -399,7 +399,7 @@ impl PlayerRepository for PgPlayerRepository {
             return self
                 .find_by_id(id)
                 .await?
-                .ok_or_else(|| DomainError::PlayerNotFound(id));
+                .ok_or(DomainError::PlayerNotFound(id));
         }
 
         // Always update updated_at
@@ -452,7 +452,7 @@ impl PlayerRepository for PgPlayerRepository {
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?
-            .ok_or_else(|| DomainError::PlayerNotFound(id))?;
+            .ok_or(DomainError::PlayerNotFound(id))?;
 
         Ok(Player::from(player))
     }

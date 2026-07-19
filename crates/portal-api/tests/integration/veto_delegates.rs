@@ -13,9 +13,11 @@ use uuid::Uuid;
 
 struct VetoTestSetup {
     league_id: Uuid,
-    season_id: Uuid,
+    // Kept (underscore-prefixed) so the scenario still persists the season and
+    // team B even though no test reads them back from the struct.
+    _season_id: Uuid,
     team_a: TeamSetup,
-    team_b: TeamSetup,
+    _team_b: TeamSetup,
 }
 
 struct TeamSetup {
@@ -79,8 +81,7 @@ async fn grant_tournament_admin_permission(app: &TestApp, user_id: Uuid) {
 
     assert!(
         has_permission,
-        "Failed to grant tournament.manage permission to user {}",
-        user_id
+        "Failed to grant tournament.manage permission to user {user_id}"
     );
 }
 
@@ -200,7 +201,7 @@ async fn setup_test_scenario(app: &TestApp) -> VetoTestSetup {
 
     VetoTestSetup {
         league_id: league.id,
-        season_id: season.id,
+        _season_id: season.id,
         team_a: TeamSetup {
             team_id: team_a.id,
             team_season_id: team_a_season.id,
@@ -208,7 +209,7 @@ async fn setup_test_scenario(app: &TestApp) -> VetoTestSetup {
             owner: team_a_owner,
             regular_member: team_a_member,
         },
-        team_b: TeamSetup {
+        _team_b: TeamSetup {
             team_id: team_b.id,
             team_season_id: team_b_season.id,
             captain: team_b_captain,

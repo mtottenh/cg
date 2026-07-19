@@ -120,7 +120,10 @@ impl PlayerGameProfileRepository for PgPlayerGameProfileRepository {
         player_ids: &[PlayerId],
         game_id: GameId,
     ) -> Result<Vec<PlayerGameProfile>, DomainError> {
-        let uuids: Vec<uuid::Uuid> = player_ids.iter().map(|id| id.as_uuid()).collect();
+        let uuids: Vec<uuid::Uuid> = player_ids
+            .iter()
+            .map(portal_core::PlayerId::as_uuid)
+            .collect();
         let rows = sqlx::query_as::<_, PlayerGameProfileRow>(
             "SELECT * FROM player_game_profiles WHERE player_id = ANY($1) AND game_id = $2",
         )

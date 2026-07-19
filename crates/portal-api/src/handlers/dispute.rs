@@ -299,14 +299,13 @@ async fn is_dispute_participant(
             return Ok(true);
         }
 
-        if let Some(ts_id) = registration.team_season_id {
-            if state
+        if let Some(ts_id) = registration.team_season_id
+            && state
                 .league_team_service
                 .is_member(ts_id, auth.player_id)
                 .await?
-            {
-                return Ok(true);
-            }
+        {
+            return Ok(true);
         }
     }
 

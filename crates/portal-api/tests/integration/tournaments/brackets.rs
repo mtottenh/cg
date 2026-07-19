@@ -27,15 +27,14 @@ async fn create_de_tournament(app: &TestApp, slug: &str, min_participants: i32) 
 
     // Publish
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Open registration
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/open-registration",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/open-registration"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -59,14 +58,13 @@ async fn register_n_players(
 
     // Remaining players use new users
     for i in 2..=count {
-        let (user_id, player_id) =
-            create_test_player(app, &format!("de_player{}_{}", i, slug)).await;
+        let (user_id, player_id) = create_test_player(app, &format!("de_player{i}_{slug}")).await;
         let reg = insert_test_registration(
             app,
             tournament_id,
             player_id,
             user_id,
-            &format!("Player{}", i),
+            &format!("Player{i}"),
         )
         .await;
         reg_ids.push(reg);
@@ -86,7 +84,7 @@ async fn test_start_double_elimination_tournament() {
     // Auto-seed
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({ "algorithm": "random" }),
         )
         .await;
@@ -94,12 +92,12 @@ async fn test_start_double_elimination_tournament() {
 
     // Start tournament
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Verify tournament status is "in_progress"
-    let response = app.get(&format!("/v1/tournaments/{}", tournament_id)).await;
+    let response = app.get(&format!("/v1/tournaments/{tournament_id}")).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "in_progress");
@@ -107,7 +105,7 @@ async fn test_start_double_elimination_tournament() {
 
     // Get brackets - should have 3 (Winners, Losers, Grand Final)
     let response = app
-        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/brackets"))
         .await;
     response.assert_status(StatusCode::OK);
     let brackets_body: serde_json::Value = response.json();
@@ -125,7 +123,7 @@ async fn test_start_double_elimination_tournament() {
 
     // Get all matches
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
     let matches_body: serde_json::Value = response.json();
@@ -160,17 +158,17 @@ async fn test_start_double_elimination_tournament() {
         .iter()
         .filter(|m| m["bracket_id"] == wb_id)
         .collect();
-    let lb_matches: Vec<_> = all_matches
+    let lb_match_count = all_matches
         .iter()
         .filter(|m| m["bracket_id"] == lb_id)
-        .collect();
+        .count();
     let gf_matches: Vec<_> = all_matches
         .iter()
         .filter(|m| m["bracket_id"] == gf_id)
         .collect();
 
     assert_eq!(wb_matches.len(), 7, "WB should have 7 matches");
-    assert_eq!(lb_matches.len(), 6, "LB should have 6 matches");
+    assert_eq!(lb_match_count, 6, "LB should have 6 matches");
     assert_eq!(gf_matches.len(), 1, "GF should have 1 match");
 
     // Verify WR1 matches have participants assigned
@@ -210,7 +208,7 @@ async fn test_start_double_elimination_4_teams() {
     // Auto-seed
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({ "algorithm": "random" }),
         )
         .await;
@@ -218,13 +216,13 @@ async fn test_start_double_elimination_4_teams() {
 
     // Start tournament
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Get all matches
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
     let matches_body: serde_json::Value = response.json();
@@ -249,7 +247,7 @@ async fn test_double_elimination_with_byes() {
     // Auto-seed
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({ "algorithm": "random" }),
         )
         .await;
@@ -257,13 +255,13 @@ async fn test_double_elimination_with_byes() {
 
     // Start tournament
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Get all matches - bracket size is 8, so same match count as 8-team
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
     let matches_body: serde_json::Value = response.json();
@@ -278,7 +276,7 @@ async fn test_double_elimination_with_byes() {
 
     // Get brackets
     let response = app
-        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/brackets"))
         .await;
     response.assert_status(StatusCode::OK);
     let brackets_body: serde_json::Value = response.json();
@@ -336,15 +334,14 @@ async fn create_rr_tournament(app: &TestApp, slug: &str, min_participants: i32) 
 
     // Publish
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Open registration
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/open-registration",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/open-registration"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -363,7 +360,7 @@ async fn test_start_round_robin_tournament() {
     // Auto-seed
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({ "algorithm": "random" }),
         )
         .await;
@@ -371,12 +368,12 @@ async fn test_start_round_robin_tournament() {
 
     // Start tournament
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Verify tournament status
-    let response = app.get(&format!("/v1/tournaments/{}", tournament_id)).await;
+    let response = app.get(&format!("/v1/tournaments/{tournament_id}")).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "in_progress");
@@ -384,7 +381,7 @@ async fn test_start_round_robin_tournament() {
 
     // Get brackets - should have 1 (RoundRobin)
     let response = app
-        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/brackets"))
         .await;
     response.assert_status(StatusCode::OK);
     let brackets_body: serde_json::Value = response.json();
@@ -394,7 +391,7 @@ async fn test_start_round_robin_tournament() {
 
     // Get all matches
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
     let matches_body: serde_json::Value = response.json();
@@ -442,20 +439,20 @@ async fn test_get_bracket_standings() {
     // Auto-seed and start
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({ "algorithm": "random" }),
         )
         .await;
     response.assert_status(StatusCode::OK);
 
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Get bracket ID
     let response = app
-        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/brackets"))
         .await;
     response.assert_status(StatusCode::OK);
     let brackets_body: serde_json::Value = response.json();
@@ -465,8 +462,7 @@ async fn test_get_bracket_standings() {
     // Get standings
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/brackets/{}/standings",
-            tournament_id, bracket_id
+            "/v1/tournaments/{tournament_id}/brackets/{bracket_id}/standings"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -516,15 +512,14 @@ async fn create_swiss_tournament(app: &TestApp, slug: &str, min_participants: i3
 
     // Publish
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Open registration
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/open-registration",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/open-registration"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -543,7 +538,7 @@ async fn test_start_swiss_tournament() {
     // Auto-seed
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({ "algorithm": "random" }),
         )
         .await;
@@ -551,12 +546,12 @@ async fn test_start_swiss_tournament() {
 
     // Start tournament
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Verify tournament status
-    let response = app.get(&format!("/v1/tournaments/{}", tournament_id)).await;
+    let response = app.get(&format!("/v1/tournaments/{tournament_id}")).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "in_progress");
@@ -564,7 +559,7 @@ async fn test_start_swiss_tournament() {
 
     // Get brackets - should have 1 (Swiss)
     let response = app
-        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/brackets"))
         .await;
     response.assert_status(StatusCode::OK);
     let brackets_body: serde_json::Value = response.json();
@@ -574,7 +569,7 @@ async fn test_start_swiss_tournament() {
 
     // Get all matches - should have 4 (round 1: 8 teams / 2 = 4 matches)
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
     let matches_body: serde_json::Value = response.json();
@@ -620,22 +615,21 @@ async fn test_swiss_generate_next_round_not_all_complete() {
     // Auto-seed and start
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({ "algorithm": "random" }),
         )
         .await;
     response.assert_status(StatusCode::OK);
 
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Try to generate next round without completing R1 matches - should fail
     let response = app
         .post_auth(&format!(
-            "/v1/admin/tournaments/{}/generate-next-round",
-            tournament_id
+            "/v1/admin/tournaments/{tournament_id}/generate-next-round"
         ))
         .await;
     assert_ne!(
@@ -681,14 +675,13 @@ async fn create_gp_tournament(
     let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
 
     // Publish
-    app.post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await
         .assert_status(StatusCode::OK);
 
     // Open registration
     app.post_auth(&format!(
-        "/v1/tournaments/{}/open-registration",
-        tournament_id
+        "/v1/tournaments/{tournament_id}/open-registration"
     ))
     .await
     .assert_status(StatusCode::OK);
@@ -717,19 +710,19 @@ async fn test_start_groups_and_playoffs_tournament() {
 
     // Auto-seed
     app.post_json(
-        &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+        &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
         &json!({ "algorithm": "random" }),
     )
     .await
     .assert_status(StatusCode::OK);
 
     // Start tournament
-    app.post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await
         .assert_status(StatusCode::OK);
 
     // Verify tournament status
-    let response = app.get(&format!("/v1/tournaments/{}", tournament_id)).await;
+    let response = app.get(&format!("/v1/tournaments/{tournament_id}")).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "in_progress");
@@ -737,7 +730,7 @@ async fn test_start_groups_and_playoffs_tournament() {
 
     // Get stages - should have 2 (Group Stage + Playoffs)
     let response = app
-        .get(&format!("/v1/tournaments/{}/stages", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/stages"))
         .await;
     response.assert_status(StatusCode::OK);
     let stages_body: serde_json::Value = response.json();
@@ -751,7 +744,7 @@ async fn test_start_groups_and_playoffs_tournament() {
 
     // Get brackets - should have 2 group brackets (RR type)
     let response = app
-        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/brackets"))
         .await;
     response.assert_status(StatusCode::OK);
     let brackets_body: serde_json::Value = response.json();
@@ -773,7 +766,7 @@ async fn test_start_groups_and_playoffs_tournament() {
 
     // Get all matches
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
     let matches_body: serde_json::Value = response.json();
@@ -805,8 +798,7 @@ async fn test_start_groups_and_playoffs_tournament() {
         let bracket_id = bracket["id"].as_str().unwrap();
         let response = app
             .get(&format!(
-                "/v1/tournaments/{}/brackets/{}/standings",
-                tournament_id, bracket_id
+                "/v1/tournaments/{tournament_id}/brackets/{bracket_id}/standings"
             ))
             .await;
         response.assert_status(StatusCode::OK);
@@ -842,20 +834,20 @@ async fn test_groups_and_playoffs_with_6_players() {
 
     // Auto-seed
     app.post_json(
-        &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+        &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
         &json!({ "algorithm": "random" }),
     )
     .await
     .assert_status(StatusCode::OK);
 
     // Start tournament
-    app.post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await
         .assert_status(StatusCode::OK);
 
     // Get brackets
     let response = app
-        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/brackets"))
         .await;
     response.assert_status(StatusCode::OK);
     let brackets_body: serde_json::Value = response.json();
@@ -864,7 +856,7 @@ async fn test_groups_and_playoffs_with_6_players() {
 
     // Get all matches
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
     let matches_body: serde_json::Value = response.json();
@@ -899,35 +891,35 @@ async fn test_groups_with_swiss_groups() {
 
     // Auto-seed
     app.post_json(
-        &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+        &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
         &json!({ "algorithm": "random" }),
     )
     .await
     .assert_status(StatusCode::OK);
 
     // Start tournament
-    app.post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await
         .assert_status(StatusCode::OK);
 
     // Get brackets - should have 2 Swiss brackets
     let response = app
-        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/brackets"))
         .await;
     response.assert_status(StatusCode::OK);
     let brackets_body: serde_json::Value = response.json();
     let brackets = brackets_body["data"].as_array().unwrap();
     assert_eq!(brackets.len(), 2, "Should have 2 group brackets");
 
-    let swiss_brackets: Vec<&serde_json::Value> = brackets
+    let swiss_bracket_count = brackets
         .iter()
         .filter(|b| b["bracket_type"] == "swiss")
-        .collect();
-    assert_eq!(swiss_brackets.len(), 2, "Should have 2 Swiss brackets");
+        .count();
+    assert_eq!(swiss_bracket_count, 2, "Should have 2 Swiss brackets");
 
     // Get all matches - Swiss only generates R1
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
     let matches_body: serde_json::Value = response.json();
@@ -971,20 +963,20 @@ async fn test_groups_with_de_playoffs() {
 
     // Auto-seed
     app.post_json(
-        &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+        &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
         &json!({ "algorithm": "random" }),
     )
     .await
     .assert_status(StatusCode::OK);
 
     // Start tournament
-    app.post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await
         .assert_status(StatusCode::OK);
 
     // Verify stages are created correctly
     let response = app
-        .get(&format!("/v1/tournaments/{}/stages", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/stages"))
         .await;
     response.assert_status(StatusCode::OK);
     let stages_body: serde_json::Value = response.json();
@@ -996,7 +988,7 @@ async fn test_groups_with_de_playoffs() {
 
     // Get brackets - should have 2 RR group brackets (no playoff brackets yet)
     let response = app
-        .get(&format!("/v1/tournaments/{}/brackets", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/brackets"))
         .await;
     response.assert_status(StatusCode::OK);
     let brackets_body: serde_json::Value = response.json();

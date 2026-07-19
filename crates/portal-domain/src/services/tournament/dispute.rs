@@ -78,14 +78,13 @@ where
         }
 
         // If disputing a specific claim, verify it's not the submitter's own claim
-        if let Some(claim_id) = result_claim_id {
-            if let Some(claim) = self.claim_repo.find_by_id(claim_id).await? {
-                if claim.submitted_by_registration_id == disputed_by_registration_id {
-                    return Err(DomainError::InvalidState(
-                        "Cannot dispute your own result claim".to_string(),
-                    ));
-                }
-            }
+        if let Some(claim_id) = result_claim_id
+            && let Some(claim) = self.claim_repo.find_by_id(claim_id).await?
+            && claim.submitted_by_registration_id == disputed_by_registration_id
+        {
+            return Err(DomainError::InvalidState(
+                "Cannot dispute your own result claim".to_string(),
+            ));
         }
 
         // Determine priority based on reason
@@ -646,7 +645,7 @@ where
         self.match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))
     }
 
     /// Fetch a dispute by ID or return a typed `DisputeNotFound` error.
@@ -658,7 +657,7 @@ where
         self.dispute_repo
             .find_by_id(dispute_id)
             .await?
-            .ok_or_else(|| DomainError::DisputeNotFound(dispute_id))
+            .ok_or(DomainError::DisputeNotFound(dispute_id))
     }
 
     fn validate_can_dispute(

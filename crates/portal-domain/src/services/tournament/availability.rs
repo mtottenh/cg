@@ -150,12 +150,12 @@ where
         command: UpdateAvailabilityWindow,
     ) -> Result<AvailabilityWindow, DomainError> {
         // Validate time range if provided
-        if let (Some(start), Some(end)) = (command.start_time, command.end_time) {
-            if start >= end {
-                return Err(DomainError::InvalidState(
-                    "Start time must be before end time".to_string(),
-                ));
-            }
+        if let (Some(start), Some(end)) = (command.start_time, command.end_time)
+            && start >= end
+        {
+            return Err(DomainError::InvalidState(
+                "Start time must be before end time".to_string(),
+            ));
         }
 
         self.window_repo.update(id, command).await
@@ -198,12 +198,12 @@ where
         }
 
         // Validate time range if provided
-        if let (Some(start), Some(end)) = (command.start_time, command.end_time) {
-            if start >= end {
-                return Err(DomainError::InvalidState(
-                    "Start time must be before end time".to_string(),
-                ));
-            }
+        if let (Some(start), Some(end)) = (command.start_time, command.end_time)
+            && start >= end
+        {
+            return Err(DomainError::InvalidState(
+                "Start time must be before end time".to_string(),
+            ));
         }
 
         self.override_repo.create(command).await
@@ -378,7 +378,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         let reg1_id = tournament_match
             .participant1_registration_id

@@ -31,9 +31,9 @@ pub struct PlayerMmStats {
 impl PlayerMmStats {
     pub fn kd_ratio(&self) -> f64 {
         if self.deaths == 0 {
-            self.kills as f64
+            f64::from(self.kills)
         } else {
-            self.kills as f64 / self.deaths as f64
+            f64::from(self.kills) / f64::from(self.deaths)
         }
     }
 
@@ -41,7 +41,7 @@ impl PlayerMmStats {
         if self.kills == 0 {
             0.0
         } else {
-            self.headshots as f64 / self.kills as f64 * 100.0
+            f64::from(self.headshots) / f64::from(self.kills) * 100.0
         }
     }
 
@@ -49,7 +49,7 @@ impl PlayerMmStats {
         if self.matches_played == 0 {
             0.0
         } else {
-            self.wins as f64 / self.matches_played as f64 * 100.0
+            f64::from(self.wins) / f64::from(self.matches_played) * 100.0
         }
     }
 }

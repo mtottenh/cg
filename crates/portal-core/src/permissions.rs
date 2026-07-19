@@ -249,19 +249,15 @@ mod tests {
         // All permissions should follow the pattern: scope.resource.action
         for (category, _, perms) in all_permissions() {
             for perm in perms {
-                let parts: Vec<&str> = perm.split('.').collect();
                 assert!(
-                    parts.len() >= 2,
-                    "Permission '{}' should have at least 2 parts separated by dots",
-                    perm
+                    perm.split('.').count() >= 2,
+                    "Permission '{perm}' should have at least 2 parts separated by dots"
                 );
                 // First part should match the category (except admin and service which use different conventions)
                 if category != "admin" && category != "service" {
                     assert!(
                         perm.starts_with(category),
-                        "Permission '{}' should start with category '{}'",
-                        perm,
-                        category
+                        "Permission '{perm}' should start with category '{category}'"
                     );
                 }
             }
@@ -295,10 +291,6 @@ mod tests {
         let all = all_permissions();
         let total: usize = all.iter().map(|(_, _, perms)| perms.len()).sum();
         // Ensure we have a reasonable number of permissions defined
-        assert!(
-            total >= 15,
-            "Expected at least 15 permissions, got {}",
-            total
-        );
+        assert!(total >= 15, "Expected at least 15 permissions, got {total}");
     }
 }

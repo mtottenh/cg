@@ -40,9 +40,8 @@ async fn wait_for_veto_response(ws: &mut WsStream) -> Option<ServerMessage> {
                 // Skip other broadcast messages
                 _ => continue,
             }
-        } else {
-            break;
         }
+        break;
     }
     None
 }
@@ -286,7 +285,7 @@ async fn test_ws_connect_and_auth_as_captain() {
             assert!(registration_id.is_some(), "Should have registration ID");
             assert!(team_name.is_some(), "Should have team name");
         }
-        other => panic!("Expected AuthSuccess, got: {:?}", other),
+        other => panic!("Expected AuthSuccess, got: {other:?}"),
     }
 }
 
@@ -309,7 +308,7 @@ async fn test_ws_connect_and_auth_as_owner() {
             assert_eq!(role, "participant", "Owner should be a participant");
             assert!(registration_id.is_some(), "Should have registration ID");
         }
-        other => panic!("Expected AuthSuccess, got: {:?}", other),
+        other => panic!("Expected AuthSuccess, got: {other:?}"),
     }
 }
 
@@ -332,7 +331,7 @@ async fn test_ws_connect_and_auth_as_delegate() {
             assert_eq!(role, "participant", "Delegate should be a participant");
             assert!(registration_id.is_some(), "Should have registration ID");
         }
-        other => panic!("Expected AuthSuccess, got: {:?}", other),
+        other => panic!("Expected AuthSuccess, got: {other:?}"),
     }
 }
 
@@ -359,7 +358,7 @@ async fn test_ws_connect_and_auth_as_regular_member() {
                 "Spectator should not have registration ID"
             );
         }
-        other => panic!("Expected AuthSuccess, got: {:?}", other),
+        other => panic!("Expected AuthSuccess, got: {other:?}"),
     }
 }
 
@@ -385,7 +384,7 @@ async fn test_ws_connect_and_auth_as_spectator() {
                 "Spectator should not have registration ID"
             );
         }
-        other => panic!("Expected AuthSuccess, got: {:?}", other),
+        other => panic!("Expected AuthSuccess, got: {other:?}"),
     }
 }
 
@@ -403,7 +402,7 @@ async fn test_ws_connect_and_auth_as_admin() {
         ServerMessage::AuthSuccess { role, .. } => {
             assert_eq!(role, "admin", "Admin should have admin role");
         }
-        other => panic!("Expected AuthSuccess, got: {:?}", other),
+        other => panic!("Expected AuthSuccess, got: {other:?}"),
     }
 }
 
@@ -421,11 +420,10 @@ async fn test_ws_auth_invalid_token() {
         ServerMessage::AuthError { error } => {
             assert!(
                 error.contains("Invalid token"),
-                "Should indicate invalid token: {}",
-                error
+                "Should indicate invalid token: {error}"
             );
         }
-        other => panic!("Expected AuthError, got: {:?}", other),
+        other => panic!("Expected AuthError, got: {other:?}"),
     }
 }
 
@@ -446,11 +444,10 @@ async fn test_ws_connect_to_nonexistent_match() {
         ServerMessage::AuthError { error } => {
             assert!(
                 error.contains("not found"),
-                "Should indicate match not found: {}",
-                error
+                "Should indicate match not found: {error}"
             );
         }
-        other => panic!("Expected AuthError, got: {:?}", other),
+        other => panic!("Expected AuthError, got: {other:?}"),
     }
 }
 
@@ -489,10 +486,7 @@ async fn test_ws_veto_action_as_participant() {
         Some(ServerMessage::VetoActionPerformed { .. }) => {
             // This is also acceptable - broadcast received
         }
-        other => panic!(
-            "Expected VetoActionAck or VetoActionPerformed, got: {:?}",
-            other
-        ),
+        other => panic!("Expected VetoActionAck or VetoActionPerformed, got: {other:?}"),
     }
 }
 
@@ -525,11 +519,10 @@ async fn test_ws_veto_action_as_spectator_denied() {
             assert_eq!(code, "not_authorized", "Should be not_authorized error");
             assert!(
                 message.contains("participant"),
-                "Should mention participants: {}",
-                message
+                "Should mention participants: {message}"
             );
         }
-        other => panic!("Expected Error, got: {:?}", other),
+        other => panic!("Expected Error, got: {other:?}"),
     }
 }
 
@@ -561,12 +554,10 @@ async fn test_ws_veto_action_wrong_turn_denied() {
         Some(ServerMessage::Error { code, message }) => {
             assert!(
                 code == "not_your_turn" || code == "veto_error",
-                "Should be turn-related error: {} - {}",
-                code,
-                message
+                "Should be turn-related error: {code} - {message}"
             );
         }
-        other => panic!("Expected Error, got: {:?}", other),
+        other => panic!("Expected Error, got: {other:?}"),
     }
 }
 
@@ -596,27 +587,24 @@ async fn test_ws_participant_connected_broadcast() {
     // Try multiple messages in case there are other broadcasts first
     let mut found_player_connected = false;
     for _ in 0..5 {
-        if let Some(msg) = ws_next_message(&mut spectator_ws).await {
-            if let ServerMessage::PlayerConnected {
+        if let Some(msg) = ws_next_message(&mut spectator_ws).await
+            && let ServerMessage::PlayerConnected {
                 registration_id,
                 team_name,
                 username,
             } = msg
-            {
-                assert!(!registration_id.is_empty(), "Should have registration ID");
-                assert!(
-                    team_name.contains("Alpha"),
-                    "Should be Team Alpha: {}",
-                    team_name
-                );
-                assert!(
-                    username.contains("captain"),
-                    "Should be captain: {}",
-                    username
-                );
-                found_player_connected = true;
-                break;
-            }
+        {
+            assert!(!registration_id.is_empty(), "Should have registration ID");
+            assert!(
+                team_name.contains("Alpha"),
+                "Should be Team Alpha: {team_name}"
+            );
+            assert!(
+                username.contains("captain"),
+                "Should be captain: {username}"
+            );
+            found_player_connected = true;
+            break;
         }
     }
 
@@ -1063,11 +1051,9 @@ async fn test_ws_spectator_cannot_send_team_chat() {
         ws_next_message(&mut ws_spec),
     )
     .await;
-    match msg {
-        Ok(Some(ServerMessage::Chat { .. })) => {
-            panic!("Spectator should NOT receive echo of team chat");
-        }
-        _ => {} // Timeout or no message — expected behavior
+    // Timeout or no message is the expected behavior
+    if let Ok(Some(ServerMessage::Chat { .. })) = msg {
+        panic!("Spectator should NOT receive echo of team chat");
     }
 }
 
@@ -1226,15 +1212,15 @@ async fn test_ws_reconnect_receives_chat_history() {
     // After auth, should receive ChatHistory containing the "hello" message
     let mut found_chat_history = false;
     for _ in 0..5 {
-        if let Some(msg) = ws_next_message(&mut ws_a2).await {
-            if let ServerMessage::ChatHistory { messages } = msg {
-                let has_hello = messages
-                    .iter()
-                    .any(|m| m["content"].as_str() == Some("hello everyone"));
-                assert!(has_hello, "Chat history should contain 'hello everyone'");
-                found_chat_history = true;
-                break;
-            }
+        if let Some(msg) = ws_next_message(&mut ws_a2).await
+            && let ServerMessage::ChatHistory { messages } = msg
+        {
+            let has_hello = messages
+                .iter()
+                .any(|m| m["content"].as_str() == Some("hello everyone"));
+            assert!(has_hello, "Chat history should contain 'hello everyone'");
+            found_chat_history = true;
+            break;
         }
     }
 
@@ -1270,24 +1256,23 @@ async fn test_ws_disconnect_broadcast_received() {
     // Team B should receive PlayerDisconnected
     let mut found_disconnect = false;
     for _ in 0..5 {
-        if let Some(msg) = ws_next_message(&mut ws_b).await {
-            if let ServerMessage::PlayerDisconnected {
+        if let Some(msg) = ws_next_message(&mut ws_b).await
+            && let ServerMessage::PlayerDisconnected {
                 team_name,
                 username,
                 ..
             } = msg
-            {
-                assert!(
-                    team_name.contains("Alpha"),
-                    "Should be Team Alpha: {team_name}"
-                );
-                assert!(
-                    username.contains("captain"),
-                    "Should be captain: {username}"
-                );
-                found_disconnect = true;
-                break;
-            }
+        {
+            assert!(
+                team_name.contains("Alpha"),
+                "Should be Team Alpha: {team_name}"
+            );
+            assert!(
+                username.contains("captain"),
+                "Should be captain: {username}"
+            );
+            found_disconnect = true;
+            break;
         }
     }
     assert!(found_disconnect, "Team B should receive PlayerDisconnected");
@@ -1299,15 +1284,15 @@ async fn test_ws_disconnect_broadcast_received() {
     // Team B should receive PlayerConnected
     let mut found_reconnect = false;
     for _ in 0..5 {
-        if let Some(msg) = ws_next_message(&mut ws_b).await {
-            if let ServerMessage::PlayerConnected { team_name, .. } = msg {
-                assert!(
-                    team_name.contains("Alpha"),
-                    "Should be Team Alpha: {team_name}"
-                );
-                found_reconnect = true;
-                break;
-            }
+        if let Some(msg) = ws_next_message(&mut ws_b).await
+            && let ServerMessage::PlayerConnected { team_name, .. } = msg
+        {
+            assert!(
+                team_name.contains("Alpha"),
+                "Should be Team Alpha: {team_name}"
+            );
+            found_reconnect = true;
+            break;
         }
     }
     assert!(

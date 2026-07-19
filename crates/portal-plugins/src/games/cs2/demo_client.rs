@@ -70,6 +70,9 @@ pub fn validate_base_url(raw: &str) -> Result<String, PluginError> {
     Ok(trimmed)
 }
 
+// `.local` here is a hostname suffix (mDNS), not a file extension; the host
+// comes from `Url::host_str()`, which already lowercases DNS names.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn is_private_or_loopback_host(host: &str) -> bool {
     // Reject obvious name-based internal targets.
     if host.eq_ignore_ascii_case("localhost")
@@ -170,12 +173,12 @@ impl Cs2DemoClient {
         // Cap the response body so a hostile (or broken) demo service can't
         // force unbounded buffering. `Content-Length` is advisory — we also
         // enforce the cap while streaming chunks.
-        if let Some(len) = response.content_length() {
-            if (len as usize) > MAX_STATS_RESPONSE_BYTES {
-                return Err(PluginError::ExternalService(format!(
-                    "Demo stats response too large: {len} bytes (max {MAX_STATS_RESPONSE_BYTES})"
-                )));
-            }
+        if let Some(len) = response.content_length()
+            && (len as usize) > MAX_STATS_RESPONSE_BYTES
+        {
+            return Err(PluginError::ExternalService(format!(
+                "Demo stats response too large: {len} bytes (max {MAX_STATS_RESPONSE_BYTES})"
+            )));
         }
 
         let mut body = Vec::with_capacity(
@@ -338,7 +341,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires external service
+    #[ignore = "requires external demo-stats service"]
     async fn test_fetch_demo_stats_integration() {
         let client = Cs2DemoClient::default();
         let demo_name = "2024-09-14_20-17-30_9_de_inferno_team_Zan_vs_team_Maxymimi.dem";

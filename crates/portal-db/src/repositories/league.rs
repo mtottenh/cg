@@ -825,11 +825,11 @@ mod tests {
     // Helper to create a test user
     async fn create_test_user(pool: &DbPool, suffix: &str) -> uuid::Uuid {
         let user = sqlx::query_as::<_, (uuid::Uuid,)>(
-            r#"
+            r"
             INSERT INTO users (username, email, password_hash)
             VALUES ($1, $2, 'hash')
             RETURNING id
-            "#,
+            ",
         )
         .bind(format!("leagueuser{suffix}"))
         .bind(format!("league{suffix}@example.com"))
@@ -842,18 +842,22 @@ mod tests {
     // Helper to create a test game
     async fn create_test_game(pool: &DbPool, slug: &str) -> uuid::Uuid {
         let id = uuid::Uuid::now_v7();
-        sqlx::query(
-            r#"
-            INSERT INTO games (id, slug, name, display_name, status)
+        // ON CONFLICT DO UPDATE (a no-op touch) so RETURNING always yields
+        // the row's real id — migrations pre-seed some slugs, and returning
+        // the locally generated id for an existing row breaks FK inserts.
+        let (id,): (uuid::Uuid,) = sqlx::query_as(
+            r"
+            INSERT INTO games (id, slug, display_name, plugin_id, status)
             VALUES ($1, $2, $3, $4, 'active')
-            ON CONFLICT (slug) DO NOTHING
-            "#,
+            ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug
+            RETURNING id
+            ",
         )
         .bind(id)
         .bind(slug)
-        .bind(slug)
         .bind(slug.to_uppercase())
-        .execute(pool)
+        .bind(format!("{slug}_plugin"))
+        .fetch_one(pool)
         .await
         .unwrap();
         id

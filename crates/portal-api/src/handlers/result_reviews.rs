@@ -128,14 +128,15 @@ pub async fn acknowledge_result_review(
 
     // If both captains acknowledged and the review only has roster issues
     // (no score/winner mismatch), resume the saga for bracket progression
-    if both_acknowledged && updated_review.is_roster_only() {
-        if let Err(e) = resume_saga_after_review(&state, match_id).await {
-            warn!(
-                match_id = %match_id,
-                error = %e,
-                "Failed to resume saga after both captains acknowledged"
-            );
-        }
+    if both_acknowledged
+        && updated_review.is_roster_only()
+        && let Err(e) = resume_saga_after_review(&state, match_id).await
+    {
+        warn!(
+            match_id = %match_id,
+            error = %e,
+            "Failed to resume saga after both captains acknowledged"
+        );
     }
 
     Ok(Json(DataResponse::new(
@@ -399,7 +400,7 @@ async fn resume_saga_after_review(
         .tournament_match_repo
         .find_by_id(match_id)
         .await?
-        .ok_or_else(|| portal_core::DomainError::TournamentMatchNotFound(match_id))?;
+        .ok_or(portal_core::DomainError::TournamentMatchNotFound(match_id))?;
 
     let winner_registration_id = match_.winner_registration_id.ok_or_else(|| {
         portal_core::DomainError::InvalidState("Match has no winner set".to_string())

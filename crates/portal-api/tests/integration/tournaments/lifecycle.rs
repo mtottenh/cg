@@ -31,7 +31,7 @@ async fn test_publish_tournament() {
 
     // Publish tournament
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await;
 
     response.assert_status(StatusCode::OK);
@@ -70,15 +70,14 @@ async fn test_open_registration() {
 
     // Publish first
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Open registration
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/open-registration",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/open-registration"
         ))
         .await;
 
@@ -123,7 +122,7 @@ async fn test_create_stage() {
     // Create a stage
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/stages", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/stages"),
             &json!({
                 "name": "Group Stage",
                 "stage_order": 1,
@@ -173,7 +172,7 @@ async fn test_get_stages() {
     for i in 1..=2 {
         let response = app
             .post_json(
-                &format!("/v1/tournaments/{}/stages", tournament_id),
+                &format!("/v1/tournaments/{tournament_id}/stages"),
                 &json!({
                     "name": format!("Stage {}", i),
                     "stage_order": i,
@@ -186,7 +185,7 @@ async fn test_get_stages() {
 
     // Get stages
     let response = app
-        .get(&format!("/v1/tournaments/{}/stages", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/stages"))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -321,12 +320,11 @@ async fn create_tournament_in_registration(app: &TestApp, slug: &str) -> String 
     let created: serde_json::Value = response.json();
     let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
 
-    app.post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await
         .assert_status(StatusCode::OK);
     app.post_auth(&format!(
-        "/v1/tournaments/{}/open-registration",
-        tournament_id
+        "/v1/tournaments/{tournament_id}/open-registration"
     ))
     .await
     .assert_status(StatusCode::OK);
@@ -342,8 +340,7 @@ async fn test_close_and_reopen_registration() {
     // Close registration → scheduled
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/close-registration",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/close-registration"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -353,8 +350,7 @@ async fn test_close_and_reopen_registration() {
     // Reopen → back to registration
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/reopen-registration",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/reopen-registration"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -368,7 +364,7 @@ async fn test_cancel_tournament() {
     let tournament_id = create_tournament_in_registration(&app, "cancel-test").await;
 
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/cancel", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/cancel"))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
@@ -377,8 +373,7 @@ async fn test_cancel_tournament() {
     // Cancelled is terminal — restarting registration must fail.
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/open-registration",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/open-registration"
         ))
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
@@ -394,7 +389,7 @@ async fn test_complete_and_finalize_tournament() {
 
     // Complete
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/complete", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/complete"))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
@@ -402,7 +397,7 @@ async fn test_complete_and_finalize_tournament() {
 
     // Finalize
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/finalize", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/finalize"))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
@@ -410,7 +405,7 @@ async fn test_complete_and_finalize_tournament() {
 
     // Finalized is terminal — completing again must fail.
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/complete", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/complete"))
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
 }
@@ -441,7 +436,7 @@ async fn test_complete_from_draft_rejected() {
     let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
 
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/complete", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/complete"))
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
 }

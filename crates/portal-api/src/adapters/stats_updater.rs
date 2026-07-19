@@ -119,14 +119,14 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         // 2. Get the tournament to find game_id
         let tournament = self
             .tournament_repo
             .find_by_id(match_.tournament_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentNotFound(match_.tournament_id))?;
+            .ok_or(DomainError::TournamentNotFound(match_.tournament_id))?;
         let game_id = tournament.game_id;
 
         // 3. Look up the plugin for this game
@@ -157,12 +157,16 @@ where
             .registration_repo
             .find_by_id(winner_registration_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(winner_registration_id))?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(
+                winner_registration_id,
+            ))?;
         let loser_reg = self
             .registration_repo
             .find_by_id(loser_registration_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(loser_registration_id))?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(
+                loser_registration_id,
+            ))?;
 
         // For now, only handle individual player registrations.
         // Team stats aggregation would require looking up team members.
@@ -252,7 +256,6 @@ where
                         error = %e,
                         "Plugin failed to build MatchData from demo — trying next demo"
                     );
-                    continue;
                 }
             }
         }

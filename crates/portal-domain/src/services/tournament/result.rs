@@ -393,7 +393,7 @@ where
         self.match_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(id))
+            .ok_or(DomainError::TournamentMatchNotFound(id))
     }
 
     async fn get_claim(&self, id: ResultClaimId) -> Result<ResultClaim, DomainError> {
@@ -411,20 +411,20 @@ where
         // Check participant 1
         if let Some(reg_id) = match_.participant1_registration_id {
             let reg = self.registration_repo.find_by_id(reg_id).await?;
-            if let Some(r) = reg {
-                if r.registered_by == user_id {
-                    return Ok(reg_id);
-                }
+            if let Some(r) = reg
+                && r.registered_by == user_id
+            {
+                return Ok(reg_id);
             }
         }
 
         // Check participant 2
         if let Some(reg_id) = match_.participant2_registration_id {
             let reg = self.registration_repo.find_by_id(reg_id).await?;
-            if let Some(r) = reg {
-                if r.registered_by == user_id {
-                    return Ok(reg_id);
-                }
+            if let Some(r) = reg
+                && r.registered_by == user_id
+            {
+                return Ok(reg_id);
             }
         }
 

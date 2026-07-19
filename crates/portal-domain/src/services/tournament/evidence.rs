@@ -162,7 +162,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         // Find user's registration
         let registration_id = self.find_user_registration(&match_, uploaded_by).await.ok();
@@ -171,7 +171,7 @@ where
         let extension = file_name.rsplit('.').next().unwrap_or("bin");
         let evidence_id = EvidenceId::new();
         let s3_key = match s3_key_prefix {
-            Some(prefix) => format!("{}/{}.{}", prefix, evidence_id, extension),
+            Some(prefix) => format!("{prefix}/{evidence_id}.{extension}"),
             None => format!(
                 "evidence/{}/{}/{}.{}",
                 match_.tournament_id, match_id, evidence_id, extension
@@ -249,7 +249,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::EvidenceNotFound(evidence_id))?;
+            .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
 
         // Only pending evidence can be completed
         if evidence.status != EvidenceStatus::Pending {
@@ -307,7 +307,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         // Find user's registration
         let registration_id = self.find_user_registration(&match_, added_by).await.ok();
@@ -352,7 +352,7 @@ where
         self.evidence_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::EvidenceNotFound(id))
+            .ok_or(DomainError::EvidenceNotFound(id))
     }
 
     /// Get all evidence for a match.
@@ -389,7 +389,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::EvidenceNotFound(evidence_id))?;
+            .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
 
         // Check if evidence is accessible
         if !evidence.is_accessible() {
@@ -459,7 +459,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::EvidenceNotFound(evidence_id))?;
+            .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
 
         // Delete from storage if S3
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
@@ -490,15 +490,15 @@ where
 
         for evidence in expired {
             // Delete from storage if S3
-            if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
-                if let Err(e) = self.s3_client.delete_object(bucket, key).await {
-                    warn!(
-                        evidence_id = %evidence.id,
-                        error = %e,
-                        "Failed to delete expired evidence from S3"
-                    );
-                    continue;
-                }
+            if let EvidenceStorage::S3 { bucket, key } = &evidence.storage
+                && let Err(e) = self.s3_client.delete_object(bucket, key).await
+            {
+                warn!(
+                    evidence_id = %evidence.id,
+                    error = %e,
+                    "Failed to delete expired evidence from S3"
+                );
+                continue;
             }
 
             // Mark as expired
@@ -563,21 +563,19 @@ where
         user_id: UserId,
     ) -> Result<TournamentRegistrationId, DomainError> {
         // Check participant 1
-        if let Some(reg_id) = match_.participant1_registration_id {
-            if let Some(reg) = self.registration_repo.find_by_id(reg_id).await? {
-                if reg.registered_by == user_id {
-                    return Ok(reg_id);
-                }
-            }
+        if let Some(reg_id) = match_.participant1_registration_id
+            && let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
+            && reg.registered_by == user_id
+        {
+            return Ok(reg_id);
         }
 
         // Check participant 2
-        if let Some(reg_id) = match_.participant2_registration_id {
-            if let Some(reg) = self.registration_repo.find_by_id(reg_id).await? {
-                if reg.registered_by == user_id {
-                    return Ok(reg_id);
-                }
-            }
+        if let Some(reg_id) = match_.participant2_registration_id
+            && let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
+            && reg.registered_by == user_id
+        {
+            return Ok(reg_id);
         }
 
         Err(DomainError::NotAuthorized(
@@ -611,7 +609,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         plugin.discover_evidence(context).await
     }
@@ -630,7 +628,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         // Find user's registration
         let registration_id = self.find_user_registration(&match_, linked_by).await.ok();
@@ -682,7 +680,7 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::EvidenceNotFound(evidence_id))?;
+            .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
 
         let validation = plugin.validate_evidence(&evidence, result).await?;
 

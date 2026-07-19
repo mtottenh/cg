@@ -105,7 +105,7 @@ impl TestApp {
         let adapter = S3EvidenceStorageAdapter::from_sdk_config(
             &sdk_config,
             bucket,
-            format!("{}/{}", minio_endpoint, bucket),
+            format!("{minio_endpoint}/{bucket}"),
             true, // force_path_style for MinIO
         );
         let storage = EvidenceStorageBackend::S3(adapter);
@@ -143,11 +143,6 @@ impl TestApp {
 
         self.server_addr = Some(addr);
         addr
-    }
-
-    /// Get the JWT secret used for this test app.
-    pub fn jwt_secret(&self) -> &str {
-        "test-jwt-secret"
     }
 
     /// Get the database pool.
@@ -247,7 +242,7 @@ impl TestApp {
             Request::builder()
                 .method("GET")
                 .uri(uri)
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -267,7 +262,7 @@ impl TestApp {
                 .method("POST")
                 .uri(uri)
                 .header("Content-Type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::from(json))
                 .unwrap(),
         )
@@ -287,7 +282,7 @@ impl TestApp {
                 .method("PATCH")
                 .uri(uri)
                 .header("Content-Type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::from(json))
                 .unwrap(),
         )
@@ -327,26 +322,6 @@ impl TestApp {
         .await
     }
 
-    /// Make a PUT request with JSON body and a specific token.
-    pub async fn put_json_with_token<T: serde::Serialize>(
-        &self,
-        uri: &str,
-        body: &T,
-        token: &str,
-    ) -> TestResponse {
-        let json = serde_json::to_string(body).unwrap();
-        self.request(
-            Request::builder()
-                .method("PUT")
-                .uri(uri)
-                .header("Content-Type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
-                .body(Body::from(json))
-                .unwrap(),
-        )
-        .await
-    }
-
     /// Make a POST request (with auth, no body).
     pub async fn post_auth(&self, uri: &str) -> TestResponse {
         self.request(
@@ -366,7 +341,7 @@ impl TestApp {
             Request::builder()
                 .method("POST")
                 .uri(uri)
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -379,7 +354,7 @@ impl TestApp {
             Request::builder()
                 .method("DELETE")
                 .uri(uri)
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

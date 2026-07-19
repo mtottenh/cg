@@ -34,63 +34,63 @@ pub fn check_eligibility(
         let matches_played = profile.as_ref().map_or(0, |p| p.matches_played);
         let rank_tier = profile.as_ref().and_then(|p| p.rank_tier.clone());
 
-        if let Some(max) = restrictions.max_rating_per_player {
-            if rating > max {
-                violations.push(EligibilityViolation {
-                    player_id: *player_id,
-                    restriction: "max_rating_per_player".to_string(),
-                    message: format!("Player rating ({rating}) exceeds maximum allowed ({max})"),
-                });
-            }
+        if let Some(max) = restrictions.max_rating_per_player
+            && rating > max
+        {
+            violations.push(EligibilityViolation {
+                player_id: *player_id,
+                restriction: "max_rating_per_player".to_string(),
+                message: format!("Player rating ({rating}) exceeds maximum allowed ({max})"),
+            });
         }
 
-        if let Some(min) = restrictions.min_rating_per_player {
-            if rating < min {
-                violations.push(EligibilityViolation {
-                    player_id: *player_id,
-                    restriction: "min_rating_per_player".to_string(),
-                    message: format!("Player rating ({rating}) is below minimum required ({min})"),
-                });
-            }
+        if let Some(min) = restrictions.min_rating_per_player
+            && rating < min
+        {
+            violations.push(EligibilityViolation {
+                player_id: *player_id,
+                restriction: "min_rating_per_player".to_string(),
+                message: format!("Player rating ({rating}) is below minimum required ({min})"),
+            });
         }
 
-        if let Some(max_peak) = restrictions.max_peak_rating_per_player {
-            if peak_rating > max_peak {
+        if let Some(max_peak) = restrictions.max_peak_rating_per_player
+            && peak_rating > max_peak
+        {
+            violations.push(EligibilityViolation {
+                player_id: *player_id,
+                restriction: "max_peak_rating_per_player".to_string(),
+                message: format!(
+                    "Player peak rating ({peak_rating}) exceeds maximum allowed ({max_peak})"
+                ),
+            });
+        }
+
+        if let Some(max_avg) = restrictions.max_avg_rating_per_player
+            && let Some(s) = stats
+        {
+            let avg = s.average_rating as i32;
+            if avg > max_avg {
                 violations.push(EligibilityViolation {
                     player_id: *player_id,
-                    restriction: "max_peak_rating_per_player".to_string(),
+                    restriction: "max_avg_rating_per_player".to_string(),
                     message: format!(
-                        "Player peak rating ({peak_rating}) exceeds maximum allowed ({max_peak})"
+                        "Player average rating ({avg}) exceeds maximum allowed ({max_avg})"
                     ),
                 });
             }
         }
 
-        if let Some(max_avg) = restrictions.max_avg_rating_per_player {
-            if let Some(s) = stats {
-                let avg = s.average_rating as i32;
-                if avg > max_avg {
-                    violations.push(EligibilityViolation {
-                        player_id: *player_id,
-                        restriction: "max_avg_rating_per_player".to_string(),
-                        message: format!(
-                            "Player average rating ({avg}) exceeds maximum allowed ({max_avg})"
-                        ),
-                    });
-                }
-            }
-        }
-
-        if let Some(min_matches) = restrictions.min_matches_played {
-            if matches_played < min_matches {
-                violations.push(EligibilityViolation {
-                    player_id: *player_id,
-                    restriction: "min_matches_played".to_string(),
-                    message: format!(
-                        "Player has played {matches_played} matches, minimum required is {min_matches}"
-                    ),
-                });
-            }
+        if let Some(min_matches) = restrictions.min_matches_played
+            && matches_played < min_matches
+        {
+            violations.push(EligibilityViolation {
+                player_id: *player_id,
+                restriction: "min_matches_played".to_string(),
+                message: format!(
+                    "Player has played {matches_played} matches, minimum required is {min_matches}"
+                ),
+            });
         }
 
         if !restrictions.allowed_rank_tiers.is_empty() {
@@ -118,16 +118,16 @@ pub fn check_eligibility(
             .sum();
         let count = player_data.len() as i32;
 
-        if let Some(max_total) = restrictions.max_team_total_rating {
-            if total_rating > max_total {
-                violations.push(EligibilityViolation {
-                    player_id: PlayerId::from_uuid(uuid::Uuid::nil()),
-                    restriction: "max_team_total_rating".to_string(),
-                    message: format!(
-                        "Team total rating ({total_rating}) exceeds maximum allowed ({max_total})"
-                    ),
-                });
-            }
+        if let Some(max_total) = restrictions.max_team_total_rating
+            && total_rating > max_total
+        {
+            violations.push(EligibilityViolation {
+                player_id: PlayerId::from_uuid(uuid::Uuid::nil()),
+                restriction: "max_team_total_rating".to_string(),
+                message: format!(
+                    "Team total rating ({total_rating}) exceeds maximum allowed ({max_total})"
+                ),
+            });
         }
 
         if let Some(max_avg) = restrictions.max_team_average_rating {

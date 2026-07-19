@@ -114,8 +114,10 @@ impl MatchDemoValidator for DemoValidatorAdapter {
                 }
 
                 // Check map name (if game result has map info)
-                if let Some(ref gr) = game_result {
-                    if metadata.map_name.to_lowercase() != gr.map_id.to_lowercase() {
+                if let Some(gr) = game_result {
+                    if metadata.map_name.to_lowercase() == gr.map_id.to_lowercase() {
+                        validation.map_match = true;
+                    } else {
                         validation.map_match = false;
                         validation.add_warning(
                             format!(
@@ -124,8 +126,6 @@ impl MatchDemoValidator for DemoValidatorAdapter {
                             ),
                             0.3,
                         );
-                    } else {
-                        validation.map_match = true;
                     }
                 }
             } else {

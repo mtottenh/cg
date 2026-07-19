@@ -60,7 +60,7 @@ where
         self.team_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::LeagueTeamNotFound(id))
+            .ok_or(DomainError::LeagueTeamNotFound(id))
     }
 
     /// Get a team season by ID.
@@ -117,7 +117,7 @@ where
             .season_repo
             .find_by_id(cmd.season_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueSeasonNotFound(cmd.season_id))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(cmd.season_id))?;
 
         if !season.can_register_team() {
             return Err(DomainError::RegistrationClosed);
@@ -216,7 +216,7 @@ where
             .season_repo
             .find_by_id(season_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueSeasonNotFound(season_id))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(season_id))?;
 
         // Verify team belongs to this league
         if team.league_id != season.league_id {
@@ -288,25 +288,23 @@ where
         let team = self.get_team(team_id).await?;
 
         // Check name uniqueness if changing
-        if let Some(ref name) = cmd.name {
-            if name.to_lowercase() != team.name.to_lowercase()
-                && self.team_repo.name_exists(team.league_id, name).await?
-            {
-                return Err(DomainError::Conflict(format!(
-                    "team name '{name}' is already taken in this league"
-                )));
-            }
+        if let Some(ref name) = cmd.name
+            && name.to_lowercase() != team.name.to_lowercase()
+            && self.team_repo.name_exists(team.league_id, name).await?
+        {
+            return Err(DomainError::Conflict(format!(
+                "team name '{name}' is already taken in this league"
+            )));
         }
 
         // Check tag uniqueness if changing
-        if let Some(ref tag) = cmd.tag {
-            if tag.to_lowercase() != team.tag.to_lowercase()
-                && self.team_repo.tag_exists(team.league_id, tag).await?
-            {
-                return Err(DomainError::Conflict(format!(
-                    "team tag '{tag}' is already taken in this league"
-                )));
-            }
+        if let Some(ref tag) = cmd.tag
+            && tag.to_lowercase() != team.tag.to_lowercase()
+            && self.team_repo.tag_exists(team.league_id, tag).await?
+        {
+            return Err(DomainError::Conflict(format!(
+                "team tag '{tag}' is already taken in this league"
+            )));
         }
 
         let updated = self
@@ -387,7 +385,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueSeasonNotFound(team_season.season_id))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         // Check roster lock status
         if role.is_primary() && !season.allows_primary_roster_changes() {
@@ -412,16 +410,15 @@ where
         }
 
         // For primary roles, check one-team-per-season constraint
-        if role.is_primary() {
-            if let Some(existing_team_season_id) = self
+        if role.is_primary()
+            && let Some(existing_team_season_id) = self
                 .member_repo
                 .find_primary_team_in_season(team_season.season_id, player_id)
                 .await?
-            {
-                return Err(DomainError::Conflict(format!(
-                    "player is already a primary member of team {existing_team_season_id} in this season"
-                )));
-            }
+        {
+            return Err(DomainError::Conflict(format!(
+                "player is already a primary member of team {existing_team_season_id} in this season"
+            )));
         }
 
         // Check roster size limits
@@ -430,19 +427,19 @@ where
                 .member_repo
                 .count_primary_members(team_season_id)
                 .await?;
-            if let Some(max) = season.team_size_max {
-                if primary_count >= i64::from(max) {
-                    return Err(DomainError::TeamFull);
-                }
+            if let Some(max) = season.team_size_max
+                && primary_count >= i64::from(max)
+            {
+                return Err(DomainError::TeamFull);
             }
         } else {
             let sub_count = self.member_repo.count_substitutes(team_season_id).await?;
-            if let Some(max_subs) = season.max_substitutes {
-                if sub_count >= i64::from(max_subs) {
-                    return Err(DomainError::Conflict(
-                        "maximum number of substitutes reached".to_string(),
-                    ));
-                }
+            if let Some(max_subs) = season.max_substitutes
+                && sub_count >= i64::from(max_subs)
+            {
+                return Err(DomainError::Conflict(
+                    "maximum number of substitutes reached".to_string(),
+                ));
             }
         }
 
@@ -480,7 +477,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueSeasonNotFound(team_season.season_id))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         let member = self
             .member_repo
@@ -663,7 +660,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueSeasonNotFound(team_season.season_id))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         // Check roster lock status
         if member.role.is_primary() && !season.allows_primary_roster_changes() {

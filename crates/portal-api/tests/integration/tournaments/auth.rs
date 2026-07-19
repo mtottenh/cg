@@ -58,7 +58,7 @@ async fn test_update_tournament_unauthorized() {
     // Try to update without auth
     let response = app
         .patch_json_no_auth(
-            &format!("/v1/tournaments/{}", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}"),
             &json!({
                 "name": "Hacked Name"
             }),

@@ -269,6 +269,8 @@ pub async fn submit_player_rating(
     Path((player_id_str, game_id_or_slug)): Path<(String, String)>,
     ValidatedJson(body): ValidatedJson<SubmitRatingRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<PlayerGameProfileResponse>>)> {
+    use portal_domain::repositories::PlayerGameProfileRepository;
+
     let request_id = get_request_id(&headers);
 
     // Admin-only endpoint (for bot/service accounts)
@@ -295,7 +297,6 @@ pub async fn submit_player_rating(
     // Ensure profile exists (find_or_create)
     {
         let profile_repo = portal_db::PgPlayerGameProfileRepository::new(state.db_pool.clone());
-        use portal_domain::repositories::PlayerGameProfileRepository;
         profile_repo.find_or_create(player_id, game_id).await?;
     }
 

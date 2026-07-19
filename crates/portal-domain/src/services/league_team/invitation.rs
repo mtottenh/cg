@@ -80,7 +80,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueSeasonNotFound(team_season.season_id))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         // Check roster lock status
         if role.is_primary() && !season.allows_primary_roster_changes() {
@@ -99,16 +99,15 @@ where
         }
 
         // For primary roles, check one-team-per-season constraint
-        if role.is_primary() {
-            if let Some(existing_team_season_id) = self
+        if role.is_primary()
+            && let Some(existing_team_season_id) = self
                 .member_repo
                 .find_primary_team_in_season(team_season.season_id, player_id)
                 .await?
-            {
-                return Err(DomainError::Conflict(format!(
-                    "player is already a primary member of team {existing_team_season_id} in this season"
-                )));
-            }
+        {
+            return Err(DomainError::Conflict(format!(
+                "player is already a primary member of team {existing_team_season_id} in this season"
+            )));
         }
 
         // Check for existing pending invitation
@@ -165,7 +164,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueSeasonNotFound(team_season.season_id))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         if !season.is_registration_open() {
             return Err(DomainError::RegistrationClosed);
@@ -181,16 +180,15 @@ where
         }
 
         // For primary roles, check one-team-per-season constraint
-        if role.is_primary() {
-            if let Some(existing_team_season_id) = self
+        if role.is_primary()
+            && let Some(existing_team_season_id) = self
                 .member_repo
                 .find_primary_team_in_season(team_season.season_id, player_id)
                 .await?
-            {
-                return Err(DomainError::Conflict(format!(
-                    "player is already a primary member of team {existing_team_season_id} in this season"
-                )));
-            }
+        {
+            return Err(DomainError::Conflict(format!(
+                "player is already a primary member of team {existing_team_season_id} in this season"
+            )));
         }
 
         // Check for existing pending request
@@ -239,7 +237,7 @@ where
             .invitation_repo
             .find_by_id(invitation_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueTeamInvitationNotFound(invitation_id))?;
+            .ok_or(DomainError::LeagueTeamInvitationNotFound(invitation_id))?;
 
         if !invitation.is_actionable() {
             if invitation.is_expired() {
@@ -285,7 +283,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueSeasonNotFound(team_season.season_id))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         // Re-verify roster lock status
         if invitation.role.is_primary() && !season.allows_primary_roster_changes() {
@@ -295,16 +293,15 @@ where
         }
 
         // Re-verify one-team-per-season constraint for primary roles
-        if invitation.role.is_primary() {
-            if let Some(existing_team_season_id) = self
+        if invitation.role.is_primary()
+            && let Some(existing_team_season_id) = self
                 .member_repo
                 .find_primary_team_in_season(team_season.season_id, invitation.player_id)
                 .await?
-            {
-                return Err(DomainError::Conflict(format!(
-                    "player is already a primary member of team {existing_team_season_id} in this season"
-                )));
-            }
+        {
+            return Err(DomainError::Conflict(format!(
+                "player is already a primary member of team {existing_team_season_id} in this season"
+            )));
         }
 
         // Check roster size limits
@@ -313,22 +310,22 @@ where
                 .member_repo
                 .count_primary_members(invitation.team_season_id)
                 .await?;
-            if let Some(max) = season.team_size_max {
-                if primary_count >= i64::from(max) {
-                    return Err(DomainError::TeamFull);
-                }
+            if let Some(max) = season.team_size_max
+                && primary_count >= i64::from(max)
+            {
+                return Err(DomainError::TeamFull);
             }
         } else {
             let sub_count = self
                 .member_repo
                 .count_substitutes(invitation.team_season_id)
                 .await?;
-            if let Some(max_subs) = season.max_substitutes {
-                if sub_count >= i64::from(max_subs) {
-                    return Err(DomainError::Conflict(
-                        "maximum number of substitutes reached".to_string(),
-                    ));
-                }
+            if let Some(max_subs) = season.max_substitutes
+                && sub_count >= i64::from(max_subs)
+            {
+                return Err(DomainError::Conflict(
+                    "maximum number of substitutes reached".to_string(),
+                ));
             }
         }
 
@@ -378,7 +375,7 @@ where
             .invitation_repo
             .find_by_id(invitation_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueTeamInvitationNotFound(invitation_id))?;
+            .ok_or(DomainError::LeagueTeamInvitationNotFound(invitation_id))?;
 
         if !invitation.is_actionable() {
             return Err(DomainError::InvitationInvalid);
@@ -436,7 +433,7 @@ where
             .invitation_repo
             .find_by_id(invitation_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueTeamInvitationNotFound(invitation_id))?;
+            .ok_or(DomainError::LeagueTeamInvitationNotFound(invitation_id))?;
 
         if !invitation.is_pending() {
             return Err(DomainError::InvitationInvalid);
@@ -503,7 +500,7 @@ where
         self.invitation_repo
             .find_by_id_with_team(invitation_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueTeamInvitationNotFound(invitation_id))
+            .ok_or(DomainError::LeagueTeamInvitationNotFound(invitation_id))
     }
 }
 

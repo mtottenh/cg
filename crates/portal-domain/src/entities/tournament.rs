@@ -114,16 +114,16 @@ impl Tournament {
         let now = Utc::now();
 
         // Check registration window if defined
-        if let Some(start) = self.registration_start {
-            if now < start {
-                return false;
-            }
+        if let Some(start) = self.registration_start
+            && now < start
+        {
+            return false;
         }
 
-        if let Some(end) = self.registration_end {
-            if now > end {
-                return false;
-            }
+        if let Some(end) = self.registration_end
+            && now > end
+        {
+            return false;
         }
 
         true

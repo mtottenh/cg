@@ -137,6 +137,6 @@ impl std::fmt::Debug for VetoLobby {
             .field("match_id", &self.match_id)
             .field("connections", &self.connections.len())
             .field("spectator_count", &self.spectator_count())
-            .finish()
+            .finish_non_exhaustive()
     }
 }

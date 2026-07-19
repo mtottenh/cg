@@ -18,10 +18,7 @@ async fn test_forfeit_endpoints_exist() {
     // Verify withdraw endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/registrations/{}/withdraw",
-                tournament_id, registration_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/registrations/{registration_id}/withdraw"),
             &json!({
                 "reason": "Test withdrawal"
             }),
@@ -36,10 +33,7 @@ async fn test_forfeit_endpoints_exist() {
     // Verify admin forfeit endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/forfeit",
-                tournament_id, match_id
-            ),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/forfeit"),
             &json!({
                 "forfeiting_registration_id": registration_id,
                 "forfeit_type": "no_show",
@@ -56,10 +50,7 @@ async fn test_forfeit_endpoints_exist() {
     // Verify admin double-forfeit endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/double-forfeit",
-                tournament_id, match_id
-            ),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/double-forfeit"),
             &json!({
                 "reason": "Both teams failed to show"
             }),
@@ -75,8 +66,7 @@ async fn test_forfeit_endpoints_exist() {
     let response = app
         .post_json(
             &format!(
-                "/v1/admin/tournaments/{}/registrations/{}/disqualify",
-                tournament_id, registration_id
+                "/v1/admin/tournaments/{tournament_id}/registrations/{registration_id}/disqualify"
             ),
             &json!({
                 "reason": "Cheating detected during tournament"

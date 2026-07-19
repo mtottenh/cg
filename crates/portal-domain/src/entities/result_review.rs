@@ -85,6 +85,8 @@ impl std::str::FromStr for ResultReviewStatus {
 // =============================================================================
 
 /// A review record for a result claim with validation issues.
+// Each bool is an independent validation-trigger flag mirroring a DB column.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResultReview {
     pub id: ResultReviewId,

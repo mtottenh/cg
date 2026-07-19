@@ -149,9 +149,8 @@ where
 
         // Check for stage advancement (groups → playoffs)
         let mut stage_advanced = false;
-        let mut tournament_complete = false;
 
-        if bracket_complete {
+        let tournament_complete = if bracket_complete {
             // Check if the completed bracket's stage is a group stage
             let stage = self
                 .stage_repo
@@ -171,10 +170,11 @@ where
                 }
             }
 
-            tournament_complete = self
-                .check_tournament_completion(match_.tournament_id)
-                .await?;
-        }
+            self.check_tournament_completion(match_.tournament_id)
+                .await?
+        } else {
+            false
+        };
 
         info!(
             match_id = %match_id,
@@ -212,9 +212,7 @@ where
         let target_match = self.get_match(target_match_id).await?;
 
         // Determine which position to fill
-        let target_position = self
-            .determine_target_position(source_match, &target_match, true)
-            .await?;
+        let target_position = self.determine_target_position(source_match, &target_match, true)?;
 
         // Get registration info for denormalization
         let registration = self
@@ -281,9 +279,7 @@ where
         let target_match = self.get_match(target_match_id).await?;
 
         // Determine position
-        let target_position = self
-            .determine_target_position(source_match, &target_match, false)
-            .await?;
+        let target_position = self.determine_target_position(source_match, &target_match, false)?;
 
         // Get registration info
         let registration = self
@@ -919,7 +915,7 @@ where
         self.match_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(id))
+            .ok_or(DomainError::TournamentMatchNotFound(id))
     }
 
     async fn get_bracket(&self, id: TournamentBracketId) -> Result<TournamentBracket, DomainError> {
@@ -929,7 +925,7 @@ where
             .ok_or_else(|| DomainError::Internal(format!("Bracket {id} not found")))
     }
 
-    async fn determine_target_position(
+    fn determine_target_position(
         &self,
         source_match: &TournamentMatch,
         target_match: &TournamentMatch,
@@ -950,17 +946,17 @@ where
         };
 
         // Check if position 1 expects from this match
-        if let Some(ref source) = target_match.participant1_source {
-            if matches_source(source) {
-                return Ok(1);
-            }
+        if let Some(ref source) = target_match.participant1_source
+            && matches_source(source)
+        {
+            return Ok(1);
         }
 
         // Check if position 2 expects from this match
-        if let Some(ref source) = target_match.participant2_source {
-            if matches_source(source) {
-                return Ok(2);
-            }
+        if let Some(ref source) = target_match.participant2_source
+            && matches_source(source)
+        {
+            return Ok(2);
         }
 
         // Fallback: use first empty position
@@ -1076,7 +1072,7 @@ mod tests {
             target_position: 1,
         };
 
-        let cloned = original.clone();
+        let cloned = original;
         if let LoserResult::DropsTo {
             target_match_id,
             target_position,

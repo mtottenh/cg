@@ -29,7 +29,7 @@ impl BracketGenerator {
         }
 
         // Circle method: if odd, add a BYE sentinel
-        let is_odd = n % 2 != 0;
+        let is_odd = !n.is_multiple_of(2);
         let circle_size = if is_odd { n + 1 } else { n };
         let total_rounds = (circle_size - 1) as i32;
 

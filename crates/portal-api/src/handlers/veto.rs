@@ -35,10 +35,10 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 fn resolve_veto_format(format_id: &str, state: &VetoState) -> ApiResult<VetoFormatConfig> {
     // Try plugin-provided formats
     for plugin in state.plugin_manager.list_plugins() {
-        if let Some(tp) = plugin.as_tournament_plugin() {
-            if let Some(f) = tp.veto_formats().into_iter().find(|f| f.id == format_id) {
-                return Ok(f);
-            }
+        if let Some(tp) = plugin.as_tournament_plugin()
+            && let Some(f) = tp.veto_formats().into_iter().find(|f| f.id == format_id)
+        {
+            return Ok(f);
         }
     }
 
@@ -384,11 +384,13 @@ pub async fn perform_veto_action(
             }));
         } else {
             // Broadcast the action performed
-            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
-                session: VetoSessionResponse::from(result.session.clone()),
-                action: VetoActionResponse::from(result.action.clone()),
-                is_complete: false,
-            }));
+            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(Box::new(
+                VetoActionBroadcast {
+                    session: VetoSessionResponse::from(result.session.clone()),
+                    action: VetoActionResponse::from(result.action.clone()),
+                    is_complete: false,
+                },
+            )));
         }
     }
 
@@ -484,14 +486,16 @@ pub async fn select_side(
 
     // Broadcast side selection to WebSocket lobby
     // Get the updated session state for the broadcast
-    if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
-        if let Ok(new_session_state) = state.veto_service.get_session_state(match_id).await {
-            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
+    if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id)
+        && let Ok(new_session_state) = state.veto_service.get_session_state(match_id).await
+    {
+        let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(Box::new(
+            VetoActionBroadcast {
                 session: VetoSessionResponse::from(new_session_state.session),
                 action: VetoActionResponse::from(updated.clone()),
                 is_complete: false,
-            }));
-        }
+            },
+        )));
     }
 
     Ok(Json(DataResponse::new(
@@ -568,17 +572,16 @@ fn resolve_side_selection_mode(
         .settings
         .get("side_selection_mode")
         .and_then(|v| v.as_str())
+        && let Ok(mode) = mode_str.parse::<SideSelectionMode>()
     {
-        if let Ok(mode) = mode_str.parse::<SideSelectionMode>() {
-            return mode;
-        }
+        return mode;
     }
 
     // Fall back to plugin default — no conversion needed, same type
-    if let Some(plugin) = plugin_manager.get(&tournament.game_id.to_string()) {
-        if let Some(tp) = plugin.as_tournament_plugin() {
-            return tp.default_side_selection_mode();
-        }
+    if let Some(plugin) = plugin_manager.get(&tournament.game_id.to_string())
+        && let Some(tp) = plugin.as_tournament_plugin()
+    {
+        return tp.default_side_selection_mode();
     }
     SideSelectionMode::Knife
 }

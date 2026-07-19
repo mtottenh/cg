@@ -58,12 +58,8 @@ jobs:
     name: Lint (fmt + clippy)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # Pre-existing debt: the workspace is not fmt-clean under rustfmt 1.88+
-    # and carries a few hundred pedantic clippy warnings (mostly
-    # portal-domain). Non-blocking until that debt is paid down — flip to
-    # blocking by removing continue-on-error once `cargo fmt` and
-    # `cargo clippy -- -D warnings` are green on master.
-    continue-on-error: true
+    # Blocking: the workspace is fmt-clean and clippy-clean (all + pedantic +
+    # nursery) as of 2026-07-19. Keep it that way.
     services:
       postgres:
         image: postgres:16-alpine
@@ -88,7 +84,7 @@ jobs:
             PGPASSWORD=portal psql -h localhost -U portal -d portal_ci -v ON_ERROR_STOP=1 -q -f "$f"
           done
       - run: cargo fmt --check
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features portal-api/test-utils -- -D warnings
 
   web-unit:
     name: Web (vitest)

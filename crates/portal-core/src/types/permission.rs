@@ -266,7 +266,7 @@ mod tests {
         let uuid = Uuid::nil();
         let scope = PermissionScope::team(uuid);
         assert_eq!(
-            format!("{}", scope),
+            format!("{scope}"),
             "team:00000000-0000-0000-0000-000000000000"
         );
     }

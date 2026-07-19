@@ -129,16 +129,25 @@ mod tests {
 
     #[test]
     fn test_spectator_visibility() {
-        // Team messages are not visible to spectators
-        assert!(!matches!(VetoMessageType::Team, t if t.to_string() != "team") || true);
-
-        // All other types are visible to spectators
+        // Team messages are not visible to spectators; every other type is.
         for msg_type in VetoMessageType::all() {
-            if *msg_type == VetoMessageType::Team {
-                continue;
-            }
-            // These should be visible to spectators
-            assert!(*msg_type != VetoMessageType::Team);
+            let message = VetoLobbyMessage {
+                id: VetoLobbyMessageId::new(),
+                match_id: TournamentMatchId::new(),
+                veto_session_id: None,
+                author_user_id: UserId::new(),
+                author_registration_id: None,
+                message_type: *msg_type,
+                content: "test".to_string(),
+                team_registration_id: None,
+                created_at: Utc::now(),
+            };
+            let expected = *msg_type != VetoMessageType::Team;
+            assert_eq!(
+                message.is_visible_to_spectators(),
+                expected,
+                "{msg_type} spectator visibility"
+            );
         }
     }
 }

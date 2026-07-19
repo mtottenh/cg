@@ -46,7 +46,7 @@ where
         self.player_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::PlayerNotFound(id))
+            .ok_or(DomainError::PlayerNotFound(id))
     }
 
     /// Get a player by user ID.
@@ -156,14 +156,13 @@ where
         }
 
         // Validate display name uniqueness if changing
-        if let Some(ref new_name) = cmd.display_name {
-            if let Some(existing) = self.player_repo.find_by_display_name(new_name).await? {
-                if existing.id != player_id {
-                    return Err(DomainError::Conflict(format!(
-                        "Display name '{new_name}' is already taken"
-                    )));
-                }
-            }
+        if let Some(ref new_name) = cmd.display_name
+            && let Some(existing) = self.player_repo.find_by_display_name(new_name).await?
+            && existing.id != player_id
+        {
+            return Err(DomainError::Conflict(format!(
+                "Display name '{new_name}' is already taken"
+            )));
         }
 
         self.player_repo.update(player_id, cmd).await

@@ -69,7 +69,7 @@ where
             .tournament_repo
             .find_by_id(tournament_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentNotFound(tournament_id))?;
+            .ok_or(DomainError::TournamentNotFound(tournament_id))?;
 
         // Tournament should be in a state where seeding makes sense
         // (registration closed or about to start)
@@ -143,7 +143,7 @@ where
             .tournament_repo
             .find_by_id(tournament_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentNotFound(tournament_id))?;
+            .ok_or(DomainError::TournamentNotFound(tournament_id))?;
 
         // Validate seeds
         let mut seed_numbers: Vec<i32> = seeds.iter().map(|(_, s)| *s).collect();
@@ -180,7 +180,7 @@ where
                 .registration_repo
                 .find_by_id(registration_id)
                 .await?
-                .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
+                .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
 
             if registration.tournament_id != tournament_id {
                 return Err(DomainError::InvalidState(format!(
@@ -224,7 +224,7 @@ where
             .tournament_repo
             .find_by_id(tournament_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentNotFound(tournament_id))?;
+            .ok_or(DomainError::TournamentNotFound(tournament_id))?;
 
         // Get seeded registrations ordered by seed
         let registrations = self.registration_repo.list_seeded(tournament_id).await?;
@@ -252,7 +252,7 @@ where
             .tournament_repo
             .find_by_id(tournament_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentNotFound(tournament_id))?;
+            .ok_or(DomainError::TournamentNotFound(tournament_id))?;
 
         self.registration_repo.clear_seeds(tournament_id).await?;
 

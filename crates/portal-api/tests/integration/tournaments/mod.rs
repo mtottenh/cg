@@ -23,8 +23,7 @@ use uuid::Uuid;
 pub async fn transition_match_to_ready(app: &TestApp, tournament_id: &str, match_id: &str) {
     let response = app
         .get(&format!(
-            "/v1/tournaments/{}/matches/{}/status",
-            tournament_id, match_id
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/status"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -35,10 +34,7 @@ pub async fn transition_match_to_ready(app: &TestApp, tournament_id: &str, match
 
     let response = app
         .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/transition",
-                tournament_id, match_id
-            ),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
             &json!({
                 "to_status": "ready",
                 "override_reason": "Test setup: transitioning match to Ready for scheduling tests"
@@ -111,15 +107,14 @@ pub async fn create_tournament_with_registration(app: &TestApp, slug: &str) -> S
 
     // Publish
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Open registration
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/open-registration",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/open-registration"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -132,7 +127,7 @@ pub async fn create_tournament_with_registration(app: &TestApp, slug: &str) -> S
 pub async fn register_player(app: &TestApp, tournament_id: &str, participant_name: &str) -> String {
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/registrations/player", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
             &json!({
                 "participant_name": participant_name
             }),
@@ -149,8 +144,7 @@ pub async fn approve_registration(app: &TestApp, tournament_id: &str, registrati
     // Approve via the API
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/registrations/{}/approve",
-            tournament_id, registration_id
+            "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -203,15 +197,14 @@ pub async fn create_tournament_with_matches_and_opponent(
 
     // Publish
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Open registration
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/open-registration",
-            tournament_id
+            "/v1/tournaments/{tournament_id}/open-registration"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -220,13 +213,13 @@ pub async fn create_tournament_with_matches_and_opponent(
     let reg1 = register_player(app, &tournament_id, "Player1").await;
     approve_registration(app, &tournament_id, &reg1).await;
 
-    let (user2_id, player2_id) = create_test_player(app, &format!("player2_{}", slug)).await;
+    let (user2_id, player2_id) = create_test_player(app, &format!("player2_{slug}")).await;
     let reg2 = insert_test_registration(app, &tournament_id, player2_id, user2_id, "Player2").await;
 
     // Auto-seed
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
             &json!({ "algorithm": "random" }),
         )
         .await;
@@ -234,13 +227,13 @@ pub async fn create_tournament_with_matches_and_opponent(
 
     // Start tournament (creates matches)
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await;
     response.assert_status(StatusCode::OK);
 
     // Get matches to find the match ID
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -262,7 +255,7 @@ pub async fn create_tournament_with_matches_and_opponent(
     let player2_token = create_test_token(
         user2_id,
         player2_id,
-        &format!("player2_{}", slug),
+        &format!("player2_{slug}"),
         TEST_JWT_SECRET,
     );
 

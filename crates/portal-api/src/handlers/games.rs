@@ -470,12 +470,12 @@ pub async fn set_map_pool(
     // Get plugin
     let plugin = state.plugin_manager.get(&game.plugin_id);
 
-    if let Some(p) = &plugin {
-        if !p.supports_custom_map_pool() {
-            return Err(ApiError::bad_request(
-                "This game does not support custom map pools",
-            ));
-        }
+    if let Some(p) = &plugin
+        && !p.supports_custom_map_pool()
+    {
+        return Err(ApiError::bad_request(
+            "This game does not support custom map pools",
+        ));
     }
 
     // Load available maps from DB first, fall back to plugin defaults
@@ -638,10 +638,10 @@ pub(crate) fn load_available_maps(
     game: &GameRow,
     plugin: &Option<std::sync::Arc<dyn portal_plugins::GamePlugin>>,
 ) -> Vec<MapInfoResponse> {
-    if let Some(arr) = game.available_maps.as_array() {
-        if !arr.is_empty() {
-            return serde_json::from_value(game.available_maps.clone()).unwrap_or_default();
-        }
+    if let Some(arr) = game.available_maps.as_array()
+        && !arr.is_empty()
+    {
+        return serde_json::from_value(game.available_maps.clone()).unwrap_or_default();
     }
     if let Some(p) = plugin {
         p.available_maps().into_iter().map(Into::into).collect()
@@ -903,21 +903,21 @@ pub async fn set_rank_tiers(
     // Validate tier ordering and boundaries
     let mut prev_max: Option<i32> = None;
     for tier in &req.rank_tiers {
-        if let Some(pm) = prev_max {
-            if tier.min_rating <= pm {
-                return Err(ApiError::bad_request(format!(
-                    "Tier '{}' min_rating ({}) overlaps with previous tier max_rating ({})",
-                    tier.id, tier.min_rating, pm
-                )));
-            }
+        if let Some(pm) = prev_max
+            && tier.min_rating <= pm
+        {
+            return Err(ApiError::bad_request(format!(
+                "Tier '{}' min_rating ({}) overlaps with previous tier max_rating ({})",
+                tier.id, tier.min_rating, pm
+            )));
         }
-        if let Some(max) = tier.max_rating {
-            if max < tier.min_rating {
-                return Err(ApiError::bad_request(format!(
-                    "Tier '{}' max_rating ({}) must be >= min_rating ({})",
-                    tier.id, max, tier.min_rating
-                )));
-            }
+        if let Some(max) = tier.max_rating
+            && max < tier.min_rating
+        {
+            return Err(ApiError::bad_request(format!(
+                "Tier '{}' max_rating ({}) must be >= min_rating ({})",
+                tier.id, max, tier.min_rating
+            )));
         }
         prev_max = tier.max_rating;
     }

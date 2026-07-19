@@ -31,14 +31,14 @@ impl Cs2EvidenceValidator {
         let mut confidence = 1.0f32;
 
         // 1. Verify map matches (if claimed)
-        if let Some(claimed_map) = &claimed_result.map_id {
-            if !Self::maps_match(&stats.map, claimed_map) {
-                errors.push(format!(
-                    "Map mismatch: demo has '{}', claimed '{}'",
-                    stats.map, claimed_map
-                ));
-                confidence *= 0.0; // Fatal mismatch
-            }
+        if let Some(claimed_map) = &claimed_result.map_id
+            && !Self::maps_match(&stats.map, claimed_map)
+        {
+            errors.push(format!(
+                "Map mismatch: demo has '{}', claimed '{}'",
+                stats.map, claimed_map
+            ));
+            confidence *= 0.0; // Fatal mismatch
         }
 
         // 2. Verify players participated
@@ -300,7 +300,7 @@ mod tests {
             PlayerState {
                 player_id: 76561198000000001,
                 player_name: "Player1".to_string(),
-                team: team_alpha.clone(),
+                team: team_alpha,
                 starting_money: 800,
             },
         );
@@ -309,7 +309,7 @@ mod tests {
             PlayerState {
                 player_id: 76561198000000002,
                 player_name: "Player2".to_string(),
-                team: team_beta.clone(),
+                team: team_beta,
                 starting_money: 800,
             },
         );

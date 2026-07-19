@@ -13,7 +13,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
     let league_ids = vec![league_id, premier_league_id];
     let tournament_id = scenario::tournament_id();
     let tournament_stage_id = scenario::tournament_stage_id();
-    let team_ids: Vec<uuid::Uuid> = TEAMS.iter().map(|t| t.team_id()).collect();
+    let team_ids: Vec<uuid::Uuid> = TEAMS
+        .iter()
+        .map(super::scenario::TeamDef::team_id)
+        .collect();
     let user_ids = scenario::all_user_ids();
     let player_ids = scenario::all_player_ids();
 

@@ -182,13 +182,12 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
             broadcast = broadcast_rx.recv() => {
                 match broadcast {
                     Ok(msg) => {
-                        if let Some(server_msg) = filter_broadcast_for_connection(&msg, &connection) {
-                            if sender.send(Message::Text(
+                        if let Some(server_msg) = filter_broadcast_for_connection(&msg, &connection)
+                            && sender.send(Message::Text(
                                 serde_json::to_string(&server_msg).unwrap().into()
                             )).await.is_err() {
                                 break;
                             }
-                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(%connection_id, lagged = n, "Broadcast receiver lagged");
@@ -264,7 +263,7 @@ async fn wait_for_auth(
             Ok(Message::Close(_)) | Err(_) => {
                 return Err("Connection closed before authentication".to_string());
             }
-            _ => continue,
+            _ => {}
         }
     }
 
@@ -284,6 +283,7 @@ async fn authenticate_user(
     String,
 > {
     use portal_domain::repositories::TournamentMatchRepository;
+    use portal_domain::services::tournament::VetoAuthorizationRole;
 
     // Validate JWT
     let claims =
@@ -301,64 +301,59 @@ async fn authenticate_user(
         .map_err(|e| format!("Database error: {e}"))?
         .ok_or_else(|| format!("Match {match_id} not found"))?;
 
-    use portal_domain::services::tournament::VetoAuthorizationRole;
-
     // Check if user can act for either participant
     let mut connection: Option<VetoConnection> = None;
 
     // Check participant 1
-    if let Some(reg_id) = match_.participant1_registration_id {
-        if let Ok(auth_role) = state
+    if let Some(reg_id) = match_.participant1_registration_id
+        && let Ok(auth_role) = state
             .veto_authorization_service
             .can_perform_veto_action(reg_id, user_id, player_id)
             .await
-        {
-            // Tournament admins get admin role, others get participant role
-            if matches!(auth_role, VetoAuthorizationRole::TournamentAdmin) {
-                connection = Some(VetoConnection::admin(
-                    user_id,
-                    player_id,
-                    claims.username.clone(),
-                ));
-            } else {
-                let team_name = match_.participant1_name.clone().unwrap_or_default();
-                connection = Some(VetoConnection::participant(
-                    user_id,
-                    player_id,
-                    claims.username.clone(),
-                    reg_id,
-                    team_name,
-                ));
-            }
+    {
+        // Tournament admins get admin role, others get participant role
+        if matches!(auth_role, VetoAuthorizationRole::TournamentAdmin) {
+            connection = Some(VetoConnection::admin(
+                user_id,
+                player_id,
+                claims.username.clone(),
+            ));
+        } else {
+            let team_name = match_.participant1_name.clone().unwrap_or_default();
+            connection = Some(VetoConnection::participant(
+                user_id,
+                player_id,
+                claims.username.clone(),
+                reg_id,
+                team_name,
+            ));
         }
     }
 
     // Check participant 2 (only if not already found as participant 1)
-    if connection.is_none() {
-        if let Some(reg_id) = match_.participant2_registration_id {
-            if let Ok(auth_role) = state
-                .veto_authorization_service
-                .can_perform_veto_action(reg_id, user_id, player_id)
-                .await
-            {
-                // Tournament admins get admin role, others get participant role
-                if matches!(auth_role, VetoAuthorizationRole::TournamentAdmin) {
-                    connection = Some(VetoConnection::admin(
-                        user_id,
-                        player_id,
-                        claims.username.clone(),
-                    ));
-                } else {
-                    let team_name = match_.participant2_name.clone().unwrap_or_default();
-                    connection = Some(VetoConnection::participant(
-                        user_id,
-                        player_id,
-                        claims.username.clone(),
-                        reg_id,
-                        team_name,
-                    ));
-                }
-            }
+    if connection.is_none()
+        && let Some(reg_id) = match_.participant2_registration_id
+        && let Ok(auth_role) = state
+            .veto_authorization_service
+            .can_perform_veto_action(reg_id, user_id, player_id)
+            .await
+    {
+        // Tournament admins get admin role, others get participant role
+        if matches!(auth_role, VetoAuthorizationRole::TournamentAdmin) {
+            connection = Some(VetoConnection::admin(
+                user_id,
+                player_id,
+                claims.username.clone(),
+            ));
+        } else {
+            let team_name = match_.participant2_name.clone().unwrap_or_default();
+            connection = Some(VetoConnection::participant(
+                user_id,
+                player_id,
+                claims.username.clone(),
+                reg_id,
+                team_name,
+            ));
         }
     }
 
@@ -574,13 +569,13 @@ async fn handle_veto_action(
                             ));
                         } else {
                             let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(
-                                VetoActionBroadcast {
+                                Box::new(VetoActionBroadcast {
                                     session: VetoSessionResponse::from(
                                         action_result.session.clone(),
                                     ),
                                     action: VetoActionResponse::from(action_result.action.clone()),
                                     is_complete: false,
-                                },
+                                }),
                             ));
                         }
                     }
@@ -637,11 +632,11 @@ async fn handle_veto_action(
                             state.veto_service.get_session_state(match_id).await
                         {
                             let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(
-                                VetoActionBroadcast {
+                                Box::new(VetoActionBroadcast {
                                     session: VetoSessionResponse::from(new_session_state.session),
                                     action: VetoActionResponse::from(updated_action.clone()),
                                     is_complete: false,
-                                },
+                                }),
                             ));
                         }
                     }
@@ -680,17 +675,15 @@ async fn try_auto_coin_flip(
     use rand::Rng;
 
     // Look up the match to get participant registration IDs
-    let match_ = match state.tournament_match_repo.find_by_id(match_id).await {
-        Ok(Some(m)) => m,
-        _ => return,
+    let Ok(Some(match_)) = state.tournament_match_repo.find_by_id(match_id).await else {
+        return;
     };
 
-    let (p1_reg, p2_reg) = match (
+    let (Some(p1_reg), Some(p2_reg)) = (
         match_.participant1_registration_id,
         match_.participant2_registration_id,
-    ) {
-        (Some(p1), Some(p2)) => (p1, p2),
-        _ => return,
+    ) else {
+        return;
     };
 
     // Verify both DISTINCT participants are connected (not same user in two tabs)
@@ -702,9 +695,8 @@ async fn try_auto_coin_flip(
     }
 
     // Get veto session — must be in CoinFlip status
-    let session_state = match state.veto_service.get_session_state(match_id).await {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(session_state) = state.veto_service.get_session_state(match_id).await else {
+        return;
     };
 
     if session_state.session.status != portal_domain::entities::VetoStatus::CoinFlip {
@@ -770,6 +762,8 @@ async fn get_chat_history(
     match_id: TournamentMatchId,
     connection: &VetoConnection,
 ) -> Result<Vec<crate::websocket::messages::ChatMessagePayload>, String> {
+    use portal_domain::repositories::TournamentMatchRepository;
+
     let messages = if let Some(reg_id) = connection.registration_id {
         state
             .veto_lobby_chat_service
@@ -784,7 +778,6 @@ async fn get_chat_history(
     .map_err(|e| e.to_string())?;
 
     // Look up match for team name resolution
-    use portal_domain::repositories::TournamentMatchRepository;
     let match_ = state
         .tournament_match_repo
         .find_by_id(match_id)

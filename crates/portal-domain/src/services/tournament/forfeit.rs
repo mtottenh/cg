@@ -200,7 +200,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         // Verify registration belongs to this tournament
         if registration.tournament_id != tournament_id {
@@ -265,7 +265,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         // Verify registration belongs to this tournament
         if registration.tournament_id != tournament_id {
@@ -328,7 +328,7 @@ where
         self.match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))
     }
 
     fn validate_can_forfeit(

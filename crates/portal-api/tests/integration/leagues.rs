@@ -157,7 +157,7 @@ async fn test_get_league_by_id() {
     let league_id = created["data"]["id"].as_str().unwrap();
 
     // Get the league by ID
-    let response = app.get(&format!("/v1/leagues/{}", league_id)).await;
+    let response = app.get(&format!("/v1/leagues/{league_id}")).await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
@@ -260,9 +260,7 @@ async fn test_list_leagues_by_game() {
     .assert_status(StatusCode::CREATED);
 
     // List leagues filtered by game
-    let response = app
-        .get(&format!("/v1/leagues?game_id={}", cs2_game_id))
-        .await;
+    let response = app.get(&format!("/v1/leagues?game_id={cs2_game_id}")).await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
@@ -286,7 +284,7 @@ async fn test_join_open_league() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create an open league as dev user
     let create_response = app
@@ -307,7 +305,7 @@ async fn test_join_open_league() {
 
     // User2 joins the open league
     let response = app
-        .post_with_token(&format!("/v1/leagues/{}/join", league_id), &token2)
+        .post_with_token(&format!("/v1/leagues/{league_id}/join"), &token2)
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -327,7 +325,7 @@ async fn test_join_invite_only_league_fails() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create an invite-only league
     let create_response = app
@@ -348,7 +346,7 @@ async fn test_join_invite_only_league_fails() {
 
     // User2 tries to join - should fail (league is invite-only)
     let response = app
-        .post_with_token(&format!("/v1/leagues/{}/join", league_id), &token2)
+        .post_with_token(&format!("/v1/leagues/{league_id}/join"), &token2)
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
 }
@@ -379,7 +377,7 @@ async fn test_list_members() {
     let league_id = created["data"]["id"].as_str().unwrap();
 
     // List members
-    let response = app.get(&format!("/v1/leagues/{}/members", league_id)).await;
+    let response = app.get(&format!("/v1/leagues/{league_id}/members")).await;
     response.assert_status(StatusCode::OK);
 
     let body: Vec<serde_json::Value> = response.json();
@@ -399,7 +397,7 @@ async fn test_leave_league() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create an open league
     let create_response = app
@@ -419,13 +417,13 @@ async fn test_leave_league() {
     let league_id = created["data"]["id"].as_str().unwrap();
 
     // User2 joins
-    app.post_with_token(&format!("/v1/leagues/{}/join", league_id), &token2)
+    app.post_with_token(&format!("/v1/leagues/{league_id}/join"), &token2)
         .await
         .assert_status(StatusCode::OK);
 
     // User2 leaves
     let response = app
-        .post_with_token(&format!("/v1/leagues/{}/leave", league_id), &token2)
+        .post_with_token(&format!("/v1/leagues/{league_id}/leave"), &token2)
         .await;
     response.assert_status(StatusCode::NO_CONTENT);
 }
@@ -461,7 +459,7 @@ async fn test_update_league() {
     // Update the league
     let response = app
         .patch_json(
-            &format!("/v1/leagues/{}", league_id),
+            &format!("/v1/leagues/{league_id}"),
             &json!({
                 "name": "Updated League Name",
                 "description": "New description"
@@ -487,7 +485,7 @@ async fn test_update_league_requires_permission() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create a league as dev user
     let create_response = app
@@ -508,7 +506,7 @@ async fn test_update_league_requires_permission() {
     // User2 tries to update - should fail
     let response = app
         .patch_json_with_token(
-            &format!("/v1/leagues/{}", league_id),
+            &format!("/v1/leagues/{league_id}"),
             &json!({
                 "name": "Unauthorized Update"
             }),
@@ -534,7 +532,7 @@ async fn test_apply_to_league() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create an application-based league
     let create_response = app
@@ -556,7 +554,7 @@ async fn test_apply_to_league() {
     // User2 applies
     let response = app
         .post_json_with_token(
-            &format!("/v1/leagues/{}/apply", league_id),
+            &format!("/v1/leagues/{league_id}/apply"),
             &json!({
                 "message": "I would like to join!"
             }),
@@ -585,7 +583,7 @@ async fn test_approve_application() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create an application-based league
     let create_response = app
@@ -607,7 +605,7 @@ async fn test_approve_application() {
     // User2 applies
     let apply_response = app
         .post_json_with_token(
-            &format!("/v1/leagues/{}/apply", league_id),
+            &format!("/v1/leagues/{league_id}/apply"),
             &json!({ "message": "Please accept me!" }),
             &token2,
         )
@@ -620,8 +618,7 @@ async fn test_approve_application() {
     // Admin approves the application
     let response = app
         .post_auth(&format!(
-            "/v1/leagues/{}/applications/{}/approve",
-            league_id, application_id
+            "/v1/leagues/{league_id}/applications/{application_id}/approve"
         ))
         .await;
     response.assert_status(StatusCode::OK);
@@ -645,7 +642,7 @@ async fn test_reject_application() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create an application-based league
     let create_response = app
@@ -667,7 +664,7 @@ async fn test_reject_application() {
     // User2 applies
     let apply_response = app
         .post_json_with_token(
-            &format!("/v1/leagues/{}/apply", league_id),
+            &format!("/v1/leagues/{league_id}/apply"),
             &json!({ "message": "Please accept me!" }),
             &token2,
         )
@@ -680,8 +677,7 @@ async fn test_reject_application() {
     // Admin rejects the application
     let response = app
         .post_auth(&format!(
-            "/v1/leagues/{}/applications/{}/reject",
-            league_id, application_id
+            "/v1/leagues/{league_id}/applications/{application_id}/reject"
         ))
         .await;
     response.assert_status(StatusCode::NO_CONTENT);
@@ -725,7 +721,7 @@ async fn test_invite_user_to_league() {
     // Invite user2
     let response = app
         .post_json(
-            &format!("/v1/leagues/{}/invitations", league_id),
+            &format!("/v1/leagues/{league_id}/invitations"),
             &json!({
                 "user_id": user2.id.to_string(),
                 "message": "Join our league!"
@@ -754,7 +750,7 @@ async fn test_accept_invitation() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create a league
     let create_response = app
@@ -775,7 +771,7 @@ async fn test_accept_invitation() {
     // Invite user2
     let invite_response = app
         .post_json(
-            &format!("/v1/leagues/{}/invitations", league_id),
+            &format!("/v1/leagues/{league_id}/invitations"),
             &json!({
                 "user_id": user2.id.to_string()
             }),
@@ -789,7 +785,7 @@ async fn test_accept_invitation() {
     // User2 accepts the invitation
     let response = app
         .post_with_token(
-            &format!("/v1/league-invitations/{}/accept", invitation_id),
+            &format!("/v1/league-invitations/{invitation_id}/accept"),
             &token2,
         )
         .await;
@@ -814,7 +810,7 @@ async fn test_decline_invitation() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create a league
     let create_response = app
@@ -835,7 +831,7 @@ async fn test_decline_invitation() {
     // Invite user2
     let invite_response = app
         .post_json(
-            &format!("/v1/leagues/{}/invitations", league_id),
+            &format!("/v1/leagues/{league_id}/invitations"),
             &json!({
                 "user_id": user2.id.to_string()
             }),
@@ -849,7 +845,7 @@ async fn test_decline_invitation() {
     // User2 declines the invitation
     let response = app
         .post_with_token(
-            &format!("/v1/league-invitations/{}/decline", invitation_id),
+            &format!("/v1/league-invitations/{invitation_id}/decline"),
             &token2,
         )
         .await;
@@ -900,7 +896,7 @@ async fn test_get_my_league_invitations() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create a league
     let create_response = app
@@ -920,7 +916,7 @@ async fn test_get_my_league_invitations() {
 
     // Invite user2
     app.post_json(
-        &format!("/v1/leagues/{}/invitations", league_id),
+        &format!("/v1/leagues/{league_id}/invitations"),
         &json!({
             "user_id": user2.id.to_string()
         }),
@@ -958,7 +954,7 @@ async fn test_update_member_role() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create an open league
     let create_response = app
@@ -978,7 +974,7 @@ async fn test_update_member_role() {
     let league_id = created["data"]["id"].as_str().unwrap();
 
     // User2 joins
-    app.post_with_token(&format!("/v1/leagues/{}/join", league_id), &token2)
+    app.post_with_token(&format!("/v1/leagues/{league_id}/join"), &token2)
         .await
         .assert_status(StatusCode::OK);
 
@@ -1012,7 +1008,7 @@ async fn test_remove_member() {
         .build_persisted(app.pool())
         .await;
 
-    let token2 = create_token_for_user(&app, user2.id).await;
+    let token2 = create_token_for_user(&app, user2.id);
 
     // Create an open league
     let create_response = app
@@ -1032,7 +1028,7 @@ async fn test_remove_member() {
     let league_id = created["data"]["id"].as_str().unwrap();
 
     // User2 joins
-    app.post_with_token(&format!("/v1/leagues/{}/join", league_id), &token2)
+    app.post_with_token(&format!("/v1/leagues/{league_id}/join"), &token2)
         .await
         .assert_status(StatusCode::OK);
 
@@ -1043,7 +1039,7 @@ async fn test_remove_member() {
     response.assert_status(StatusCode::NO_CONTENT);
 
     // Verify user2 is no longer a member
-    let members_response = app.get(&format!("/v1/leagues/{}/members", league_id)).await;
+    let members_response = app.get(&format!("/v1/leagues/{league_id}/members")).await;
     let members: Vec<serde_json::Value> = members_response.json();
     assert!(!members.iter().any(|m| m["user_id"] == user2.id.to_string()));
 }
@@ -1087,7 +1083,7 @@ async fn grant_league_admin_permission(app: &TestApp) {
 
 /// Create a JWT token for a user.
 /// The user_id and player_id are assumed to be the same (as per UserBuilder behavior).
-async fn create_token_for_user(_app: &TestApp, user_id: uuid::Uuid) -> String {
+fn create_token_for_user(_app: &TestApp, user_id: uuid::Uuid) -> String {
     use portal_domain::generate_access_token;
 
     // User and player have the same ID per UserBuilder

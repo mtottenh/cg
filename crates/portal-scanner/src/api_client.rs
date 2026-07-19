@@ -15,30 +15,40 @@ pub struct PortalApiClient {
 /// A single demo entry for batch cataloging.
 #[derive(Debug, Serialize)]
 pub struct CatalogDemoEntry {
+    /// Demo file name (basename of the S3 key).
     pub file_name: String,
+    /// S3 bucket the demo was found in.
     pub s3_bucket: String,
+    /// Full S3 key of the demo object.
     pub s3_key: String,
+    /// Object size in bytes, if known.
     pub file_size_bytes: Option<i64>,
 }
 
 /// Batch catalog request.
 #[derive(Debug, Serialize)]
 pub struct BatchCatalogRequest {
+    /// ID of the game the demos belong to.
     pub game_id: String,
+    /// Demos to catalog in this batch.
     pub demos: Vec<CatalogDemoEntry>,
 }
 
 /// Response from batch catalog.
 #[derive(Debug, Deserialize)]
 pub struct BatchCatalogResponse {
+    /// Payload of the batch catalog response.
     pub data: BatchCatalogData,
 }
 
 /// Inner data of the batch catalog response.
 #[derive(Debug, Deserialize)]
 pub struct BatchCatalogData {
+    /// Demos newly created by this batch.
     pub created: Vec<CatalogDemoResponse>,
+    /// Demos that were already cataloged.
     pub existing: Vec<CatalogDemoResponse>,
+    /// Entries that failed to catalog.
     pub errors: Vec<CatalogErrorResponse>,
 }
 
@@ -46,15 +56,20 @@ pub struct BatchCatalogData {
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct CatalogDemoResponse {
+    /// Demo ID assigned by the portal.
     pub id: String,
+    /// Demo file name.
     pub file_name: String,
+    /// Processing status of the demo.
     pub status: String,
 }
 
 /// An error from catalog.
 #[derive(Debug, Deserialize)]
 pub struct CatalogErrorResponse {
+    /// S3 key of the entry that failed.
     pub s3_key: String,
+    /// Error message describing the failure.
     pub error: String,
 }
 
@@ -62,44 +77,63 @@ pub struct CatalogErrorResponse {
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct PendingDemoResponse {
+    /// Demo ID assigned by the portal.
     pub id: String,
+    /// Demo file name.
     pub file_name: String,
+    /// Processing status of the demo.
     pub status: String,
 }
 
 /// Wrapper for data responses.
 #[derive(Debug, Deserialize)]
 pub struct DataResponse<T> {
+    /// The wrapped response payload.
     pub data: T,
 }
 
 /// Submit demo stats request.
 #[derive(Debug, Serialize)]
 pub struct SubmitStatsRequest {
+    /// Map the match was played on.
     pub map_name: Option<String>,
+    /// Date the match was played (ISO 8601 string).
     pub match_date: Option<String>,
+    /// Name of the first team.
     pub team1_name: Option<String>,
+    /// Name of the second team.
     pub team2_name: Option<String>,
+    /// Final score of the first team.
     pub team1_score: Option<i32>,
+    /// Final score of the second team.
     pub team2_score: Option<i32>,
+    /// Total number of rounds played.
     pub total_rounds: Option<i32>,
+    /// Match duration in seconds.
     pub duration_seconds: Option<i64>,
+    /// Per-player statistics entries.
     pub players: Vec<SubmitPlayerEntry>,
+    /// Full raw stats payload from the demo parser.
     pub raw_stats: serde_json::Value,
 }
 
 /// A player entry for stats submission.
 #[derive(Debug, Serialize)]
 pub struct SubmitPlayerEntry {
+    /// Player's Steam ID.
     pub steam_id: String,
+    /// Player's in-game name.
     pub player_name: String,
+    /// Team the player was on, if known.
     pub team_name: Option<String>,
+    /// Per-player stats as JSON.
     pub stats: serde_json::Value,
 }
 
 /// Mark demo as failed request.
 #[derive(Debug, Serialize)]
 pub struct MarkFailedRequest {
+    /// Error message explaining why processing failed.
     pub error: String,
 }
 

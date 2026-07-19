@@ -49,12 +49,12 @@ pub async fn create_tournament(
     let mut cmd = req.into_command()?;
 
     // Default season_id to the league's current season when not specified
-    if cmd.league_id.is_some() && cmd.season_id.is_none() {
-        if let Some(league_id) = cmd.league_id {
-            if let Ok(league) = state.league_service.get_league(league_id).await {
-                cmd.season_id = league.current_season_id;
-            }
-        }
+    if cmd.league_id.is_some()
+        && cmd.season_id.is_none()
+        && let Some(league_id) = cmd.league_id
+        && let Ok(league) = state.league_service.get_league(league_id).await
+    {
+        cmd.season_id = league.current_season_id;
     }
 
     let tournament = state

@@ -193,10 +193,10 @@ mod tests {
     fn new_test_game(slug: &str) -> NewGame {
         NewGame {
             slug: slug.to_string(),
-            display_name: format!("{} Game", slug),
+            display_name: format!("{slug} Game"),
             short_name: Some(slug.to_string()),
             description: Some("A test game".to_string()),
-            plugin_id: format!("{}_plugin", slug),
+            plugin_id: format!("{slug}_plugin"),
             plugin_version: "1.0.0".to_string(),
             team_size_min: 1,
             team_size_max: 5,
@@ -241,7 +241,7 @@ mod tests {
         let initial_count = repo.list().await.unwrap().len();
 
         for i in 1..=3 {
-            repo.create(new_test_game(&format!("listgame{}", i)))
+            repo.create(new_test_game(&format!("listgame{i}")))
                 .await
                 .unwrap();
         }

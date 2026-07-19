@@ -55,10 +55,10 @@ impl CliConfig {
         }
 
         for location in &locations {
-            if location.exists() {
-                if let Some(path_str) = location.to_str() {
-                    return Ok(Some(Self::load_from_file(path_str)?));
-                }
+            if location.exists()
+                && let Some(path_str) = location.to_str()
+            {
+                return Ok(Some(Self::load_from_file(path_str)?));
             }
         }
 

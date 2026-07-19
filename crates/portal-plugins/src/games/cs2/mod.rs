@@ -400,7 +400,7 @@ impl GamePlugin for Cs2Plugin {
                 value: context.rating.to_string(),
                 category: "Rating".to_string(),
                 sort_order: 1,
-                color: rank_color.clone(),
+                color: rank_color,
             },
             DisplayStat {
                 key: "elo_peak".to_string(),
@@ -423,17 +423,17 @@ impl GamePlugin for Cs2Plugin {
             });
         }
 
-        if let Some(ref tier_id) = context.rank_tier {
-            if let Some(tier) = self.rank_tiers().into_iter().find(|t| t.id == *tier_id) {
-                result.push(DisplayStat {
-                    key: "rank_tier".to_string(),
-                    label: "Rank".to_string(),
-                    value: tier.display_name,
-                    category: "Rating".to_string(),
-                    sort_order: 4,
-                    color: tier.color,
-                });
-            }
+        if let Some(ref tier_id) = context.rank_tier
+            && let Some(tier) = self.rank_tiers().into_iter().find(|t| t.id == *tier_id)
+        {
+            result.push(DisplayStat {
+                key: "rank_tier".to_string(),
+                label: "Rank".to_string(),
+                value: tier.display_name,
+                category: "Rating".to_string(),
+                sort_order: 4,
+                color: tier.color,
+            });
         }
 
         // General stats

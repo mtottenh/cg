@@ -18,9 +18,8 @@ use crate::entities::veto::{
     VetoSession, VetoSessionState, VetoStatus,
 };
 use crate::repositories::tournament::{
-    CreateVetoAction, CreateVetoSession, TournamentMatchRepository,
-    TournamentRegistrationRepository, UpdateVetoSession, VetoActionRepository,
-    VetoSessionRepository,
+    CreateVetoAction, CreateVetoSession, TournamentMatchRepository, UpdateVetoSession,
+    VetoActionRepository, VetoSessionRepository,
 };
 use portal_core::{SideSelectionMode, VetoActionType, VetoFormatConfig};
 
@@ -43,41 +42,32 @@ pub trait SideSelectionProvider: Send + Sync {
 
 /// Service for managing map veto sessions.
 #[derive(Clone)]
-pub struct VetoService<VSR, VAR, TMR, TRR>
+pub struct VetoService<VSR, VAR, TMR>
 where
     VSR: VetoSessionRepository,
     VAR: VetoActionRepository,
     TMR: TournamentMatchRepository,
-    TRR: TournamentRegistrationRepository,
 {
     session_repo: Arc<VSR>,
     action_repo: Arc<VAR>,
     match_repo: Arc<TMR>,
-    registration_repo: Arc<TRR>,
     format_provider: Option<Arc<dyn VetoFormatProvider>>,
     side_provider: Option<Arc<dyn SideSelectionProvider>>,
     default_timeout_seconds: u32,
 }
 
-impl<VSR, VAR, TMR, TRR> VetoService<VSR, VAR, TMR, TRR>
+impl<VSR, VAR, TMR> VetoService<VSR, VAR, TMR>
 where
     VSR: VetoSessionRepository,
     VAR: VetoActionRepository,
     TMR: TournamentMatchRepository,
-    TRR: TournamentRegistrationRepository,
 {
     /// Create a new veto service.
-    pub fn new(
-        session_repo: Arc<VSR>,
-        action_repo: Arc<VAR>,
-        match_repo: Arc<TMR>,
-        registration_repo: Arc<TRR>,
-    ) -> Self {
+    pub fn new(session_repo: Arc<VSR>, action_repo: Arc<VAR>, match_repo: Arc<TMR>) -> Self {
         Self {
             session_repo,
             action_repo,
             match_repo,
-            registration_repo,
             format_provider: None,
             side_provider: None,
             default_timeout_seconds: 30,
@@ -117,7 +107,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         // Verify match has both participants
         if !match_.has_both_participants() {
@@ -151,6 +141,12 @@ where
                 side_selection_mode,
             })
             .await?;
+
+        // A veto session existing IS what makes the match veto-gated: flip
+        // veto_required so check-in auto-advances into pick_ban (not straight
+        // to in_progress) and clients show the veto panel. Nothing at
+        // bracket-generation time sets this flag.
+        self.match_repo.set_veto_required(match_id, true).await?;
 
         info!(
             session_id = %session.id,
@@ -209,7 +205,7 @@ where
             .match_repo
             .find_by_id(session.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(session.match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(session.match_id))?;
 
         let is_participant = match_.participant1_registration_id == Some(winner)
             || match_.participant2_registration_id == Some(winner);
@@ -570,10 +566,10 @@ where
 
     fn get_format(&self, format_id: &str) -> Result<VetoFormat, DomainError> {
         // Try injected provider first (plugin-backed)
-        if let Some(provider) = &self.format_provider {
-            if let Some(fmt) = provider.get_format(format_id) {
-                return Ok(fmt);
-            }
+        if let Some(provider) = &self.format_provider
+            && let Some(fmt) = provider.get_format(format_id)
+        {
+            return Ok(fmt);
         }
 
         // Fall back to built-in formats
@@ -714,7 +710,7 @@ where
             .match_repo
             .find_by_id(session.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(session.match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(session.match_id))?;
 
         let team1 = match_
             .participant1_registration_id

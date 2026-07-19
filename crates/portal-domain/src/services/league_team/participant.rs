@@ -42,7 +42,7 @@ where
             .season_repo
             .find_by_id(season_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueSeasonNotFound(season_id))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(season_id))?;
 
         if !season.is_registration_open() {
             return Err(DomainError::RegistrationClosed);

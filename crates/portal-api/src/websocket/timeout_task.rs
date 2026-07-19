@@ -100,21 +100,16 @@ async fn check_and_send_warnings(
 
     // For each active lobby, check if there's a session with an approaching deadline
     for match_id in get_active_match_ids(lobby_manager) {
-        // Try to get the session state for this match
-        let session_state = match state.veto_service.get_session_state(match_id).await {
-            Ok(state) => state,
-            Err(_) => {
-                // No session or error - skip this match
-                continue;
-            }
+        // Try to get the session state for this match.
+        // On error there is no session (or it can't be read) - skip this match.
+        let Ok(session_state) = state.veto_service.get_session_state(match_id).await else {
+            continue;
         };
 
         let session = &session_state.session;
 
         // Check if session is in progress with a deadline
-        let deadline = if let Some(d) = session.action_deadline {
-            d
-        } else {
+        let Some(deadline) = session.action_deadline else {
             // No deadline set, clear any tracked warnings
             tracker.clear_match(&match_id);
             continue;
@@ -136,13 +131,12 @@ async fn check_and_send_warnings(
         for &threshold in WARNING_THRESHOLDS {
             if seconds_remaining <= threshold && tracker.should_send(&match_id, threshold) {
                 // Get team info for the warning
-                let current_team_reg_id = match session.current_team_turn {
-                    Some(id) => id,
-                    None => continue,
+                let Some(current_team_reg_id) = session.current_team_turn else {
+                    continue;
                 };
 
                 // Look up team name (best effort)
-                let team_name = get_team_name_for_registration(state, current_team_reg_id).await;
+                let team_name = get_team_name_for_registration(state, current_team_reg_id);
 
                 // Send the warning
                 if let Some(lobby) = lobby_manager.get_lobby(&match_id) {
@@ -178,7 +172,7 @@ fn get_active_match_ids(manager: &Arc<VetoLobbyManager>) -> Vec<TournamentMatchI
 /// For now, returns a placeholder since clients have the registration ID
 /// and can look up the team name themselves. In the future, this could
 /// be enhanced to cache team names from session state.
-async fn get_team_name_for_registration(
+fn get_team_name_for_registration(
     _state: &AppState,
     _registration_id: portal_core::TournamentRegistrationId,
 ) -> String {

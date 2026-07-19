@@ -21,10 +21,10 @@ impl PluginVetoFormatProvider {
 impl VetoFormatProvider for PluginVetoFormatProvider {
     fn get_format(&self, format_id: &str) -> Option<VetoFormatConfig> {
         for plugin in self.plugin_manager.list_plugins() {
-            if let Some(tp) = plugin.as_tournament_plugin() {
-                if let Some(f) = tp.veto_formats().into_iter().find(|f| f.id == format_id) {
-                    return Some(f);
-                }
+            if let Some(tp) = plugin.as_tournament_plugin()
+                && let Some(f) = tp.veto_formats().into_iter().find(|f| f.id == format_id)
+            {
+                return Some(f);
             }
         }
         None

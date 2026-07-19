@@ -36,8 +36,8 @@ use portal_test::prelude::*;
 async fn create_test_league(pool: &DbPool) -> LeagueId {
     let unique = uuid::Uuid::new_v4();
     let league = LeagueBuilder::new()
-        .name(&format!("Test League {}", &unique.to_string()[..8]))
-        .slug(&format!("test-league-{}", &unique.to_string()[..12]))
+        .name(format!("Test League {}", &unique.to_string()[..8]))
+        .slug(format!("test-league-{}", &unique.to_string()[..12]))
         .build_persisted(pool)
         .await;
     LeagueId::from_uuid(league.id)
@@ -48,8 +48,8 @@ async fn create_test_user(pool: &DbPool, _suffix: &str) -> UserId {
     let unique = uuid::Uuid::new_v4();
     // Keep username short (max 32 chars)
     let user = UserBuilder::new()
-        .username(&format!("u{}", &unique.to_string()[..12]))
-        .email(&format!("{}@t.com", &unique.to_string()[..12]))
+        .username(format!("u{}", &unique.to_string()[..12]))
+        .email(format!("{}@t.com", &unique.to_string()[..12]))
         .build_persisted(pool)
         .await;
     UserId::from_uuid(user.id)
@@ -60,8 +60,8 @@ async fn create_test_player(pool: &DbPool, _suffix: &str) -> (PlayerId, UserId) 
     let unique = uuid::Uuid::new_v4();
     // Keep username short (max 32 chars)
     let user = UserBuilder::new()
-        .username(&format!("p{}", &unique.to_string()[..12]))
-        .email(&format!("p{}@t.com", &unique.to_string()[..12]))
+        .username(format!("p{}", &unique.to_string()[..12]))
+        .email(format!("p{}@t.com", &unique.to_string()[..12]))
         .build_persisted(pool)
         .await;
     // UserBuilder::build_persisted already creates a player with the same ID as the user

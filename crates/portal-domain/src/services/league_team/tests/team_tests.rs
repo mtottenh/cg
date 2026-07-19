@@ -80,7 +80,7 @@ async fn test_get_team_not_found() {
 #[tokio::test]
 async fn test_create_team_success() {
     let mut team_repo = MockLeagueTeamRepository::new();
-    let mut team_season_repo = MockLeagueTeamSeasonRepository::new();
+    let team_season_repo = MockLeagueTeamSeasonRepository::new();
     let mut member_repo = MockLeagueTeamMemberRepository::new();
     let mut season_repo = MockLeagueSeasonRepository::new();
 

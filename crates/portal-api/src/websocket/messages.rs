@@ -268,7 +268,10 @@ pub enum LobbyBroadcast {
     /// Veto state update broadcast.
     VetoStateUpdate(VetoStateBroadcast),
     /// Veto action performed broadcast.
-    VetoActionPerformed(VetoActionBroadcast),
+    ///
+    /// Boxed to keep the enum small (`VetoActionBroadcast` is by far the
+    /// largest payload).
+    VetoActionPerformed(Box<VetoActionBroadcast>),
     /// Veto complete broadcast.
     VetoComplete(VetoCompleteBroadcast),
     /// Timeout warning broadcast.

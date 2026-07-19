@@ -326,7 +326,7 @@ pub const RATING_HISTORY_COUNT: usize = 15;
 /// Deterministic wobble that avoids RNG. Returns a small +/- offset.
 pub fn deterministic_wobble(player_idx: usize, entry_idx: usize) -> i32 {
     const MAX_FLUCTUATION: i32 = 400;
-    let sign = if (player_idx + entry_idx) % 3 == 0 {
+    let sign = if (player_idx + entry_idx).is_multiple_of(3) {
         -1
     } else {
         1
@@ -352,7 +352,11 @@ pub fn deterministic_wobble(player_idx: usize, entry_idx: usize) -> i32 {
 //   Bravo vs Charlie overlap on Wednesday 19:00-22:00 UTC
 // ---------------------------------------------------------------------------
 
-pub const AVAILABILITY_WINDOWS: &[(&str, u8, u8, u8, u8, u8, bool, &str)] = &[
+/// One availability window entry:
+/// (persona_key, day_of_week, start_h, start_m, end_h, end_m, is_preferred, timezone).
+pub type AvailabilityWindowSpec = (&'static str, u8, u8, u8, u8, u8, bool, &'static str);
+
+pub const AVAILABILITY_WINDOWS: &[AvailabilityWindowSpec] = &[
     // --- Team Alpha (SE) shared: Tue 18-22, Thu 18-22 ---
     ("captain_alpha", 2, 18, 0, 22, 0, true, "Europe/Stockholm"),
     ("player_1", 2, 18, 0, 22, 0, true, "Europe/Stockholm"),
@@ -486,10 +490,10 @@ pub fn persona(key: &str) -> &'static Persona {
 
 /// Collect all user IDs for reset.
 pub fn all_user_ids() -> Vec<Uuid> {
-    PERSONAS.iter().map(|p| p.user_id()).collect()
+    PERSONAS.iter().map(Persona::user_id).collect()
 }
 
 /// Collect all player IDs for reset.
 pub fn all_player_ids() -> Vec<Uuid> {
-    PERSONAS.iter().map(|p| p.player_id()).collect()
+    PERSONAS.iter().map(Persona::player_id).collect()
 }

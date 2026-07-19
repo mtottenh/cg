@@ -212,7 +212,7 @@ mod tests {
         let mut manager = PluginManager::new();
         let plugin = Arc::new(TestPlugin::new("test", "Test Game"));
 
-        assert!(manager.register(plugin.clone()).is_ok());
+        assert!(manager.register(plugin).is_ok());
         assert!(manager.has("test"));
 
         let retrieved = manager.get("test").unwrap();

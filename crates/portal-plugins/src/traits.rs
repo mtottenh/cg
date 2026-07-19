@@ -421,15 +421,15 @@ pub trait TournamentPlugin: GamePlugin {
         self.validate_map_pool(maps)?;
 
         // Then check count requirements
-        if let Some(format) = self.veto_formats().iter().find(|f| f.id == veto_format_id) {
-            if maps.len() < format.min_map_pool {
-                return Err(format!(
-                    "Map pool requires at least {} maps for {} format, got {}",
-                    format.min_map_pool,
-                    format.display_name,
-                    maps.len()
-                ));
-            }
+        if let Some(format) = self.veto_formats().iter().find(|f| f.id == veto_format_id)
+            && maps.len() < format.min_map_pool
+        {
+            return Err(format!(
+                "Map pool requires at least {} maps for {} format, got {}",
+                format.min_map_pool,
+                format.display_name,
+                maps.len()
+            ));
         }
 
         Ok(())

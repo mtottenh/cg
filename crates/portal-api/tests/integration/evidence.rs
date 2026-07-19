@@ -47,14 +47,13 @@ async fn create_cs2_tournament_with_match(app: &TestApp, slug: &str) -> TestMatc
     let tournament_uuid: Uuid = tournament_id.parse().unwrap();
 
     // Publish
-    app.post_auth(&format!("/v1/tournaments/{}/publish", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
         .await
         .assert_status(StatusCode::OK);
 
     // Open registration
     app.post_auth(&format!(
-        "/v1/tournaments/{}/open-registration",
-        tournament_id
+        "/v1/tournaments/{tournament_id}/open-registration"
     ))
     .await
     .assert_status(StatusCode::OK);
@@ -62,7 +61,7 @@ async fn create_cs2_tournament_with_match(app: &TestApp, slug: &str) -> TestMatc
     // Register player 1 (dev user, via API)
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{}/registrations/player", tournament_id),
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
             &json!({ "participant_name": "Player1" }),
         )
         .await;
@@ -72,15 +71,14 @@ async fn create_cs2_tournament_with_match(app: &TestApp, slug: &str) -> TestMatc
 
     // Approve registration 1
     app.post_auth(&format!(
-        "/v1/tournaments/{}/registrations/{}/approve",
-        tournament_id, reg1
+        "/v1/tournaments/{tournament_id}/registrations/{reg1}/approve"
     ))
     .await
     .assert_status(StatusCode::OK);
 
     // Register player 2 (via builder)
     let user2 = UserBuilder::new()
-        .username(&format!("player2_{}", slug))
+        .username(format!("player2_{slug}"))
         .build_persisted(app.pool())
         .await;
 
@@ -95,19 +93,19 @@ async fn create_cs2_tournament_with_match(app: &TestApp, slug: &str) -> TestMatc
 
     // Seed and start
     app.post_json(
-        &format!("/v1/tournaments/{}/seeding/auto", tournament_id),
+        &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
         &json!({ "algorithm": "random" }),
     )
     .await
     .assert_status(StatusCode::OK);
 
-    app.post_auth(&format!("/v1/tournaments/{}/start", tournament_id))
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
         .await
         .assert_status(StatusCode::OK);
 
     // Get match info
     let response = app
-        .get(&format!("/v1/tournaments/{}/matches", tournament_id))
+        .get(&format!("/v1/tournaments/{tournament_id}/matches"))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -394,8 +392,7 @@ async fn test_link_discovered_evidence_external_id_not_found() {
     let detail = body["detail"].as_str().unwrap_or("");
     assert!(
         detail.contains("nonexistent_demo_12345"),
-        "Error should mention the external_id that was not found, got: {}",
-        detail
+        "Error should mention the external_id that was not found, got: {detail}"
     );
 }
 
@@ -494,7 +491,7 @@ async fn test_evidence_endpoints_exist() {
     let match_id = "00000000-0000-0000-0000-000000000000";
 
     // Verify GET /evidence endpoint exists
-    let response = app.get(&format!("/v1/matches/{}/evidence", match_id)).await;
+    let response = app.get(&format!("/v1/matches/{match_id}/evidence")).await;
     assert_ne!(
         response.status,
         StatusCode::METHOD_NOT_ALLOWED,
@@ -504,7 +501,7 @@ async fn test_evidence_endpoints_exist() {
     // Verify POST /evidence/upload endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!("/v1/matches/{}/evidence/upload", match_id),
+            &format!("/v1/matches/{match_id}/evidence/upload"),
             &json!({
                 "evidence_type": "demo",
                 "file_name": "test.dem",
@@ -522,7 +519,7 @@ async fn test_evidence_endpoints_exist() {
     // Verify POST /evidence/link endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!("/v1/matches/{}/evidence/link", match_id),
+            &format!("/v1/matches/{match_id}/evidence/link"),
             &json!({
                 "evidence_type": "video",
                 "url": "https://example.com/video",
@@ -545,10 +542,7 @@ async fn test_evidence_detail_endpoints_exist() {
 
     // Verify GET /evidence/{evidence_id} endpoint exists
     let response = app
-        .get(&format!(
-            "/v1/matches/{}/evidence/{}",
-            match_id, evidence_id
-        ))
+        .get(&format!("/v1/matches/{match_id}/evidence/{evidence_id}"))
         .await;
     assert_ne!(
         response.status,
@@ -559,8 +553,7 @@ async fn test_evidence_detail_endpoints_exist() {
     // Verify GET /evidence/{evidence_id}/access endpoint exists (authenticated)
     let response = app
         .get_auth(&format!(
-            "/v1/matches/{}/evidence/{}/access",
-            match_id, evidence_id
+            "/v1/matches/{match_id}/evidence/{evidence_id}/access"
         ))
         .await;
     assert_ne!(
@@ -571,10 +564,7 @@ async fn test_evidence_detail_endpoints_exist() {
 
     // Verify DELETE /evidence/{evidence_id} endpoint exists (authenticated)
     let response = app
-        .delete_auth(&format!(
-            "/v1/matches/{}/evidence/{}",
-            match_id, evidence_id
-        ))
+        .delete_auth(&format!("/v1/matches/{match_id}/evidence/{evidence_id}"))
         .await;
     assert_ne!(
         response.status,
@@ -594,7 +584,7 @@ async fn test_plugin_evidence_endpoints_exist() {
 
     // Verify GET /evidence/discover endpoint exists (returns 404, not 405)
     let response = app
-        .get_auth(&format!("/v1/matches/{}/evidence/discover", match_id))
+        .get_auth(&format!("/v1/matches/{match_id}/evidence/discover"))
         .await;
     assert_ne!(
         response.status,
@@ -605,7 +595,7 @@ async fn test_plugin_evidence_endpoints_exist() {
     // Verify POST /evidence/link-discovered endpoint exists (returns 404, not 405)
     let response = app
         .post_json(
-            &format!("/v1/matches/{}/evidence/link-discovered", match_id),
+            &format!("/v1/matches/{match_id}/evidence/link-discovered"),
             &json!({ "external_id": "test" }),
         )
         .await;
@@ -618,7 +608,7 @@ async fn test_plugin_evidence_endpoints_exist() {
     // Verify POST /evidence/validate endpoint exists (returns 404, not 405)
     let response = app
         .post_json(
-            &format!("/v1/matches/{}/evidence/validate", match_id),
+            &format!("/v1/matches/{match_id}/evidence/validate"),
             &json!({
                 "evidence_ids": ["00000000-0000-0000-0000-000000000001"]
             }),

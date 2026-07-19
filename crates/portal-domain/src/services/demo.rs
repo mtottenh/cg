@@ -61,7 +61,7 @@ where
         self.demo_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::DemoNotFound(id))
+            .ok_or(DomainError::DemoNotFound(id))
     }
 
     /// List demos with filtering.

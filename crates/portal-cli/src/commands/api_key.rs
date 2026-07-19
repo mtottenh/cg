@@ -12,6 +12,18 @@ use crate::output::{
     OutputFormat, error, format_timestamp, format_uuid, info, output_list, success,
 };
 
+/// Row shape for a single `api_keys` lookup:
+/// (id, service_name, key_prefix, is_active, expires_at, last_used_at, created_at).
+type ApiKeyRow = (
+    uuid::Uuid,
+    String,
+    String,
+    bool,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    chrono::DateTime<chrono::Utc>,
+);
+
 /// API key management commands.
 #[derive(Args)]
 pub struct ApiKeyCommand {
@@ -231,15 +243,7 @@ async fn list_keys(pool: &PgPool, format: OutputFormat) -> Result<()> {
 async fn get_key(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
     let key_id: uuid::Uuid = id.parse().context("Invalid API key ID")?;
 
-    let row: Option<(
-        uuid::Uuid,
-        String,
-        String,
-        bool,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        chrono::DateTime<chrono::Utc>,
-    )> = sqlx::query_as(
+    let row: Option<ApiKeyRow> = sqlx::query_as(
         r"
         SELECT id, service_name, key_prefix, is_active,
                expires_at, last_used_at, created_at

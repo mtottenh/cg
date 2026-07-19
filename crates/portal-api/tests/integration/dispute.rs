@@ -18,10 +18,7 @@ async fn test_dispute_endpoints_exist() {
     // Verify raise dispute endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!(
-                "/v1/tournaments/{}/matches/{}/dispute",
-                tournament_id, match_id
-            ),
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/dispute"),
             &json!({
                 "registration_id": "00000000-0000-0000-0000-000000000003",
                 "reason": "wrong_score",
@@ -37,7 +34,7 @@ async fn test_dispute_endpoints_exist() {
     );
 
     // Verify get dispute endpoint exists
-    let response = app.get(&format!("/v1/disputes/{}", dispute_id)).await;
+    let response = app.get(&format!("/v1/disputes/{dispute_id}")).await;
     assert_ne!(
         response.status,
         StatusCode::METHOD_NOT_ALLOWED,
@@ -47,7 +44,7 @@ async fn test_dispute_endpoints_exist() {
     // Verify add message endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!("/v1/disputes/{}/messages", dispute_id),
+            &format!("/v1/disputes/{dispute_id}/messages"),
             &json!({
                 "message": "Additional evidence provided",
                 "evidence_ids": []
@@ -70,7 +67,7 @@ async fn test_dispute_endpoints_exist() {
 
     // Verify admin assign endpoint exists
     let response = app
-        .post_auth(&format!("/v1/admin/disputes/{}/assign", dispute_id))
+        .post_auth(&format!("/v1/admin/disputes/{dispute_id}/assign"))
         .await;
     assert_ne!(
         response.status,
@@ -87,7 +84,7 @@ async fn test_dispute_resolve_endpoints_exist() {
     // Verify resolve uphold endpoint exists
     let response = app
         .post_json(
-            &format!("/v1/admin/disputes/{}/resolve/uphold", dispute_id),
+            &format!("/v1/admin/disputes/{dispute_id}/resolve/uphold"),
             &json!({
                 "notes": "After reviewing the evidence, the original result stands."
             }),
@@ -102,7 +99,7 @@ async fn test_dispute_resolve_endpoints_exist() {
     // Verify resolve overturn endpoint exists
     let response = app
         .post_json(
-            &format!("/v1/admin/disputes/{}/resolve/overturn", dispute_id),
+            &format!("/v1/admin/disputes/{dispute_id}/resolve/overturn"),
             &json!({
                 "notes": "Evidence clearly shows the reported result was incorrect.",
                 "new_winner_registration_id": "00000000-0000-0000-0000-000000000002",
@@ -120,7 +117,7 @@ async fn test_dispute_resolve_endpoints_exist() {
     // Verify resolve rematch endpoint exists
     let response = app
         .post_json(
-            &format!("/v1/admin/disputes/{}/resolve/rematch", dispute_id),
+            &format!("/v1/admin/disputes/{dispute_id}/resolve/rematch"),
             &json!({
                 "notes": "Due to technical issues, a rematch is required."
             }),
@@ -135,7 +132,7 @@ async fn test_dispute_resolve_endpoints_exist() {
     // Verify resolve adjusted endpoint exists
     let response = app
         .post_json(
-            &format!("/v1/admin/disputes/{}/resolve/adjusted", dispute_id),
+            &format!("/v1/admin/disputes/{dispute_id}/resolve/adjusted"),
             &json!({
                 "notes": "Scores have been adjusted based on the evidence.",
                 "new_participant1_score": 2,
@@ -152,7 +149,7 @@ async fn test_dispute_resolve_endpoints_exist() {
     // Verify resolve double-dq endpoint exists
     let response = app
         .post_json(
-            &format!("/v1/admin/disputes/{}/resolve/double-dq", dispute_id),
+            &format!("/v1/admin/disputes/{dispute_id}/resolve/double-dq"),
             &json!({
                 "notes": "Both teams violated the rules. Both are disqualified."
             }),

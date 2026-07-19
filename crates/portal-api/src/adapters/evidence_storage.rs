@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use portal_core::DomainError;
 use portal_domain::services::tournament::EvidenceS3Client;
 use portal_storage::{S3Config, S3EvidenceClient, S3Storage};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs;
 
@@ -45,7 +45,7 @@ impl LocalEvidenceStorage {
     }
 
     /// Ensure parent directories exist.
-    async fn ensure_dir(&self, path: &PathBuf) -> Result<(), DomainError> {
+    async fn ensure_dir(&self, path: &Path) -> Result<(), DomainError> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .await

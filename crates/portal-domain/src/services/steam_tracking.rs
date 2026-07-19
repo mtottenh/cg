@@ -43,7 +43,7 @@ where
             .player_repo
             .find_by_id(cmd.player_id)
             .await?
-            .ok_or_else(|| DomainError::PlayerNotFound(cmd.player_id))?;
+            .ok_or(DomainError::PlayerNotFound(cmd.player_id))?;
 
         // Validate: player must have steam_id linked (checked via steam_id field)
         if !player.has_steam_linked() {

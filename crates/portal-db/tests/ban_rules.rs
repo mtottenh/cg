@@ -16,14 +16,14 @@ use uuid::Uuid;
 
 async fn create_test_user(pool: &DbPool, suffix: &str) -> Uuid {
     let user = sqlx::query_as::<_, (Uuid,)>(
-        r#"
+        r"
         INSERT INTO users (username, email, password_hash)
         VALUES ($1, $2, 'hash')
         RETURNING id
-        "#,
+        ",
     )
-    .bind(format!("banrulesuser{}", suffix))
-    .bind(format!("banrules{}@example.com", suffix))
+    .bind(format!("banrulesuser{suffix}"))
+    .bind(format!("banrules{suffix}@example.com"))
     .fetch_one(pool)
     .await
     .unwrap();

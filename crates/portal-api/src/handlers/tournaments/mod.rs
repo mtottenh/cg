@@ -164,10 +164,10 @@ pub(super) async fn auto_create_veto_session(
         {
             mode
         } else if let Some(plugin) = state.plugin_manager.get(&tournament.game_id.to_string()) {
-            plugin
-                .as_tournament_plugin()
-                .map(|tp| tp.default_side_selection_mode())
-                .unwrap_or(SideSelectionMode::Knife)
+            plugin.as_tournament_plugin().map_or(
+                SideSelectionMode::Knife,
+                portal_plugins::TournamentPlugin::default_side_selection_mode,
+            )
         } else {
             SideSelectionMode::Knife
         }

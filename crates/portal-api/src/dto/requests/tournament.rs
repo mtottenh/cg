@@ -182,7 +182,7 @@ pub struct EligibilityRestrictionsInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_team_average_rating: Option<i32>,
 
-    /// Only allow players in certain rank tiers (e.g., ["silver", "gold"]).
+    /// Only allow players in certain rank tiers (e.g., `["silver", "gold"]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_rank_tiers: Vec<String>,
 
@@ -196,14 +196,13 @@ fn merge_eligibility_into_settings(
     settings: Option<serde_json::Value>,
     eligibility: Option<EligibilityRestrictionsInput>,
 ) -> Option<serde_json::Value> {
-    let eligibility = match eligibility {
-        Some(e) => e,
-        None => return settings,
+    let Some(eligibility) = eligibility else {
+        return settings;
     };
 
     let eligibility_json = serde_json::to_value(eligibility).unwrap_or_default();
 
-    let mut settings = settings.unwrap_or(serde_json::json!({}));
+    let mut settings = settings.unwrap_or_else(|| serde_json::json!({}));
     if let Some(obj) = settings.as_object_mut() {
         obj.insert("eligibility".to_string(), eligibility_json);
     }
@@ -815,6 +814,9 @@ pub struct MyMatchesQuery {
     pub offset: Option<i64>,
 }
 
+// Serde `default = "..."` for an `Option<i64>` field requires the function to
+// return `Option<i64>`, so the wrap is necessary here.
+#[allow(clippy::unnecessary_wraps)]
 fn default_my_matches_limit() -> Option<i64> {
     Some(50)
 }

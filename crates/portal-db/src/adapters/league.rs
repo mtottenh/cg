@@ -147,7 +147,7 @@ impl LeagueRepository for PgLeagueRepository {
     async fn create(&self, cmd: CreateLeague) -> Result<League, DomainError> {
         let settings = cmd
             .settings
-            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
         let league = sqlx::query_as::<_, LeagueRow>(
             r"
             INSERT INTO leagues (game_id, name, slug, description, logo_url, access_type, settings, created_by)
@@ -197,7 +197,7 @@ impl LeagueRepository for PgLeagueRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::LeagueNotFound(id))?;
+        .ok_or(DomainError::LeagueNotFound(id))?;
 
         Ok(League::from(league))
     }

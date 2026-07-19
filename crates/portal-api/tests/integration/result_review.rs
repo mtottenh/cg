@@ -16,20 +16,19 @@ async fn test_result_review_endpoints_exist() {
 
     // Verify get result review for match endpoint exists (authenticated)
     let response = app
-        .get_auth(&format!("/v1/matches/{}/result-review", match_id))
+        .get_auth(&format!("/v1/matches/{match_id}/result-review"))
         .await;
     assert_ne!(
         response.status,
         StatusCode::METHOD_NOT_ALLOWED,
-        "GET /matches/{{match_id}}/result-review endpoint should exist"
+        "GET /matches/:match_id/result-review endpoint should exist"
     );
 
     // Verify acknowledge result review endpoint exists (authenticated)
     let response = app
         .post_json(
             &format!(
-                "/v1/matches/{}/result-review/acknowledge?registration_id=00000000-0000-0000-0000-000000000003",
-                match_id
+                "/v1/matches/{match_id}/result-review/acknowledge?registration_id=00000000-0000-0000-0000-000000000003"
             ),
             &json!({}),
         )
@@ -37,7 +36,7 @@ async fn test_result_review_endpoints_exist() {
     assert_ne!(
         response.status,
         StatusCode::METHOD_NOT_ALLOWED,
-        "POST /matches/{{match_id}}/result-review/acknowledge endpoint should exist"
+        "POST /matches/:match_id/result-review/acknowledge endpoint should exist"
     );
 
     // Verify admin list pending reviews endpoint exists (authenticated)
@@ -50,7 +49,7 @@ async fn test_result_review_endpoints_exist() {
 
     // Verify admin get review by ID endpoint exists (authenticated)
     let response = app
-        .get_auth(&format!("/v1/admin/result-reviews/{}", review_id))
+        .get_auth(&format!("/v1/admin/result-reviews/{review_id}"))
         .await;
     assert_ne!(
         response.status,
@@ -61,7 +60,7 @@ async fn test_result_review_endpoints_exist() {
     // Verify admin approve endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!("/v1/admin/result-reviews/{}/approve", review_id),
+            &format!("/v1/admin/result-reviews/{review_id}/approve"),
             &json!({
                 "notes": "Approved after review"
             }),
@@ -76,7 +75,7 @@ async fn test_result_review_endpoints_exist() {
     // Verify admin reject endpoint exists (authenticated)
     let response = app
         .post_json(
-            &format!("/v1/admin/result-reviews/{}/reject", review_id),
+            &format!("/v1/admin/result-reviews/{review_id}/reject"),
             &json!({
                 "notes": "Rejected after review"
             }),
@@ -100,7 +99,7 @@ async fn test_get_result_review_not_found() {
 
     // GET review for match with no review
     let response = app
-        .get_auth(&format!("/v1/matches/{}/result-review", match_id))
+        .get_auth(&format!("/v1/matches/{match_id}/result-review"))
         .await;
 
     // Should return 404
@@ -125,7 +124,7 @@ async fn test_get_result_review_unauthorized() {
 
     // GET without auth should fail
     let response = app
-        .get(&format!("/v1/matches/{}/result-review", match_id))
+        .get(&format!("/v1/matches/{match_id}/result-review"))
         .await;
 
     // Should return 401
@@ -146,8 +145,7 @@ async fn test_acknowledge_result_review_not_found() {
     let response = app
         .post_json(
             &format!(
-                "/v1/matches/{}/result-review/acknowledge?registration_id={}",
-                match_id, registration_id
+                "/v1/matches/{match_id}/result-review/acknowledge?registration_id={registration_id}"
             ),
             &json!({}),
         )
@@ -165,10 +163,7 @@ async fn test_acknowledge_result_review_invalid_registration_id() {
     // Try to acknowledge with invalid registration ID
     let response = app
         .post_json(
-            &format!(
-                "/v1/matches/{}/result-review/acknowledge?registration_id=not-a-uuid",
-                match_id
-            ),
+            &format!("/v1/matches/{match_id}/result-review/acknowledge?registration_id=not-a-uuid"),
             &json!({}),
         )
         .await;
@@ -212,7 +207,7 @@ async fn test_admin_get_review_not_found() {
 
     // GET review that doesn't exist
     let response = app
-        .get_auth(&format!("/v1/admin/result-reviews/{}", review_id))
+        .get_auth(&format!("/v1/admin/result-reviews/{review_id}"))
         .await;
 
     // Should return 404
@@ -227,7 +222,7 @@ async fn test_admin_approve_review_not_found() {
     // Try to approve review that doesn't exist
     let response = app
         .post_json(
-            &format!("/v1/admin/result-reviews/{}/approve", review_id),
+            &format!("/v1/admin/result-reviews/{review_id}/approve"),
             &json!({
                 "notes": "Approved after review"
             }),
@@ -246,7 +241,7 @@ async fn test_admin_reject_review_not_found() {
     // Try to reject review that doesn't exist
     let response = app
         .post_json(
-            &format!("/v1/admin/result-reviews/{}/reject", review_id),
+            &format!("/v1/admin/result-reviews/{review_id}/reject"),
             &json!({
                 "notes": "Rejected after review"
             }),
@@ -308,7 +303,7 @@ async fn test_admin_endpoints_require_auth() {
 
     // GET admin review by ID without auth
     let response = app
-        .get(&format!("/v1/admin/result-reviews/{}", review_id))
+        .get(&format!("/v1/admin/result-reviews/{review_id}"))
         .await;
     response.assert_status(StatusCode::UNAUTHORIZED);
 }

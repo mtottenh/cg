@@ -107,18 +107,18 @@ pub async fn get_my_matches(
     let status_filter = query
         .status
         .as_deref()
-        .map(|s| s.parse::<TournamentMatchStatus>())
+        .map(str::parse::<TournamentMatchStatus>)
         .transpose()
         .map_err(|e| ApiError::bad_request(format!("Invalid status: {e}")))?;
 
     let tournament_id_filter = query
         .tournament_id
         .as_deref()
-        .map(|s| s.parse::<TournamentId>())
+        .map(str::parse::<TournamentId>)
         .transpose()
         .map_err(|_| ApiError::bad_request("Invalid tournament_id format"))?;
 
-    let limit = query.limit.unwrap_or(50).min(100).max(1);
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
     let offset = query.offset.unwrap_or(0).max(0);
 
     let matches = state

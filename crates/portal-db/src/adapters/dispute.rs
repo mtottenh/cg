@@ -369,7 +369,7 @@ impl DisputeRepository for PgDisputeRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::DisputeNotFound(id))?;
+        .ok_or(DomainError::DisputeNotFound(id))?;
 
         Ok(Dispute::from(dispute))
     }
@@ -388,7 +388,7 @@ impl DisputeRepository for PgDisputeRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::DisputeNotFound(id))?;
+        .ok_or(DomainError::DisputeNotFound(id))?;
 
         Ok(Dispute::from(dispute))
     }
@@ -441,7 +441,7 @@ impl DisputeRepository for PgDisputeRepository {
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::DisputeNotFound(dispute_id))?;
+        .ok_or(DomainError::DisputeNotFound(dispute_id))?;
 
         sqlx::query(
             r"
@@ -518,7 +518,7 @@ impl DisputeRepository for PgDisputeRepository {
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::DisputeNotFound(dispute_id))?;
+        .ok_or(DomainError::DisputeNotFound(dispute_id))?;
 
         sqlx::query(
             r"
@@ -711,7 +711,7 @@ impl DisputeRepository for PgDisputeRepository {
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::DisputeNotFound(dispute_id))?;
+        .ok_or(DomainError::DisputeNotFound(dispute_id))?;
 
         sqlx::query(
             r"

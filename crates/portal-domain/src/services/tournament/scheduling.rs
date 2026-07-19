@@ -73,7 +73,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         if !tournament_match.status.can_schedule() {
             return Err(DomainError::InvalidState(format!(
@@ -166,7 +166,7 @@ where
             .match_repo
             .find_by_id(proposal.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(proposal.match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(proposal.match_id))?;
 
         self.validate_responder_is_opponent(
             command.accepted_by_user_id,
@@ -225,7 +225,7 @@ where
             .match_repo
             .find_by_id(proposal.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(proposal.match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(proposal.match_id))?;
 
         self.validate_responder_is_opponent(
             command.rejected_by_user_id,
@@ -285,7 +285,7 @@ where
             .match_repo
             .find_by_id(command.match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(command.match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(command.match_id))?;
 
         self.validate_responder_is_opponent(
             command.proposed_by_user_id,
@@ -330,7 +330,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         if !tournament_match.status.can_schedule() {
             return Err(DomainError::InvalidState(format!(
@@ -410,21 +410,19 @@ where
         tournament_match: &TournamentMatch,
     ) -> Result<portal_core::ids::TournamentRegistrationId, DomainError> {
         // Check participant 1
-        if let Some(reg_id) = tournament_match.participant1_registration_id {
-            if let Some(reg) = self.registration_repo.find_by_id(reg_id).await? {
-                if reg.registered_by == user_id {
-                    return Ok(reg_id);
-                }
-            }
+        if let Some(reg_id) = tournament_match.participant1_registration_id
+            && let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
+            && reg.registered_by == user_id
+        {
+            return Ok(reg_id);
         }
 
         // Check participant 2
-        if let Some(reg_id) = tournament_match.participant2_registration_id {
-            if let Some(reg) = self.registration_repo.find_by_id(reg_id).await? {
-                if reg.registered_by == user_id {
-                    return Ok(reg_id);
-                }
-            }
+        if let Some(reg_id) = tournament_match.participant2_registration_id
+            && let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
+            && reg.registered_by == user_id
+        {
+            return Ok(reg_id);
         }
 
         Err(DomainError::NotAuthorized(format!(

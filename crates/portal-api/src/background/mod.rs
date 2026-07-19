@@ -15,7 +15,11 @@
 //! 3. **No-shows** — matches still in `checking_in` past their deadline are
 //!    forfeited against the absent side (or double-forfeited when nobody
 //!    showed up).
-//! 4. **Evidence hygiene** — expired evidence is processed and stale pending
+//! 4. **Result auto-confirmation** — pending result claims whose
+//!    `auto_confirm_at` deadline has passed are confirmed and their
+//!    match-completion saga is executed, exactly as a manual opponent
+//!    confirm would, so ignored claims can no longer stall a bracket.
+//! 5. **Evidence hygiene** — expired evidence is processed and stale pending
 //!    uploads are cleaned, on a slower cadence.
 //!
 //! `run_lifecycle_pass` is a single, side-effect-complete pass so
@@ -31,10 +35,12 @@ use portal_core::DomainError;
 use portal_core::types::TournamentMatchStatus;
 use portal_domain::entities::forfeit::ForfeitTrigger;
 use portal_domain::entities::match_lifecycle::TransitionTrigger;
+use portal_domain::entities::result_claim::ResultClaim;
 use portal_domain::entities::tournament::TournamentMatch;
 use portal_domain::repositories::tournament::{
     TournamentMapPoolRepository as _, TournamentMatchRepository as _,
 };
+use portal_domain::services::tournament::MatchCompletionInput;
 use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,6 +107,8 @@ pub struct LifecyclePassSummary {
     pub no_shows_forfeited: u32,
     /// Matches double-forfeited (nobody showed).
     pub double_forfeits: u32,
+    /// Result claims auto-confirmed past their `auto_confirm_at` deadline.
+    pub claims_auto_confirmed: u32,
     /// Evidence records expired.
     pub evidence_expired: u32,
     /// Stale pending evidence records cleaned.
@@ -158,7 +166,12 @@ pub async fn run_lifecycle_pass(
     }
 
     // ------------------------------------------------------------------
-    // 4: evidence hygiene (slower cadence)
+    // 4: auto-confirm overdue result claims + run their completion sagas
+    // ------------------------------------------------------------------
+    process_overdue_result_claims(state, &mut summary).await;
+
+    // ------------------------------------------------------------------
+    // 5: evidence hygiene (slower cadence)
     // ------------------------------------------------------------------
     if sweep_evidence {
         match state.evidence_service.process_expired().await {
@@ -311,6 +324,92 @@ async fn ensure_veto_session(
 
     info!(match_id = %match_.id, session_id = %session.id, "lifecycle: veto session auto-created");
     Ok(true)
+}
+
+/// Auto-confirm every pending result claim whose `auto_confirm_at`
+/// deadline has passed, then execute the match-completion saga for each,
+/// mirroring what the opponent-confirm endpoint does. Without this the
+/// deadline stored on every claim (and returned to clients) was never
+/// enforced and an ignored claim stalled its bracket forever.
+async fn process_overdue_result_claims(state: &AppState, summary: &mut LifecyclePassSummary) {
+    let confirmed = match state.result_service.process_auto_confirmations().await {
+        Ok(confirmed) => confirmed,
+        Err(e) => {
+            error!(error = %e, "lifecycle: auto-confirm sweep failed");
+            summary.errors += 1;
+            return;
+        }
+    };
+
+    for claim in confirmed {
+        summary.claims_auto_confirmed += 1;
+        info!(
+            claim_id = %claim.id,
+            match_id = %claim.match_id,
+            "lifecycle: result claim auto-confirmed"
+        );
+        // The claim + match are already committed as confirmed/completed;
+        // the saga advances the bracket (progression, standings, stats).
+        // A failure here is retried implicitly: the match completion can
+        // still be driven via the admin progression endpoints.
+        if let Err(e) = run_completion_saga_for_claim(state, &claim).await {
+            error!(
+                claim_id = %claim.id,
+                match_id = %claim.match_id,
+                error = %e,
+                "lifecycle: completion saga failed after auto-confirm"
+            );
+            summary.errors += 1;
+        }
+    }
+}
+
+/// Build the completion-saga input for a confirmed claim and execute it —
+/// the same derivation the confirm handler performs.
+async fn run_completion_saga_for_claim(
+    state: &AppState,
+    claim: &ResultClaim,
+) -> Result<(), DomainError> {
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(claim.match_id)
+        .await?
+        .ok_or(DomainError::TournamentMatchNotFound(claim.match_id))?;
+
+    let winner = claim.claimed_winner_registration_id;
+    let loser = if match_.participant1_registration_id == Some(winner) {
+        match_.participant2_registration_id
+    } else {
+        match_.participant1_registration_id
+    }
+    .ok_or_else(|| DomainError::InvalidState("Loser participant not found on match".to_string()))?;
+
+    let (winner_score, loser_score) = if match_.participant1_registration_id == Some(winner) {
+        (
+            claim.claimed_participant1_score,
+            claim.claimed_participant2_score,
+        )
+    } else {
+        (
+            claim.claimed_participant2_score,
+            claim.claimed_participant1_score,
+        )
+    };
+
+    state
+        .match_completion_saga
+        .execute_completion(MatchCompletionInput {
+            match_id: claim.match_id,
+            winner_registration_id: winner,
+            loser_registration_id: loser,
+            winner_score,
+            loser_score,
+            is_forfeit: false,
+            saga_id: None,
+            result_claim_id: Some(claim.id),
+        })
+        .await
+        .map(|_| ())
 }
 
 /// Forfeit whichever side failed to check in before the deadline.

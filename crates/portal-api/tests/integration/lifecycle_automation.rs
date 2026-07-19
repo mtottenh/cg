@@ -289,3 +289,187 @@ async fn test_evidence_sweep_runs_clean() {
         "evidence sweep should not error: {summary:?}"
     );
 }
+
+// ===========================================================================
+// RESULT-CLAIM AUTO-CONFIRMATION (launch blocker #8 regression)
+// ===========================================================================
+
+/// Transition a match Ready → Scheduled → InProgress via admin endpoints.
+async fn transition_to_in_progress(app: &TestApp, tournament_id: &str, match_id: &str) {
+    let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &json!({
+                "scheduled_at": scheduled_time.to_rfc3339(),
+                "reason": "auto-confirm lifecycle test"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
+            &json!({
+                "to_status": "in_progress",
+                "override_reason": "auto-confirm lifecycle test"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+}
+
+/// A pending claim whose `auto_confirm_at` deadline has passed must be
+/// auto-confirmed by the lifecycle pass, completing the match and running
+/// the completion saga (bracket progression) — exactly as a manual
+/// opponent confirm would.
+#[tokio::test]
+async fn test_pass_auto_confirms_overdue_result_claim_and_progresses() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "lifecycle-auto-confirm").await;
+
+    transition_to_in_progress(&app, &tournament_id, &match_id).await;
+
+    // Dev (registrant of participant 1's registration) claims a 2-0 win
+    // for whichever participant sits in slot 1.
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let match_body: serde_json::Value = response.json();
+    let p1_reg = match_body["data"]["participant1_registration_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let claim_uuid = uuid::Uuid::parse_str(&claim_id).unwrap();
+
+    // The opponent ignores the claim; its deadline passes.
+    sqlx::query(
+        "UPDATE result_claims SET auto_confirm_at = NOW() - INTERVAL '1 minute' WHERE id = $1",
+    )
+    .bind(claim_uuid)
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    let summary = run_lifecycle_pass(&state, &test_config(), false).await;
+    assert_eq!(summary.errors, 0, "pass should not error: {summary:?}");
+    assert_eq!(
+        summary.claims_auto_confirmed, 1,
+        "the overdue claim must be auto-confirmed: {summary:?}"
+    );
+
+    // Claim confirmed, flagged as auto.
+    let (status, was_auto): (String, bool) =
+        sqlx::query_as("SELECT status, was_auto_confirmed FROM result_claims WHERE id = $1")
+            .bind(claim_uuid)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "confirmed");
+    assert!(was_auto, "claim must be flagged as auto-confirmed");
+
+    // Match completed with the claimed winner recorded.
+    let (match_status, winner): (String, Option<uuid::Uuid>) = sqlx::query_as(
+        "SELECT status, winner_registration_id FROM tournament_matches WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(match_status, "completed");
+    assert_eq!(winner, Some(uuid::Uuid::parse_str(&p1_reg).unwrap()));
+
+    // The completion saga ran (bracket progression happened).
+    let (sagas,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM saga_executions
+         WHERE match_id = $1 AND saga_type = 'match_completion' AND status = 'completed'",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(sagas, 1, "completion saga must have run exactly once");
+
+    // A second pass is a no-op: nothing left to confirm.
+    let summary2 = run_lifecycle_pass(&state, &test_config(), false).await;
+    assert_eq!(summary2.claims_auto_confirmed, 0);
+    assert_eq!(summary2.errors, 0);
+}
+
+/// Claims whose deadline has not passed are left alone.
+#[tokio::test]
+async fn test_pass_leaves_unexpired_claims_pending() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "lifecycle-claim-pending").await;
+
+    transition_to_in_progress(&app, &tournament_id, &match_id).await;
+
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let match_body: serde_json::Value = response.json();
+    let p1_reg = match_body["data"]["participant1_registration_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let summary = run_lifecycle_pass(&state, &test_config(), false).await;
+    assert_eq!(summary.claims_auto_confirmed, 0);
+
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM result_claims WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&claim_id).unwrap())
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        status, "pending",
+        "claim inside its window must stay pending"
+    );
+}

@@ -17,7 +17,8 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# aws-sdk-s3/sso/sts and `home` require >=1.88 (Dockerfile builds on rust:1.88)
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/community-gaming/gaming-portal"
 

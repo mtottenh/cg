@@ -49,3 +49,26 @@ aws-sdk-s3 = { workspace = true }
 
 [lints]
 workspace = true
+
+# ---------------------------------------------------------------------------
+# cargo-deb packaging. See crates/portal-app/Cargo.toml for the full
+# pattern; the scanner is a trimmed copy.
+# ---------------------------------------------------------------------------
+[package.metadata.deb]
+name = "portal-scanner"
+maintainer = "Gaming Portal Ops <ops@gaming-portal.invalid>"
+copyright = "2026, Gaming Portal"
+extended-description = """\
+Demo catalog scanner. Polls a Linode Object Storage bucket for new .dem
+files and batch-registers them with the portal API."""
+depends = "$auto, ca-certificates"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/portal-scanner", "usr/bin/portal-scanner", "755"],
+    ["crates/portal-scanner/dist/portal-scanner.env.example", "etc/portal/scanner.env.example", "0644"],
+    ["crates/portal-scanner/dist/portal-scanner.service", "lib/systemd/system/portal-scanner.service", "0644"],
+]
+maintainer-scripts = "crates/portal-scanner/dist/maintainer-scripts"
+conf-files = ["/etc/portal/scanner.env"]
+systemd-units = { unit-name = "portal-scanner", enable = true, start = true, restart-after-upgrade = true }

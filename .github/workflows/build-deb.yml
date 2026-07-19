@@ -1,0 +1,75 @@
+name: build-debs
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, or SHA)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # upload to the release
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Build deps the workspace needs. libpq-dev is for SQLx's postgres
+      # feature; pkg-config + libssl-dev for reqwest's native-tls backend
+      # (we use rustls but some transitive deps still link openssl).
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libpq-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: deb-build
+
+      - name: Install cargo-deb
+        run: cargo install --locked cargo-deb
+
+      # sqlx::migrate!(...) is a macro that reads files at compile time;
+      # schema-verified `query!`/`query_as!` macros are rare in this repo
+      # but SQLX_OFFLINE=true keeps CI hermetic even if one sneaks in.
+      - name: Build release binaries
+        run: |
+          export SQLX_OFFLINE=true
+          cargo build --release -p portal-app -p portal-scanner
+
+      - name: Package portal-api
+        run: cargo deb --no-build -p portal-app
+
+      - name: Package portal-scanner
+        run: cargo deb --no-build -p portal-scanner
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          cp target/debian/*.deb dist/
+          ls -la dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs
+          path: dist/*.deb
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
+          fail_on_unmatched_files: true

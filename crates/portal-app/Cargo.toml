@@ -40,3 +40,40 @@ anyhow = { workspace = true }
 
 [lints]
 workspace = true
+
+# ---------------------------------------------------------------------------
+# cargo-deb packaging
+#
+# Build with:   cargo deb -p portal-app
+# Output:       target/debian/portal-api_<version>_amd64.deb
+#
+# The package installs a single binary at /usr/bin/portal-api, a systemd
+# unit at /lib/systemd/system/portal-api.service, and an example env file
+# at /etc/portal/api.env.example. The maintainer postinst creates the
+# `portal` system user, the /var/lib/portal and /etc/portal directories,
+# copies the env example into place on first install (never on upgrade),
+# and enables + starts the service.
+#
+# Migrations are embedded at compile time via sqlx::migrate!(...) and run
+# on startup, so the deb contains nothing extra for migrations.
+# ---------------------------------------------------------------------------
+[package.metadata.deb]
+name = "portal-api"
+maintainer = "Gaming Portal Ops <ops@gaming-portal.invalid>"
+copyright = "2026, Gaming Portal"
+extended-description = """\
+Multi-game competitive gaming portal API.
+Rust/Axum/SQLx backend exposing ~230 OpenAPI endpoints for players, teams,
+leagues, tournaments, disputes, evidence, and demo catalog."""
+depends = "$auto, ca-certificates, adduser"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/portal", "usr/bin/portal-api", "755"],
+    ["crates/portal-app/dist/portal-api.env.example", "etc/portal/api.env.example", "0644"],
+    ["crates/portal-app/dist/portal-api.service", "lib/systemd/system/portal-api.service", "0644"],
+    ["crates/portal-app/dist/README.Debian", "usr/share/doc/portal-api/README.Debian", "0644"],
+]
+maintainer-scripts = "crates/portal-app/dist/maintainer-scripts"
+conf-files = ["/etc/portal/api.env"]
+systemd-units = { unit-name = "portal-api", enable = true, start = true, restart-after-upgrade = true }

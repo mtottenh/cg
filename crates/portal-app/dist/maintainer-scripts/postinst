@@ -1,0 +1,48 @@
+#!/bin/sh
+set -e
+
+# cargo-deb injects dh_installsystemd-style snippets below this marker for
+# enabling + starting the unit. Everything above is our own setup: user,
+# directories, conf file.
+
+case "$1" in
+    configure)
+        # System user. adduser is idempotent when given an existing name.
+        if ! getent passwd portal >/dev/null; then
+            adduser --system --group \
+                --home /var/lib/portal \
+                --no-create-home \
+                --shell /usr/sbin/nologin \
+                --gecos "Gaming Portal API" \
+                portal
+        fi
+
+        # Runtime directory (uploads land here; WorkingDirectory= in the
+        # unit, ReadWritePaths= in the sandbox).
+        install -d -o portal -g portal -m 0750 /var/lib/portal
+        install -d -o portal -g portal -m 0750 /var/lib/portal/uploads
+
+        # Config directory. Readable by the portal group only.
+        install -d -o root -g portal -m 0750 /etc/portal
+
+        # First-install: seed /etc/portal/api.env from the example so the
+        # service at least starts (it will fail on CHANGE_ME values, but
+        # that's an actionable failure). On upgrade we never clobber it.
+        if [ ! -f /etc/portal/api.env ]; then
+            cp /etc/portal/api.env.example /etc/portal/api.env
+            chown root:portal /etc/portal/api.env
+            chmod 0640 /etc/portal/api.env
+            echo "portal-api: seeded /etc/portal/api.env from example — edit before starting"
+        fi
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1\`" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#

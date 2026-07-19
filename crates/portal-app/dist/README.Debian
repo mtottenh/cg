@@ -1,0 +1,23 @@
+portal-api on Debian/Ubuntu
+===========================
+
+Files owned by this package:
+  /usr/bin/portal-api                         API server binary
+  /lib/systemd/system/portal-api.service      systemd unit
+  /etc/portal/api.env.example                 env file template
+
+Files created on first install, not owned by the package:
+  /etc/portal/api.env                         seeded from example (edit before use)
+  /var/lib/portal/                            runtime dir (uploads)
+
+The `portal` system user and group are created on first install and
+removed on `dpkg --purge`. The /var/lib/portal tree is NEVER removed
+automatically — purge it by hand if you want the data gone.
+
+Upgrades preserve /etc/portal/api.env (marked as a conffile).
+
+Migrations are embedded in the binary and applied on startup.
+
+Logs:  journalctl -u portal-api
+Stop:  systemctl stop portal-api
+Start: systemctl start portal-api

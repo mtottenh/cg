@@ -1,15 +1,15 @@
 //! Application builder.
 
 use crate::handlers::evidence::local_evidence_upload;
-use crate::middleware::{request_id_middleware, REQUEST_ID_HEADER};
+use crate::middleware::{REQUEST_ID_HEADER, request_id_middleware};
 use crate::openapi::swagger_routes;
 use crate::routes::api_routes;
 use crate::state::AppState;
+use axum::Router;
 use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
-use axum::http::{HeaderValue, Request};
+use axum::http::{HeaderValue, Request, header};
 use axum::middleware;
-use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
@@ -37,9 +37,22 @@ const LOCAL_UPLOADS_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 /// foot-gun.
 fn build_cors_layer() -> CorsLayer {
     let raw = std::env::var("PORTAL_CORS_ORIGINS").ok();
+    // Enumerate allowed headers explicitly rather than using `Any` (wildcard).
+    // Per the CORS spec, a wildcard `Access-Control-Allow-Headers: *` does
+    // NOT match the `Authorization` header — it's special-cased and must be
+    // listed by name. Browsers (Firefox first) already emit a warning and
+    // will start blocking outright. Our frontend always sends Bearer tokens
+    // via `Authorization`, so wildcard was silently on borrowed time.
     let base = CorsLayer::new()
         .allow_methods(Any)
-        .allow_headers(Any)
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::ACCEPT_LANGUAGE,
+            header::CACHE_CONTROL,
+            header::HeaderName::from_static("x-request-id"),
+        ])
         .expose_headers(Any);
 
     match raw.as_deref().map(str::trim).filter(|s| !s.is_empty()) {

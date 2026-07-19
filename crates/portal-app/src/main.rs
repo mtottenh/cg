@@ -1,8 +1,8 @@
 //! Gaming Portal server entry point.
 
 use anyhow::Result;
-use portal_api::{create_app, spawn_timeout_warning_task, AppState, TokenConfig};
-use portal_db::{create_pool, PoolConfig};
+use portal_api::{AppState, TokenConfig, create_app, spawn_timeout_warning_task};
+use portal_db::{PoolConfig, create_pool};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -24,24 +24,24 @@ async fn main() -> Result<()> {
         .init();
 
     // Database connection
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     let pool = create_pool(&database_url, PoolConfig::default()).await?;
 
     // Run migrations
     info!("Running database migrations...");
-    sqlx::migrate!("../../migrations")
-        .run(&pool)
-        .await?;
+    sqlx::migrate!("../../migrations").run(&pool).await?;
     info!("Migrations complete");
 
     // JWT secret — no fallback. Missing or weak secrets must hard-fail at startup
     // so a misconfigured deployment cannot serve traffic with a known signing key.
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .map_err(|_| anyhow::anyhow!("JWT_SECRET must be set"))?;
+    let jwt_secret =
+        std::env::var("JWT_SECRET").map_err(|_| anyhow::anyhow!("JWT_SECRET must be set"))?;
     if jwt_secret.len() < 32 {
-        anyhow::bail!("JWT_SECRET must be at least 32 bytes (got {})", jwt_secret.len());
+        anyhow::bail!(
+            "JWT_SECRET must be at least 32 bytes (got {})",
+            jwt_secret.len()
+        );
     }
 
     // Token expiry configuration
@@ -57,12 +57,12 @@ async fn main() -> Result<()> {
     };
     info!(
         "Token config: access={}min, refresh={}min",
-        token_config.access_token_expiry_minutes,
-        token_config.refresh_token_expiry_minutes
+        token_config.access_token_expiry_minutes, token_config.refresh_token_expiry_minutes
     );
 
     // Create app state
-    let state = AppState::new(pool, jwt_secret).await
+    let state = AppState::new(pool, jwt_secret)
+        .await
         .with_token_config(token_config);
 
     // Shutdown signalling shared between the HTTP server's
@@ -94,13 +94,21 @@ async fn main() -> Result<()> {
     // Wait for either Ctrl-C (SIGINT) or SIGTERM, signal background tasks to
     // stop, drain in-flight requests, then close the pool.
     let shutdown_for_serve = Arc::clone(&shutdown);
-    let server_result = axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            wait_for_shutdown_signal().await;
-            info!("shutdown signal received; draining in-flight requests");
-            shutdown_for_serve.notify_waiters();
-        })
-        .await;
+    // `into_make_service_with_connect_info::<SocketAddr>()` (vs plain
+    // `app` / `into_make_service`) is what populates the `ConnectInfo<SocketAddr>`
+    // extension on every request. `tower_governor`'s `SmartIpKeyExtractor` needs
+    // that to pull the peer IP out of the connection; without it every
+    // rate-limited route returns 500 "Unable To Extract Key!".
+    let server_result = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        wait_for_shutdown_signal().await;
+        info!("shutdown signal received; draining in-flight requests");
+        shutdown_for_serve.notify_waiters();
+    })
+    .await;
 
     if let Err(e) = server_result {
         warn!(error = %e, "axum::serve returned error during shutdown");

@@ -1,0 +1,72 @@
+[Unit]
+Description=Gaming Portal API
+Documentation=https://github.com/community-gaming/gaming-portal
+# Wants vs Requires: we *prefer* Postgres up first, but the API retries
+# the initial connection, so a slow Postgres at boot shouldn't fail the API.
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=portal
+Group=portal
+WorkingDirectory=/var/lib/portal
+
+# Config comes from /etc/portal/api.env (rendered by Ansible from Vault).
+# The file is root:portal 0640 so the service can read it but unprivileged
+# users on the box cannot.
+EnvironmentFile=/etc/portal/api.env
+
+ExecStart=/usr/bin/portal-api
+
+# Restart policy. on-failure avoids a restart storm on a clean shutdown
+# (SIGTERM from systemctl stop). Backoff lets Postgres come back before
+# we hammer it.
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+# Graceful shutdown — main.rs waits up to 10s for the background timeout
+# task on SIGTERM. Give it headroom.
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+# Resource limits. Tune MemoryMax once you have prod metrics.
+LimitNOFILE=65536
+MemoryMax=2G
+TasksMax=4096
+
+# Sandboxing. systemd does the isolation for free — use it.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# The API writes locally-stored uploads under ./uploads relative to
+# WorkingDirectory. Everything else is read-only.
+ReadWritePaths=/var/lib/portal
+
+# Logging goes to journald; tracing-subscriber's stdout layer emits JSON
+# when RUST_LOG_FORMAT=json (if wired), otherwise plain text.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=portal-api
+
+[Install]
+WantedBy=multi-user.target

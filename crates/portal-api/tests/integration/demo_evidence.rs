@@ -424,3 +424,37 @@ async fn test_internal_demos_require_api_key() {
     let response = api_key_request(&app, "GET", "/v1/internal/demos/pending", None, &api_key).await;
     response.assert_status(StatusCode::FORBIDDEN);
 }
+
+// ============================================================================
+// LIVE SERVICE INTEGRATION (ignored by default)
+// ============================================================================
+
+/// Round-trip against a locally running portal-demo-stats service — the
+/// self-hosted replacement for the external stats dependency.
+///
+/// Setup:
+/// ```text
+/// cd ../demo-stats-service
+/// cp ../api/*.dem.bz2 data/demos/
+/// DEMO_STATS_PORT=3100 DEMO_STATS_DATA_DIR=./data ./target/release/portal-demo-stats
+/// # wait until /health reports pending: 0
+/// cargo test -p portal-api --features test-utils --test integration -- --ignored live_demo_stats
+/// ```
+#[tokio::test]
+#[ignore = "requires portal-demo-stats on 127.0.0.1:3100 with the real demos parsed"]
+async fn test_live_demo_stats_service_roundtrip() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:3100").await;
+
+    let response = app
+        .get_auth(&format!(
+            "/v1/matches/{}/evidence/demo-stats/003802311790264582805_1309061287.dem",
+            uuid::Uuid::now_v7()
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["map_name"], "de_nuke");
+    let total =
+        body["data"]["team1_score"].as_i64().unwrap() + body["data"]["team2_score"].as_i64().unwrap();
+    assert_eq!(total, 14, "de_nuke demo finished 13-1");
+}

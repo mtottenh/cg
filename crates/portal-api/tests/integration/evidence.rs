@@ -812,3 +812,53 @@ async fn test_evidence_add_link_as_admin_nonparticipant() {
         "Admin-attached evidence should not be attributed to a registration"
     );
 }
+
+/// Presigned evidence downloads are uploader/participant/admin-only.
+#[tokio::test]
+async fn test_access_url_denied_for_non_participants() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _, _) =
+        crate::tournaments::create_tournament_with_matches(&app, "evidence-access-authz").await;
+
+    // Dev user (a participant's registrant) attaches link evidence.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/evidence/link"),
+            &json!({
+                "name": "Access Test VOD",
+                "url": "https://youtube.com/watch?v=access-authz",
+                "evidence_type": "video"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let evidence_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // The uploader can mint an access URL.
+    let response = app
+        .get_auth(&format!(
+            "/v1/matches/{match_id}/evidence/{evidence_id}/access"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // An unrelated authenticated user cannot.
+    let outsider = UserBuilder::new()
+        .username("evidence_access_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = create_test_token(
+        outsider.id,
+        outsider.id,
+        "evidence_access_outsider",
+        TEST_JWT_SECRET,
+    );
+    let response = app
+        .get_with_token(
+            &format!("/v1/matches/{match_id}/evidence/{evidence_id}/access"),
+            &outsider_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}

@@ -4,7 +4,7 @@ Multi-Game Competitive Gaming Portal — Rust / Axum / SQLx / PostgreSQL backend
 
 **Status**: Core platform + tournament system production-ready. Matchmaking, OAuth, lobbies, game-server integration, substitutes are planned (no code yet — see `docs/gaming-portal-hld.md`).
 
-**Scale**: 194 handlers · 228 OpenAPI paths · 44 migrations · 27 services · 362+ integration tests.
+**Scale**: ~200 handlers · 230+ OpenAPI paths · 62 migrations · 27 services · 520+ integration tests.
 
 ## Tech Stack
 
@@ -39,9 +39,12 @@ Each entity exists as: DB entity (`portal-db/src/entities/`, derives `FromRow`) 
 Repository traits live in `portal-domain/src/repositories/`. Services in `portal-domain/src/services/` are generic over those traits (enables test doubles). Postgres implementations are `Pg*Repository` in `portal-db/src/adapters/`.
 
 ### RBAC
-Permission constants in `portal-core/src/permissions.rs` (28 constants across `team`, `league`, `tournament`, `match_`, `admin`). Use the `PermissionChecker` extractor in handlers:
+Permission constants in `portal-core/src/permissions.rs` (across `team`, `league`, `tournament`, `match_`, `admin`, `service`). Use the `PermissionChecker` extractor in handlers:
 - `require_permission(&auth, permissions::admin::TOURNAMENTS_MANAGE_ANY)` — global
 - `require_team_permission(&auth, team_id, permissions::team::SETTINGS_MANAGE)` — scoped (admin override falls back automatically)
+- `require_tournament_permission(&auth, tournament_uuid, permissions::tournament::SETTINGS_MANAGE)` — tournament creators are granted the scoped `tournament_admin` role on create
+
+Every mutating endpoint MUST carry an authorization check (permission, scoped permission, or ownership/participant binding) — see `docs/rbac-audit-2026-07-19.md` for the audited model. `is_admin` (`users.view_all`) is for READ surfaces only; mutations use `admin.users.manage` / `admin.bans.manage` / scoped permissions. `DomainError::NotAuthorized` maps to HTTP 403.
 
 ### Strongly-typed IDs
 All 43 entity IDs are newtypes in `portal-core/src/ids.rs`. New IDs: UUID v7 via `Id::new()`. Parse from string with `.parse()?`.
@@ -53,6 +56,12 @@ All 43 entity IDs are newtypes in `portal-core/src/ids.rs`. New IDs: UUID v7 via
 Parameterized SQLx queries only (`$1`, `$2` …). Never string-interpolate user input.
 
 Adapters use the **runtime** query form (`sqlx::query_as::<_, Row>(...)`, bound to a `FromRow` struct) rather than the `query!`/`query_as!` macros. That means the schema is verified at test time, not compile time. `.sqlx/` is effectively unused until the schema stabilises and we migrate to the macro form. See `docs/audit-remediation.md` I3.
+
+### Background automation
+`portal_api::background::spawn_lifecycle_task` (started in portal-app beside the veto timeout task) opens match check-in windows, auto-creates veto sessions for tournaments with `default_map_veto_format`, forfeits no-shows, and sweeps evidence. Tunables: `PORTAL_LIFECYCLE_INTERVAL_SECS`, `PORTAL_CHECKIN_LEAD_MINUTES`, `PORTAL_CHECKIN_GRACE_MINUTES`, `PORTAL_EVIDENCE_STALE_HOURS`. Tests drive `run_lifecycle_pass` directly (`tests/integration/lifecycle_automation.rs`).
+
+### CS2 demo stats
+Demo parsing is served by the self-hosted `portal-demo-stats` service (sibling repo `../demo-stats-service`, wraps `../demoparser`); the portal fetches `{CS2_DEMO_SERVICE_URL}/stats/{name}.dem.stats.json`. `/health` and `/health/ready` on the API report db + demo-service reachability.
 
 ## Common Commands
 

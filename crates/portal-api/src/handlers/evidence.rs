@@ -324,6 +324,7 @@ pub async fn get_evidence(
 pub async fn get_access_url(
     State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((_match_id, evidence_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<AccessUrlResponse>>> {
@@ -351,9 +352,21 @@ pub async fn get_access_url(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
+    // Uploader / match participant / tournament admin only — presigned
+    // evidence downloads are not public.
+    let acting_as_admin = perm_checker
+        .has_admin_override(&auth, ScopeType::Tournament)
+        .await;
+
     let access_url = state
         .evidence_service
-        .get_access_url(evidence_id, auth.user_id, ip_address, user_agent)
+        .get_access_url(
+            evidence_id,
+            auth.user_id,
+            acting_as_admin,
+            ip_address,
+            user_agent,
+        )
         .await?;
 
     Ok(Json(DataResponse::new(

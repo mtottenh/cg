@@ -400,6 +400,7 @@ where
         &self,
         evidence_id: EvidenceId,
         accessed_by: UserId,
+        acting_as_admin: bool,
         ip_address: Option<std::net::IpAddr>,
         user_agent: Option<String>,
     ) -> Result<EvidenceAccessUrl, DomainError> {
@@ -408,6 +409,19 @@ where
             .find_by_id(evidence_id)
             .await?
             .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
+
+        // Authorization: uploader, match participant, or admin — evidence
+        // downloads (dispute screenshots, demos) are not public. Mirrors
+        // delete_evidence.
+        if !acting_as_admin && evidence.uploaded_by_user_id != Some(accessed_by) {
+            let match_ = self
+                .match_repo
+                .find_by_id(evidence.match_id)
+                .await?
+                .ok_or(DomainError::TournamentMatchNotFound(evidence.match_id))?;
+            // Propagates NotAuthorized when the caller is not a participant.
+            self.find_user_registration(&match_, accessed_by).await?;
+        }
 
         // Check if evidence is accessible
         if !evidence.is_accessible() {

@@ -1,7 +1,7 @@
 //! Steam tracking repository adapter.
 
-use crate::entities::SteamTrackingRow;
 use crate::DbPool;
+use crate::entities::SteamTrackingRow;
 use async_trait::async_trait;
 use portal_core::{DomainError, GameId, PlayerId, SteamTrackingId};
 use portal_domain::entities::steam_tracking::{SteamTracking, UpdatePollResultCommand};
@@ -51,13 +51,12 @@ impl PgSteamTrackingRepository {
 #[async_trait]
 impl SteamTrackingRepository for PgSteamTrackingRepository {
     async fn find_by_id(&self, id: SteamTrackingId) -> Result<Option<SteamTracking>, DomainError> {
-        let row = sqlx::query_as::<_, SteamTrackingRow>(
-            "SELECT * FROM steam_tracking WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row =
+            sqlx::query_as::<_, SteamTrackingRow>("SELECT * FROM steam_tracking WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(row.map(SteamTracking::from))
     }

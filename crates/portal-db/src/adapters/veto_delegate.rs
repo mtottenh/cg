@@ -1,7 +1,7 @@
 //! Veto delegate repository adapter.
 
-use crate::entities::VetoDelegateRow;
 use crate::DbPool;
+use crate::entities::VetoDelegateRow;
 use async_trait::async_trait;
 use portal_core::{
     DomainError, LeagueTeamSeasonId, PlayerId, TournamentId, UserId, VetoDelegateId,

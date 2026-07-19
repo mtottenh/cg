@@ -12,9 +12,9 @@ use crate::dto::responses::TournamentMapPoolResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::TournamentState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::TournamentId;
 use portal_domain::repositories::tournament::{
     TournamentMapPoolRepository, UpsertTournamentMapPool,
@@ -108,7 +108,10 @@ pub async fn set_tournament_map_pool(
 
     // Check admin permission
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let tournament = state
@@ -174,7 +177,10 @@ pub async fn delete_tournament_map_pool(
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<StatusCode> {
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     // Find and delete the tournament-level pool

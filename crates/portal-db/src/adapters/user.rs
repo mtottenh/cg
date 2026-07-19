@@ -1,7 +1,7 @@
 //! User and Player repository adapters.
 
-use crate::entities::{PlayerRow, UserRow};
 use crate::DbPool;
+use crate::entities::{PlayerRow, UserRow};
 use async_trait::async_trait;
 use portal_core::{DomainError, PlayerId, UserId};
 use portal_domain::entities::user::UserStatus as DomainUserStatus;
@@ -123,37 +123,33 @@ impl UserRepository for PgUserRepository {
 
     async fn create(&self, cmd: CreateUser) -> Result<User, DomainError> {
         let user = match cmd.id {
-            Some(id) => {
-                sqlx::query_as::<_, UserRow>(
-                    r"
+            Some(id) => sqlx::query_as::<_, UserRow>(
+                r"
                     INSERT INTO users (id, username, email, password_hash)
                     VALUES ($1, $2, $3, $4)
                     RETURNING *
                     ",
-                )
-                .bind(id.as_uuid())
-                .bind(&cmd.username)
-                .bind(cmd.email.to_lowercase())
-                .bind(&cmd.password_hash)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?
-            }
-            None => {
-                sqlx::query_as::<_, UserRow>(
-                    r"
+            )
+            .bind(id.as_uuid())
+            .bind(&cmd.username)
+            .bind(cmd.email.to_lowercase())
+            .bind(&cmd.password_hash)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?,
+            None => sqlx::query_as::<_, UserRow>(
+                r"
                     INSERT INTO users (username, email, password_hash)
                     VALUES ($1, $2, $3)
                     RETURNING *
                     ",
-                )
-                .bind(&cmd.username)
-                .bind(cmd.email.to_lowercase())
-                .bind(&cmd.password_hash)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?
-            }
+            )
+            .bind(&cmd.username)
+            .bind(cmd.email.to_lowercase())
+            .bind(&cmd.password_hash)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?,
         };
 
         Ok(User::from(user))
@@ -250,12 +246,11 @@ impl PlayerRepository for PgPlayerRepository {
     }
 
     async fn find_by_steam_id_64(&self, steam_id_64: i64) -> Result<Option<Player>, DomainError> {
-        let player =
-            sqlx::query_as::<_, PlayerRow>("SELECT * FROM players WHERE steam_id_64 = $1")
-                .bind(steam_id_64)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let player = sqlx::query_as::<_, PlayerRow>("SELECT * FROM players WHERE steam_id_64 = $1")
+            .bind(steam_id_64)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(player.map(Player::from))
     }

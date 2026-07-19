@@ -57,7 +57,10 @@ impl PluginManager {
 
     /// List all registered plugin IDs.
     pub fn list(&self) -> Vec<&str> {
-        self.plugins.keys().map(std::string::String::as_str).collect()
+        self.plugins
+            .keys()
+            .map(std::string::String::as_str)
+            .collect()
     }
 
     /// List all registered plugins.
@@ -121,7 +124,7 @@ mod tests {
     use crate::error::StatsError;
     use crate::traits::{MapInfo, RankTier};
     use crate::types::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     /// A simple test plugin for testing the manager.
     struct TestPlugin {
@@ -168,7 +171,11 @@ mod tests {
             Ok(json!({}))
         }
 
-        fn format_player_stats(&self, _stats: &Value, _context: &PlayerStatsContext) -> Vec<DisplayStat> {
+        fn format_player_stats(
+            &self,
+            _stats: &Value,
+            _context: &PlayerStatsContext,
+        ) -> Vec<DisplayStat> {
             vec![]
         }
 

@@ -1,13 +1,11 @@
 //! Player MM stats repository adapter.
 
-use crate::entities::player_mm_stats::PlayerMmStatsRow;
 use crate::DbPool;
+use crate::entities::player_mm_stats::PlayerMmStatsRow;
 use async_trait::async_trait;
 use portal_core::{DomainError, GameId, PlayerId, PlayerMmStatsId};
 use portal_domain::entities::player_mm_stats::PlayerMmStats;
-use portal_domain::repositories::player_mm_stats::{
-    AccumulateMatchStats, PlayerMmStatsRepository,
-};
+use portal_domain::repositories::player_mm_stats::{AccumulateMatchStats, PlayerMmStatsRepository};
 
 impl From<PlayerMmStatsRow> for PlayerMmStats {
     fn from(row: PlayerMmStatsRow) -> Self {

@@ -1,8 +1,8 @@
 //! Game repository.
 
+use crate::DbPool;
 use crate::entities::{GameRow, NewGame, UpdateGame};
 use crate::error::RepositoryError;
-use crate::DbPool;
 use uuid::Uuid;
 
 /// Repository for game operations.
@@ -40,11 +40,10 @@ impl GameRepository {
 
     /// List all games.
     pub async fn list(&self) -> Result<Vec<GameRow>, RepositoryError> {
-        let games = sqlx::query_as::<_, GameRow>(
-            "SELECT * FROM games ORDER BY sort_order, display_name",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let games =
+            sqlx::query_as::<_, GameRow>("SELECT * FROM games ORDER BY sort_order, display_name")
+                .fetch_all(&self.pool)
+                .await?;
 
         Ok(games)
     }
@@ -242,7 +241,9 @@ mod tests {
         let initial_count = repo.list().await.unwrap().len();
 
         for i in 1..=3 {
-            repo.create(new_test_game(&format!("listgame{}", i))).await.unwrap();
+            repo.create(new_test_game(&format!("listgame{}", i)))
+                .await
+                .unwrap();
         }
 
         let games = repo.list().await.unwrap();

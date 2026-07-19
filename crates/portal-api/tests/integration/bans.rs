@@ -1,8 +1,7 @@
 //! Bans API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;

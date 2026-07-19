@@ -49,7 +49,8 @@ pub trait DisputeRepository: Send + Sync + 'static {
     async fn find_by_id(&self, id: DisputeId) -> Result<Option<Dispute>, DomainError>;
 
     /// Find all disputes for a match.
-    async fn find_by_match(&self, match_id: TournamentMatchId) -> Result<Vec<Dispute>, DomainError>;
+    async fn find_by_match(&self, match_id: TournamentMatchId)
+    -> Result<Vec<Dispute>, DomainError>;
 
     /// Find pending disputes for a match.
     async fn find_pending_by_match(
@@ -70,8 +71,10 @@ pub trait DisputeRepository: Send + Sync + 'static {
     async fn update(&self, id: DisputeId, data: UpdateDispute) -> Result<Dispute, DomainError>;
 
     /// Check if there's a pending dispute for a match.
-    async fn exists_pending_for_match(&self, match_id: TournamentMatchId)
-        -> Result<bool, DomainError>;
+    async fn exists_pending_for_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<bool, DomainError>;
 
     /// Resolve a dispute.
     async fn resolve(
@@ -174,7 +177,7 @@ pub trait DisputeMessageRepository: Send + Sync + 'static {
 
     /// Find a dispute message by ID.
     async fn find_by_id(&self, id: DisputeMessageId)
-        -> Result<Option<DisputeMessage>, DomainError>;
+    -> Result<Option<DisputeMessage>, DomainError>;
 
     /// Find all messages for a dispute, optionally including internal messages.
     async fn find_by_dispute(

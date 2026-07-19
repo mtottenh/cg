@@ -1,11 +1,11 @@
 //! User and Player repositories.
 
+use crate::DbPool;
 use crate::entities::{
     NewPlayer, NewPlayerGameProfile, NewUser, PlayerGameProfileRow, PlayerRow, UpdatePlayer,
     UpdateUser, UserRow,
 };
 use crate::error::RepositoryError;
-use crate::DbPool;
 use portal_core::{PlayerId, UserId};
 use sqlx::Row;
 use uuid::Uuid;
@@ -77,11 +77,7 @@ impl UserRepository {
     }
 
     /// Update a user.
-    pub async fn update(
-        &self,
-        id: UserId,
-        update: UpdateUser,
-    ) -> Result<UserRow, RepositoryError> {
+    pub async fn update(&self, id: UserId, update: UpdateUser) -> Result<UserRow, RepositoryError> {
         let user = sqlx::query_as::<_, UserRow>(
             r"
             UPDATE users SET
@@ -192,7 +188,11 @@ impl UserRepository {
     }
 
     /// Disable a user account.
-    pub async fn disable(&self, id: UserId, reason: Option<&str>) -> Result<UserRow, RepositoryError> {
+    pub async fn disable(
+        &self,
+        id: UserId,
+        reason: Option<&str>,
+    ) -> Result<UserRow, RepositoryError> {
         let user = sqlx::query_as::<_, UserRow>(
             r"
             UPDATE users SET
@@ -235,7 +235,11 @@ impl UserRepository {
     }
 
     /// Update user password.
-    pub async fn update_password(&self, id: UserId, password_hash: &str) -> Result<(), RepositoryError> {
+    pub async fn update_password(
+        &self,
+        id: UserId,
+        password_hash: &str,
+    ) -> Result<(), RepositoryError> {
         let result = sqlx::query(
             r"
             UPDATE users SET
@@ -282,7 +286,10 @@ impl PlayerRepository {
     }
 
     /// Find a player by user ID.
-    pub async fn find_by_user_id(&self, user_id: UserId) -> Result<Option<PlayerRow>, RepositoryError> {
+    pub async fn find_by_user_id(
+        &self,
+        user_id: UserId,
+    ) -> Result<Option<PlayerRow>, RepositoryError> {
         let player = sqlx::query_as::<_, PlayerRow>("SELECT * FROM players WHERE user_id = $1")
             .bind(user_id.as_uuid())
             .fetch_optional(&self.pool)
@@ -755,7 +762,11 @@ mod tests {
             .await
             .unwrap();
 
-        let updated = repo.find_by_id(UserId::from(created.id)).await.unwrap().unwrap();
+        let updated = repo
+            .find_by_id(UserId::from(created.id))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.password_hash, Some("new_hash".to_string()));
         assert!(updated.password_changed_at.is_some());
     }
@@ -773,9 +784,15 @@ mod tests {
         let created = repo.create(new_user).await.unwrap();
         assert!(created.last_login_at.is_none());
 
-        repo.update_last_login(UserId::from(created.id)).await.unwrap();
+        repo.update_last_login(UserId::from(created.id))
+            .await
+            .unwrap();
 
-        let updated = repo.find_by_id(UserId::from(created.id)).await.unwrap().unwrap();
+        let updated = repo
+            .find_by_id(UserId::from(created.id))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(updated.last_login_at.is_some());
     }
 
@@ -829,12 +846,18 @@ mod tests {
         };
         player_repo.create(new_player).await.unwrap();
 
-        let found = player_repo.find_by_user_id(UserId::from(user.id)).await.unwrap();
+        let found = player_repo
+            .find_by_user_id(UserId::from(user.id))
+            .await
+            .unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().display_name, "FindByUserPlayer");
 
         // Not found
-        let not_found = player_repo.find_by_user_id(UserId::from(Uuid::nil())).await.unwrap();
+        let not_found = player_repo
+            .find_by_user_id(UserId::from(Uuid::nil()))
+            .await
+            .unwrap();
         assert!(not_found.is_none());
     }
 
@@ -887,7 +910,10 @@ mod tests {
             ..Default::default()
         };
 
-        let updated = player_repo.update(PlayerId::from(player.id), update).await.unwrap();
+        let updated = player_repo
+            .update(PlayerId::from(player.id), update)
+            .await
+            .unwrap();
         assert_eq!(updated.display_name, "UpdatedName");
         assert_eq!(updated.bio, Some("Test bio".to_string()));
         assert_eq!(updated.country_code, Some("CA".to_string()));
@@ -982,7 +1008,10 @@ mod tests {
             .unwrap();
 
         // Reset
-        let reset = profile_repo.reset_rating(PlayerId::from(player.id), game_id).await.unwrap();
+        let reset = profile_repo
+            .reset_rating(PlayerId::from(player.id), game_id)
+            .await
+            .unwrap();
         assert_eq!(reset.rating, 1500);
         assert_eq!(reset.rating_deviation, 350);
     }
@@ -1038,7 +1067,10 @@ mod tests {
             profile_repo.create(new_profile).await.unwrap();
         }
 
-        let profiles = profile_repo.list_by_player(PlayerId::from(player.id)).await.unwrap();
+        let profiles = profile_repo
+            .list_by_player(PlayerId::from(player.id))
+            .await
+            .unwrap();
         assert_eq!(profiles.len(), 2);
     }
 }

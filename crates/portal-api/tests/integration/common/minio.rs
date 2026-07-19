@@ -32,13 +32,8 @@ pub async fn start_minio() -> (ContainerAsync<GenericImage>, String) {
 
 /// Build an S3 client pointing at MinIO with static credentials.
 pub async fn create_s3_client(endpoint: &str) -> aws_sdk_s3::Client {
-    let creds = aws_sdk_s3::config::Credentials::new(
-        "minioadmin",
-        "minioadmin",
-        None,
-        None,
-        "test",
-    );
+    let creds =
+        aws_sdk_s3::config::Credentials::new("minioadmin", "minioadmin", None, None, "test");
     let config = aws_config::from_env()
         .region(aws_sdk_s3::config::Region::new("us-east-1"))
         .endpoint_url(endpoint)
@@ -64,11 +59,7 @@ pub async fn create_bucket(s3_client: &aws_sdk_s3::Client, bucket: &str) {
 }
 
 /// Create a bucket and upload a stub file.
-pub async fn create_bucket_and_upload(
-    s3_client: &aws_sdk_s3::Client,
-    bucket: &str,
-    key: &str,
-) {
+pub async fn create_bucket_and_upload(s3_client: &aws_sdk_s3::Client, bucket: &str, key: &str) {
     create_bucket(s3_client, bucket).await;
 
     s3_client
@@ -83,13 +74,7 @@ pub async fn create_bucket_and_upload(
 
 /// Check if an object exists in the bucket.
 pub async fn object_exists(s3_client: &aws_sdk_s3::Client, bucket: &str, key: &str) -> bool {
-    match s3_client
-        .head_object()
-        .bucket(bucket)
-        .key(key)
-        .send()
-        .await
-    {
+    match s3_client.head_object().bucket(bucket).key(key).send().await {
         Ok(_) => true,
         Err(_) => false,
     }

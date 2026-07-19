@@ -3,14 +3,14 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use portal_core::UserId;
+use portal_db::PgPool;
 use portal_db::entities::{NewBan, NewUser, UpdateUser};
 use portal_db::repositories::{BanRepository, UserRepository};
-use portal_db::PgPool;
 use uuid::Uuid;
 
 use crate::output::{
-    error, format_optional, format_timestamp, format_uuid, output_list, success, OutputFormat,
-    UserTableRow,
+    OutputFormat, UserTableRow, error, format_optional, format_timestamp, format_uuid, output_list,
+    success,
 };
 
 /// User management commands.
@@ -125,7 +125,16 @@ impl UserCommand {
                 status,
                 search,
                 limit,
-            } => list_users(&user_repo, status.as_deref(), search.as_deref(), *limit, format).await,
+            } => {
+                list_users(
+                    &user_repo,
+                    status.as_deref(),
+                    search.as_deref(),
+                    *limit,
+                    format,
+                )
+                .await
+            }
 
             UserSubcommand::Get { id } => get_user(&user_repo, *id, format).await,
 
@@ -151,7 +160,16 @@ impl UserCommand {
                 id,
                 username,
                 email,
-            } => update_user(&user_repo, *id, username.as_deref(), email.as_deref(), format).await,
+            } => {
+                update_user(
+                    &user_repo,
+                    *id,
+                    username.as_deref(),
+                    email.as_deref(),
+                    format,
+                )
+                .await
+            }
 
             UserSubcommand::Disable { id, reason } => {
                 disable_user(&user_repo, *id, reason.as_deref()).await
@@ -244,7 +262,8 @@ async fn get_user(repo: &UserRepository, id: Uuid, format: OutputFormat) -> Resu
             println!("  Updated:         {}", format_timestamp(&u.updated_at));
             println!(
                 "  Last Login:      {}",
-                u.last_login_at.map_or_else(|| "Never".to_string(), |t| format_timestamp(&t))
+                u.last_login_at
+                    .map_or_else(|| "Never".to_string(), |t| format_timestamp(&t))
             );
         }
         Ok(())
@@ -288,7 +307,10 @@ async fn create_user(
         password_hash: Some(password_hash),
     };
 
-    let user = repo.create(new_user).await.context("Failed to create user")?;
+    let user = repo
+        .create(new_user)
+        .await
+        .context("Failed to create user")?;
 
     // Create player profile with the same ID as the user
     let player_repo = portal_db::repositories::PlayerRepository::new(pool.clone());
@@ -347,7 +369,10 @@ async fn disable_user(repo: &UserRepository, id: Uuid, reason: Option<&str>) -> 
 
 async fn enable_user(repo: &UserRepository, id: Uuid) -> Result<()> {
     let user_id = UserId::from_uuid(id);
-    let user = repo.enable(user_id).await.context("Failed to enable user")?;
+    let user = repo
+        .enable(user_id)
+        .await
+        .context("Failed to enable user")?;
 
     success(&format!("Enabled user: {}", user.id));
     Ok(())

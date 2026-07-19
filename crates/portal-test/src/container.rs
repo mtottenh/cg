@@ -4,7 +4,7 @@
 //! that is shared across all tests in the process.
 
 use std::sync::{Arc, OnceLock};
-use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
+use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 
@@ -88,7 +88,10 @@ pub async fn get_or_init_container() -> Result<Arc<SharedPostgresContainer>, Con
 
 /// Start a new `PostgreSQL` container.
 async fn start_container() -> Result<Arc<SharedPostgresContainer>, ContainerError> {
-    tracing::info!("Starting shared PostgreSQL container (tag: {})", POSTGRES_TAG);
+    tracing::info!(
+        "Starting shared PostgreSQL container (tag: {})",
+        POSTGRES_TAG
+    );
 
     let postgres = Postgres::default().with_tag(POSTGRES_TAG);
 

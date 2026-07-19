@@ -165,7 +165,10 @@ impl PermissionChecker {
             return true;
         }
 
-        let scope = PermissionScope { scope_type, scope_id };
+        let scope = PermissionScope {
+            scope_type,
+            scope_id,
+        };
         log_and_deny(
             self.0
                 .user_has_scoped_permission(user.user_id, permission, Some(&scope))
@@ -181,7 +184,11 @@ impl PermissionChecker {
     /// - Team scope: `admin.teams.manage_any`
     /// - League scope: `admin.leagues.manage_any`
     /// - Tournament scope: `admin.tournaments.manage_any`
-    pub async fn has_admin_override(&self, user: &AuthenticatedUser, scope_type: ScopeType) -> bool {
+    pub async fn has_admin_override(
+        &self,
+        user: &AuthenticatedUser,
+        scope_type: ScopeType,
+    ) -> bool {
         if is_dev_user(user) {
             return true;
         }
@@ -213,7 +220,10 @@ impl PermissionChecker {
         scope_id: Uuid,
     ) -> Result<(), ApiError> {
         // Check scoped permission first
-        if self.has_scoped_permission(user, permission, scope_type, scope_id).await {
+        if self
+            .has_scoped_permission(user, permission, scope_type, scope_id)
+            .await
+        {
             return Ok(());
         }
 

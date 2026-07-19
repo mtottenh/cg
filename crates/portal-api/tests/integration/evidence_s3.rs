@@ -14,8 +14,8 @@ use axum::http::StatusCode;
 use portal_test::prelude::*;
 use serde_json::json;
 
-use crate::common::minio::{create_bucket, create_s3_client, object_exists, start_minio};
 use crate::common::TestApp;
+use crate::common::minio::{create_bucket, create_s3_client, object_exists, start_minio};
 
 const EVIDENCE_BUCKET: &str = "test-evidence";
 
@@ -62,9 +62,12 @@ async fn create_tournament_with_match(app: &TestApp, slug: &str) -> TestMatchInf
         .assert_status(StatusCode::OK);
 
     // Open registration
-    app.post_auth(&format!("/v1/tournaments/{}/open-registration", tournament_id))
-        .await
-        .assert_status(StatusCode::OK);
+    app.post_auth(&format!(
+        "/v1/tournaments/{}/open-registration",
+        tournament_id
+    ))
+    .await
+    .assert_status(StatusCode::OK);
 
     // Register player 1 (dev user)
     let response = app
@@ -120,7 +123,10 @@ async fn create_tournament_with_match(app: &TestApp, slug: &str) -> TestMatchInf
 
     let body: serde_json::Value = response.json();
     let matches = body["data"].as_array().unwrap();
-    assert!(!matches.is_empty(), "Tournament should have at least one match");
+    assert!(
+        !matches.is_empty(),
+        "Tournament should have at least one match"
+    );
 
     let match_id = matches[0]["id"].as_str().unwrap().to_string();
 
@@ -300,7 +306,11 @@ async fn test_evidence_upload_s3_pending_not_listed() {
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     let evidence_list = body["data"].as_array().unwrap();
-    assert_eq!(evidence_list.len(), 1, "Active evidence should appear in list");
+    assert_eq!(
+        evidence_list.len(),
+        1,
+        "Active evidence should appear in list"
+    );
 }
 
 /// complete_upload fails if the file was never PUT to S3.
@@ -449,7 +459,10 @@ async fn test_evidence_delete_s3() {
         .await
         .unwrap();
     let count_before = objects_before.contents().len();
-    assert!(count_before > 0, "Should have at least one object in bucket before deletion");
+    assert!(
+        count_before > 0,
+        "Should have at least one object in bucket before deletion"
+    );
 
     // Delete evidence
     let response = app

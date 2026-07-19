@@ -1,10 +1,10 @@
 //! Game builder for tests.
 
-use fake::faker::company::en::CompanyName;
 use fake::Fake;
+use fake::faker::company::en::CompanyName;
+use portal_db::DbPool;
 use portal_db::entities::GameRow;
 use portal_db::repositories::GameRepository;
-use portal_db::DbPool;
 use uuid::Uuid;
 
 /// Builder for creating test games.

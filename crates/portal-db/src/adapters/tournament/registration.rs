@@ -3,11 +3,13 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
+use crate::DbPool;
 use crate::entities::tournament::TournamentRegistrationRow;
 use crate::transaction::DbTransaction;
-use crate::DbPool;
 use portal_core::types::TournamentRegistrationStatus;
-use portal_core::{DomainError, LeagueTeamSeasonId, PlayerId, TournamentId, TournamentRegistrationId, UserId};
+use portal_core::{
+    DomainError, LeagueTeamSeasonId, PlayerId, TournamentId, TournamentRegistrationId, UserId,
+};
 use portal_domain::entities::tournament::TournamentRegistration;
 use portal_domain::repositories::tournament::{
     CreateTournamentRegistration, TournamentRegistrationRepository, UpdateTournamentRegistration,

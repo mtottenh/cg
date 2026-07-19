@@ -3,10 +3,12 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::entities::league_team::{LeagueTeamInvitationRow, LeagueTeamInvitationWithTeamRow};
 use crate::DbPool;
+use crate::entities::league_team::{LeagueTeamInvitationRow, LeagueTeamInvitationWithTeamRow};
 use portal_core::types::LeagueTeamInvitationStatus;
-use portal_core::{DomainError, LeagueSeasonId, LeagueTeamInvitationId, LeagueTeamSeasonId, PlayerId};
+use portal_core::{
+    DomainError, LeagueSeasonId, LeagueTeamInvitationId, LeagueTeamSeasonId, PlayerId,
+};
 use portal_domain::entities::league_team::{
     LeagueTeamInvitation, LeagueTeamInvitationWithTeam, LeagueTeamMember,
 };
@@ -153,7 +155,10 @@ impl LeagueTeamInvitationRepository for PgLeagueTeamInvitationRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(rows.into_iter().map(LeagueTeamInvitationWithTeam::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(LeagueTeamInvitationWithTeam::from)
+            .collect())
     }
 
     async fn find_pending_for_player_in_season(
@@ -184,7 +189,10 @@ impl LeagueTeamInvitationRepository for PgLeagueTeamInvitationRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(rows.into_iter().map(LeagueTeamInvitationWithTeam::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(LeagueTeamInvitationWithTeam::from)
+            .collect())
     }
 
     async fn find_existing_pending(

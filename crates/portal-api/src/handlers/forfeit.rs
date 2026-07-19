@@ -1,14 +1,16 @@
 //! Forfeit handlers.
 
 use crate::dto::common::DataResponse;
-use crate::dto::requests::{AdminDisqualifyRequest, AdminForfeitMatchRequest, WithdrawFromTournamentRequest};
+use crate::dto::requests::{
+    AdminDisqualifyRequest, AdminForfeitMatchRequest, WithdrawFromTournamentRequest,
+};
 use crate::dto::responses::{DisqualificationResponse, ForfeitResponse, WithdrawalResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::ForfeitState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::Json;
 use portal_core::{TournamentId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::entities::forfeit::{ForfeitTrigger, ForfeitType};
 
@@ -107,7 +109,10 @@ pub async fn admin_forfeit_match(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let match_id: TournamentMatchId = match_id
@@ -176,12 +181,20 @@ pub async fn admin_disqualify(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let results = state
         .forfeit_service
-        .disqualify(tournament_id, registration_id, req.reason.clone(), auth.user_id)
+        .disqualify(
+            tournament_id,
+            registration_id,
+            req.reason.clone(),
+            auth.user_id,
+        )
         .await?;
 
     let response = DisqualificationResponse {
@@ -226,7 +239,10 @@ pub async fn admin_double_forfeit(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let match_id: TournamentMatchId = match_id

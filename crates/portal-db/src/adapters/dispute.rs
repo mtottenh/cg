@@ -1,7 +1,7 @@
 //! Dispute repository adapters.
 
-use crate::entities::{DisputeMessageRow, DisputeRow};
 use crate::DbPool;
+use crate::entities::{DisputeMessageRow, DisputeRow};
 use async_trait::async_trait;
 use portal_core::{
     DisputeId, DisputeMessageId, DomainError, EvidenceId, ResultClaimId, TournamentId,
@@ -12,8 +12,7 @@ use portal_domain::entities::dispute::{
     ResolutionType,
 };
 use portal_domain::repositories::dispute::{
-    CreateDispute, CreateDisputeMessage, DisputeMessageRepository, DisputeRepository,
-    UpdateDispute,
+    CreateDispute, CreateDisputeMessage, DisputeMessageRepository, DisputeRepository, UpdateDispute,
 };
 use sqlx::Row;
 
@@ -100,8 +99,11 @@ impl PgDisputeRepository {
 #[async_trait]
 impl DisputeRepository for PgDisputeRepository {
     async fn create(&self, data: CreateDispute) -> Result<Dispute, DomainError> {
-        let evidence_ids: Vec<uuid::Uuid> =
-            data.evidence_ids.iter().map(portal_core::EvidenceId::as_uuid).collect();
+        let evidence_ids: Vec<uuid::Uuid> = data
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
 
         let dispute = sqlx::query_as::<_, DisputeRow>(
             r"
@@ -133,17 +135,19 @@ impl DisputeRepository for PgDisputeRepository {
     }
 
     async fn find_by_id(&self, id: DisputeId) -> Result<Option<Dispute>, DomainError> {
-        let dispute =
-            sqlx::query_as::<_, DisputeRow>("SELECT * FROM disputes WHERE id = $1")
-                .bind(id.as_uuid())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let dispute = sqlx::query_as::<_, DisputeRow>("SELECT * FROM disputes WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(dispute.map(Dispute::from))
     }
 
-    async fn find_by_match(&self, match_id: TournamentMatchId) -> Result<Vec<Dispute>, DomainError> {
+    async fn find_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<Dispute>, DomainError> {
         let disputes = sqlx::query_as::<_, DisputeRow>(
             "SELECT * FROM disputes WHERE match_id = $1 ORDER BY created_at DESC",
         )
@@ -599,7 +603,11 @@ impl DisputeRepository for PgDisputeRepository {
         .bind(create.reason.to_string())
         .bind(&create.description)
         .bind(&create_evidence_ids)
-        .bind(create.original_winner_registration_id.map(|id| id.as_uuid()))
+        .bind(
+            create
+                .original_winner_registration_id
+                .map(|id| id.as_uuid()),
+        )
         .bind(create.original_participant1_score)
         .bind(create.original_participant2_score)
         .bind(create.priority.to_string())
@@ -780,8 +788,11 @@ impl PgDisputeMessageRepository {
 #[async_trait]
 impl DisputeMessageRepository for PgDisputeMessageRepository {
     async fn create(&self, data: CreateDisputeMessage) -> Result<DisputeMessage, DomainError> {
-        let evidence_ids: Vec<uuid::Uuid> =
-            data.evidence_ids.iter().map(portal_core::EvidenceId::as_uuid).collect();
+        let evidence_ids: Vec<uuid::Uuid> = data
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
 
         let message = sqlx::query_as::<_, DisputeMessageRow>(
             r"
@@ -809,13 +820,12 @@ impl DisputeMessageRepository for PgDisputeMessageRepository {
         &self,
         id: DisputeMessageId,
     ) -> Result<Option<DisputeMessage>, DomainError> {
-        let message = sqlx::query_as::<_, DisputeMessageRow>(
-            "SELECT * FROM dispute_messages WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let message =
+            sqlx::query_as::<_, DisputeMessageRow>("SELECT * FROM dispute_messages WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(message.map(DisputeMessage::from))
     }
@@ -841,11 +851,12 @@ impl DisputeMessageRepository for PgDisputeMessageRepository {
     }
 
     async fn count_by_dispute(&self, dispute_id: DisputeId) -> Result<i64, DomainError> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM dispute_messages WHERE dispute_id = $1")
-            .bind(dispute_id.as_uuid())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row =
+            sqlx::query("SELECT COUNT(*) as count FROM dispute_messages WHERE dispute_id = $1")
+                .bind(dispute_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(row.get("count"))
     }

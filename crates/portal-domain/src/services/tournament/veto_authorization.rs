@@ -103,9 +103,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(registration_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         // Get team_season_id (required for team registrations)
         let team_season_id = registration.team_season_id.ok_or_else(|| {
@@ -331,9 +329,7 @@ where
             .team_repo
             .find_by_id(team_season.team_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::LeagueTeamNotFound(team_season.team_id)
-            })?;
+            .ok_or_else(|| DomainError::LeagueTeamNotFound(team_season.team_id))?;
 
         Ok(team.owner_player_id == player_id)
     }

@@ -1,10 +1,10 @@
 //! League builder for tests.
 
 use chrono::Utc;
-use fake::faker::company::en::CompanyName;
 use fake::Fake;
-use portal_db::entities::LeagueRow;
+use fake::faker::company::en::CompanyName;
 use portal_db::DbPool;
+use portal_db::entities::LeagueRow;
 use uuid::Uuid;
 
 /// Builder for creating test leagues.

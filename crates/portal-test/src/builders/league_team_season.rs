@@ -1,8 +1,8 @@
 //! League team season builder for tests.
 
 use chrono::Utc;
-use portal_db::entities::LeagueTeamSeasonRow;
 use portal_db::DbPool;
+use portal_db::entities::LeagueTeamSeasonRow;
 use uuid::Uuid;
 
 use super::{LeagueSeasonBuilder, LeagueTeamBuilder};

@@ -17,15 +17,13 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     BatchCatalogDemosRequest, MarkDemoFailedRequest, PendingDemosQuery, SubmitDemoStatsRequest,
 };
-use crate::dto::responses::{
-    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoResponse,
-};
+use crate::dto::responses::{BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedService;
 use crate::state::InternalState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::DateTime;
 use portal_core::permissions::service;
 use portal_core::{DemoId, GameId, SteamTrackingId};
@@ -454,8 +452,8 @@ async fn process_demo_ratings(
     discovered: &portal_domain::entities::discovered_match::DiscoveredMatch,
     ratings: &[DemoPlayerRating],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use portal_domain::repositories::player_rating_history::CreatePlayerRatingHistory;
     use portal_domain::repositories::PlayerRatingHistoryRepository;
+    use portal_domain::repositories::player_rating_history::CreatePlayerRatingHistory;
 
     // Only process Premier ratings (rank_type_id == 11) with non-zero rank
     let premier_ratings: Vec<&DemoPlayerRating> = ratings
@@ -536,10 +534,10 @@ async fn process_match_stats(
     discovered: &portal_domain::entities::discovered_match::DiscoveredMatch,
     map_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use portal_domain::repositories::player_match_history::CreatePlayerMatchHistory;
-    use portal_domain::repositories::player_mm_stats::AccumulateMatchStats;
     use portal_domain::repositories::PlayerMatchHistoryRepository;
     use portal_domain::repositories::PlayerMmStatsRepository;
+    use portal_domain::repositories::player_match_history::CreatePlayerMatchHistory;
+    use portal_domain::repositories::player_mm_stats::AccumulateMatchStats;
 
     let gc_data = match &discovered.gc_data {
         Some(data) => data,
@@ -610,10 +608,7 @@ async fn process_match_stats(
         };
 
         // Determine team from the explicit `team` field set during GC extraction.
-        let team = player_val
-            .get("team")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1) as u8;
+        let team = player_val.get("team").and_then(|v| v.as_u64()).unwrap_or(1) as u8;
         let is_team1 = team == 1;
 
         let (player_team_score, opponent_score) = if team_scores.len() >= 2 {
@@ -634,15 +629,39 @@ async fn process_match_stats(
             "draw"
         };
 
-        let kills = player_val.get("kills").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let deaths = player_val.get("deaths").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let assists = player_val.get("assists").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let score = player_val.get("score").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let headshots = player_val.get("headshots").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let kills = player_val
+            .get("kills")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        let deaths = player_val
+            .get("deaths")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        let assists = player_val
+            .get("assists")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        let score = player_val
+            .get("score")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        let headshots = player_val
+            .get("headshots")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
         let mvps = player_val.get("mvps").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let entry_3k = player_val.get("entry_3k").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let entry_4k = player_val.get("entry_4k").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let entry_5k = player_val.get("entry_5k").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let entry_3k = player_val
+            .get("entry_3k")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        let entry_4k = player_val
+            .get("entry_4k")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        let entry_5k = player_val
+            .get("entry_5k")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
 
         // Insert match history (idempotent via UNIQUE)
         state
@@ -874,7 +893,10 @@ pub async fn internal_submit_demo_stats(
         .save_demo_stats(demo_id, metadata, request.raw_stats, players)
         .await?;
 
-    Ok(Json(DataResponse::new(DemoResponse::from(demo), "internal")))
+    Ok(Json(DataResponse::new(
+        DemoResponse::from(demo),
+        "internal",
+    )))
 }
 
 /// Mark a demo's stats processing as failed (service auth).
@@ -892,5 +914,8 @@ pub async fn internal_mark_demo_stats_failed(
         .mark_stats_failed(demo_id, &request.error)
         .await?;
 
-    Ok(Json(DataResponse::new(DemoResponse::from(demo), "internal")))
+    Ok(Json(DataResponse::new(
+        DemoResponse::from(demo),
+        "internal",
+    )))
 }

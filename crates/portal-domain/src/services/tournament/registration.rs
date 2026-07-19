@@ -10,9 +10,7 @@ use portal_core::{DomainError, TournamentId, TournamentRegistrationId, UserId};
 use tracing::instrument;
 
 use crate::entities::tournament::TournamentRegistration;
-use crate::repositories::tournament::{
-    TournamentRegistrationRepository, TournamentRepository,
-};
+use crate::repositories::tournament::{TournamentRegistrationRepository, TournamentRepository};
 
 /// Service for tournament registration management.
 pub struct RegistrationService<TR, TRR>
@@ -74,9 +72,7 @@ where
             .tournament_repo
             .find_by_id(registration.tournament_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentNotFound(registration.tournament_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentNotFound(registration.tournament_id))?;
 
         // Check if tournament has already started and is past a certain state
         if tournament.status == TournamentStatus::InProgress
@@ -124,9 +120,7 @@ where
             .tournament_repo
             .find_by_id(registration.tournament_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentNotFound(registration.tournament_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentNotFound(registration.tournament_id))?;
 
         // Check capacity
         let current_count = self
@@ -234,10 +228,7 @@ where
     /// - Participant is not already registered
     /// - Tournament is not full
     #[instrument(skip(self))]
-    pub async fn check_eligibility(
-        &self,
-        tournament_id: TournamentId,
-    ) -> Result<(), DomainError> {
+    pub async fn check_eligibility(&self, tournament_id: TournamentId) -> Result<(), DomainError> {
         let tournament = self
             .tournament_repo
             .find_by_id(tournament_id)
@@ -250,7 +241,10 @@ where
         }
 
         // Check capacity
-        let current_count = self.tournament_repo.count_registrations(tournament_id).await?;
+        let current_count = self
+            .tournament_repo
+            .count_registrations(tournament_id)
+            .await?;
         if current_count >= i64::from(tournament.max_participants) {
             return Err(DomainError::TournamentFull);
         }

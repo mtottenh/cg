@@ -390,7 +390,10 @@ pub trait LeagueTeamMemberRepository: Send + Sync {
     ) -> Result<Option<LeagueTeamMember>, DomainError>;
 
     /// Add a member to a team-season roster.
-    async fn add_member(&self, member: AddLeagueTeamMember) -> Result<LeagueTeamMember, DomainError>;
+    async fn add_member(
+        &self,
+        member: AddLeagueTeamMember,
+    ) -> Result<LeagueTeamMember, DomainError>;
 
     /// Update a member's role.
     async fn update_role(
@@ -435,8 +438,10 @@ pub trait LeagueTeamMemberRepository: Send + Sync {
     ) -> Result<i64, DomainError>;
 
     /// Count all active members in a team-season.
-    async fn count_active_members(&self, team_season_id: LeagueTeamSeasonId)
-        -> Result<i64, DomainError>;
+    async fn count_active_members(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<i64, DomainError>;
 
     /// Count primary members (captain + players) in a team-season.
     async fn count_primary_members(
@@ -445,7 +450,10 @@ pub trait LeagueTeamMemberRepository: Send + Sync {
     ) -> Result<i64, DomainError>;
 
     /// Count substitutes in a team-season.
-    async fn count_substitutes(&self, team_season_id: LeagueTeamSeasonId) -> Result<i64, DomainError>;
+    async fn count_substitutes(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<i64, DomainError>;
 
     /// Count captains in a team-season.
     async fn count_captains(&self, team_season_id: LeagueTeamSeasonId) -> Result<i64, DomainError>;

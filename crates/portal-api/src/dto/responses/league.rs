@@ -2,8 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use portal_domain::entities::league::{
-    League, LeagueInvitation,
-    LeagueMemberWithUser, UserLeagueMembership,
+    League, LeagueInvitation, LeagueMemberWithUser, UserLeagueMembership,
 };
 use serde::Serialize;
 use utoipa::ToSchema;

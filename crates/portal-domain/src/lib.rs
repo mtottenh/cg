@@ -23,8 +23,10 @@ pub mod services;
 
 // Re-export commonly used types
 pub use auth::{hash_password, verify_dummy_for_timing, verify_password};
-pub use jwt::{generate_access_token, generate_access_token_with_expiry, validate_token, Claims};
-pub use refresh_token::{generate_refresh_token, hash_refresh_token};
 pub use entities::league_team::{LeagueSeason, LeagueTeam, LeagueTeamMember};
+pub use jwt::{Claims, generate_access_token, generate_access_token_with_expiry, validate_token};
+pub use refresh_token::{generate_refresh_token, hash_refresh_token};
 pub use services::league::LeagueService;
-pub use services::league_team::{LeagueSeasonService, LeagueTeamInvitationService, LeagueTeamService};
+pub use services::league_team::{
+    LeagueSeasonService, LeagueTeamInvitationService, LeagueTeamService,
+};

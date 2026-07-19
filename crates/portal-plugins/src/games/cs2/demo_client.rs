@@ -18,9 +18,7 @@ fn has_extension(filename: &str, ext: &str) -> bool {
 
 /// Check if a filename ends with ".stats.json" (case-insensitive).
 fn has_stats_json_extension(filename: &str) -> bool {
-    filename
-        .to_ascii_lowercase()
-        .ends_with(".stats.json")
+    filename.to_ascii_lowercase().ends_with(".stats.json")
 }
 
 const DEMO_BASE_URL: &str = "https://demos.cs210mans.uk";
@@ -157,12 +155,9 @@ impl Cs2DemoClient {
 
         debug!(url = %url, "Fetching demo stats");
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| PluginError::ExternalService(format!("Failed to fetch demo stats: {e}")))?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            PluginError::ExternalService(format!("Failed to fetch demo stats: {e}"))
+        })?;
 
         if !response.status().is_success() {
             return Err(PluginError::NotFound(format!(

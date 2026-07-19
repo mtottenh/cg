@@ -1,7 +1,9 @@
 //! PostgreSQL implementations of Demo repositories.
 
-use crate::entities::{DemoMatchLinkRow, DemoPlayerRow, DemoRow, NewDemo, NewDemoMatchLink, NewDemoPlayer};
 use crate::DbPool;
+use crate::entities::{
+    DemoMatchLinkRow, DemoPlayerRow, DemoRow, NewDemo, NewDemoMatchLink, NewDemoPlayer,
+};
 use async_trait::async_trait;
 use portal_core::{
     DemoCategory, DemoId, DemoLinkType, DemoMatchLinkId, DemoPlayerId, DemoStatus, DomainError,
@@ -37,13 +39,11 @@ impl PgDemoRepository {
 #[async_trait]
 impl DemoRepository for PgDemoRepository {
     async fn find_by_id(&self, id: DemoId) -> Result<Option<Demo>, DomainError> {
-        let row = sqlx::query_as::<_, DemoRow>(
-            r"SELECT * FROM demos WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("Failed to find demo: {e}")))?;
+        let row = sqlx::query_as::<_, DemoRow>(r"SELECT * FROM demos WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("Failed to find demo: {e}")))?;
 
         row.map(demo_row_to_domain).transpose()
     }
@@ -103,11 +103,15 @@ impl DemoRepository for PgDemoRepository {
             param_index += 1;
         }
         if filter.match_date_from.is_some() {
-            conditions.push(format!("(metadata->>'match_date')::timestamptz >= ${param_index}"));
+            conditions.push(format!(
+                "(metadata->>'match_date')::timestamptz >= ${param_index}"
+            ));
             param_index += 1;
         }
         if filter.match_date_to.is_some() {
-            conditions.push(format!("(metadata->>'match_date')::timestamptz <= ${param_index}"));
+            conditions.push(format!(
+                "(metadata->>'match_date')::timestamptz <= ${param_index}"
+            ));
             param_index += 1;
         }
         if !filter.include_hidden {
@@ -187,7 +191,8 @@ impl DemoRepository for PgDemoRepository {
             .await
             .map_err(|e| DomainError::internal(format!("Failed to list demos: {e}")))?;
 
-        let demos: Result<Vec<Demo>, DomainError> = rows.into_iter().map(demo_row_to_domain).collect();
+        let demos: Result<Vec<Demo>, DomainError> =
+            rows.into_iter().map(demo_row_to_domain).collect();
 
         Ok(DemoListResult {
             demos: demos?,
@@ -355,7 +360,11 @@ impl DemoRepository for PgDemoRepository {
         demo_row_to_domain(row)
     }
 
-    async fn set_admin_notes(&self, id: DemoId, notes: Option<String>) -> Result<Demo, DomainError> {
+    async fn set_admin_notes(
+        &self,
+        id: DemoId,
+        notes: Option<String>,
+    ) -> Result<Demo, DomainError> {
         let row = sqlx::query_as::<_, DemoRow>(
             r"UPDATE demos SET admin_notes = $2, updated_at = NOW() WHERE id = $1 RETURNING *",
         )
@@ -474,23 +483,30 @@ impl PgDemoMatchLinkRepository {
 #[async_trait]
 impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
     async fn find_by_id(&self, id: DemoMatchLinkId) -> Result<Option<DemoMatchLink>, DomainError> {
-        let row = sqlx::query_as::<_, DemoMatchLinkRow>(
-            r"SELECT * FROM demo_match_links WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("Failed to find demo match link: {e}")))?;
+        let row =
+            sqlx::query_as::<_, DemoMatchLinkRow>(r"SELECT * FROM demo_match_links WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| {
+                    DomainError::internal(format!("Failed to find demo match link: {e}"))
+                })?;
 
         row.map(link_row_to_domain).transpose()
     }
 
-    async fn find_by_ids(&self, ids: &[DemoMatchLinkId]) -> Result<Vec<DemoMatchLink>, DomainError> {
+    async fn find_by_ids(
+        &self,
+        ids: &[DemoMatchLinkId],
+    ) -> Result<Vec<DemoMatchLink>, DomainError> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
 
-        let uuids: Vec<uuid::Uuid> = ids.iter().map(portal_core::DemoMatchLinkId::as_uuid).collect();
+        let uuids: Vec<uuid::Uuid> = ids
+            .iter()
+            .map(portal_core::DemoMatchLinkId::as_uuid)
+            .collect();
         let rows = sqlx::query_as::<_, DemoMatchLinkRow>(
             r"SELECT * FROM demo_match_links WHERE id = ANY($1)",
         )
@@ -514,7 +530,10 @@ impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
         rows.into_iter().map(link_row_to_domain).collect()
     }
 
-    async fn find_by_match(&self, match_id: TournamentMatchId) -> Result<Vec<DemoMatchLink>, DomainError> {
+    async fn find_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<DemoMatchLink>, DomainError> {
         let rows = sqlx::query_as::<_, DemoMatchLinkRow>(
             r"SELECT * FROM demo_match_links WHERE match_id = $1 ORDER BY game_number, linked_at",
         )
@@ -547,13 +566,11 @@ impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
         let demo_ids: Vec<uuid::Uuid> = link_rows.iter().map(|l| l.demo_id).collect();
 
         // Fetch all demos
-        let demo_rows = sqlx::query_as::<_, DemoRow>(
-            r"SELECT * FROM demos WHERE id = ANY($1)",
-        )
-        .bind(&demo_ids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("Failed to find demos: {e}")))?;
+        let demo_rows = sqlx::query_as::<_, DemoRow>(r"SELECT * FROM demos WHERE id = ANY($1)")
+            .bind(&demo_ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("Failed to find demos: {e}")))?;
 
         // Fetch all players for these demos
         let player_rows = sqlx::query_as::<_, DemoPlayerRow>(
@@ -715,13 +732,11 @@ impl PgDemoPlayerRepository {
 #[async_trait]
 impl DemoPlayerRepository for PgDemoPlayerRepository {
     async fn find_by_id(&self, id: DemoPlayerId) -> Result<Option<DemoPlayer>, DomainError> {
-        let row = sqlx::query_as::<_, DemoPlayerRow>(
-            r"SELECT * FROM demo_players WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("Failed to find demo player: {e}")))?;
+        let row = sqlx::query_as::<_, DemoPlayerRow>(r"SELECT * FROM demo_players WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("Failed to find demo player: {e}")))?;
 
         Ok(row.map(player_row_to_domain))
     }

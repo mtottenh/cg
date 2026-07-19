@@ -1,8 +1,7 @@
 //! Result review API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use serde_json::json;
 
 // ============================================================================
@@ -125,7 +124,9 @@ async fn test_get_result_review_unauthorized() {
     let match_id = "00000000-0000-0000-0000-000000000001";
 
     // GET without auth should fail
-    let response = app.get(&format!("/v1/matches/{}/result-review", match_id)).await;
+    let response = app
+        .get(&format!("/v1/matches/{}/result-review", match_id))
+        .await;
 
     // Should return 401
     response.assert_status(StatusCode::UNAUTHORIZED);

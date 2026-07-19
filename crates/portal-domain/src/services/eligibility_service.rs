@@ -62,7 +62,10 @@ where
             player_data.push((pid, profile, stats));
         }
 
-        Ok(super::eligibility::check_eligibility(restrictions, &player_data))
+        Ok(super::eligibility::check_eligibility(
+            restrictions,
+            &player_data,
+        ))
     }
 
     /// Check players against restrictions parsed from a settings JSONB value.

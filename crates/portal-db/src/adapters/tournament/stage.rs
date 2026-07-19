@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::tournament::TournamentStageRow;
 use crate::DbPool;
+use crate::entities::tournament::TournamentStageRow;
 use portal_core::types::StageStatus;
 use portal_core::{DomainError, TournamentId, TournamentStageId};
 use portal_domain::entities::tournament::TournamentStage;
@@ -192,7 +192,10 @@ impl TournamentStageRepository for PgTournamentStageRepository {
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok((TournamentStage::from(from_row), TournamentStage::from(to_row)))
+        Ok((
+            TournamentStage::from(from_row),
+            TournamentStage::from(to_row),
+        ))
     }
 
     async fn list_by_tournament(

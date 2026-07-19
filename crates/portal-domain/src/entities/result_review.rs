@@ -282,11 +282,15 @@ mod tests {
     #[test]
     fn test_result_review_status_parse() {
         assert_eq!(
-            "pending_acknowledgment".parse::<ResultReviewStatus>().unwrap(),
+            "pending_acknowledgment"
+                .parse::<ResultReviewStatus>()
+                .unwrap(),
             ResultReviewStatus::PendingAcknowledgment
         );
         assert_eq!(
-            "pending_admin_review".parse::<ResultReviewStatus>().unwrap(),
+            "pending_admin_review"
+                .parse::<ResultReviewStatus>()
+                .unwrap(),
             ResultReviewStatus::PendingAdminReview
         );
         assert!("invalid".parse::<ResultReviewStatus>().is_err());
@@ -382,6 +386,9 @@ mod tests {
 
         assert_eq!(review.get_captain_side(captain1_id), Some(1));
         assert_eq!(review.get_captain_side(captain2_id), Some(2));
-        assert_eq!(review.get_captain_side(TournamentRegistrationId::new()), None);
+        assert_eq!(
+            review.get_captain_side(TournamentRegistrationId::new()),
+            None
+        );
     }
 }

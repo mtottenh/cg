@@ -115,13 +115,11 @@ where
         let standings = self.standing_repo.list_by_bracket(bracket_id).await?;
 
         // Create a map to accumulate stats
-        let mut stats: std::collections::HashMap<
-            TournamentRegistrationId,
-            StandingStats,
-        > = standings
-            .iter()
-            .map(|s| (s.registration_id, StandingStats::default()))
-            .collect();
+        let mut stats: std::collections::HashMap<TournamentRegistrationId, StandingStats> =
+            standings
+                .iter()
+                .map(|s| (s.registration_id, StandingStats::default()))
+                .collect();
 
         // Replay all completed matches
         for match_ in &matches {
@@ -190,7 +188,10 @@ where
                     .keys()
                     .filter_map(|opp_id| stats.get(opp_id))
                     .fold((0, 0), |(wins, matches), opp_stats| {
-                        (wins + opp_stats.matches_won, matches + opp_stats.matches_played)
+                        (
+                            wins + opp_stats.matches_won,
+                            matches + opp_stats.matches_played,
+                        )
                     });
 
                 let omw = if total_opp_matches > 0 {

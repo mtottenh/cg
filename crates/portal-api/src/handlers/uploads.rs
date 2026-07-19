@@ -5,16 +5,16 @@ use crate::dto::responses::{LeagueTeamResponse, PlayerResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::state::UploadsState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::Json;
 use axum_extra::extract::Multipart;
 use bytes::Bytes;
-use portal_core::{permissions, LeagueTeamId};
+use portal_core::{LeagueTeamId, permissions};
 use portal_domain::entities::league_team::UpdateLeagueTeamCommand;
 use portal_domain::repositories::UpdatePlayer;
-use portal_storage::image::{ImageProcessor, ImageType};
 use portal_storage::StoreRequest;
+use portal_storage::image::{ImageProcessor, ImageType};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -45,7 +45,8 @@ async fn extract_file(mut multipart: Multipart) -> Result<(String, Bytes), ApiEr
     {
         if field.name() == Some("file") {
             let filename = field
-                .file_name().map_or_else(|| "upload".to_string(), String::from);
+                .file_name()
+                .map_or_else(|| "upload".to_string(), String::from);
 
             let data = field
                 .bytes()
@@ -113,7 +114,10 @@ pub async fn upload_player_avatar(
         .update_profile(auth.player_id, update)
         .await?;
 
-    Ok(Json(DataResponse::new(PlayerResponse::from(player), request_id)))
+    Ok(Json(DataResponse::new(
+        PlayerResponse::from(player),
+        request_id,
+    )))
 }
 
 /// Upload player banner.
@@ -170,7 +174,10 @@ pub async fn upload_player_banner(
         .update_profile(auth.player_id, update)
         .await?;
 
-    Ok(Json(DataResponse::new(PlayerResponse::from(player), request_id)))
+    Ok(Json(DataResponse::new(
+        PlayerResponse::from(player),
+        request_id,
+    )))
 }
 
 /// Shared worker for team-image uploads. Handles auth (team settings manage
@@ -187,12 +194,8 @@ async fn upload_team_image(
     request_id: &str,
     mut apply: impl FnMut(&mut UpdateLeagueTeamCommand, String),
 ) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
-    perm.require_team_permission(
-        &auth,
-        team_id.as_uuid(),
-        permissions::team::SETTINGS_MANAGE,
-    )
-    .await?;
+    perm.require_team_permission(&auth, team_id.as_uuid(), permissions::team::SETTINGS_MANAGE)
+        .await?;
 
     let (filename, data) = extract_file(multipart).await?;
     let config = image_type.config();

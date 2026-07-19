@@ -1,7 +1,7 @@
 //! Player game profile repository adapter.
 
-use crate::entities::PlayerGameProfileRow;
 use crate::DbPool;
+use crate::entities::PlayerGameProfileRow;
 use async_trait::async_trait;
 use portal_core::{DomainError, GameId, PlayerGameProfileId, PlayerId};
 use portal_domain::entities::PlayerGameProfile;

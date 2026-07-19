@@ -131,7 +131,8 @@ impl PortalApiClient {
             anyhow::bail!("batch catalog failed ({status}): {body}");
         }
 
-        let parsed: BatchCatalogResponse = resp.json().await.context("parse batch catalog response")?;
+        let parsed: BatchCatalogResponse =
+            resp.json().await.context("parse batch catalog response")?;
         Ok(parsed.data)
     }
 

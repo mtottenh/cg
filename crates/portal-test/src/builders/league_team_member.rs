@@ -1,8 +1,8 @@
 //! League team member builder for tests.
 
 use chrono::Utc;
-use portal_db::entities::LeagueTeamMemberRow;
 use portal_db::DbPool;
+use portal_db::entities::LeagueTeamMemberRow;
 use uuid::Uuid;
 
 use super::{LeagueTeamSeasonBuilder, PlayerBuilder};
@@ -143,7 +143,12 @@ impl LeagueTeamMemberBuilder {
     /// Build an in-memory league team member (not persisted).
     /// Requires `team_season_id`, `player_id`, and `season_id` to be known.
     #[must_use]
-    pub fn build(self, team_season_id: Uuid, player_id: Uuid, season_id: Uuid) -> LeagueTeamMemberRow {
+    pub fn build(
+        self,
+        team_season_id: Uuid,
+        player_id: Uuid,
+        season_id: Uuid,
+    ) -> LeagueTeamMemberRow {
         let now = Utc::now();
 
         LeagueTeamMemberRow {
@@ -167,14 +172,16 @@ impl LeagueTeamMemberBuilder {
     /// If `player_id` is not set, creates a test player automatically.
     pub async fn build_persisted(self, pool: &DbPool) -> LeagueTeamMemberRow {
         // Get or create team_season and player
-        let team_season_id = if let Some(ts) = self.team_season_id { ts } else {
-            let team_season = LeagueTeamSeasonBuilder::new()
-                .build_persisted(pool)
-                .await;
+        let team_season_id = if let Some(ts) = self.team_season_id {
+            ts
+        } else {
+            let team_season = LeagueTeamSeasonBuilder::new().build_persisted(pool).await;
             team_season.id
         };
 
-        let player_id = if let Some(p) = self.player_id { p } else {
+        let player_id = if let Some(p) = self.player_id {
+            p
+        } else {
             let player = PlayerBuilder::new().build_persisted(pool).await;
             player.id
         };

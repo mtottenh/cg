@@ -72,7 +72,10 @@ where
         self.team_season_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::LookupFailed { resource: "league team season", query: id.to_string() })
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "league team season",
+                query: id.to_string(),
+            })
     }
 
     /// Get team season by team and season.
@@ -94,7 +97,9 @@ where
         team_season_id: LeagueTeamSeasonId,
     ) -> Result<Vec<LeagueTeamMemberWithPlayer>, DomainError> {
         let _ = self.get_team_season(team_season_id).await?;
-        self.member_repo.list_members_with_players(team_season_id).await
+        self.member_repo
+            .list_members_with_players(team_season_id)
+            .await
     }
 
     /// Create a new team in a league and register it for a season.
@@ -140,7 +145,11 @@ where
         }
 
         // Check name uniqueness within the league
-        if self.team_repo.name_exists(season.league_id, &cmd.name).await? {
+        if self
+            .team_repo
+            .name_exists(season.league_id, &cmd.name)
+            .await?
+        {
             return Err(DomainError::Conflict(format!(
                 "team name '{}' is already taken in this league",
                 cmd.name
@@ -148,7 +157,11 @@ where
         }
 
         // Check tag uniqueness within the league
-        if self.team_repo.tag_exists(season.league_id, &cmd.tag).await? {
+        if self
+            .team_repo
+            .tag_exists(season.league_id, &cmd.tag)
+            .await?
+        {
             return Err(DomainError::Conflict(format!(
                 "team tag '{}' is already taken in this league",
                 cmd.tag
@@ -374,9 +387,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::LeagueSeasonNotFound(team_season.season_id)
-            })?;
+            .ok_or_else(|| DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         // Check roster lock status
         if role.is_primary() && !season.allows_primary_roster_changes() {
@@ -469,9 +480,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::LeagueSeasonNotFound(team_season.season_id)
-            })?;
+            .ok_or_else(|| DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         let member = self
             .member_repo
@@ -529,7 +538,9 @@ where
             .ok_or(DomainError::NotTeamMember)?;
 
         if member.role == LeagueTeamRole::Captain {
-            return Err(DomainError::Conflict("member is already a captain".to_string()));
+            return Err(DomainError::Conflict(
+                "member is already a captain".to_string(),
+            ));
         }
 
         if !member.is_active() {
@@ -652,9 +663,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::LeagueSeasonNotFound(team_season.season_id)
-            })?;
+            .ok_or_else(|| DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         // Check roster lock status
         if member.role.is_primary() && !season.allows_primary_roster_changes() {
@@ -722,7 +731,9 @@ where
         &self,
         player_id: PlayerId,
     ) -> Result<Vec<PlayerLeagueTeamMembership>, DomainError> {
-        self.member_repo.list_memberships_for_player(player_id).await
+        self.member_repo
+            .list_memberships_for_player(player_id)
+            .await
     }
 
     /// Check if a player is a member of a team season.

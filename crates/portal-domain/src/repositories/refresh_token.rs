@@ -18,7 +18,10 @@ pub trait RefreshTokenRepository: Send + Sync {
     ) -> Result<RefreshToken, DomainError>;
 
     /// Find an active (non-revoked) refresh token by its hash.
-    async fn find_active_by_hash(&self, token_hash: &str) -> Result<Option<RefreshToken>, DomainError>;
+    async fn find_active_by_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<RefreshToken>, DomainError>;
 
     /// Find a refresh token by hash **regardless of revoked state**.
     ///

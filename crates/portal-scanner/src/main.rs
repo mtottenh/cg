@@ -43,9 +43,8 @@ async fn main() -> Result<()> {
     );
 
     // Build S3 client
-    let mut s3_config_loader = aws_config::from_env().region(
-        aws_sdk_s3::config::Region::new(config.s3_region.clone()),
-    );
+    let mut s3_config_loader =
+        aws_config::from_env().region(aws_sdk_s3::config::Region::new(config.s3_region.clone()));
     if let Some(endpoint) = &config.s3_endpoint {
         s3_config_loader = s3_config_loader.endpoint_url(endpoint);
     }

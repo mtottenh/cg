@@ -160,7 +160,9 @@ async fn test_get_tournament_not_found() {
     let app = TestApp::new().await;
 
     // Try to get non-existent tournament
-    let response = app.get("/v1/tournaments/00000000-0000-0000-0000-000000000000").await;
+    let response = app
+        .get("/v1/tournaments/00000000-0000-0000-0000-000000000000")
+        .await;
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
@@ -225,7 +227,9 @@ async fn test_list_tournaments_filter_by_game() {
     response.assert_status(StatusCode::CREATED);
 
     // Filter by game
-    let response = app.get(&format!("/v1/tournaments?game_id={}", game_id)).await;
+    let response = app
+        .get(&format!("/v1/tournaments?game_id={}", game_id))
+        .await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();

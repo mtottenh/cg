@@ -9,7 +9,9 @@ use portal_core::{
 };
 // Re-export shared veto types from portal-core so downstream crates
 // can continue to import from `portal_domain::entities::veto`.
-pub use portal_core::{VetoActionType, VetoFormatConfig, VetoFormatActionConfig, SideSelectionMode};
+pub use portal_core::{
+    SideSelectionMode, VetoActionType, VetoFormatActionConfig, VetoFormatConfig,
+};
 use serde::{Deserialize, Serialize};
 
 // =============================================================================

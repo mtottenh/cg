@@ -9,13 +9,15 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::PlayerState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{GameId, PlayerId};
 use portal_domain::entities::PlayerGameProfile;
 use portal_domain::repositories::player_rating_history::CreatePlayerRatingHistory;
-use portal_domain::repositories::{PlayerMatchHistoryRepository, PlayerMmStatsRepository, PlayerRatingHistoryRepository};
+use portal_domain::repositories::{
+    PlayerMatchHistoryRepository, PlayerMmStatsRepository, PlayerRatingHistoryRepository,
+};
 use portal_plugins::types::PlayerStatsContext;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
@@ -66,7 +68,10 @@ async fn profiles_to_responses(
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
-        responses.push(PlayerGameProfileResponse::from_profile_with_stats(profile, display_stats));
+        responses.push(PlayerGameProfileResponse::from_profile_with_stats(
+            profile,
+            display_stats,
+        ));
     }
     responses
 }
@@ -377,8 +382,10 @@ pub async fn get_player_rating_history(
         .list_by_player_and_game(player_id, game_id, limit)
         .await?;
 
-    let responses: Vec<PlayerRatingHistoryResponse> =
-        entries.into_iter().map(PlayerRatingHistoryResponse::from).collect();
+    let responses: Vec<PlayerRatingHistoryResponse> = entries
+        .into_iter()
+        .map(PlayerRatingHistoryResponse::from)
+        .collect();
 
     Ok(Json(DataResponse::new(responses, request_id)))
 }
@@ -512,8 +519,10 @@ pub async fn get_player_match_history(
         .list_by_player_and_game(player_id, game_id, limit, offset)
         .await?;
 
-    let responses: Vec<MatchHistoryEntryResponse> =
-        entries.into_iter().map(MatchHistoryEntryResponse::from).collect();
+    let responses: Vec<MatchHistoryEntryResponse> = entries
+        .into_iter()
+        .map(MatchHistoryEntryResponse::from)
+        .collect();
 
     Ok(Json(DataResponse::new(responses, request_id)))
 }

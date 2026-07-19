@@ -2,8 +2,8 @@
 
 use crate::handlers::availability;
 use crate::state::AppState;
-use axum::routing::{delete, get, post};
 use axum::Router;
+use axum::routing::{delete, get, post};
 
 /// Create availability routes for current player (/players/me/availability).
 pub fn player_availability_routes() -> Router<AppState> {
@@ -32,7 +32,10 @@ pub fn player_availability_routes() -> Router<AppState> {
 
 /// Create public availability routes for a specific player (/players/{player_id}/availability).
 pub fn player_public_availability_routes() -> Router<AppState> {
-    Router::new().route("/date", get(availability::get_player_date_availability_public))
+    Router::new().route(
+        "/date",
+        get(availability::get_player_date_availability_public),
+    )
 }
 
 /// Create match suggestion routes (/tournaments/{tournament_id}/matches/{match_id}/suggestions).

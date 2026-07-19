@@ -99,9 +99,7 @@ async fn test_start_double_elimination_tournament() {
     response.assert_status(StatusCode::OK);
 
     // Verify tournament status is "in_progress"
-    let response = app
-        .get(&format!("/v1/tournaments/{}", tournament_id))
-        .await;
+    let response = app.get(&format!("/v1/tournaments/{}", tournament_id)).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "in_progress");
@@ -378,9 +376,7 @@ async fn test_start_round_robin_tournament() {
     response.assert_status(StatusCode::OK);
 
     // Verify tournament status
-    let response = app
-        .get(&format!("/v1/tournaments/{}", tournament_id))
-        .await;
+    let response = app.get(&format!("/v1/tournaments/{}", tournament_id)).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "in_progress");
@@ -560,9 +556,7 @@ async fn test_start_swiss_tournament() {
     response.assert_status(StatusCode::OK);
 
     // Verify tournament status
-    let response = app
-        .get(&format!("/v1/tournaments/{}", tournament_id))
-        .await;
+    let response = app.get(&format!("/v1/tournaments/{}", tournament_id)).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "in_progress");
@@ -735,9 +729,7 @@ async fn test_start_groups_and_playoffs_tournament() {
         .assert_status(StatusCode::OK);
 
     // Verify tournament status
-    let response = app
-        .get(&format!("/v1/tournaments/{}", tournament_id))
-        .await;
+    let response = app.get(&format!("/v1/tournaments/{}", tournament_id)).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "in_progress");

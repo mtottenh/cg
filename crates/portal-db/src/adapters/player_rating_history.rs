@@ -1,7 +1,7 @@
 //! Player rating history repository adapter.
 
-use crate::entities::{PlayerRatingHistoryRow, RatingStatsRow};
 use crate::DbPool;
+use crate::entities::{PlayerRatingHistoryRow, RatingStatsRow};
 use async_trait::async_trait;
 use portal_core::{DomainError, GameId, PlayerId, PlayerRatingHistoryId};
 use portal_domain::entities::PlayerRatingHistory;

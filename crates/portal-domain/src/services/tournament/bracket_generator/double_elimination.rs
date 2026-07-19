@@ -253,10 +253,7 @@ impl BracketGenerator {
 
                 cross_bracket_links.push(CrossBracketLink {
                     source_bracket_position: format!("WR{wb_round}M{}", match_idx + 1),
-                    target_bracket_position: format!(
-                        "LR{lb_dropper_round}M{}",
-                        lb_match_idx + 1
-                    ),
+                    target_bracket_position: format!("LR{lb_dropper_round}M{}", lb_match_idx + 1),
                     link_type: CrossLinkType::LoserDropsTo,
                 });
             }
@@ -280,12 +277,8 @@ impl BracketGenerator {
             participant2_name: None,
             participant2_logo_url: None,
             participant2_seed: None,
-            participant1_source: Some(MatchParticipantSource::WinnerOf(format!(
-                "WR{wb_rounds}M1"
-            ))),
-            participant2_source: Some(MatchParticipantSource::WinnerOf(format!(
-                "LR{lb_rounds}M1"
-            ))),
+            participant1_source: Some(MatchParticipantSource::WinnerOf(format!("WR{wb_rounds}M1"))),
+            participant2_source: Some(MatchParticipantSource::WinnerOf(format!("LR{lb_rounds}M1"))),
             match_format,
             maps_required: match_format.wins_required(),
             winner_progresses_to: None,
@@ -346,7 +339,10 @@ impl BracketGenerator {
         lb_round: i32,
         match_idx: usize,
         wb_rounds: i32,
-    ) -> (Option<MatchParticipantSource>, Option<MatchParticipantSource>) {
+    ) -> (
+        Option<MatchParticipantSource>,
+        Option<MatchParticipantSource>,
+    ) {
         if lb_round == 1 {
             let wr1_matches = (1usize << wb_rounds) / 2;
             let p1_wr1_idx = match_idx;
@@ -371,13 +367,12 @@ impl BracketGenerator {
                 match_idx + 1
             )));
 
-            let wb_match_idx = if wb_matches_in_round
-                == Self::lb_matches_in_round(lb_round, wb_rounds)
-            {
-                wb_matches_in_round - 1 - match_idx
-            } else {
-                match_idx
-            };
+            let wb_match_idx =
+                if wb_matches_in_round == Self::lb_matches_in_round(lb_round, wb_rounds) {
+                    wb_matches_in_round - 1 - match_idx
+                } else {
+                    match_idx
+                };
             let p2_source = Some(MatchParticipantSource::LoserOf(format!(
                 "WR{wb_source_round}M{}",
                 wb_match_idx + 1
@@ -554,24 +549,63 @@ mod tests {
     fn test_double_elimination_participant_sources() {
         let result = create_de_result(8);
 
-        for m in result.losers_bracket.matches.iter().filter(|m| m.round == 1) {
-            assert!(matches!(m.participant1_source, Some(MatchParticipantSource::LoserOf(_))));
-            assert!(matches!(m.participant2_source, Some(MatchParticipantSource::LoserOf(_))));
+        for m in result
+            .losers_bracket
+            .matches
+            .iter()
+            .filter(|m| m.round == 1)
+        {
+            assert!(matches!(
+                m.participant1_source,
+                Some(MatchParticipantSource::LoserOf(_))
+            ));
+            assert!(matches!(
+                m.participant2_source,
+                Some(MatchParticipantSource::LoserOf(_))
+            ));
         }
 
-        for m in result.losers_bracket.matches.iter().filter(|m| m.round == 2) {
-            assert!(matches!(m.participant1_source, Some(MatchParticipantSource::WinnerOf(_))));
-            assert!(matches!(m.participant2_source, Some(MatchParticipantSource::LoserOf(_))));
+        for m in result
+            .losers_bracket
+            .matches
+            .iter()
+            .filter(|m| m.round == 2)
+        {
+            assert!(matches!(
+                m.participant1_source,
+                Some(MatchParticipantSource::WinnerOf(_))
+            ));
+            assert!(matches!(
+                m.participant2_source,
+                Some(MatchParticipantSource::LoserOf(_))
+            ));
         }
 
-        for m in result.losers_bracket.matches.iter().filter(|m| m.round == 3) {
-            assert!(matches!(m.participant1_source, Some(MatchParticipantSource::WinnerOf(_))));
-            assert!(matches!(m.participant2_source, Some(MatchParticipantSource::WinnerOf(_))));
+        for m in result
+            .losers_bracket
+            .matches
+            .iter()
+            .filter(|m| m.round == 3)
+        {
+            assert!(matches!(
+                m.participant1_source,
+                Some(MatchParticipantSource::WinnerOf(_))
+            ));
+            assert!(matches!(
+                m.participant2_source,
+                Some(MatchParticipantSource::WinnerOf(_))
+            ));
         }
 
         let gf = &result.grand_final.matches[0];
-        assert!(matches!(gf.participant1_source, Some(MatchParticipantSource::WinnerOf(_))));
-        assert!(matches!(gf.participant2_source, Some(MatchParticipantSource::WinnerOf(_))));
+        assert!(matches!(
+            gf.participant1_source,
+            Some(MatchParticipantSource::WinnerOf(_))
+        ));
+        assert!(matches!(
+            gf.participant2_source,
+            Some(MatchParticipantSource::WinnerOf(_))
+        ));
 
         if let Some(MatchParticipantSource::WinnerOf(pos)) = &gf.participant1_source {
             assert_eq!(pos, "WR3M1");

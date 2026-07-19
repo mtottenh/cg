@@ -241,11 +241,7 @@ impl Cs2DemoStats {
             return self
                 .player_summaries
                 .iter()
-                .filter(|(_, ps)| {
-                    ps.team
-                        .as_ref()
-                        .is_some_and(|t| t.team_name == team_name)
-                })
+                .filter(|(_, ps)| ps.team.as_ref().is_some_and(|t| t.team_name == team_name))
                 .map(|(steam_id, _)| steam_id.clone())
                 .collect();
         }

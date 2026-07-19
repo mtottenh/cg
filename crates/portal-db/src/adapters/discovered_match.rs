@@ -1,7 +1,7 @@
 //! Discovered match repository adapter.
 
-use crate::entities::DiscoveredMatchRow;
 use crate::DbPool;
+use crate::entities::DiscoveredMatchRow;
 use async_trait::async_trait;
 use portal_core::{DemoId, DiscoveredMatchId, DomainError, GameId, SteamTrackingId};
 use portal_domain::entities::discovered_match::DiscoveredMatch;

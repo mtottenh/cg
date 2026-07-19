@@ -1,8 +1,6 @@
 //! Round Robin bracket generation.
 
-use super::{
-    BracketGenerator, GeneratedBracket, InitialAssignment,
-};
+use super::{BracketGenerator, GeneratedBracket, InitialAssignment};
 use crate::entities::tournament::SeededParticipant;
 use crate::repositories::tournament::CreateTournamentMatch;
 use portal_core::types::{MatchFormat, MatchParticipantSource};
@@ -190,10 +188,7 @@ mod tests {
                 } else {
                     (id2, id1)
                 };
-                assert!(
-                    pairings.insert(pair),
-                    "Duplicate pairing found"
-                );
+                assert!(pairings.insert(pair), "Duplicate pairing found");
             }
         }
 

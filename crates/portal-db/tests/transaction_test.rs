@@ -15,7 +15,7 @@ use portal_db::adapters::{
     PgTournamentBracketRepository, PgTournamentMatchRepository, PgTournamentRegistrationRepository,
     PgTournamentRepository, PgTournamentStageRepository,
 };
-use portal_db::{begin_transaction, complete_match_in_transaction, MatchCompletionTxInput};
+use portal_db::{MatchCompletionTxInput, begin_transaction, complete_match_in_transaction};
 use portal_domain::repositories::tournament::{
     CreateTournamentBracket, CreateTournamentMatch, CreateTournamentRegistration,
     CreateTournamentStage, TournamentBracketRepository, TournamentMatchRepository,
@@ -142,8 +142,14 @@ async fn setup_tournament_with_match(
 
     // Create second user for second registration
     let user2 = UserBuilder::new()
-        .username(&format!("txuser2{}", &uuid::Uuid::new_v4().to_string()[..8]))
-        .email(&format!("tx2{}@test.com", &uuid::Uuid::new_v4().to_string()[..8]))
+        .username(&format!(
+            "txuser2{}",
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ))
+        .email(&format!(
+            "tx2{}@test.com",
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ))
         .build_persisted(pool)
         .await;
 

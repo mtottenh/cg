@@ -1,8 +1,7 @@
 //! Evidence API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use portal_test::prelude::*;
 use serde_json::json;
 use uuid::Uuid;
@@ -53,9 +52,12 @@ async fn create_cs2_tournament_with_match(app: &TestApp, slug: &str) -> TestMatc
         .assert_status(StatusCode::OK);
 
     // Open registration
-    app.post_auth(&format!("/v1/tournaments/{}/open-registration", tournament_id))
-        .await
-        .assert_status(StatusCode::OK);
+    app.post_auth(&format!(
+        "/v1/tournaments/{}/open-registration",
+        tournament_id
+    ))
+    .await
+    .assert_status(StatusCode::OK);
 
     // Register player 1 (dev user, via API)
     let response = app
@@ -111,7 +113,10 @@ async fn create_cs2_tournament_with_match(app: &TestApp, slug: &str) -> TestMatc
 
     let body: serde_json::Value = response.json();
     let matches = body["data"].as_array().unwrap();
-    assert!(!matches.is_empty(), "Tournament should have at least one match");
+    assert!(
+        !matches.is_empty(),
+        "Tournament should have at least one match"
+    );
 
     let match_data = &matches[0];
     let match_id = match_data["id"].as_str().unwrap().to_string();
@@ -318,16 +323,16 @@ async fn test_discover_evidence_returns_empty_for_valid_match() {
 
     // CS2 plugin returns empty discovery (S3 scanning not yet implemented)
     let response = app
-        .get_auth(&format!(
-            "/v1/matches/{}/evidence/discover",
-            info.match_id
-        ))
+        .get_auth(&format!("/v1/matches/{}/evidence/discover", info.match_id))
         .await;
 
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     let data = body["data"].as_array().unwrap();
-    assert!(data.is_empty(), "CS2 plugin should return empty discovery list");
+    assert!(
+        data.is_empty(),
+        "CS2 plugin should return empty discovery list"
+    );
 }
 
 #[tokio::test]
@@ -377,10 +382,7 @@ async fn test_link_discovered_evidence_external_id_not_found() {
     // CS2 discovery returns empty, so any external_id will not be found
     let response = app
         .post_json(
-            &format!(
-                "/v1/matches/{}/evidence/link-discovered",
-                info.match_id
-            ),
+            &format!("/v1/matches/{}/evidence/link-discovered", info.match_id),
             &json!({
                 "external_id": "nonexistent_demo_12345"
             }),
@@ -405,10 +407,7 @@ async fn test_link_discovered_evidence_with_game_number() {
     // Even with game_number, the external_id must exist in discovery
     let response = app
         .post_json(
-            &format!(
-                "/v1/matches/{}/evidence/link-discovered",
-                info.match_id
-            ),
+            &format!("/v1/matches/{}/evidence/link-discovered", info.match_id),
             &json!({
                 "external_id": "demo_99999",
                 "game_number": 1
@@ -495,9 +494,7 @@ async fn test_evidence_endpoints_exist() {
     let match_id = "00000000-0000-0000-0000-000000000000";
 
     // Verify GET /evidence endpoint exists
-    let response = app
-        .get(&format!("/v1/matches/{}/evidence", match_id))
-        .await;
+    let response = app.get(&format!("/v1/matches/{}/evidence", match_id)).await;
     assert_ne!(
         response.status,
         StatusCode::METHOD_NOT_ALLOWED,

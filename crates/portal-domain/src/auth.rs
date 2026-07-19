@@ -21,8 +21,8 @@
 //! standard Argon2 upgrade story. To re-hash at new parameters, trigger a
 //! password reset or verify-then-rehash-on-login.
 
-use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
+use argon2::password_hash::rand_core::OsRng;
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use portal_core::DomainError;
 use std::sync::OnceLock;
@@ -153,7 +153,11 @@ mod tests {
 
         assert!(!hash.is_empty());
         assert!(verify_password(password, hash.clone()).await.unwrap());
-        assert!(!verify_password("wrong_password".into(), hash).await.unwrap());
+        assert!(
+            !verify_password("wrong_password".into(), hash)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

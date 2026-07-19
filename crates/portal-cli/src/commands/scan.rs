@@ -33,7 +33,11 @@ enum ScanSubcommand {
         #[arg(long, env = "PORTAL_API_TOKEN")]
         api_token: String,
         /// External stats service URL
-        #[arg(long, env = "CS2_DEMO_SERVICE_URL", default_value = "https://demos.cs210mans.uk")]
+        #[arg(
+            long,
+            env = "CS2_DEMO_SERVICE_URL",
+            default_value = "https://demos.cs210mans.uk"
+        )]
         stats_url: String,
         /// File extension to match
         #[arg(long, default_value = ".dem")]
@@ -78,8 +82,15 @@ impl ScanCommand {
                 dry_run,
             } => {
                 run_scan(
-                    bucket, prefix, game_id, api_url, api_token, stats_url, extension,
-                    *batch_size, *dry_run,
+                    bucket,
+                    prefix,
+                    game_id,
+                    api_url,
+                    api_token,
+                    stats_url,
+                    extension,
+                    *batch_size,
+                    *dry_run,
                 )
                 .await
             }
@@ -115,11 +126,7 @@ impl PortalApiClient {
         }
     }
 
-    async fn batch_catalog(
-        &self,
-        game_id: &str,
-        demos: &[BatchEntry],
-    ) -> BatchCatalogResult {
+    async fn batch_catalog(&self, game_id: &str, demos: &[BatchEntry]) -> BatchCatalogResult {
         let body = serde_json::json!({
             "game_id": game_id,
             "demos": demos,
@@ -280,10 +287,7 @@ async fn run_scan(
     let mut continuation_token: Option<String> = None;
 
     loop {
-        let mut req = s3_client
-            .list_objects_v2()
-            .bucket(bucket)
-            .prefix(prefix);
+        let mut req = s3_client.list_objects_v2().bucket(bucket).prefix(prefix);
 
         if let Some(token) = &continuation_token {
             req = req.continuation_token(token);
@@ -330,11 +334,7 @@ async fn run_scan(
         let entries: Vec<BatchEntry> = chunk
             .iter()
             .map(|(key, size)| {
-                let file_name = key
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(key)
-                    .to_string();
+                let file_name = key.rsplit('/').next().unwrap_or(key).to_string();
                 BatchEntry {
                     file_name,
                     s3_bucket: bucket.to_string(),
@@ -388,12 +388,7 @@ async fn run_scan(
     Ok(())
 }
 
-async fn process_stats(
-    api_url: &str,
-    api_token: &str,
-    stats_url: &str,
-    limit: i64,
-) -> Result<()> {
+async fn process_stats(api_url: &str, api_token: &str, stats_url: &str, limit: i64) -> Result<()> {
     let api = PortalApiClient::new(api_url, api_token);
     let stats_base = stats_url.trim_end_matches('/');
 

@@ -1,7 +1,7 @@
 //! Result review repository adapters.
 
-use crate::entities::ResultReviewRow;
 use crate::DbPool;
+use crate::entities::ResultReviewRow;
 use async_trait::async_trait;
 use portal_core::{
     DemoMatchLinkId, DomainError, ResultClaimId, ResultReviewId, TournamentMatchId,
@@ -142,12 +142,13 @@ impl ResultReviewRepository for PgResultReviewRepository {
     }
 
     async fn find_by_id(&self, id: ResultReviewId) -> Result<Option<ResultReview>, DomainError> {
-        let review =
-            sqlx::query_as::<_, ResultReviewRow>(&format!("SELECT {SELECT_COLUMNS} FROM result_reviews WHERE id = $1"))
-                .bind(id.as_uuid())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let review = sqlx::query_as::<_, ResultReviewRow>(&format!(
+            "SELECT {SELECT_COLUMNS} FROM result_reviews WHERE id = $1"
+        ))
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(review.map(ResultReview::from))
     }
@@ -156,9 +157,9 @@ impl ResultReviewRepository for PgResultReviewRepository {
         &self,
         claim_id: ResultClaimId,
     ) -> Result<Option<ResultReview>, DomainError> {
-        let review = sqlx::query_as::<_, ResultReviewRow>(
-            &format!("SELECT {SELECT_COLUMNS} FROM result_reviews WHERE result_claim_id = $1"),
-        )
+        let review = sqlx::query_as::<_, ResultReviewRow>(&format!(
+            "SELECT {SELECT_COLUMNS} FROM result_reviews WHERE result_claim_id = $1"
+        ))
         .bind(claim_id.as_uuid())
         .fetch_optional(&self.pool)
         .await

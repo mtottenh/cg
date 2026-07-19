@@ -23,9 +23,9 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::TournamentState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{ScheduleProposalId, TournamentId, TournamentMatchId};
 use portal_domain::entities::schedule_proposal::{
     AcceptProposalCommand, CounterProposeCommand, RejectProposalCommand,
@@ -320,8 +320,7 @@ pub async fn get_proposal_history(
         .get_proposal_history(match_id)
         .await?;
 
-    let response: Vec<ScheduleProposalResponse> =
-        proposals.into_iter().map(Into::into).collect();
+    let response: Vec<ScheduleProposalResponse> = proposals.into_iter().map(Into::into).collect();
 
     Ok(Json(DataResponse::new(response, request_id)))
 }
@@ -356,7 +355,10 @@ pub async fn admin_schedule_match(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let match_id: TournamentMatchId = match_id
@@ -401,8 +403,7 @@ pub async fn get_bracket_standings(
 
     let standings = state.standings_service.get_standings(bracket_id).await?;
 
-    let response: Vec<TournamentStandingResponse> =
-        standings.into_iter().map(Into::into).collect();
+    let response: Vec<TournamentStandingResponse> = standings.into_iter().map(Into::into).collect();
 
     Ok(Json(DataResponse::new(response, request_id)))
 }
@@ -434,7 +435,10 @@ pub async fn admin_generate_next_swiss_round(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let new_matches = state
@@ -442,8 +446,7 @@ pub async fn admin_generate_next_swiss_round(
         .generate_next_swiss_round(tournament_id)
         .await?;
 
-    let response: Vec<TournamentMatchResponse> =
-        new_matches.into_iter().map(Into::into).collect();
+    let response: Vec<TournamentMatchResponse> = new_matches.into_iter().map(Into::into).collect();
 
     Ok(Json(DataResponse::new(response, request_id)))
 }

@@ -11,9 +11,9 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::LeagueTeamState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{LeagueTeamInvitationId, LeagueTeamSeasonId};
 
 /// Invite a player to join a team's seasonal roster.
@@ -50,12 +50,21 @@ pub async fn invite_to_team(
     let cmd = req.into_command(team_season_id)?;
     let invitation = state
         .league_team_invitation_service
-        .create_invitation(team_season_id, cmd.player_id, cmd.role, cmd.message, auth.user_id)
+        .create_invitation(
+            team_season_id,
+            cmd.player_id,
+            cmd.role,
+            cmd.message,
+            auth.user_id,
+        )
         .await?;
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(LeagueTeamInvitationResponse::from(invitation), request_id)),
+        Json(DataResponse::new(
+            LeagueTeamInvitationResponse::from(invitation),
+            request_id,
+        )),
     ))
 }
 
@@ -94,7 +103,10 @@ pub async fn apply_to_team(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(LeagueTeamInvitationResponse::from(invitation), request_id)),
+        Json(DataResponse::new(
+            LeagueTeamInvitationResponse::from(invitation),
+            request_id,
+        )),
     ))
 }
 
@@ -156,7 +168,14 @@ pub async fn get_team_invitations(
 ) -> ApiResult<Json<DataResponse<Vec<LeagueTeamInvitationResponse>>>> {
     let request_id = get_request_id(&headers);
 
-    require_captain_or_admin(&state, &perm, &auth, team_season_id, "view team invitations").await?;
+    require_captain_or_admin(
+        &state,
+        &perm,
+        &auth,
+        team_season_id,
+        "view team invitations",
+    )
+    .await?;
 
     let invitations = state
         .league_team_invitation_service
@@ -234,7 +253,6 @@ pub async fn decline_invitation(
     Path(invitation_id): Path<LeagueTeamInvitationId>,
     ValidatedJson(req): ValidatedJson<RespondToInvitationRequest>,
 ) -> ApiResult<StatusCode> {
-
     state
         .league_team_invitation_service
         .decline_invitation(invitation_id, auth.player_id, req.message)
@@ -264,7 +282,6 @@ pub async fn cancel_invitation(
     auth: AuthenticatedUser,
     Path(invitation_id): Path<LeagueTeamInvitationId>,
 ) -> ApiResult<StatusCode> {
-
     state
         .league_team_invitation_service
         .cancel_invitation(invitation_id, auth.player_id)

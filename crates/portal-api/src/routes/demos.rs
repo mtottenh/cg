@@ -1,7 +1,7 @@
 //! Demo catalog routes.
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 
 use crate::handlers::demos;
 use crate::state::AppState;

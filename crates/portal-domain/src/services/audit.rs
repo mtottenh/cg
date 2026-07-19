@@ -77,8 +77,8 @@ where
         created_by: PlayerId,
         ctx: &ChangeContext,
     ) -> Result<EntityChange, DomainError> {
-        let entity_json = serde_json::to_value(entity_data)
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let entity_json =
+            serde_json::to_value(entity_data).map_err(|e| DomainError::Internal(e.to_string()))?;
 
         let cmd = CreateEntityChange {
             entity_type: entity_type.to_string(),
@@ -106,8 +106,8 @@ where
         deleted_by: PlayerId,
         ctx: &ChangeContext,
     ) -> Result<EntityChange, DomainError> {
-        let entity_json = serde_json::to_value(entity_data)
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let entity_json =
+            serde_json::to_value(entity_data).map_err(|e| DomainError::Internal(e.to_string()))?;
 
         let cmd = CreateEntityChange {
             entity_type: entity_type.to_string(),

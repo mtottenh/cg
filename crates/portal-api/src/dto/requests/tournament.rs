@@ -305,10 +305,7 @@ impl CreateTournamentRequest {
             default_map_veto_format: self.default_map_veto_format,
             withdrawal_policy,
             rules_url: self.rules_url,
-            settings: merge_eligibility_into_settings(
-                self.settings,
-                self.eligibility_restrictions,
-            ),
+            settings: merge_eligibility_into_settings(self.settings, self.eligibility_restrictions),
         })
     }
 }
@@ -449,10 +446,7 @@ impl TryFrom<UpdateTournamentRequest> for UpdateTournamentCommand {
             default_map_veto_format: req.default_map_veto_format,
             prize_pool: req.prize_pool,
             rules_url: req.rules_url,
-            settings: merge_eligibility_into_settings(
-                req.settings,
-                req.eligibility_restrictions,
-            ),
+            settings: merge_eligibility_into_settings(req.settings, req.eligibility_restrictions),
             withdrawal_policy,
         })
     }
@@ -572,10 +566,7 @@ pub struct RegisterPlayerRequest {
 
 impl RegisterPlayerRequest {
     /// Parse player ID from the authenticated user.
-    pub fn into_command(
-        self,
-        player_id: PlayerId,
-    ) -> (PlayerId, String) {
+    pub fn into_command(self, player_id: PlayerId) -> (PlayerId, String) {
         (player_id, self.participant_name)
     }
 }

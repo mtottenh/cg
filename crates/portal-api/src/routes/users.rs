@@ -2,8 +2,8 @@
 
 use crate::handlers::{leagues, users};
 use crate::state::AppState;
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 
 /// Create user routes.
 pub fn routes() -> Router<AppState> {

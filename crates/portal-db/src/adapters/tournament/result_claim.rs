@@ -1,7 +1,7 @@
 //! PostgreSQL implementation of ResultClaimRepository.
 
-use crate::entities::{NewResultClaim, ResultClaimRow};
 use crate::DbPool;
+use crate::entities::{NewResultClaim, ResultClaimRow};
 use async_trait::async_trait;
 use portal_core::{
     DemoMatchLinkId, DomainError, EvidenceId, ResultClaimId, TournamentMatchId,
@@ -33,13 +33,11 @@ impl PgResultClaimRepository {
 #[async_trait]
 impl ResultClaimRepository for PgResultClaimRepository {
     async fn find_by_id(&self, id: ResultClaimId) -> Result<Option<ResultClaim>, DomainError> {
-        let row = sqlx::query_as::<_, ResultClaimRow>(
-            r"SELECT * FROM result_claims WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find result claim: {e}")))?;
+        let row = sqlx::query_as::<_, ResultClaimRow>(r"SELECT * FROM result_claims WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to find result claim: {e}")))?;
 
         row.map(row_to_domain).transpose()
     }
@@ -59,9 +57,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(match_id.as_uuid())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| {
-            DomainError::Internal(format!("Failed to find pending result claim: {e}"))
-        })?;
+        .map_err(|e| DomainError::Internal(format!("Failed to find pending result claim: {e}")))?;
 
         row.map(row_to_domain).transpose()
     }
@@ -89,8 +85,16 @@ impl ResultClaimRepository for PgResultClaimRepository {
         let game_results_json = serde_json::to_value(&claim.game_results)
             .map_err(|e| DomainError::Internal(format!("Failed to serialize game results: {e}")))?;
 
-        let evidence_uuids: Vec<_> = claim.evidence_ids.iter().map(portal_core::EvidenceId::as_uuid).collect();
-        let demo_link_uuids: Vec<_> = claim.demo_link_ids.iter().map(portal_core::DemoMatchLinkId::as_uuid).collect();
+        let evidence_uuids: Vec<_> = claim
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
+        let demo_link_uuids: Vec<_> = claim
+            .demo_link_ids
+            .iter()
+            .map(portal_core::DemoMatchLinkId::as_uuid)
+            .collect();
 
         let new_claim = NewResultClaim {
             match_id: claim.match_id.as_uuid(),
@@ -213,9 +217,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(status.to_string())
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| {
-            DomainError::Internal(format!("Failed to update result claim status: {e}"))
-        })?;
+        .map_err(|e| DomainError::Internal(format!("Failed to update result claim status: {e}")))?;
 
         row_to_domain(row)
     }
@@ -421,9 +423,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(except_claim_id.as_uuid())
         .execute(&self.pool)
         .await
-        .map_err(|e| {
-            DomainError::Internal(format!("Failed to supersede pending claims: {e}"))
-        })?;
+        .map_err(|e| DomainError::Internal(format!("Failed to supersede pending claims: {e}")))?;
 
         Ok(())
     }
@@ -482,8 +482,16 @@ fn row_to_domain(row: ResultClaimRow) -> Result<ResultClaim, DomainError> {
         confirmed_by_user_id: row.confirmed_by_user_id.map(UserId::from_uuid),
         auto_confirm_at: row.auto_confirm_at,
         was_auto_confirmed: row.was_auto_confirmed,
-        evidence_ids: row.evidence_ids.into_iter().map(EvidenceId::from_uuid).collect(),
-        demo_link_ids: row.demo_link_ids.into_iter().map(DemoMatchLinkId::from_uuid).collect(),
+        evidence_ids: row
+            .evidence_ids
+            .into_iter()
+            .map(EvidenceId::from_uuid)
+            .collect(),
+        demo_link_ids: row
+            .demo_link_ids
+            .into_iter()
+            .map(DemoMatchLinkId::from_uuid)
+            .collect(),
         submitter_notes: row.submitter_notes,
         created_at: row.created_at,
         updated_at: row.updated_at,

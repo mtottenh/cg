@@ -38,9 +38,7 @@ async fn test_get_season_not_found() {
 
     let season_id = LeagueSeasonId::new();
 
-    season_repo
-        .expect_find_by_id()
-        .returning(|_| Ok(None));
+    season_repo.expect_find_by_id().returning(|_| Ok(None));
 
     let service = LeagueSeasonService::new(Arc::new(season_repo), Arc::new(league_repo));
 
@@ -68,9 +66,7 @@ async fn test_create_season_success() {
         .returning(move |_| Ok(Some(league.clone())));
 
     // Expect slug check
-    season_repo
-        .expect_slug_exists()
-        .returning(|_, _| Ok(false));
+    season_repo.expect_slug_exists().returning(|_, _| Ok(false));
 
     // Expect create
     let expected_season = make_season(league_id);
@@ -113,9 +109,7 @@ async fn test_create_season_league_not_found() {
     let league_id = LeagueId::new();
     let creator_id = UserId::new();
 
-    league_repo
-        .expect_find_by_id()
-        .returning(|_| Ok(None));
+    league_repo.expect_find_by_id().returning(|_| Ok(None));
 
     let service = LeagueSeasonService::new(Arc::new(season_repo), Arc::new(league_repo));
 
@@ -140,7 +134,10 @@ async fn test_create_season_league_not_found() {
         .await;
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), DomainError::LeagueNotFound(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        DomainError::LeagueNotFound(_)
+    ));
 }
 
 #[tokio::test]
@@ -156,9 +153,7 @@ async fn test_create_season_slug_taken() {
         .expect_find_by_id()
         .returning(move |_| Ok(Some(league.clone())));
 
-    season_repo
-        .expect_slug_exists()
-        .returning(|_, _| Ok(true)); // Slug already taken
+    season_repo.expect_slug_exists().returning(|_, _| Ok(true)); // Slug already taken
 
     let service = LeagueSeasonService::new(Arc::new(season_repo), Arc::new(league_repo));
 

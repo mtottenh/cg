@@ -1,7 +1,7 @@
 //! Player match history repository adapter.
 
-use crate::entities::player_match_history::PlayerMatchHistoryRow;
 use crate::DbPool;
+use crate::entities::player_match_history::PlayerMatchHistoryRow;
 use async_trait::async_trait;
 use portal_core::{DiscoveredMatchId, DomainError, GameId, PlayerId, PlayerMatchHistoryId};
 use portal_domain::entities::player_match_history::PlayerMatchHistory;

@@ -67,9 +67,7 @@ impl<PGPR: PlayerGameProfileRepository> PlayerGameProfileService<PGPR> {
         is_draw: bool,
     ) -> Result<PlayerGameProfile, DomainError> {
         // Ensure profile exists
-        self.profile_repo
-            .find_or_create(player_id, game_id)
-            .await?;
+        self.profile_repo.find_or_create(player_id, game_id).await?;
 
         self.profile_repo
             .update_stats_after_match(player_id, game_id, &new_stats, is_win, is_loss, is_draw)
@@ -98,7 +96,14 @@ impl<PGPR: PlayerGameProfileRepository> PlayerGameProfileService<PGPR> {
         rank_tier: Option<String>,
     ) -> Result<(), DomainError> {
         self.profile_repo
-            .update_rating(player_id, game_id, rating, rating_deviation, volatility, rank_tier)
+            .update_rating(
+                player_id,
+                game_id,
+                rating,
+                rating_deviation,
+                volatility,
+                rank_tier,
+            )
             .await
     }
 }

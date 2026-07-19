@@ -11,10 +11,12 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::VetoState;
-use crate::websocket::{LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast, VetoStateBroadcast};
+use crate::websocket::{
+    LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast, VetoStateBroadcast,
+};
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{TournamentMatchId, TournamentRegistrationId, VetoFormatConfig};
 use portal_domain::repositories::TournamentMatchRepository;
 
@@ -110,7 +112,10 @@ pub async fn create_veto_session(
 
     if !is_participant {
         perm_checker
-            .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+            .require_permission(
+                &auth,
+                portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+            )
             .await?;
     }
 
@@ -179,7 +184,10 @@ pub async fn create_veto_session(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(VetoSessionResponse::from(session), request_id)),
+        Json(DataResponse::new(
+            VetoSessionResponse::from(session),
+            request_id,
+        )),
     ))
 }
 
@@ -358,7 +366,12 @@ pub async fn perform_veto_action(
 
     let result = state
         .veto_service
-        .perform_action(session_state.session.id, &req.map_id, current_team, auth.user_id)
+        .perform_action(
+            session_state.session.id,
+            &req.map_id,
+            current_team,
+            auth.user_id,
+        )
         .await?;
 
     // Broadcast action to WebSocket lobby
@@ -520,10 +533,8 @@ async fn enrich_map_metadata(
         let catalog = crate::handlers::games::load_available_maps(&game, &plugin);
 
         // Build lookup by map ID
-        let lookup: std::collections::HashMap<&str, _> = catalog
-            .iter()
-            .map(|m| (m.id.as_str(), m))
-            .collect();
+        let lookup: std::collections::HashMap<&str, _> =
+            catalog.iter().map(|m| (m.id.as_str(), m)).collect();
 
         for map in maps.iter_mut() {
             if let Some(info) = lookup.get(map.map_id.as_str()) {
@@ -553,7 +564,11 @@ fn resolve_side_selection_mode(
     use portal_core::SideSelectionMode;
 
     // Try tournament settings first
-    if let Some(mode_str) = tournament.settings.get("side_selection_mode").and_then(|v| v.as_str()) {
+    if let Some(mode_str) = tournament
+        .settings
+        .get("side_selection_mode")
+        .and_then(|v| v.as_str())
+    {
         if let Ok(mode) = mode_str.parse::<SideSelectionMode>() {
             return mode;
         }

@@ -12,9 +12,9 @@ use crate::dto::responses::SeededParticipantResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::state::TournamentState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::TournamentId;
 
 /// Get current seeding for a tournament.
@@ -180,10 +180,7 @@ pub async fn clear_seeding(
     _auth: AuthenticatedUser,
     Path(tournament_id): Path<TournamentId>,
 ) -> ApiResult<StatusCode> {
-    state
-        .seeding_service
-        .clear_seeding(tournament_id)
-        .await?;
+    state.seeding_service.clear_seeding(tournament_id).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

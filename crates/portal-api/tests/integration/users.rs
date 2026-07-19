@@ -1,8 +1,7 @@
 //! User API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 
 #[tokio::test]
 async fn test_get_current_user() {

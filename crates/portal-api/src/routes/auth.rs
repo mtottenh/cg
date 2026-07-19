@@ -30,12 +30,12 @@
 
 use crate::handlers::auth;
 use crate::state::AppState;
-use axum::routing::post;
 use axum::Router;
+use axum::routing::post;
 use std::sync::Arc;
+use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::SmartIpKeyExtractor;
-use tower_governor::GovernorLayer;
 
 const DEFAULT_BURST: u32 = 20;
 const DEFAULT_PER_SECOND: u64 = 5;

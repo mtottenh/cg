@@ -138,7 +138,9 @@ where
         &self,
         registration_id: TournamentRegistrationId,
     ) -> Result<Vec<AvailabilityWindow>, DomainError> {
-        self.window_repo.find_by_registration_id(registration_id).await
+        self.window_repo
+            .find_by_registration_id(registration_id)
+            .await
     }
 
     /// Update an availability window.
@@ -174,7 +176,9 @@ where
         &self,
         registration_id: TournamentRegistrationId,
     ) -> Result<u64, DomainError> {
-        self.window_repo.delete_by_registration_id(registration_id).await
+        self.window_repo
+            .delete_by_registration_id(registration_id)
+            .await
     }
 
     // =========================================================================
@@ -226,7 +230,9 @@ where
         &self,
         registration_id: TournamentRegistrationId,
     ) -> Result<Vec<AvailabilityOverride>, DomainError> {
-        self.override_repo.find_by_registration_id(registration_id).await
+        self.override_repo
+            .find_by_registration_id(registration_id)
+            .await
     }
 
     /// Get overrides for a player within a date range.
@@ -267,9 +273,13 @@ where
 
         // Get recurring windows for this day
         let windows = if let Some(pid) = player_id {
-            self.window_repo.find_by_player_and_day(pid, day_of_week).await?
+            self.window_repo
+                .find_by_player_and_day(pid, day_of_week)
+                .await?
         } else if let Some(rid) = registration_id {
-            self.window_repo.find_by_registration_and_day(rid, day_of_week).await?
+            self.window_repo
+                .find_by_registration_and_day(rid, day_of_week)
+                .await?
         } else {
             return Err(DomainError::InvalidState(
                 "Must provide player_id or registration_id".to_string(),
@@ -301,10 +311,7 @@ where
                 date,
                 available_slots: vec![],
                 is_blocked: true,
-                notes: overrides
-                    .iter()
-                    .filter_map(|o| o.reason.clone())
-                    .collect(),
+                notes: overrides.iter().filter_map(|o| o.reason.clone()).collect(),
             });
         }
 
@@ -326,9 +333,7 @@ where
                     if let (Some(start), Some(end)) = (ovr.start_time, ovr.end_time) {
                         slots = slots
                             .into_iter()
-                            .flat_map(|slot| {
-                                remove_time_from_slot(&slot, start, end)
-                            })
+                            .flat_map(|slot| remove_time_from_slot(&slot, start, end))
                             .collect();
                     }
                 }
@@ -352,10 +357,7 @@ where
             date,
             available_slots: slots,
             is_blocked: false,
-            notes: overrides
-                .iter()
-                .filter_map(|o| o.reason.clone())
-                .collect(),
+            notes: overrides.iter().filter_map(|o| o.reason.clone()).collect(),
         })
     }
 
@@ -378,12 +380,16 @@ where
             .await?
             .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id))?;
 
-        let reg1_id = tournament_match.participant1_registration_id.ok_or_else(|| {
-            DomainError::InvalidState("Match participant 1 not assigned".to_string())
-        })?;
-        let reg2_id = tournament_match.participant2_registration_id.ok_or_else(|| {
-            DomainError::InvalidState("Match participant 2 not assigned".to_string())
-        })?;
+        let reg1_id = tournament_match
+            .participant1_registration_id
+            .ok_or_else(|| {
+                DomainError::InvalidState("Match participant 1 not assigned".to_string())
+            })?;
+        let reg2_id = tournament_match
+            .participant2_registration_id
+            .ok_or_else(|| {
+                DomainError::InvalidState("Match participant 2 not assigned".to_string())
+            })?;
 
         let mut suggestions = Vec::new();
 
@@ -406,12 +412,8 @@ where
                         let duration_mins = (overlap.end - overlap.start).num_minutes();
                         if duration_mins >= min_duration_minutes {
                             // Convert to DateTime
-                            let suggested_start = current_date
-                                .and_time(overlap.start)
-                                .and_utc();
-                            let suggested_end = current_date
-                                .and_time(overlap.end)
-                                .and_utc();
+                            let suggested_start = current_date.and_time(overlap.start).and_utc();
+                            let suggested_end = current_date.and_time(overlap.end).and_utc();
 
                             // Calculate confidence score
                             let confidence = calculate_confidence_score(
@@ -493,7 +495,11 @@ where
 // =============================================================================
 
 /// Remove a time range from a slot, potentially splitting it.
-fn remove_time_from_slot(slot: &TimeSlot, block_start: NaiveTime, block_end: NaiveTime) -> Vec<TimeSlot> {
+fn remove_time_from_slot(
+    slot: &TimeSlot,
+    block_start: NaiveTime,
+    block_end: NaiveTime,
+) -> Vec<TimeSlot> {
     // No overlap
     if block_end <= slot.start || block_start >= slot.end {
         return vec![slot.clone()];

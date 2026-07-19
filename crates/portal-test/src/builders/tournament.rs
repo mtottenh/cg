@@ -1,10 +1,10 @@
 //! Tournament builder for tests.
 
 use chrono::{DateTime, Utc};
-use fake::faker::company::en::CompanyName;
 use fake::Fake;
-use portal_db::entities::TournamentRow;
+use fake::faker::company::en::CompanyName;
 use portal_db::DbPool;
+use portal_db::entities::TournamentRow;
 use uuid::Uuid;
 
 /// Builder for creating test tournaments.

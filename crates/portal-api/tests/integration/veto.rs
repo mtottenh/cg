@@ -1,8 +1,7 @@
 //! Veto (map pick/ban) API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use portal_test::prelude::*;
 use serde_json::json;
 use uuid::Uuid;
@@ -430,7 +429,12 @@ async fn setup_veto_auth_scenario(app: &TestApp) -> VetoAuthTestSetup {
         .build_persisted(app.pool())
         .await;
 
-    let delegate_token = create_test_token(delegate_user.id, delegate_user.id, "veto_delegate", TEST_JWT_SECRET);
+    let delegate_token = create_test_token(
+        delegate_user.id,
+        delegate_user.id,
+        "veto_delegate",
+        TEST_JWT_SECRET,
+    );
 
     VetoAuthTestSetup {
         match_id: fixture.match_id,

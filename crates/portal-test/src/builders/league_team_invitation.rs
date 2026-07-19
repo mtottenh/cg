@@ -1,8 +1,8 @@
 //! League team invitation builder for tests.
 
 use chrono::{DateTime, Duration, Utc};
-use portal_db::entities::LeagueTeamInvitationRow;
 use portal_db::DbPool;
+use portal_db::entities::LeagueTeamInvitationRow;
 use uuid::Uuid;
 
 use super::{LeagueTeamSeasonBuilder, PlayerBuilder};
@@ -204,14 +204,16 @@ impl LeagueTeamInvitationBuilder {
     /// If `player_id` is not set, creates a test player automatically.
     pub async fn build_persisted(self, pool: &DbPool) -> LeagueTeamInvitationRow {
         // Get or create team_season and player
-        let team_season_id = if let Some(ts) = self.team_season_id { ts } else {
-            let team_season = LeagueTeamSeasonBuilder::new()
-                .build_persisted(pool)
-                .await;
+        let team_season_id = if let Some(ts) = self.team_season_id {
+            ts
+        } else {
+            let team_season = LeagueTeamSeasonBuilder::new().build_persisted(pool).await;
             team_season.id
         };
 
-        let player_id = if let Some(p) = self.player_id { p } else {
+        let player_id = if let Some(p) = self.player_id {
+            p
+        } else {
             let player = PlayerBuilder::new().build_persisted(pool).await;
             player.id
         };

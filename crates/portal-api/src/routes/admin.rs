@@ -1,9 +1,11 @@
 //! Admin routes.
 
-use axum::routing::{delete, get, patch, post};
 use axum::Router;
+use axum::routing::{delete, get, patch, post};
 
-use crate::handlers::{admin, bans, demos, dispute, forfeit, progression, result_reviews, roles, tournaments};
+use crate::handlers::{
+    admin, bans, demos, dispute, forfeit, progression, result_reviews, roles, tournaments,
+};
 use crate::state::AppState;
 
 /// Create routes for admin endpoints.
@@ -113,17 +115,17 @@ pub fn routes() -> Router<AppState> {
             post(dispute::admin_resolve_double_dq),
         )
         // Demo admin routes
-        .route(
-            "/demos/{id}",
-            delete(demos::delete_demo),
-        )
+        .route("/demos/{id}", delete(demos::delete_demo))
         .route("/demos/{id}/notes", patch(demos::set_demo_notes))
         .route("/demos", post(demos::catalog_demo))
         .route("/demos/batch", post(demos::batch_catalog_demos))
         .route("/demos/stats", get(demos::get_demo_status_counts))
         .route("/demos/pending", get(demos::get_pending_demos))
         .route("/demos/{id}/stats", post(demos::submit_demo_stats))
-        .route("/demos/{id}/stats-failed", post(demos::mark_demo_stats_failed))
+        .route(
+            "/demos/{id}/stats-failed",
+            post(demos::mark_demo_stats_failed),
+        )
         .route("/demos/{id}/categorize", post(demos::categorize_demo))
         .route("/demos/{id}/visibility", post(demos::set_demo_visibility))
         .route("/demos/{id}/associate", post(demos::associate_demo))
@@ -134,7 +136,16 @@ pub fn routes() -> Router<AppState> {
         )
         // Result review admin routes
         .route("/result-reviews", get(result_reviews::list_pending_reviews))
-        .route("/result-reviews/{id}", get(result_reviews::get_result_review_by_id))
-        .route("/result-reviews/{id}/approve", post(result_reviews::approve_result_review))
-        .route("/result-reviews/{id}/reject", post(result_reviews::reject_result_review))
+        .route(
+            "/result-reviews/{id}",
+            get(result_reviews::get_result_review_by_id),
+        )
+        .route(
+            "/result-reviews/{id}/approve",
+            post(result_reviews::approve_result_review),
+        )
+        .route(
+            "/result-reviews/{id}/reject",
+            post(result_reviews::reject_result_review),
+        )
 }

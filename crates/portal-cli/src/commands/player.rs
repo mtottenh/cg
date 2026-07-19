@@ -3,14 +3,14 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use portal_core::PlayerId;
+use portal_db::PgPool;
 use portal_db::entities::{NewPlayer, UpdatePlayer};
 use portal_db::repositories::{PlayerGameProfileRepository, PlayerRepository};
-use portal_db::PgPool;
 use uuid::Uuid;
 
 use crate::output::{
-    error, format_optional, format_timestamp, format_uuid, output_list, success, OutputFormat,
-    PlayerTableRow,
+    OutputFormat, PlayerTableRow, error, format_optional, format_timestamp, format_uuid,
+    output_list, success,
 };
 
 /// Player management commands.
@@ -315,10 +315,7 @@ async fn show_stats(
                 println!("  Rating:      {} (±{})", p.rating, p.rating_deviation);
                 println!("  Rank:        {}", format_optional(&p.rank_tier));
                 println!("  Matches:     {}", p.matches_played);
-                println!(
-                    "  W/L:         {}/{} ({:.1}%)",
-                    p.wins, p.losses, win_rate
-                );
+                println!("  W/L:         {}/{} ({:.1}%)", p.wins, p.losses, win_rate);
                 println!(
                     "  Win Streak:  {} (best: {})",
                     p.win_streak, p.best_win_streak

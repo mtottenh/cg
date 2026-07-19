@@ -3,9 +3,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::DbPool;
 use crate::entities::tournament::TournamentMatchRow;
 use crate::transaction::DbTransaction;
-use crate::DbPool;
 use portal_core::types::TournamentMatchStatus;
 use portal_core::{
     DomainError, PlayerId, TournamentBracketId, TournamentId, TournamentMatchId,

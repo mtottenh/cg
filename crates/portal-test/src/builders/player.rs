@@ -1,10 +1,10 @@
 //! Player builder for tests.
 
 use chrono::Utc;
-use fake::faker::name::en::Name;
 use fake::Fake;
-use portal_db::entities::PlayerRow;
+use fake::faker::name::en::Name;
 use portal_db::DbPool;
+use portal_db::entities::PlayerRow;
 use uuid::Uuid;
 
 use super::UserBuilder;

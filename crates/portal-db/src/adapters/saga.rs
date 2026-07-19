@@ -84,13 +84,12 @@ fn row_to_saga(row: SagaExecutionRow) -> Result<SagaExecution, DomainError> {
 #[async_trait]
 impl SagaExecutionRepository for PgSagaExecutionRepository {
     async fn find_by_id(&self, id: SagaId) -> Result<Option<SagaExecution>, DomainError> {
-        let row = sqlx::query_as::<_, SagaExecutionRow>(
-            "SELECT * FROM saga_executions WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find saga: {e}")))?;
+        let row =
+            sqlx::query_as::<_, SagaExecutionRow>("SELECT * FROM saga_executions WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(format!("Failed to find saga: {e}")))?;
 
         row.map(row_to_saga).transpose()
     }
@@ -184,10 +183,7 @@ impl SagaExecutionRepository for PgSagaExecutionRepository {
         rows.into_iter().map(row_to_saga).collect()
     }
 
-    async fn find_by_status(
-        &self,
-        status: SagaStatus,
-    ) -> Result<Vec<SagaExecution>, DomainError> {
+    async fn find_by_status(&self, status: SagaStatus) -> Result<Vec<SagaExecution>, DomainError> {
         let rows = sqlx::query_as::<_, SagaExecutionRow>(
             r"SELECT * FROM saga_executions WHERE status = $1 ORDER BY created_at ASC",
         )
@@ -224,9 +220,7 @@ impl SagaExecutionRepository for PgSagaExecutionRepository {
         .bind(tournament_id.as_uuid())
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| {
-            DomainError::Internal(format!("Failed to find sagas by tournament: {e}"))
-        })?;
+        .map_err(|e| DomainError::Internal(format!("Failed to find sagas by tournament: {e}")))?;
 
         rows.into_iter().map(row_to_saga).collect()
     }
@@ -348,10 +342,7 @@ impl ProgressionLogRepository for PgProgressionLogRepository {
         rows.into_iter().map(row_to_progression_log).collect()
     }
 
-    async fn find_by_saga(
-        &self,
-        saga_id: SagaId,
-    ) -> Result<Vec<ProgressionLog>, DomainError> {
+    async fn find_by_saga(&self, saga_id: SagaId) -> Result<Vec<ProgressionLog>, DomainError> {
         let rows = sqlx::query_as::<_, ProgressionLogRow>(
             r"SELECT * FROM progression_log WHERE saga_id = $1 ORDER BY progressed_at ASC",
         )
@@ -371,7 +362,9 @@ impl ProgressionLogRepository for PgProgressionLogRepository {
             .bind(source_match_id.as_uuid())
             .execute(&self.pool)
             .await
-            .map_err(|e| DomainError::Internal(format!("Failed to delete progression logs: {e}")))?;
+            .map_err(|e| {
+                DomainError::Internal(format!("Failed to delete progression logs: {e}"))
+            })?;
 
         Ok(())
     }

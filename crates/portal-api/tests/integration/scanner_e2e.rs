@@ -17,8 +17,8 @@ use portal_scanner::{scanner, stats_converter};
 use portal_test::prelude::*;
 use tokio::sync::RwLock;
 
-use crate::common::minio::{create_bucket_and_upload, create_s3_client, start_minio};
 use crate::common::TestApp;
+use crate::common::minio::{create_bucket_and_upload, create_s3_client, start_minio};
 
 // ============================================================================
 // TEST INFRASTRUCTURE
@@ -39,9 +39,7 @@ fn load_fixture() -> String {
 /// so we serve any `GET /stats/*` with the fixture.
 ///
 /// `fixture_store` is shared so tests can swap between 404 and real responses.
-async fn start_mock_stats_server(
-    fixture_store: Arc<RwLock<Option<String>>>,
-) -> SocketAddr {
+async fn start_mock_stats_server(fixture_store: Arc<RwLock<Option<String>>>) -> SocketAddr {
     let app = axum::Router::new().route(
         "/stats/{*path}",
         axum::routing::get({
@@ -81,8 +79,7 @@ async fn start_mock_stats_server(
 
 /// Grant admin role to the dev user.
 async fn make_dev_user_admin(app: &TestApp) {
-    let dev_user_id =
-        uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    let dev_user_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
     assign_role_to_user(app.pool(), dev_user_id, "platform_admin").await;
 }
 
@@ -102,7 +99,7 @@ async fn create_test_api_key(pool: &portal_db::DbPool) -> String {
     let row: (uuid::Uuid,) = sqlx::query_as(
         r"INSERT INTO api_keys (service_name, key_hash, key_prefix, is_active)
           VALUES ($1, $2, $3, true)
-          RETURNING id"
+          RETURNING id",
     )
     .bind("test-scanner")
     .bind(&key_hash)
@@ -117,7 +114,7 @@ async fn create_test_api_key(pool: &portal_db::DbPool) -> String {
     for perm in &["demos.catalog", "demos.read", "demos.stats"] {
         sqlx::query(
             r"INSERT INTO api_key_permissions (api_key_id, permission_id)
-              SELECT $1, id FROM permissions WHERE name = $2"
+              SELECT $1, id FROM permissions WHERE name = $2",
         )
         .bind(api_key_id)
         .bind(perm)
@@ -214,9 +211,7 @@ async fn test_scanner_e2e_full_flow() {
 
     // Verify players
     let demo_id = demo["id"].as_str().unwrap();
-    let response = app
-        .get_auth(&format!("/v1/demos/{demo_id}/players"))
-        .await;
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/players")).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     let players = body["data"].as_array().unwrap();
@@ -268,7 +263,11 @@ async fn test_scanner_e2e_idempotent() {
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     let demos = body["data"]["demos"].as_array().unwrap();
-    assert_eq!(demos.len(), 1, "Should still have exactly 1 demo after re-scan");
+    assert_eq!(
+        demos.len(),
+        1,
+        "Should still have exactly 1 demo after re-scan"
+    );
 }
 
 /// Pending retry: stats unavailable initially → catalog as pending → retry succeeds.
@@ -364,7 +363,11 @@ async fn test_stats_converter_with_real_fixture() {
     // All players have non-zero kills
     for player in &request.players {
         let kills = player.stats["kills"].as_i64().unwrap();
-        assert!(kills > 0, "Player {} should have kills > 0", player.player_name);
+        assert!(
+            kills > 0,
+            "Player {} should have kills > 0",
+            player.player_name
+        );
     }
 
     // Top fragger check (MiT with 25 kills)

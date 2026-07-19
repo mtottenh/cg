@@ -13,10 +13,12 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::DisputeState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{DisputeId, EvidenceId, ResultClaimId, ScopeType, TournamentMatchId, TournamentRegistrationId};
+use portal_core::{
+    DisputeId, EvidenceId, ResultClaimId, ScopeType, TournamentMatchId, TournamentRegistrationId,
+};
 use portal_domain::entities::dispute::{AuthorType, Dispute, DisputePriority, DisputeReason};
 use portal_domain::repositories::tournament::TournamentMatchRepository;
 
@@ -107,7 +109,10 @@ pub async fn raise_dispute(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(DisputeResponse::from(dispute), request_id)),
+        Json(DataResponse::new(
+            DisputeResponse::from(dispute),
+            request_id,
+        )),
     ))
 }
 
@@ -204,7 +209,10 @@ pub async fn add_dispute_message(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(DisputeMessageResponse::from(message), request_id)),
+        Json(DataResponse::new(
+            DisputeMessageResponse::from(message),
+            request_id,
+        )),
     ))
 }
 
@@ -334,7 +342,10 @@ pub async fn admin_list_disputes(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let priority = query
@@ -391,7 +402,10 @@ pub async fn admin_add_message(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let evidence_ids: Vec<EvidenceId> = req
@@ -417,7 +431,10 @@ pub async fn admin_add_message(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(DisputeMessageResponse::from(message), request_id)),
+        Json(DataResponse::new(
+            DisputeMessageResponse::from(message),
+            request_id,
+        )),
     ))
 }
 
@@ -448,7 +465,10 @@ pub async fn admin_assign_dispute(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let dispute = state
@@ -456,7 +476,10 @@ pub async fn admin_assign_dispute(
         .assign_for_review(dispute_id, auth.user_id)
         .await?;
 
-    Ok(Json(DataResponse::new(DisputeResponse::from(dispute), request_id)))
+    Ok(Json(DataResponse::new(
+        DisputeResponse::from(dispute),
+        request_id,
+    )))
 }
 
 /// Admin: Resolve dispute by upholding the original result.
@@ -488,7 +511,10 @@ pub async fn admin_resolve_uphold(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let result = state
@@ -531,7 +557,10 @@ pub async fn admin_resolve_overturn(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let new_winner_registration_id: TournamentRegistrationId = req
@@ -586,7 +615,10 @@ pub async fn admin_resolve_rematch(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let result = state
@@ -629,7 +661,10 @@ pub async fn admin_resolve_adjusted(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let result = state
@@ -678,7 +713,10 @@ pub async fn admin_resolve_double_dq(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let result = state

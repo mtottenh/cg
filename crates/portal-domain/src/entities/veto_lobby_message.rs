@@ -37,9 +37,7 @@ impl VetoLobbyMessage {
     #[must_use]
     pub fn is_visible_to_team(&self, registration_id: TournamentRegistrationId) -> bool {
         match self.message_type {
-            VetoMessageType::Team => {
-                self.team_registration_id == Some(registration_id)
-            }
+            VetoMessageType::Team => self.team_registration_id == Some(registration_id),
             VetoMessageType::All | VetoMessageType::Admin | VetoMessageType::System => true,
         }
     }
@@ -118,8 +116,14 @@ mod tests {
 
     #[test]
     fn test_message_type_from_str() {
-        assert_eq!("team".parse::<VetoMessageType>().unwrap(), VetoMessageType::Team);
-        assert_eq!("ALL".parse::<VetoMessageType>().unwrap(), VetoMessageType::All);
+        assert_eq!(
+            "team".parse::<VetoMessageType>().unwrap(),
+            VetoMessageType::Team
+        );
+        assert_eq!(
+            "ALL".parse::<VetoMessageType>().unwrap(),
+            VetoMessageType::All
+        );
         assert!("invalid".parse::<VetoMessageType>().is_err());
     }
 

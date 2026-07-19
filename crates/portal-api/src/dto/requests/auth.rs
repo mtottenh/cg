@@ -6,7 +6,8 @@ use utoipa::ToSchema;
 use validator::Validate;
 
 /// Regex for validating usernames (alphanumeric with underscores).
-static USERNAME_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^[a-zA-Z][a-zA-Z0-9_]*$").unwrap());
+static USERNAME_REGEX: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"^[a-zA-Z][a-zA-Z0-9_]*$").unwrap());
 
 /// Validate a username.
 fn validate_username(username: &str) -> Result<(), validator::ValidationError> {

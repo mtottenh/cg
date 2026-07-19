@@ -4,11 +4,15 @@
 
 use std::sync::Arc;
 
-use portal_core::{DomainError, TournamentMatchId, TournamentRegistrationId, UserId, VetoSessionId};
+use portal_core::{
+    DomainError, TournamentMatchId, TournamentRegistrationId, UserId, VetoSessionId,
+};
 
 use crate::entities::veto_lobby_message::{VetoLobbyMessage, VetoMessageType};
+use crate::repositories::tournament::{
+    TournamentMatchRepository, TournamentRegistrationRepository,
+};
 use crate::repositories::veto_lobby_message::{CreateVetoLobbyMessage, VetoLobbyMessageRepository};
-use crate::repositories::tournament::{TournamentMatchRepository, TournamentRegistrationRepository};
 
 /// Configuration for the veto lobby chat service.
 #[derive(Debug, Clone)]
@@ -48,11 +52,7 @@ where
     TRR: TournamentRegistrationRepository,
 {
     /// Create a new veto lobby chat service.
-    pub fn new(
-        message_repo: Arc<VLMR>,
-        match_repo: Arc<TMR>,
-        registration_repo: Arc<TRR>,
-    ) -> Self {
+    pub fn new(message_repo: Arc<VLMR>, match_repo: Arc<TMR>, registration_repo: Arc<TRR>) -> Self {
         Self {
             message_repo,
             match_repo,
@@ -189,10 +189,16 @@ where
         let limit = self.config.max_history_messages;
 
         // Get public messages
-        let public = self.message_repo.list_public_messages(match_id, limit, 0).await?;
+        let public = self
+            .message_repo
+            .list_public_messages(match_id, limit, 0)
+            .await?;
 
         // Get team messages for this participant
-        let team = self.message_repo.list_team_messages(match_id, registration_id, limit, 0).await?;
+        let team = self
+            .message_repo
+            .list_team_messages(match_id, registration_id, limit, 0)
+            .await?;
 
         // Merge and sort by timestamp
         let mut all: Vec<_> = public.into_iter().chain(team).collect();

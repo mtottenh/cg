@@ -7,8 +7,7 @@ use uuid::Uuid;
 
 /// Fixed namespace for deterministic seed UUIDs.
 const SEED_NAMESPACE: Uuid = Uuid::from_bytes([
-    0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30,
-    0xc8,
+    0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
 ]);
 
 /// Derive a deterministic UUID from a seed key.
@@ -356,67 +355,64 @@ pub fn deterministic_wobble(player_idx: usize, entry_idx: usize) -> i32 {
 pub const AVAILABILITY_WINDOWS: &[(&str, u8, u8, u8, u8, u8, bool, &str)] = &[
     // --- Team Alpha (SE) shared: Tue 18-22, Thu 18-22 ---
     ("captain_alpha", 2, 18, 0, 22, 0, true, "Europe/Stockholm"),
-    ("player_1",      2, 18, 0, 22, 0, true, "Europe/Stockholm"),
-    ("player_2",      2, 18, 0, 22, 0, true, "Europe/Stockholm"),
-    ("player_3",      2, 18, 0, 22, 0, true, "Europe/Stockholm"),
-    ("player_4",      2, 18, 0, 22, 0, true, "Europe/Stockholm"),
+    ("player_1", 2, 18, 0, 22, 0, true, "Europe/Stockholm"),
+    ("player_2", 2, 18, 0, 22, 0, true, "Europe/Stockholm"),
+    ("player_3", 2, 18, 0, 22, 0, true, "Europe/Stockholm"),
+    ("player_4", 2, 18, 0, 22, 0, true, "Europe/Stockholm"),
     ("captain_alpha", 4, 18, 0, 22, 0, true, "Europe/Stockholm"),
-    ("player_1",      4, 18, 0, 22, 0, true, "Europe/Stockholm"),
-    ("player_2",      4, 18, 0, 22, 0, true, "Europe/Stockholm"),
-    ("player_3",      4, 18, 0, 22, 0, true, "Europe/Stockholm"),
-    ("player_4",      4, 18, 0, 22, 0, true, "Europe/Stockholm"),
+    ("player_1", 4, 18, 0, 22, 0, true, "Europe/Stockholm"),
+    ("player_2", 4, 18, 0, 22, 0, true, "Europe/Stockholm"),
+    ("player_3", 4, 18, 0, 22, 0, true, "Europe/Stockholm"),
+    ("player_4", 4, 18, 0, 22, 0, true, "Europe/Stockholm"),
     // Alpha extras
     ("captain_alpha", 6, 14, 0, 20, 0, false, "Europe/Stockholm"),
-    ("player_1",      3, 19, 0, 22, 0, false, "Europe/Stockholm"),
-    ("player_2",      6, 15, 0, 21, 0, false, "Europe/Stockholm"),
-
+    ("player_1", 3, 19, 0, 22, 0, false, "Europe/Stockholm"),
+    ("player_2", 6, 15, 0, 21, 0, false, "Europe/Stockholm"),
     // --- Team Bravo (DE) shared: Mon 18-22, Wed 18-22 ---
     ("captain_bravo", 1, 18, 0, 22, 0, true, "Europe/Berlin"),
-    ("player_5",      1, 18, 0, 22, 0, true, "Europe/Berlin"),
-    ("player_6",      1, 18, 0, 22, 0, true, "Europe/Berlin"),
-    ("player_7",      1, 18, 0, 22, 0, true, "Europe/Berlin"),
-    ("player_8",      1, 18, 0, 22, 0, true, "Europe/Berlin"),
+    ("player_5", 1, 18, 0, 22, 0, true, "Europe/Berlin"),
+    ("player_6", 1, 18, 0, 22, 0, true, "Europe/Berlin"),
+    ("player_7", 1, 18, 0, 22, 0, true, "Europe/Berlin"),
+    ("player_8", 1, 18, 0, 22, 0, true, "Europe/Berlin"),
     ("captain_bravo", 3, 18, 0, 22, 0, true, "Europe/Berlin"),
-    ("player_5",      3, 18, 0, 22, 0, true, "Europe/Berlin"),
-    ("player_6",      3, 18, 0, 22, 0, true, "Europe/Berlin"),
-    ("player_7",      3, 18, 0, 22, 0, true, "Europe/Berlin"),
-    ("player_8",      3, 18, 0, 22, 0, true, "Europe/Berlin"),
+    ("player_5", 3, 18, 0, 22, 0, true, "Europe/Berlin"),
+    ("player_6", 3, 18, 0, 22, 0, true, "Europe/Berlin"),
+    ("player_7", 3, 18, 0, 22, 0, true, "Europe/Berlin"),
+    ("player_8", 3, 18, 0, 22, 0, true, "Europe/Berlin"),
     // Bravo extras
     ("captain_bravo", 6, 16, 0, 22, 0, false, "Europe/Berlin"),
-    ("player_5",      2, 19, 0, 22, 0, false, "Europe/Berlin"),
-    ("player_6",      5, 18, 0, 22, 0, false, "Europe/Berlin"),
-
+    ("player_5", 2, 19, 0, 22, 0, false, "Europe/Berlin"),
+    ("player_6", 5, 18, 0, 22, 0, false, "Europe/Berlin"),
     // --- Team Charlie (FR) shared: Wed 19-23, Sun 14-18 ---
     ("captain_charlie", 3, 19, 0, 23, 0, true, "Europe/Paris"),
-    ("player_9",       3, 19, 0, 23, 0, true, "Europe/Paris"),
-    ("player_10",      3, 19, 0, 23, 0, true, "Europe/Paris"),
-    ("player_11",      3, 19, 0, 23, 0, true, "Europe/Paris"),
-    ("player_12",      3, 19, 0, 23, 0, true, "Europe/Paris"),
+    ("player_9", 3, 19, 0, 23, 0, true, "Europe/Paris"),
+    ("player_10", 3, 19, 0, 23, 0, true, "Europe/Paris"),
+    ("player_11", 3, 19, 0, 23, 0, true, "Europe/Paris"),
+    ("player_12", 3, 19, 0, 23, 0, true, "Europe/Paris"),
     ("captain_charlie", 0, 14, 0, 18, 0, true, "Europe/Paris"),
-    ("player_9",       0, 14, 0, 18, 0, true, "Europe/Paris"),
-    ("player_10",      0, 14, 0, 18, 0, true, "Europe/Paris"),
-    ("player_11",      0, 14, 0, 18, 0, true, "Europe/Paris"),
-    ("player_12",      0, 14, 0, 18, 0, true, "Europe/Paris"),
+    ("player_9", 0, 14, 0, 18, 0, true, "Europe/Paris"),
+    ("player_10", 0, 14, 0, 18, 0, true, "Europe/Paris"),
+    ("player_11", 0, 14, 0, 18, 0, true, "Europe/Paris"),
+    ("player_12", 0, 14, 0, 18, 0, true, "Europe/Paris"),
     // Charlie extras
     ("captain_charlie", 1, 19, 0, 22, 0, false, "Europe/Paris"),
-    ("player_9",       4, 19, 0, 22, 0, false, "Europe/Paris"),
-    ("player_10",      6, 14, 0, 18, 0, false, "Europe/Paris"),
-
+    ("player_9", 4, 19, 0, 22, 0, false, "Europe/Paris"),
+    ("player_10", 6, 14, 0, 18, 0, false, "Europe/Paris"),
     // --- Team Delta (UK) shared: Tue 19-23, Sat 14-18 ---
     ("captain_delta", 2, 19, 0, 23, 0, true, "Europe/London"),
-    ("player_13",     2, 19, 0, 23, 0, true, "Europe/London"),
-    ("player_14",     2, 19, 0, 23, 0, true, "Europe/London"),
-    ("player_15",     2, 19, 0, 23, 0, true, "Europe/London"),
-    ("player_16",     2, 19, 0, 23, 0, true, "Europe/London"),
+    ("player_13", 2, 19, 0, 23, 0, true, "Europe/London"),
+    ("player_14", 2, 19, 0, 23, 0, true, "Europe/London"),
+    ("player_15", 2, 19, 0, 23, 0, true, "Europe/London"),
+    ("player_16", 2, 19, 0, 23, 0, true, "Europe/London"),
     ("captain_delta", 6, 14, 0, 18, 0, true, "Europe/London"),
-    ("player_13",     6, 14, 0, 18, 0, true, "Europe/London"),
-    ("player_14",     6, 14, 0, 18, 0, true, "Europe/London"),
-    ("player_15",     6, 14, 0, 18, 0, true, "Europe/London"),
-    ("player_16",     6, 14, 0, 18, 0, true, "Europe/London"),
+    ("player_13", 6, 14, 0, 18, 0, true, "Europe/London"),
+    ("player_14", 6, 14, 0, 18, 0, true, "Europe/London"),
+    ("player_15", 6, 14, 0, 18, 0, true, "Europe/London"),
+    ("player_16", 6, 14, 0, 18, 0, true, "Europe/London"),
     // Delta extras
     ("captain_delta", 4, 19, 0, 22, 0, false, "Europe/London"),
-    ("player_13",     3, 18, 0, 21, 0, false, "Europe/London"),
-    ("player_14",     0, 15, 0, 19, 0, false, "Europe/London"),
+    ("player_13", 3, 18, 0, 21, 0, false, "Europe/London"),
+    ("player_14", 0, 15, 0, 19, 0, false, "Europe/London"),
 ];
 
 // ---------------------------------------------------------------------------

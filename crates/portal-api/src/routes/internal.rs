@@ -4,8 +4,8 @@
 
 use crate::handlers::internal;
 use crate::state::AppState;
-use axum::routing::{get, patch, post};
 use axum::Router;
+use axum::routing::{get, patch, post};
 
 /// Create internal API routes.
 pub fn routes() -> Router<AppState> {

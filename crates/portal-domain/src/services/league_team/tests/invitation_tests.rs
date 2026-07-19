@@ -163,7 +163,10 @@ async fn test_create_invitation_player_already_member() {
         .await;
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), DomainError::AlreadyTeamMember));
+    assert!(matches!(
+        result.unwrap_err(),
+        DomainError::AlreadyTeamMember
+    ));
 }
 
 #[tokio::test]

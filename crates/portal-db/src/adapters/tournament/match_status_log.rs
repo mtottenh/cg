@@ -1,7 +1,7 @@
 //! PostgreSQL implementation of MatchStatusLogRepository.
 
-use crate::entities::{MatchStatusLogRow, NewMatchStatusLog};
 use crate::DbPool;
+use crate::entities::{MatchStatusLogRow, NewMatchStatusLog};
 use async_trait::async_trait;
 use portal_core::types::TournamentMatchStatus;
 use portal_core::{DomainError, MatchStatusLogId, TournamentMatchId, UserId};
@@ -63,13 +63,14 @@ impl MatchStatusLogRepository for PgMatchStatusLogRepository {
         &self,
         id: MatchStatusLogId,
     ) -> Result<Option<MatchStatusLog>, DomainError> {
-        let row = sqlx::query_as::<_, MatchStatusLogRow>(
-            r"SELECT * FROM match_status_log WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find match status log: {e}")))?;
+        let row =
+            sqlx::query_as::<_, MatchStatusLogRow>(r"SELECT * FROM match_status_log WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| {
+                    DomainError::Internal(format!("Failed to find match status log: {e}"))
+                })?;
 
         row.map(row_to_domain).transpose()
     }
@@ -108,19 +109,22 @@ impl MatchStatusLogRepository for PgMatchStatusLogRepository {
         .bind(match_id.as_uuid())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find latest match status log: {e}")))?;
+        .map_err(|e| {
+            DomainError::Internal(format!("Failed to find latest match status log: {e}"))
+        })?;
 
         row.map(row_to_domain).transpose()
     }
 
     async fn count_by_match_id(&self, match_id: TournamentMatchId) -> Result<i64, DomainError> {
-        let count: (i64,) = sqlx::query_as(
-            r"SELECT COUNT(*) FROM match_status_log WHERE match_id = $1",
-        )
-        .bind(match_id.as_uuid())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(format!("Failed to count match status logs: {e}")))?;
+        let count: (i64,) =
+            sqlx::query_as(r"SELECT COUNT(*) FROM match_status_log WHERE match_id = $1")
+                .bind(match_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    DomainError::Internal(format!("Failed to count match status logs: {e}"))
+                })?;
 
         Ok(count.0)
     }

@@ -9,10 +9,12 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::state::ResultState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId};
+use portal_core::{
+    DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId,
+};
 use portal_domain::entities::result_claim::GameResultInput;
 use portal_domain::repositories::tournament::TournamentMatchRepository;
 use portal_domain::services::tournament::MatchCompletionInput;
@@ -54,7 +56,10 @@ pub async fn submit_result(
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<SubmitResultClaimRequest>,
-) -> ApiResult<(StatusCode, Json<DataResponse<ResultClaimSubmissionResponse>>)> {
+) -> ApiResult<(
+    StatusCode,
+    Json<DataResponse<ResultClaimSubmissionResponse>>,
+)> {
     let request_id = get_request_id(&headers);
 
     let claimed_winner_registration_id: TournamentRegistrationId = req
@@ -165,7 +170,8 @@ pub async fn get_result_claim(
 
     let claim = state.result_service.get_pending_claim(match_id).await?;
 
-    let claim = claim.ok_or_else(|| ApiError::not_found("No pending result claim for this match"))?;
+    let claim =
+        claim.ok_or_else(|| ApiError::not_found("No pending result claim for this match"))?;
 
     Ok(Json(DataResponse::new(
         ResultClaimResponse::from(claim),
@@ -240,29 +246,27 @@ pub async fn confirm_result(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found("Match not found"))?;
 
-    let loser_registration_id = if match_.participant1_registration_id
-        == Some(claim.claimed_winner_registration_id)
-    {
-        match_.participant2_registration_id
-    } else {
-        match_.participant1_registration_id
-    }
-    .ok_or_else(|| ApiError::internal("Loser participant not found on match"))?;
+    let loser_registration_id =
+        if match_.participant1_registration_id == Some(claim.claimed_winner_registration_id) {
+            match_.participant2_registration_id
+        } else {
+            match_.participant1_registration_id
+        }
+        .ok_or_else(|| ApiError::internal("Loser participant not found on match"))?;
 
     // Determine winner/loser scores
-    let (winner_score, loser_score) = if match_.participant1_registration_id
-        == Some(claim.claimed_winner_registration_id)
-    {
-        (
-            claim.claimed_participant1_score,
-            claim.claimed_participant2_score,
-        )
-    } else {
-        (
-            claim.claimed_participant2_score,
-            claim.claimed_participant1_score,
-        )
-    };
+    let (winner_score, loser_score) =
+        if match_.participant1_registration_id == Some(claim.claimed_winner_registration_id) {
+            (
+                claim.claimed_participant1_score,
+                claim.claimed_participant2_score,
+            )
+        } else {
+            (
+                claim.claimed_participant2_score,
+                claim.claimed_participant1_score,
+            )
+        };
 
     // Build saga input
     let saga_input = MatchCompletionInput {

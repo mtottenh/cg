@@ -1,8 +1,8 @@
 //! Demo and DemoMatchLink builders for tests.
 
 use chrono::Utc;
-use portal_db::entities::{DemoMatchLinkRow, DemoRow};
 use portal_db::DbPool;
+use portal_db::entities::{DemoMatchLinkRow, DemoRow};
 use uuid::Uuid;
 
 // =============================================================================
@@ -154,7 +154,14 @@ impl DemoBuilder {
 
     /// Set CS2-like metadata for a match.
     #[must_use]
-    pub fn cs2_metadata(self, map_name: &str, team1: &str, team2: &str, score1: i32, score2: i32) -> Self {
+    pub fn cs2_metadata(
+        self,
+        map_name: &str,
+        team1: &str,
+        team2: &str,
+        score1: i32,
+        score2: i32,
+    ) -> Self {
         self.metadata(serde_json::json!({
             "map_name": map_name,
             "team1_name": team1,
@@ -216,8 +223,12 @@ impl DemoBuilder {
         };
 
         let id = self.id.unwrap_or_else(Uuid::now_v7);
-        let file_name = self.file_name.unwrap_or_else(|| format!("test_demo_{}.dem", &id.to_string()[..8]));
-        let s3_key = self.s3_key.unwrap_or_else(|| format!("demos/{game_id}/{file_name}"));
+        let file_name = self
+            .file_name
+            .unwrap_or_else(|| format!("test_demo_{}.dem", &id.to_string()[..8]));
+        let s3_key = self
+            .s3_key
+            .unwrap_or_else(|| format!("demos/{game_id}/{file_name}"));
 
         sqlx::query_as::<_, DemoRow>(
             r"
@@ -365,8 +376,12 @@ impl DemoMatchLinkBuilder {
     pub async fn build_persisted(self, pool: &DbPool) -> DemoMatchLinkRow {
         let now = Utc::now();
 
-        let demo_id = self.demo_id.expect("demo_id is required for DemoMatchLinkBuilder");
-        let match_id = self.match_id.expect("match_id is required for DemoMatchLinkBuilder");
+        let demo_id = self
+            .demo_id
+            .expect("demo_id is required for DemoMatchLinkBuilder");
+        let match_id = self
+            .match_id
+            .expect("match_id is required for DemoMatchLinkBuilder");
         let id = self.id.unwrap_or_else(Uuid::now_v7);
 
         sqlx::query_as::<_, DemoMatchLinkRow>(

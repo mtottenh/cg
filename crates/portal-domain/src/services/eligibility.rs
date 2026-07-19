@@ -1,7 +1,7 @@
 //! Eligibility checking logic for tournament registration.
 
-use crate::entities::eligibility::{EligibilityRestrictions, EligibilityViolation};
 use crate::entities::PlayerGameProfile;
+use crate::entities::eligibility::{EligibilityRestrictions, EligibilityViolation};
 use crate::repositories::player_rating_history::RatingStats;
 use portal_core::PlayerId;
 
@@ -39,9 +39,7 @@ pub fn check_eligibility(
                 violations.push(EligibilityViolation {
                     player_id: *player_id,
                     restriction: "max_rating_per_player".to_string(),
-                    message: format!(
-                        "Player rating ({rating}) exceeds maximum allowed ({max})"
-                    ),
+                    message: format!("Player rating ({rating}) exceeds maximum allowed ({max})"),
                 });
             }
         }
@@ -51,9 +49,7 @@ pub fn check_eligibility(
                 violations.push(EligibilityViolation {
                     player_id: *player_id,
                     restriction: "min_rating_per_player".to_string(),
-                    message: format!(
-                        "Player rating ({rating}) is below minimum required ({min})"
-                    ),
+                    message: format!("Player rating ({rating}) is below minimum required ({min})"),
                 });
             }
         }

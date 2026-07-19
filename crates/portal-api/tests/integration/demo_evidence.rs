@@ -87,7 +87,12 @@ async fn test_validate_demo_happy_path_confirms_matching_claim() {
     assert!(body["data"]["confidence"].as_f64().unwrap() > 0.5);
     let extracted = &body["data"]["extracted_result"];
     assert_eq!(extracted["map_id"], "de_inferno");
-    assert!(body["data"]["stats_url"].as_str().unwrap().contains("stats"));
+    assert!(
+        body["data"]["stats_url"]
+            .as_str()
+            .unwrap()
+            .contains("stats")
+    );
 }
 
 #[tokio::test]
@@ -141,7 +146,11 @@ async fn test_get_demo_stats_proxies_external_service() {
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["map_name"], "de_inferno");
-    assert_eq!(body["data"]["team1_score"].as_i64().unwrap() + body["data"]["team2_score"].as_i64().unwrap(), 23);
+    assert_eq!(
+        body["data"]["team1_score"].as_i64().unwrap()
+            + body["data"]["team2_score"].as_i64().unwrap(),
+        23
+    );
 }
 
 // ============================================================================
@@ -243,7 +252,10 @@ async fn test_internal_demo_pipeline_catalog_pending_stats() {
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["created"].as_array().unwrap().len(), 1);
-    let demo_id = body["data"]["created"][0]["id"].as_str().unwrap().to_string();
+    let demo_id = body["data"]["created"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Re-cataloging the same key is idempotent: existing, not created.
     let response = api_key_request(
@@ -268,8 +280,7 @@ async fn test_internal_demo_pipeline_catalog_pending_stats() {
     assert_eq!(body["data"]["existing"].as_array().unwrap().len(), 1);
 
     // 2. The demo shows up as pending (the scanner's retry poll)
-    let response =
-        api_key_request(&app, "GET", "/v1/internal/demos/pending", None, &api_key).await;
+    let response = api_key_request(&app, "GET", "/v1/internal/demos/pending", None, &api_key).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     let pending = body["data"].as_array().unwrap();
@@ -326,8 +337,7 @@ async fn test_internal_demo_pipeline_catalog_pending_stats() {
     );
 
     // 5. No longer pending
-    let response =
-        api_key_request(&app, "GET", "/v1/internal/demos/pending", None, &api_key).await;
+    let response = api_key_request(&app, "GET", "/v1/internal/demos/pending", None, &api_key).await;
     let body: serde_json::Value = response.json();
     assert!(
         !body["data"]
@@ -362,7 +372,10 @@ async fn test_internal_demo_stats_failed_marks_demo() {
     .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
-    let demo_id = body["data"]["created"][0]["id"].as_str().unwrap().to_string();
+    let demo_id = body["data"]["created"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let response = api_key_request(
         &app,
@@ -408,7 +421,6 @@ async fn test_internal_demos_require_api_key() {
         .expect("insert key");
         raw_key
     };
-    let response =
-        api_key_request(&app, "GET", "/v1/internal/demos/pending", None, &api_key).await;
+    let response = api_key_request(&app, "GET", "/v1/internal/demos/pending", None, &api_key).await;
     response.assert_status(StatusCode::FORBIDDEN);
 }

@@ -8,11 +8,11 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
 use crate::state::UsersState;
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
-use axum::Json;
-use portal_core::types::TournamentMatchStatus;
 use portal_core::TournamentId;
+use portal_core::types::TournamentMatchStatus;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -42,7 +42,10 @@ pub async fn get_current_user(
 
     let user = state.user_service.get_current_user(auth.user_id).await?;
 
-    Ok(Json(DataResponse::new(UserResponse::from(user), request_id)))
+    Ok(Json(DataResponse::new(
+        UserResponse::from(user),
+        request_id,
+    )))
 }
 
 /// Get the current user's role assignments.

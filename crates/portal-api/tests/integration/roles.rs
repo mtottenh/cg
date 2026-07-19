@@ -1,8 +1,7 @@
 //! Roles, Permissions, User Role Assignments, and Admin Stats integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
@@ -111,7 +110,10 @@ async fn test_list_roles() {
 
     let names: Vec<&str> = roles.iter().filter_map(|r| r["name"].as_str()).collect();
     assert!(names.contains(&"super_admin"), "should contain super_admin");
-    assert!(names.contains(&"platform_admin"), "should contain platform_admin");
+    assert!(
+        names.contains(&"platform_admin"),
+        "should contain platform_admin"
+    );
     assert!(names.contains(&"moderator"), "should contain moderator");
     assert!(names.contains(&"user"), "should contain user");
 }
@@ -185,7 +187,10 @@ async fn test_get_role_with_permissions() {
 
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["id"], role_id);
-    assert!(body["data"]["permissions"].is_array(), "should include permissions array");
+    assert!(
+        body["data"]["permissions"].is_array(),
+        "should include permissions array"
+    );
 }
 
 #[tokio::test]
@@ -268,9 +273,7 @@ async fn test_delete_system_role_fails() {
         .unwrap();
     let role_id: Uuid = role_row.get("id");
 
-    let response = app
-        .delete_auth(&format!("/v1/admin/roles/{role_id}"))
-        .await;
+    let response = app.delete_auth(&format!("/v1/admin/roles/{role_id}")).await;
     response.assert_status(StatusCode::BAD_REQUEST);
 }
 
@@ -342,7 +345,10 @@ async fn test_add_and_remove_permission() {
         .iter()
         .filter_map(|p| p["id"].as_str())
         .collect();
-    assert!(perm_names.contains(&perm_id.as_str()), "permission should be added");
+    assert!(
+        perm_names.contains(&perm_id.as_str()),
+        "permission should be added"
+    );
 
     // Remove permission from role
     let remove_resp = app

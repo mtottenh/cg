@@ -14,11 +14,14 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::state::DemoState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use chrono::DateTime;
-use portal_core::{DemoCategory, DemoId, DemoLinkType, DemoStatus, GameId, LeagueId, ScopeType, TournamentId, TournamentMatchId};
+use portal_core::{
+    DemoCategory, DemoId, DemoLinkType, DemoStatus, GameId, LeagueId, ScopeType, TournamentId,
+    TournamentMatchId,
+};
 use portal_domain::entities::demo::{Demo, DemoFilter, DemoPlayerStats, ParsedDemoMetadata};
 use portal_domain::services::DemoPlayerInput;
 use validator::Validate;
@@ -76,15 +79,29 @@ pub async fn list_demos(
 
     let filter = DemoFilter {
         game_id: query.game_id.map(GameId::from),
-        category: query.category.as_ref().and_then(|c| c.parse::<DemoCategory>().ok()),
-        status: query.status.as_ref().and_then(|s| s.parse::<DemoStatus>().ok()),
+        category: query
+            .category
+            .as_ref()
+            .and_then(|c| c.parse::<DemoCategory>().ok()),
+        status: query
+            .status
+            .as_ref()
+            .and_then(|s| s.parse::<DemoStatus>().ok()),
         league_id: query.league_id.map(LeagueId::from),
         tournament_id: query.tournament_id.map(TournamentId::from),
         map_name: query.map_name,
         team_name_contains: query.team_name,
         steam_id: query.steam_id,
-        match_date_from: query.match_date_from.as_ref().and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map(|dt| dt.to_utc()),
-        match_date_to: query.match_date_to.as_ref().and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map(|dt| dt.to_utc()),
+        match_date_from: query
+            .match_date_from
+            .as_ref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.to_utc()),
+        match_date_to: query
+            .match_date_to
+            .as_ref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.to_utc()),
         include_hidden,
         limit: query.limit,
         offset: query.offset,
@@ -126,7 +143,10 @@ pub async fn get_demo(
     let demo = state.demo_service.get_demo(demo_id).await?;
     authorize_demo_read(&state, &perm, &auth, &demo).await?;
 
-    Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
+    Ok(Json(DataResponse::new(
+        DemoResponse::from(demo),
+        request_id,
+    )))
 }
 
 /// Get a demo with its players.
@@ -158,7 +178,8 @@ pub async fn get_demo_players(
     authorize_demo_read(&state, &perm, &auth, &demo).await?;
 
     let players = state.demo_service.get_demo_players(demo_id).await?;
-    let responses: Vec<DemoPlayerResponse> = players.into_iter().map(DemoPlayerResponse::from).collect();
+    let responses: Vec<DemoPlayerResponse> =
+        players.into_iter().map(DemoPlayerResponse::from).collect();
 
     Ok(Json(DataResponse::new(responses, request_id)))
 }
@@ -216,7 +237,10 @@ pub async fn catalog_demo(
 
     Ok((
         status,
-        Json(DataResponse::new(DemoResponse::from(result.into_demo()), request_id)),
+        Json(DataResponse::new(
+            DemoResponse::from(result.into_demo()),
+            request_id,
+        )),
     ))
 }
 
@@ -269,7 +293,10 @@ pub async fn categorize_demo(
         .categorize_demo(demo_id, category, auth.user_id)
         .await?;
 
-    Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
+    Ok(Json(DataResponse::new(
+        DemoResponse::from(demo),
+        request_id,
+    )))
 }
 
 /// Hide or unhide a demo.
@@ -316,7 +343,10 @@ pub async fn set_demo_visibility(
         .set_demo_visibility(demo_id, request.is_hidden, auth.user_id)
         .await?;
 
-    Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
+    Ok(Json(DataResponse::new(
+        DemoResponse::from(demo),
+        request_id,
+    )))
 }
 
 /// Associate a demo with a league/tournament.
@@ -367,7 +397,10 @@ pub async fn associate_demo(
         )
         .await?;
 
-    Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
+    Ok(Json(DataResponse::new(
+        DemoResponse::from(demo),
+        request_id,
+    )))
 }
 
 /// Link a demo to a tournament match.
@@ -430,7 +463,10 @@ pub async fn link_demo_to_match(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(DemoMatchLinkResponse::from(link), request_id)),
+        Json(DataResponse::new(
+            DemoMatchLinkResponse::from(link),
+            request_id,
+        )),
     ))
 }
 
@@ -463,7 +499,8 @@ pub async fn get_demo_links(
     authorize_demo_read(&state, &perm, &auth, &demo).await?;
 
     let links = state.demo_service.get_demo_links(demo_id).await?;
-    let responses: Vec<DemoMatchLinkResponse> = links.into_iter().map(DemoMatchLinkResponse::from).collect();
+    let responses: Vec<DemoMatchLinkResponse> =
+        links.into_iter().map(DemoMatchLinkResponse::from).collect();
 
     Ok(Json(DataResponse::new(responses, request_id)))
 }
@@ -547,11 +584,26 @@ pub async fn get_demo_status_counts(
     let counts = state.demo_service.get_status_counts().await?;
 
     let response = DemoStatusCountsResponse {
-        pending: counts.iter().find(|(s, _)| *s == DemoStatus::Pending).map_or(0, |(_, c)| *c),
-        processing: counts.iter().find(|(s, _)| *s == DemoStatus::Processing).map_or(0, |(_, c)| *c),
-        ready: counts.iter().find(|(s, _)| *s == DemoStatus::Ready).map_or(0, |(_, c)| *c),
-        failed: counts.iter().find(|(s, _)| *s == DemoStatus::Failed).map_or(0, |(_, c)| *c),
-        archived: counts.iter().find(|(s, _)| *s == DemoStatus::Archived).map_or(0, |(_, c)| *c),
+        pending: counts
+            .iter()
+            .find(|(s, _)| *s == DemoStatus::Pending)
+            .map_or(0, |(_, c)| *c),
+        processing: counts
+            .iter()
+            .find(|(s, _)| *s == DemoStatus::Processing)
+            .map_or(0, |(_, c)| *c),
+        ready: counts
+            .iter()
+            .find(|(s, _)| *s == DemoStatus::Ready)
+            .map_or(0, |(_, c)| *c),
+        failed: counts
+            .iter()
+            .find(|(s, _)| *s == DemoStatus::Failed)
+            .map_or(0, |(_, c)| *c),
+        archived: counts
+            .iter()
+            .find(|(s, _)| *s == DemoStatus::Archived)
+            .map_or(0, |(_, c)| *c),
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
@@ -879,7 +931,10 @@ pub async fn submit_demo_stats(
         .save_demo_stats(demo_id, metadata, request.raw_stats, players)
         .await?;
 
-    Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
+    Ok(Json(DataResponse::new(
+        DemoResponse::from(demo),
+        request_id,
+    )))
 }
 
 /// Mark a demo's stats processing as failed.
@@ -925,7 +980,10 @@ pub async fn mark_demo_stats_failed(
         .mark_stats_failed(demo_id, &request.error)
         .await?;
 
-    Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
+    Ok(Json(DataResponse::new(
+        DemoResponse::from(demo),
+        request_id,
+    )))
 }
 
 /// Delete a demo (admin only).
@@ -949,7 +1007,6 @@ pub async fn delete_demo(
     auth: AuthenticatedUser,
     Path(demo_id): Path<DemoId>,
 ) -> ApiResult<StatusCode> {
-
     let is_admin = state
         .permission_service
         .is_admin(auth.user_id)
@@ -1008,7 +1065,10 @@ pub async fn set_demo_notes(
         .set_admin_notes(demo_id, request.notes)
         .await?;
 
-    Ok(Json(DataResponse::new(DemoResponse::from(demo), request_id)))
+    Ok(Json(DataResponse::new(
+        DemoResponse::from(demo),
+        request_id,
+    )))
 }
 
 // =============================================================================
@@ -1042,10 +1102,7 @@ async fn authorize_demo_read(
     }
 
     let players = state.demo_service.get_demo_players(demo.id).await?;
-    if players
-        .iter()
-        .any(|p| p.player_id == Some(auth.player_id))
-    {
+    if players.iter().any(|p| p.player_id == Some(auth.player_id)) {
         return Ok(());
     }
 

@@ -11,9 +11,9 @@ use crate::dto::responses::TournamentStageResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::state::TournamentState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::TournamentId;
 
 /// Create a tournament stage.
@@ -59,7 +59,10 @@ pub async fn create_stage(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(TournamentStageResponse::from(stage), request_id)),
+        Json(DataResponse::new(
+            TournamentStageResponse::from(stage),
+            request_id,
+        )),
     ))
 }
 

@@ -1,6 +1,6 @@
 //! API key management commands.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use portal_db::PgPool;
 use rand::Rng;
@@ -8,7 +8,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tabled::Tabled;
 
-use crate::output::{error, format_timestamp, format_uuid, info, output_list, success, OutputFormat};
+use crate::output::{
+    OutputFormat, error, format_timestamp, format_uuid, info, output_list, success,
+};
 
 /// API key management commands.
 #[derive(Args)]
@@ -120,7 +122,11 @@ async fn create_key(pool: &PgPool, service: &str, permissions_str: &str) -> Resu
     if !invalid.is_empty() {
         bail!(
             "Unknown service permission(s): {}. Run `portal role list-permissions` to see valid scopes.",
-            invalid.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            invalid
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 
@@ -315,9 +321,7 @@ async fn deactivate_key(pool: &PgPool, id: &str) -> Result<()> {
     .context("Failed to deactivate API key")?;
 
     if result.rows_affected() == 0 {
-        error(&format!(
-            "API key not found or already inactive: {id}"
-        ));
+        error(&format!("API key not found or already inactive: {id}"));
         std::process::exit(1);
     }
 

@@ -1,8 +1,8 @@
 //! Veto delegate handlers.
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{LeagueTeamSeasonId, PlayerId, TournamentId, VetoDelegateId};
 
 use crate::dto::common::DataResponse;
@@ -127,7 +127,10 @@ pub async fn list_delegations(
         .await?;
 
     let response = VetoDelegateListResponse {
-        delegates: delegates.into_iter().map(VetoDelegateResponse::from).collect(),
+        delegates: delegates
+            .into_iter()
+            .map(VetoDelegateResponse::from)
+            .collect(),
     };
 
     Ok(Json(DataResponse::new(response, request_id)))

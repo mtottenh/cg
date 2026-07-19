@@ -12,7 +12,9 @@ use tracing::{info, instrument, warn};
 use crate::entities::forfeit::{ForfeitResult, ForfeitTrigger, ForfeitType};
 use crate::entities::tournament::TournamentMatch;
 use crate::repositories::forfeit::{CreateForfeitRecord, ForfeitRecordRepository};
-use crate::repositories::tournament::{TournamentMatchRepository, TournamentRegistrationRepository};
+use crate::repositories::tournament::{
+    TournamentMatchRepository, TournamentRegistrationRepository,
+};
 
 /// Service for handling forfeits.
 #[derive(Clone)]
@@ -29,11 +31,7 @@ where
     TRR: TournamentRegistrationRepository,
 {
     /// Create a new forfeit service.
-    pub fn new(
-        forfeit_repo: Arc<FRR>,
-        match_repo: Arc<TMR>,
-        registration_repo: Arc<TRR>,
-    ) -> Self {
+    pub fn new(forfeit_repo: Arc<FRR>, match_repo: Arc<TMR>, registration_repo: Arc<TRR>) -> Self {
         Self {
             forfeit_repo,
             match_repo,
@@ -202,9 +200,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(registration_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         // Verify registration belongs to this tournament
         if registration.tournament_id != tournament_id {
@@ -269,9 +265,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(registration_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         // Verify registration belongs to this tournament
         if registration.tournament_id != tournament_id {
@@ -351,8 +345,10 @@ where
         }
 
         // Check if the forfeiting party is a participant
-        let is_participant1 = match_.participant1_registration_id == Some(forfeiting_registration_id);
-        let is_participant2 = match_.participant2_registration_id == Some(forfeiting_registration_id);
+        let is_participant1 =
+            match_.participant1_registration_id == Some(forfeiting_registration_id);
+        let is_participant2 =
+            match_.participant2_registration_id == Some(forfeiting_registration_id);
 
         if !is_participant1 && !is_participant2 {
             return Err(DomainError::not_authorized(format!(

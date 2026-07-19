@@ -17,8 +17,7 @@ use crate::entities::dispute::{
 };
 use crate::entities::tournament::TournamentMatch;
 use crate::repositories::dispute::{
-    CreateDispute, CreateDisputeMessage, DisputeMessageRepository, DisputeRepository,
-    UpdateDispute,
+    CreateDispute, CreateDisputeMessage, DisputeMessageRepository, DisputeRepository, UpdateDispute,
 };
 use crate::repositories::tournament::{ResultClaimRepository, TournamentMatchRepository};
 
@@ -679,7 +678,8 @@ where
         }
 
         // Check if the disputer is a participant
-        let is_participant = match_.participant1_registration_id == Some(disputed_by_registration_id)
+        let is_participant = match_.participant1_registration_id
+            == Some(disputed_by_registration_id)
             || match_.participant2_registration_id == Some(disputed_by_registration_id);
 
         if !is_participant {

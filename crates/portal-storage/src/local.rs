@@ -57,11 +57,7 @@ impl LocalStorage {
     /// Generate a unique storage key.
     fn generate_key(&self, request: &StoreRequest) -> String {
         let id = uuid::Uuid::now_v7();
-        let extension = request
-            .filename
-            .rsplit('.')
-            .next()
-            .unwrap_or("bin");
+        let extension = request.filename.rsplit('.').next().unwrap_or("bin");
 
         match &request.owner_id {
             Some(owner) => format!("{}/{}/{}.{}", request.prefix, owner, id, extension),
@@ -160,7 +156,11 @@ mod tests {
 
         let result = storage.store(request).await.unwrap();
 
-        assert!(result.url.starts_with("http://localhost:3000/uploads/files/"));
+        assert!(
+            result
+                .url
+                .starts_with("http://localhost:3000/uploads/files/")
+        );
         assert!(result.key.starts_with("files/"));
         assert!(result.key.ends_with(".txt"));
         assert_eq!(result.size, 11);

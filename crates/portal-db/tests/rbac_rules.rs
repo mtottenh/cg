@@ -5,9 +5,9 @@
 
 use chrono::{Duration, Utc};
 use portal_core::UserId;
+use portal_db::DbPool;
 use portal_db::entities::{NewRole, NewUserRole};
 use portal_db::repositories::{PermissionRepository, RoleRepository};
-use portal_db::DbPool;
 use portal_test::database::TestDb;
 use uuid::Uuid;
 
@@ -176,10 +176,7 @@ async fn test_expired_role_no_longer_grants_permission() {
         .user_has_permission(UserId::from(user_id), "expiring_perm")
         .await
         .unwrap();
-    assert!(
-        !has_perm,
-        "Expired role should not grant permission"
-    );
+    assert!(!has_perm, "Expired role should not grant permission");
 }
 
 /// Test that a revoked role no longer grants permission.
@@ -223,10 +220,7 @@ async fn test_revoked_role_no_longer_grants_permission() {
         .user_has_permission(UserId::from(user_id), "revoking_perm")
         .await
         .unwrap();
-    assert!(
-        !has_perm,
-        "Revoked role should not grant permission"
-    );
+    assert!(!has_perm, "Revoked role should not grant permission");
 }
 
 /// Test that system roles cannot be deleted.
@@ -254,7 +248,10 @@ async fn test_system_roles_cannot_be_deleted() {
 
     // Verify role still exists
     let role = role_repo.find_by_id(system_role_id.0).await.unwrap();
-    assert!(role.is_some(), "System role should still exist after delete attempt");
+    assert!(
+        role.is_some(),
+        "System role should still exist after delete attempt"
+    );
 }
 
 /// Test that a non-system role can be deleted.
@@ -304,10 +301,7 @@ async fn test_roles_ordered_by_priority() {
     let roles = role_repo.list().await.unwrap();
 
     // Filter to our test roles
-    let test_roles: Vec<_> = roles
-        .iter()
-        .filter(|r| r.name.ends_with("_role"))
-        .collect();
+    let test_roles: Vec<_> = roles.iter().filter(|r| r.name.ends_with("_role")).collect();
 
     // Should be ordered highest priority first
     for i in 1..test_roles.len() {

@@ -118,9 +118,7 @@ where
         let bracket = self.get_bracket(match_.bracket_id).await?;
 
         // Advance winner
-        let winner_advancement = self
-            .advance_winner(&match_, winner_registration_id)
-            .await?;
+        let winner_advancement = self.advance_winner(&match_, winner_registration_id).await?;
 
         // Route loser
         let loser_result = self
@@ -340,14 +338,14 @@ where
         let mut standings = self.standing_repo.list_by_bracket(bracket.id).await?;
 
         // Find and update winner standing
-        if let Some(winner_standing) = standings.iter_mut().find(|s| s.registration_id == winner_id)
+        if let Some(winner_standing) = standings
+            .iter_mut()
+            .find(|s| s.registration_id == winner_id)
         {
             winner_standing.matches_played += 1;
             winner_standing.matches_won += 1;
-            winner_standing.game_wins +=
-                match_.participant1_score.max(match_.participant2_score);
-            winner_standing.game_losses +=
-                match_.participant1_score.min(match_.participant2_score);
+            winner_standing.game_wins += match_.participant1_score.max(match_.participant2_score);
+            winner_standing.game_losses += match_.participant1_score.min(match_.participant2_score);
             winner_standing.game_differential =
                 winner_standing.game_wins - winner_standing.game_losses;
             winner_standing.points += 3; // 3 points for win
@@ -491,10 +489,7 @@ where
             })?;
 
         // Get all group brackets ordered by group_number
-        let mut group_brackets = self
-            .bracket_repo
-            .list_by_stage(completed_stage.id)
-            .await?;
+        let mut group_brackets = self.bracket_repo.list_by_stage(completed_stage.id).await?;
         group_brackets.sort_by_key(|b| b.group_number.unwrap_or(0));
 
         let advance_per_group = completed_stage.advancement_count.unwrap_or(2) as usize;
@@ -655,12 +650,8 @@ where
         )
         .await?;
 
-        helpers::set_se_progression_links(
-            self.match_repo.as_ref(),
-            &matches,
-            &position_to_match,
-        )
-        .await?;
+        helpers::set_se_progression_links(self.match_repo.as_ref(), &matches, &position_to_match)
+            .await?;
 
         // Mark newly ready matches
         self.find_newly_ready_matches(bracket.id).await?;

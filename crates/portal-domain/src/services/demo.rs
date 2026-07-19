@@ -15,7 +15,9 @@ use crate::entities::demo::{
     Demo, DemoFilter, DemoListResult, DemoMatchLink, DemoPlayer, DemoPlayerStats,
     ParsedDemoMetadata,
 };
-use crate::entities::evidence::{DiscoveredEvidence, EvidenceStorage, EvidenceType, MatchEvidenceContext};
+use crate::entities::evidence::{
+    DiscoveredEvidence, EvidenceStorage, EvidenceType, MatchEvidenceContext,
+};
 use crate::repositories::demo::{
     CreateDemo, CreateDemoMatchLink, CreateDemoPlayer, DemoMatchLinkRepository,
     DemoMatchLinkWithData, DemoPlayerRepository, DemoRepository,
@@ -112,7 +114,9 @@ where
     /// Update demo status to processing.
     #[instrument(skip(self))]
     pub async fn mark_processing(&self, id: DemoId) -> Result<Demo, DomainError> {
-        self.demo_repo.update_status(id, DemoStatus::Processing).await
+        self.demo_repo
+            .update_status(id, DemoStatus::Processing)
+            .await
     }
 
     /// Save parsed demo stats.
@@ -343,7 +347,9 @@ where
         demo_player_id: portal_core::DemoPlayerId,
         player_id: PlayerId,
     ) -> Result<DemoPlayer, DomainError> {
-        self.player_repo.link_to_player(demo_player_id, player_id).await
+        self.player_repo
+            .link_to_player(demo_player_id, player_id)
+            .await
     }
 
     // =========================================================================
@@ -371,9 +377,7 @@ where
         }
 
         // Build time window: reference_time ± 6 hours
-        let reference_time = context
-            .started_at
-            .or(context.scheduled_at);
+        let reference_time = context.started_at.or(context.scheduled_at);
 
         let (time_from, time_to) = match reference_time {
             Some(t) => (
@@ -384,23 +388,21 @@ where
         };
 
         // Query the catalog
-        let game_id = context.game_id.parse::<uuid::Uuid>()
+        let game_id = context
+            .game_id
+            .parse::<uuid::Uuid>()
             .map(portal_core::GameId::from_uuid)
-            .map_err(|_| portal_core::DomainError::Internal(
-                format!("Invalid game_id UUID in evidence context: {}", context.game_id),
-            ))?;
+            .map_err(|_| {
+                portal_core::DomainError::Internal(format!(
+                    "Invalid game_id UUID in evidence context: {}",
+                    context.game_id
+                ))
+            })?;
         let match_id = portal_core::TournamentMatchId::from_uuid(context.match_id);
 
         let matching_demos = self
             .demo_repo
-            .find_matching_for_context(
-                game_id,
-                &steam_ids,
-                time_from,
-                time_to,
-                Some(match_id),
-                50,
-            )
+            .find_matching_for_context(game_id, &steam_ids, time_from, time_to, Some(match_id), 50)
             .await?;
 
         // For each demo, fetch players and compute relevance
@@ -539,7 +541,10 @@ fn compute_relevance(
     let steam_overlap = matching_count as f32 / all_steam_ids.len() as f32;
 
     // Time proximity
-    let time_score = match (reference_time, demo.metadata.as_ref().and_then(|m| m.match_date)) {
+    let time_score = match (
+        reference_time,
+        demo.metadata.as_ref().and_then(|m| m.match_date),
+    ) {
         (Some(ref_time), Some(demo_time)) => {
             let hours_diff = (ref_time - demo_time).num_hours().unsigned_abs() as f32;
             (1.0 - hours_diff / 24.0).max(0.0)
@@ -558,5 +563,8 @@ fn compute_relevance(
     let both_teams_score = if both_teams_present { 1.0 } else { 0.0 };
 
     // Weighted sum
-    0.15f32.mul_add(both_teams_score, 0.50f32.mul_add(steam_overlap, 0.30 * time_score)) + 0.05
+    0.15f32.mul_add(
+        both_teams_score,
+        0.50f32.mul_add(steam_overlap, 0.30 * time_score),
+    ) + 0.05
 }

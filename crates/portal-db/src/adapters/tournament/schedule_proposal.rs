@@ -8,8 +8,8 @@ use portal_core::types::ProposalStatus;
 use portal_domain::entities::{CreateScheduleProposalCommand, ScheduleProposal};
 use portal_domain::repositories::ScheduleProposalRepository;
 
-use crate::entities::tournament::{NewScheduleProposal, ScheduleProposalRow};
 use crate::DbPool;
+use crate::entities::tournament::{NewScheduleProposal, ScheduleProposalRow};
 
 /// PostgreSQL implementation of the schedule proposal repository.
 #[derive(Clone)]
@@ -167,10 +167,7 @@ impl ScheduleProposalRepository for PgScheduleProposalRepository {
         Ok(rows.into_iter().map(row_to_proposal).collect())
     }
 
-    async fn mark_expired(
-        &self,
-        id: ScheduleProposalId,
-    ) -> Result<ScheduleProposal, DomainError> {
+    async fn mark_expired(&self, id: ScheduleProposalId) -> Result<ScheduleProposal, DomainError> {
         let row = sqlx::query_as::<_, ScheduleProposalRow>(
             r"
             UPDATE schedule_proposals
@@ -193,7 +190,9 @@ fn row_to_proposal(row: ScheduleProposalRow) -> ScheduleProposal {
     ScheduleProposal {
         id: ScheduleProposalId::from(row.id),
         match_id: TournamentMatchId::from(row.match_id),
-        proposed_by_registration_id: TournamentRegistrationId::from(row.proposed_by_registration_id),
+        proposed_by_registration_id: TournamentRegistrationId::from(
+            row.proposed_by_registration_id,
+        ),
         proposed_by_user_id: UserId::from(row.proposed_by_user_id),
         proposed_times: row.proposed_times,
         selected_time: row.selected_time,

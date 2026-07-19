@@ -15,8 +15,8 @@ use portal_domain::repositories::{
     AvailabilityOverrideRepository, AvailabilityWindowRepository, SuggestedTimeRepository,
 };
 
-use crate::entities::{AvailabilityOverrideRow, AvailabilityWindowRow, SuggestedTimeRow};
 use crate::DbPool;
+use crate::entities::{AvailabilityOverrideRow, AvailabilityWindowRow, SuggestedTimeRow};
 
 // =============================================================================
 // AVAILABILITY WINDOW REPOSITORY
@@ -389,8 +389,7 @@ impl AvailabilityOverrideRepository for PgAvailabilityOverrideRepository {
         .await
         .map_err(|e| DomainError::Internal(format!("Database error: {e}")))?;
 
-        row.try_into()
-            .map_err(|e: String| DomainError::Internal(e))
+        row.try_into().map_err(|e: String| DomainError::Internal(e))
     }
 
     async fn delete(&self, id: AvailabilityExceptionId) -> Result<bool, DomainError> {
@@ -456,13 +455,12 @@ impl PgSuggestedTimeRepository {
 #[async_trait]
 impl SuggestedTimeRepository for PgSuggestedTimeRepository {
     async fn find_by_id(&self, id: SuggestedTimeId) -> Result<Option<SuggestedTime>, DomainError> {
-        let row = sqlx::query_as::<_, SuggestedTimeRow>(
-            "SELECT * FROM suggested_times WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(format!("Database error: {e}")))?;
+        let row =
+            sqlx::query_as::<_, SuggestedTimeRow>("SELECT * FROM suggested_times WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(format!("Database error: {e}")))?;
 
         row.map(TryInto::try_into)
             .transpose()
@@ -530,8 +528,7 @@ impl SuggestedTimeRepository for PgSuggestedTimeRepository {
         .await
         .map_err(|e| DomainError::Internal(format!("Database error: {e}")))?;
 
-        row.try_into()
-            .map_err(|e: String| DomainError::Internal(e))
+        row.try_into().map_err(|e: String| DomainError::Internal(e))
     }
 
     async fn accept(&self, id: SuggestedTimeId) -> Result<SuggestedTime, DomainError> {
@@ -543,8 +540,7 @@ impl SuggestedTimeRepository for PgSuggestedTimeRepository {
         .await
         .map_err(|e| DomainError::Internal(format!("Database error: {e}")))?;
 
-        row.try_into()
-            .map_err(|e: String| DomainError::Internal(e))
+        row.try_into().map_err(|e: String| DomainError::Internal(e))
     }
 
     async fn reject(&self, id: SuggestedTimeId) -> Result<SuggestedTime, DomainError> {
@@ -556,8 +552,7 @@ impl SuggestedTimeRepository for PgSuggestedTimeRepository {
         .await
         .map_err(|e| DomainError::Internal(format!("Database error: {e}")))?;
 
-        row.try_into()
-            .map_err(|e: String| DomainError::Internal(e))
+        row.try_into().map_err(|e: String| DomainError::Internal(e))
     }
 
     async fn expire(&self, id: SuggestedTimeId) -> Result<SuggestedTime, DomainError> {
@@ -569,8 +564,7 @@ impl SuggestedTimeRepository for PgSuggestedTimeRepository {
         .await
         .map_err(|e| DomainError::Internal(format!("Database error: {e}")))?;
 
-        row.try_into()
-            .map_err(|e: String| DomainError::Internal(e))
+        row.try_into().map_err(|e: String| DomainError::Internal(e))
     }
 
     async fn delete_by_match_id(&self, match_id: TournamentMatchId) -> Result<u64, DomainError> {

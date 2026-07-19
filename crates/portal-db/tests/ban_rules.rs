@@ -4,9 +4,9 @@
 //! Some tests may initially FAIL (Red) if constraints aren't enforced yet - that's expected TDD.
 
 use chrono::{Duration, Utc};
+use portal_db::DbPool;
 use portal_db::entities::NewBan;
 use portal_db::repositories::BanRepository;
-use portal_db::DbPool;
 use portal_test::database::TestDb;
 use uuid::Uuid;
 
@@ -88,7 +88,10 @@ async fn test_expired_ban_no_longer_active() {
 
     // Expired ban should not appear in active bans
     let active = repo.get_active(user_id).await.unwrap();
-    assert!(active.is_empty(), "Expired ban should not be in active list");
+    assert!(
+        active.is_empty(),
+        "Expired ban should not be in active list"
+    );
 }
 
 /// Test that a lifted ban no longer affects the user.
@@ -232,7 +235,10 @@ async fn test_timed_ban_expiry() {
     // Active bans should include this ban
     let active = repo.get_active(user_id).await.unwrap();
     assert_eq!(active.len(), 1);
-    assert!(active[0].ends_at.is_some(), "Timed ban should have an end date");
+    assert!(
+        active[0].ends_at.is_some(),
+        "Timed ban should have an end date"
+    );
 }
 
 /// Test that permanent bans (no end date) remain active indefinitely.

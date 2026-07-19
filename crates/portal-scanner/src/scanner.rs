@@ -16,7 +16,8 @@ pub async fn scan_and_process(
     config: &ScannerConfig,
 ) -> Result<()> {
     // 1. List demo files from S3
-    let objects = s3_scanner::list_demo_files(s3_client, &config.s3_bucket, &config.s3_prefix).await?;
+    let objects =
+        s3_scanner::list_demo_files(s3_client, &config.s3_bucket, &config.s3_prefix).await?;
 
     if objects.is_empty() {
         info!("No demo files found in S3");
@@ -30,12 +31,7 @@ pub async fn scan_and_process(
         let demos: Vec<CatalogDemoEntry> = chunk
             .iter()
             .map(|obj| {
-                let file_name = obj
-                    .key
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&obj.key)
-                    .to_string();
+                let file_name = obj.key.rsplit('/').next().unwrap_or(&obj.key).to_string();
                 CatalogDemoEntry {
                     file_name,
                     s3_bucket: config.s3_bucket.clone(),
@@ -61,7 +57,9 @@ pub async fn scan_and_process(
 
                 // 3. Fetch stats for newly created demos
                 for demo in &result.created {
-                    if let Err(e) = fetch_and_submit_stats(api_client, demo_client, &demo.id, &demo.file_name).await
+                    if let Err(e) =
+                        fetch_and_submit_stats(api_client, demo_client, &demo.id, &demo.file_name)
+                            .await
                     {
                         warn!(
                             demo_id = %demo.id,
@@ -99,7 +97,9 @@ pub async fn process_pending(
     info!(count = pending.len(), "Processing pending demos");
 
     for demo in &pending {
-        if let Err(e) = fetch_and_submit_stats(api_client, demo_client, &demo.id, &demo.file_name).await {
+        if let Err(e) =
+            fetch_and_submit_stats(api_client, demo_client, &demo.id, &demo.file_name).await
+        {
             warn!(
                 demo_id = %demo.id,
                 file_name = %demo.file_name,
@@ -120,9 +120,7 @@ async fn fetch_and_submit_stats(
     file_name: &str,
 ) -> Result<()> {
     // Strip .dem.bz2 or .dem extension for the stats lookup
-    let stats_name = file_name
-        .trim_end_matches(".bz2")
-        .trim_end_matches(".dem");
+    let stats_name = file_name.trim_end_matches(".bz2").trim_end_matches(".dem");
 
     let stats_url = demo_client.get_stats_url(stats_name);
     debug!(demo_id, file_name, url = %stats_url, "Fetching demo stats");
@@ -134,7 +132,10 @@ async fn fetch_and_submit_stats(
             info!(demo_id, file_name, map = %stats.map, "Stats submitted");
         }
         Err(portal_plugins::PluginError::NotFound(_)) => {
-            info!(demo_id, file_name, "Demo stats not yet available (not parsed)");
+            info!(
+                demo_id,
+                file_name, "Demo stats not yet available (not parsed)"
+            );
             // Don't mark as failed — stats service may not have parsed it yet
         }
         Err(e) => {

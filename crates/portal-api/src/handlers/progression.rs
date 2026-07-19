@@ -8,9 +8,9 @@ use crate::dto::responses::ProgressionResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::ProgressionState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::Json;
 use portal_core::{TournamentMatchId, TournamentRegistrationId};
 
 /// Extract request ID from headers.

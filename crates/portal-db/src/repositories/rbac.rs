@@ -1,8 +1,8 @@
 //! RBAC (Role-Based Access Control) repositories.
 
+use crate::DbPool;
 use crate::entities::{BanRow, NewBan, NewRole, NewUserRole, PermissionRow, RoleRow, UserRoleRow};
 use crate::error::RepositoryError;
-use crate::DbPool;
 use portal_core::{PermissionScope, ScopeType, UserId};
 use uuid::Uuid;
 
@@ -40,24 +40,25 @@ impl RoleRepository {
     }
 
     /// Find a role by ID or name.
-    pub async fn find_by_id_or_name(&self, id_or_name: &str) -> Result<Option<RoleRow>, RepositoryError> {
-        let role = sqlx::query_as::<_, RoleRow>(
-            "SELECT * FROM roles WHERE id::text = $1 OR name = $1",
-        )
-        .bind(id_or_name)
-        .fetch_optional(&self.pool)
-        .await?;
+    pub async fn find_by_id_or_name(
+        &self,
+        id_or_name: &str,
+    ) -> Result<Option<RoleRow>, RepositoryError> {
+        let role =
+            sqlx::query_as::<_, RoleRow>("SELECT * FROM roles WHERE id::text = $1 OR name = $1")
+                .bind(id_or_name)
+                .fetch_optional(&self.pool)
+                .await?;
 
         Ok(role)
     }
 
     /// List all roles.
     pub async fn list(&self) -> Result<Vec<RoleRow>, RepositoryError> {
-        let roles = sqlx::query_as::<_, RoleRow>(
-            "SELECT * FROM roles ORDER BY priority DESC, name",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let roles =
+            sqlx::query_as::<_, RoleRow>("SELECT * FROM roles ORDER BY priority DESC, name")
+                .fetch_all(&self.pool)
+                .await?;
 
         Ok(roles)
     }
@@ -86,12 +87,10 @@ impl RoleRepository {
 
     /// Delete a role (only non-system roles).
     pub async fn delete(&self, id: Uuid) -> Result<bool, RepositoryError> {
-        let result = sqlx::query(
-            "DELETE FROM roles WHERE id = $1 AND is_system = FALSE",
-        )
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query("DELETE FROM roles WHERE id = $1 AND is_system = FALSE")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -129,7 +128,10 @@ impl RoleRepository {
     }
 
     /// Get all role assignments for a user (with assignment metadata).
-    pub async fn get_user_role_assignments(&self, user_id: Uuid) -> Result<Vec<UserRoleRow>, RepositoryError> {
+    pub async fn get_user_role_assignments(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<UserRoleRow>, RepositoryError> {
         let assignments = sqlx::query_as::<_, UserRoleRow>(
             r"
             SELECT ur.*
@@ -147,7 +149,10 @@ impl RoleRepository {
     }
 
     /// Get permissions for a role.
-    pub async fn get_permissions(&self, role_id: Uuid) -> Result<Vec<PermissionRow>, RepositoryError> {
+    pub async fn get_permissions(
+        &self,
+        role_id: Uuid,
+    ) -> Result<Vec<PermissionRow>, RepositoryError> {
         let permissions = sqlx::query_as::<_, PermissionRow>(
             r"
             SELECT p.* FROM permissions p
@@ -190,19 +195,21 @@ impl RoleRepository {
         role_id: Uuid,
         permission_id: Uuid,
     ) -> Result<bool, RepositoryError> {
-        let result = sqlx::query(
-            "DELETE FROM role_permissions WHERE role_id = $1 AND permission_id = $2",
-        )
-        .bind(role_id)
-        .bind(permission_id)
-        .execute(&self.pool)
-        .await?;
+        let result =
+            sqlx::query("DELETE FROM role_permissions WHERE role_id = $1 AND permission_id = $2")
+                .bind(role_id)
+                .bind(permission_id)
+                .execute(&self.pool)
+                .await?;
 
         Ok(result.rows_affected() > 0)
     }
 
     /// Assign a role to a user.
-    pub async fn assign_to_user(&self, assignment: NewUserRole) -> Result<UserRoleRow, RepositoryError> {
+    pub async fn assign_to_user(
+        &self,
+        assignment: NewUserRole,
+    ) -> Result<UserRoleRow, RepositoryError> {
         let user_role = sqlx::query_as::<_, UserRoleRow>(
             r"
             INSERT INTO user_roles (user_id, role_id, scope_type, scope_id, granted_by, expires_at)
@@ -438,24 +445,22 @@ impl PermissionRepository {
 
     /// Find a permission by ID.
     pub async fn find_by_id(&self, id: Uuid) -> Result<Option<PermissionRow>, RepositoryError> {
-        let permission = sqlx::query_as::<_, PermissionRow>(
-            "SELECT * FROM permissions WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let permission =
+            sqlx::query_as::<_, PermissionRow>("SELECT * FROM permissions WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
 
         Ok(permission)
     }
 
     /// Find a permission by name.
     pub async fn find_by_name(&self, name: &str) -> Result<Option<PermissionRow>, RepositoryError> {
-        let permission = sqlx::query_as::<_, PermissionRow>(
-            "SELECT * FROM permissions WHERE name = $1",
-        )
-        .bind(name)
-        .fetch_optional(&self.pool)
-        .await?;
+        let permission =
+            sqlx::query_as::<_, PermissionRow>("SELECT * FROM permissions WHERE name = $1")
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
 
         Ok(permission)
     }
@@ -477,11 +482,10 @@ impl PermissionRepository {
 
     /// List all permissions.
     pub async fn list(&self) -> Result<Vec<PermissionRow>, RepositoryError> {
-        let permissions = sqlx::query_as::<_, PermissionRow>(
-            "SELECT * FROM permissions ORDER BY category, name",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let permissions =
+            sqlx::query_as::<_, PermissionRow>("SELECT * FROM permissions ORDER BY category, name")
+                .fetch_all(&self.pool)
+                .await?;
 
         Ok(permissions)
     }
@@ -1095,7 +1099,10 @@ mod tests {
         role_repo.assign_to_user(assignment).await.unwrap();
 
         // Get user permissions
-        let perms = perm_repo.get_user_permissions(UserId::from(user_id)).await.unwrap();
+        let perms = perm_repo
+            .get_user_permissions(UserId::from(user_id))
+            .await
+            .unwrap();
         assert!(!perms.is_empty());
         assert!(perms.iter().any(|p| p.name == "user_perm"));
     }
@@ -1123,10 +1130,12 @@ mod tests {
         role_repo.add_permission(role.id, perm_id).await.unwrap();
 
         // User doesn't have permission yet
-        assert!(!perm_repo
-            .user_has_permission(UserId::from(user_id), "check_perm")
-            .await
-            .unwrap());
+        assert!(
+            !perm_repo
+                .user_has_permission(UserId::from(user_id), "check_perm")
+                .await
+                .unwrap()
+        );
 
         // Assign role
         let assignment = NewUserRole {
@@ -1140,10 +1149,12 @@ mod tests {
         role_repo.assign_to_user(assignment).await.unwrap();
 
         // Now user has permission
-        assert!(perm_repo
-            .user_has_permission(UserId::from(user_id), "check_perm")
-            .await
-            .unwrap());
+        assert!(
+            perm_repo
+                .user_has_permission(UserId::from(user_id), "check_perm")
+                .await
+                .unwrap()
+        );
     }
 
     // ===========================================

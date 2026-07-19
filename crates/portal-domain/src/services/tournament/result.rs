@@ -133,7 +133,15 @@ where
         // Convert game result inputs to domain type
         let game_results: Vec<GameResult> = game_results
             .into_iter()
-            .map(|g| self.convert_game_result(&match_, g, claimed_winner, participant1_score, participant2_score))
+            .map(|g| {
+                self.convert_game_result(
+                    &match_,
+                    g,
+                    claimed_winner,
+                    participant1_score,
+                    participant2_score,
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         // Calculate auto-confirm time
@@ -208,14 +216,13 @@ where
         // together. See audit I5. Loser derived here instead of inside
         // `apply_result_to_match` because the match row will be mutated
         // as part of the same tx.
-        let loser = if match_.participant1_registration_id
-            == Some(claim.claimed_winner_registration_id)
-        {
-            match_.participant2_registration_id
-        } else {
-            match_.participant1_registration_id
-        }
-        .ok_or_else(|| DomainError::InvalidState("Loser participant not found".to_string()))?;
+        let loser =
+            if match_.participant1_registration_id == Some(claim.claimed_winner_registration_id) {
+                match_.participant2_registration_id
+            } else {
+                match_.participant1_registration_id
+            }
+            .ok_or_else(|| DomainError::InvalidState("Loser participant not found".to_string()))?;
 
         let claim = self
             .claim_repo
@@ -493,7 +500,8 @@ where
             for (i, game) in game_results.iter().enumerate() {
                 if game.game_number != (i + 1) as i32 {
                     return Err(DomainError::InvalidMatchResult(
-                        ResultValidationError::NonSequentialGameNumber(game.game_number).to_string(),
+                        ResultValidationError::NonSequentialGameNumber(game.game_number)
+                            .to_string(),
                     ));
                 }
 
@@ -557,22 +565,22 @@ where
         let match_ = self.get_match(claim.match_id).await?;
 
         // Find opponent registration
-        let opponent = if match_.participant1_registration_id == Some(claim.submitted_by_registration_id) {
-            match_.participant2_registration_id
-        } else {
-            match_.participant1_registration_id
-        }
-        .ok_or_else(|| DomainError::InvalidState("Opponent not found".to_string()))?;
+        let opponent =
+            if match_.participant1_registration_id == Some(claim.submitted_by_registration_id) {
+                match_.participant2_registration_id
+            } else {
+                match_.participant1_registration_id
+            }
+            .ok_or_else(|| DomainError::InvalidState("Opponent not found".to_string()))?;
 
         // Atomic auto-confirm + result application. See audit I5.
-        let loser = if match_.participant1_registration_id
-            == Some(claim.claimed_winner_registration_id)
-        {
-            match_.participant2_registration_id
-        } else {
-            match_.participant1_registration_id
-        }
-        .ok_or_else(|| DomainError::InvalidState("Loser participant not found".to_string()))?;
+        let loser =
+            if match_.participant1_registration_id == Some(claim.claimed_winner_registration_id) {
+                match_.participant2_registration_id
+            } else {
+                match_.participant1_registration_id
+            }
+            .ok_or_else(|| DomainError::InvalidState("Loser participant not found".to_string()))?;
 
         let claim = self
             .claim_repo
@@ -580,7 +588,7 @@ where
                 claim.id,
                 opponent,
                 claim.submitted_by_user_id, // Use submitter's user ID as placeholder
-                true,                        // was_auto
+                true,                       // was_auto
                 match_.id,
                 claim.claimed_winner_registration_id,
                 loser,

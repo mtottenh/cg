@@ -11,9 +11,9 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use portal_db::PgPool;
 
+use crate::output::{OutputFormat, info, success};
 use chrono::{Duration, NaiveTime, Utc};
-use crate::output::{info, success, OutputFormat};
-use scenario::{Persona, PERSONAS, SEED_PASSWORD, TEAMS};
+use scenario::{PERSONAS, Persona, SEED_PASSWORD, TEAMS};
 
 /// Seed commands for frontend development.
 #[derive(Args)]
@@ -149,18 +149,27 @@ async fn seed_full(pool: &PgPool) -> Result<()> {
     info("Seeding premier league applications...");
     let captain_charlie = scenario::persona("captain_charlie");
     let captain_delta = scenario::persona("captain_delta");
-    seed_premier_league_application(&mut tx, captain_charlie.user_id(), Some("I'm improving fast!")).await?;
-    seed_premier_league_application(&mut tx, captain_delta.user_id(), Some("Please let me in, I want to improve")).await?;
+    seed_premier_league_application(
+        &mut tx,
+        captain_charlie.user_id(),
+        Some("I'm improving fast!"),
+    )
+    .await?;
+    seed_premier_league_application(
+        &mut tx,
+        captain_delta.user_id(),
+        Some("Please let me in, I want to improve"),
+    )
+    .await?;
 
     // 6. Look up the auto-created season (trigger creates it on league insert)
     info("Looking up auto-created season...");
-    let season_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT current_season_id FROM leagues WHERE id = $1",
-    )
-    .bind(scenario::league_id())
-    .fetch_one(&mut *tx)
-    .await
-    .context("Failed to find auto-created season")?;
+    let season_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT current_season_id FROM leagues WHERE id = $1")
+            .bind(scenario::league_id())
+            .fetch_one(&mut *tx)
+            .await
+            .context("Failed to find auto-created season")?;
     info(&format!("  Season ID: {season_id}"));
 
     // Update season to 'active' status and set team sizes for CS2
@@ -199,13 +208,25 @@ async fn seed_full(pool: &PgPool) -> Result<()> {
 
         let captain = scenario::persona(team.captain_key);
         // Captain
-        seed_team_member(&mut tx, team_season_id, captain.player_id(), "captain", captain.user_id())
-            .await?;
+        seed_team_member(
+            &mut tx,
+            team_season_id,
+            captain.player_id(),
+            "captain",
+            captain.user_id(),
+        )
+        .await?;
         // Members
         for member_key in team.member_keys {
             let member = scenario::persona(member_key);
-            seed_team_member(&mut tx, team_season_id, member.player_id(), "player", captain.user_id())
-                .await?;
+            seed_team_member(
+                &mut tx,
+                team_season_id,
+                member.player_id(),
+                "player",
+                captain.user_id(),
+            )
+            .await?;
         }
     }
 
@@ -269,10 +290,7 @@ async fn seed_user(
     Ok(())
 }
 
-async fn seed_player(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    p: &Persona,
-) -> Result<()> {
+async fn seed_player(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, p: &Persona) -> Result<()> {
     sqlx::query(
         r"INSERT INTO players (id, user_id, display_name, country_code)
           VALUES ($1, $2, $3, $4)
@@ -503,9 +521,7 @@ async fn seed_tournament(
     Ok(())
 }
 
-async fn seed_tournament_stage(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+async fn seed_tournament_stage(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO tournament_stages (
             id, tournament_id,
@@ -579,9 +595,7 @@ async fn seed_rating_histories(
 // Availability windows
 // ---------------------------------------------------------------------------
 
-async fn seed_availability_windows(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+async fn seed_availability_windows(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     for &(persona_key, day, sh, sm, eh, em, preferred, tz) in scenario::AVAILABILITY_WINDOWS {
         let p = scenario::persona(persona_key);
         let id = scenario::seed_uuid(&format!("avail:{persona_key}:{day}:{sh:02}{sm:02}"));
@@ -658,9 +672,7 @@ async fn seed_tournament_2(
     Ok(())
 }
 
-async fn seed_tournament_2_stage(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+async fn seed_tournament_2_stage(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO tournament_stages (
             id, tournament_id,
@@ -687,9 +699,7 @@ async fn seed_tournament_2_stage(
     Ok(())
 }
 
-async fn seed_tournament_2_bracket(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+async fn seed_tournament_2_bracket(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO tournament_brackets (
             id, stage_id, tournament_id,
@@ -715,13 +725,16 @@ async fn seed_tournament_2_bracket(
 
 /// CS2 competitive map pool.
 const CS2_MAP_POOL: &[&str] = &[
-    "de_mirage", "de_inferno", "de_nuke", "de_overpass",
-    "de_ancient", "de_anubis", "de_vertigo",
+    "de_mirage",
+    "de_inferno",
+    "de_nuke",
+    "de_overpass",
+    "de_ancient",
+    "de_anubis",
+    "de_vertigo",
 ];
 
-async fn seed_tournament_2_map_pool(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+async fn seed_tournament_2_map_pool(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO tournament_map_pools (id, tournament_id, maps, veto_format_id)
           VALUES ($1, $2, $3, 'bo3_veto')

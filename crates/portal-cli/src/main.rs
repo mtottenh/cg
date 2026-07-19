@@ -6,16 +6,18 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod commands;
 mod config;
 mod output;
 mod repl;
 
-use commands::{api_key, audit, ban, bootstrap, db, demo, game, league_team, player, role, seed, user};
 #[cfg(feature = "scanner")]
 use commands::scan;
+use commands::{
+    api_key, audit, ban, bootstrap, db, demo, game, league_team, player, role, seed, user,
+};
 use config::CliConfig;
 use output::OutputFormat;
 

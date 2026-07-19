@@ -1,7 +1,7 @@
 //! Veto lobby message repository adapter.
 
-use crate::entities::VetoLobbyMessageRow;
 use crate::DbPool;
+use crate::entities::VetoLobbyMessageRow;
 use async_trait::async_trait;
 use portal_core::{
     DomainError, TournamentMatchId, TournamentRegistrationId, UserId, VetoLobbyMessageId,
@@ -24,7 +24,9 @@ impl From<VetoLobbyMessageRow> for VetoLobbyMessage {
             match_id: TournamentMatchId::from(row.match_id),
             veto_session_id: row.veto_session_id.map(VetoSessionId::from),
             author_user_id: UserId::from(row.author_user_id),
-            author_registration_id: row.author_registration_id.map(TournamentRegistrationId::from),
+            author_registration_id: row
+                .author_registration_id
+                .map(TournamentRegistrationId::from),
             message_type: row.message_type.parse().unwrap_or(VetoMessageType::System),
             content: row.content,
             team_registration_id: row.team_registration_id.map(TournamentRegistrationId::from),
@@ -168,13 +170,12 @@ impl VetoLobbyMessageRepository for PgVetoLobbyMessageRepository {
     }
 
     async fn count_by_match(&self, match_id: TournamentMatchId) -> Result<i64, DomainError> {
-        let row = sqlx::query(
-            "SELECT COUNT(*) as count FROM veto_lobby_messages WHERE match_id = $1",
-        )
-        .bind(match_id.as_uuid())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row =
+            sqlx::query("SELECT COUNT(*) as count FROM veto_lobby_messages WHERE match_id = $1")
+                .bind(match_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(row.get("count"))
     }

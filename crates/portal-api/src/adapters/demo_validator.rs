@@ -36,10 +36,7 @@ impl MatchDemoValidator for DemoValidatorAdapter {
         claim_id: ResultClaimId,
     ) -> Result<Vec<DemoValidationOutcome>, DomainError> {
         // Get the confirmed claim for game results
-        let claim = self
-            .result_service
-            .get_claim_by_id(claim_id)
-            .await?;
+        let claim = self.result_service.get_claim_by_id(claim_id).await?;
 
         debug!(
             claim_id = %claim_id,
@@ -82,9 +79,9 @@ impl MatchDemoValidator for DemoValidatorAdapter {
             }
 
             // Find the corresponding game result for this link's game_number
-            let game_result = link.game_number.and_then(|gn| {
-                claim.game_results.iter().find(|gr| gr.game_number == gn)
-            });
+            let game_result = link
+                .game_number
+                .and_then(|gn| claim.game_results.iter().find(|gr| gr.game_number == gn));
 
             // Build validation result
             let mut validation = DemoValidationResult::default();
@@ -94,7 +91,10 @@ impl MatchDemoValidator for DemoValidatorAdapter {
             if let Some(ref metadata) = demo.metadata {
                 // Extract claimed score for this game
                 let claimed_score = game_result.map_or(
-                    (claim.claimed_participant1_score, claim.claimed_participant2_score),
+                    (
+                        claim.claimed_participant1_score,
+                        claim.claimed_participant2_score,
+                    ),
                     |gr| (gr.participant1_score, gr.participant2_score),
                 );
                 validation.claimed_score = claimed_score;
@@ -109,10 +109,7 @@ impl MatchDemoValidator for DemoValidatorAdapter {
                 } else {
                     validation.add_error(format!(
                         "Score mismatch: demo shows {}-{} but claim says {}-{}",
-                        extracted_score.0,
-                        extracted_score.1,
-                        claimed_score.0,
-                        claimed_score.1,
+                        extracted_score.0, extracted_score.1, claimed_score.0, claimed_score.1,
                     ));
                 }
 

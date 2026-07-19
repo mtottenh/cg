@@ -19,8 +19,8 @@ pub mod types;
 // Re-export main types for convenience
 pub use error::{PluginError, RatingError, StatsError};
 pub use games::{
-    validate_demo_service_url, Cs2DemoClient, Cs2DemoStats, Cs2EvidenceValidator, Cs2Plugin,
-    Cs2PluginWithEvidence,
+    Cs2DemoClient, Cs2DemoStats, Cs2EvidenceValidator, Cs2Plugin, Cs2PluginWithEvidence,
+    validate_demo_service_url,
 };
 pub use manager::PluginManager;
 pub use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};

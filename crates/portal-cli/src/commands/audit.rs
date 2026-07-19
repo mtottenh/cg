@@ -8,13 +8,13 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand};
-use portal_db::entities::EntityChangeRow;
 use portal_db::PgPool;
+use portal_db::entities::EntityChangeRow;
 use serde::Serialize;
 use tabled::Tabled;
 use uuid::Uuid;
 
-use crate::output::{format_optional, format_timestamp, format_uuid, output_list, OutputFormat};
+use crate::output::{OutputFormat, format_optional, format_timestamp, format_uuid, output_list};
 
 /// Audit log viewing commands.
 #[derive(Args)]
@@ -206,13 +206,11 @@ async fn list_audit_entries(
 }
 
 async fn get_audit_entry(pool: &PgPool, id: Uuid, format: OutputFormat) -> Result<()> {
-    let row = sqlx::query_as::<_, EntityChangeRow>(
-        "SELECT * FROM entity_changes WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
-    .context("Failed to fetch audit entry")?;
+    let row = sqlx::query_as::<_, EntityChangeRow>("SELECT * FROM entity_changes WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .context("Failed to fetch audit entry")?;
 
     if let Some(entry) = row {
         if matches!(format, OutputFormat::Json) {
@@ -247,13 +245,15 @@ async fn get_audit_entry(pool: &PgPool, id: Uuid, format: OutputFormat) -> Resul
                 "  Old Value:    {}",
                 entry
                     .old_value
-                    .as_ref().map_or_else(|| "-".to_string(), std::string::ToString::to_string)
+                    .as_ref()
+                    .map_or_else(|| "-".to_string(), std::string::ToString::to_string)
             );
             println!(
                 "  New Value:    {}",
                 entry
                     .new_value
-                    .as_ref().map_or_else(|| "-".to_string(), std::string::ToString::to_string)
+                    .as_ref()
+                    .map_or_else(|| "-".to_string(), std::string::ToString::to_string)
             );
             println!("  Changed By:   {}", entry.changed_by);
             println!("  Created At:   {}", format_timestamp(&entry.created_at));
@@ -265,12 +265,10 @@ async fn get_audit_entry(pool: &PgPool, id: Uuid, format: OutputFormat) -> Resul
                 println!(
                     "  Reverted By:  {}",
                     entry
-                        .reverted_by.map_or_else(|| "-".to_string(), |id| id.to_string())
+                        .reverted_by
+                        .map_or_else(|| "-".to_string(), |id| id.to_string())
                 );
-                println!(
-                    "  Revert Reason: {}",
-                    format_optional(&entry.revert_reason)
-                );
+                println!("  Revert Reason: {}", format_optional(&entry.revert_reason));
             }
         }
         Ok(())

@@ -27,7 +27,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
         .bind(tournament_2_id)
         .execute(&mut *tx)
         .await?;
-    info(&format!("  Deleted {} tournament 2 match(es)", r.rows_affected()));
+    info(&format!(
+        "  Deleted {} tournament 2 match(es)",
+        r.rows_affected()
+    ));
 
     // Tournament 2 brackets
     info("Removing tournament 2 brackets...");
@@ -35,7 +38,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
         .bind(tournament_2_id)
         .execute(&mut *tx)
         .await?;
-    info(&format!("  Deleted {} tournament 2 bracket(s)", r.rows_affected()));
+    info(&format!(
+        "  Deleted {} tournament 2 bracket(s)",
+        r.rows_affected()
+    ));
 
     // Tournament 2 stages
     info("Removing tournament 2 stages...");
@@ -43,7 +49,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
         .bind(tournament_2_id)
         .execute(&mut *tx)
         .await?;
-    info(&format!("  Deleted {} tournament 2 stage(s)", r.rows_affected()));
+    info(&format!(
+        "  Deleted {} tournament 2 stage(s)",
+        r.rows_affected()
+    ));
 
     // Tournament 2 registrations
     info("Removing tournament 2 registrations...");
@@ -51,7 +60,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
         .bind(tournament_2_id)
         .execute(&mut *tx)
         .await?;
-    info(&format!("  Deleted {} tournament 2 registration(s)", r.rows_affected()));
+    info(&format!(
+        "  Deleted {} tournament 2 registration(s)",
+        r.rows_affected()
+    ));
 
     // Tournament 2
     info("Removing tournament 2...");
@@ -67,7 +79,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
         .bind(&player_ids)
         .execute(&mut *tx)
         .await?;
-    info(&format!("  Deleted {} rating history entries", r.rows_affected()));
+    info(&format!(
+        "  Deleted {} rating history entries",
+        r.rows_affected()
+    ));
 
     // Availability windows
     info("Removing availability windows...");
@@ -75,7 +90,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
         .bind(&player_ids)
         .execute(&mut *tx)
         .await?;
-    info(&format!("  Deleted {} availability window(s)", r.rows_affected()));
+    info(&format!(
+        "  Deleted {} availability window(s)",
+        r.rows_affected()
+    ));
 
     // Tournament stage
     info("Removing tournament stage...");
@@ -83,7 +101,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
         .bind(tournament_stage_id)
         .execute(&mut *tx)
         .await?;
-    info(&format!("  Deleted {} tournament stage(s)", r.rows_affected()));
+    info(&format!(
+        "  Deleted {} tournament stage(s)",
+        r.rows_affected()
+    ));
 
     // Tournament registrations (if any)
     info("Removing tournament registrations...");
@@ -165,7 +186,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
     .execute(&mut *tx)
     .await?;
     if r.rows_affected() > 0 {
-        info(&format!("  Deleted {} team invitation(s)", r.rows_affected()));
+        info(&format!(
+            "  Deleted {} team invitation(s)",
+            r.rows_affected()
+        ));
     }
 
     // Team seasons
@@ -194,7 +218,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
         .execute(&mut *tx)
         .await?;
     if r.rows_affected() > 0 {
-        info(&format!("  Deleted {} league invitation(s)", r.rows_affected()));
+        info(&format!(
+            "  Deleted {} league invitation(s)",
+            r.rows_affected()
+        ));
     }
 
     // Clear league current_season_id before deleting seasons
@@ -328,10 +355,7 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
         "DELETE FROM league_invitations WHERE user_id = ANY($1)",
         "DELETE FROM api_keys WHERE created_by = ANY($1)",
     ] {
-        sqlx::query(stmt)
-            .bind(&user_ids)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(stmt).bind(&user_ids).execute(&mut *tx).await?;
     }
 
     // SET NULL on nullable audit/secondary columns that reference seeded users
@@ -358,10 +382,7 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
         "UPDATE tournament_matches SET dispute_resolved_by = NULL WHERE dispute_resolved_by = ANY($1)",
         "UPDATE tournament_registrations SET checked_in_by = NULL WHERE checked_in_by = ANY($1)",
     ] {
-        sqlx::query(stmt)
-            .bind(&user_ids)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(stmt).bind(&user_ids).execute(&mut *tx).await?;
     }
 
     // User roles (seeded users only)
@@ -385,12 +406,10 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query(
-        "UPDATE entity_changes SET changed_by = NULL WHERE changed_by = ANY($1)",
-    )
-    .bind(&player_ids)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("UPDATE entity_changes SET changed_by = NULL WHERE changed_by = ANY($1)")
+        .bind(&player_ids)
+        .execute(&mut *tx)
+        .await?;
 
     // Players
     info("Removing players...");
@@ -412,7 +431,9 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
 
     println!();
     success("All seed data removed.");
-    warn("Note: Any additional data created through the API referencing seed entities may have been cascade-deleted.");
+    warn(
+        "Note: Any additional data created through the API referencing seed entities may have been cascade-deleted.",
+    );
 
     Ok(())
 }

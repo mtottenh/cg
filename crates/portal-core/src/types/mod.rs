@@ -25,9 +25,9 @@ pub use permission::{ParseScopeTypeError, PermissionScope, ScopeType};
 pub use rating::{Glicko2Rating, RatingChange};
 pub use status::{EntityStatus, MatchStatus, TournamentStatus};
 pub use tournament::{
-    AdvancementRule, BracketStatus, BracketType, ExceptionType, MatchFormat, MatchParticipantSource,
-    ProposalStatus, RegistrationType, SchedulingMode, SeedingAlgorithm, StageFormat, StageStatus,
-    TournamentFormat, TournamentMatchStatus, TournamentParticipantType, TournamentRegistrationStatus,
-    WithdrawalPolicy,
+    AdvancementRule, BracketStatus, BracketType, ExceptionType, MatchFormat,
+    MatchParticipantSource, ProposalStatus, RegistrationType, SchedulingMode, SeedingAlgorithm,
+    StageFormat, StageStatus, TournamentFormat, TournamentMatchStatus, TournamentParticipantType,
+    TournamentRegistrationStatus, WithdrawalPolicy,
 };
 pub use veto::{SideSelectionMode, VetoActionType, VetoFormatActionConfig, VetoFormatConfig};

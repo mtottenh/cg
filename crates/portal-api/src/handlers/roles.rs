@@ -10,9 +10,9 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
 use crate::state::RolesState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::UserId;
 use portal_db::entities::{NewRole, NewUserRole};
 use uuid::Uuid;
@@ -564,7 +564,10 @@ pub async fn assign_role_to_user(
         .map_err(|e| ApiError::conflict(format!("Failed to assign role: {e}")))?;
 
     let response = UserRoleAssignmentResponse::new(assignment, role);
-    Ok((StatusCode::CREATED, Json(DataResponse::new(response, request_id))))
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(response, request_id)),
+    ))
 }
 
 /// Revoke a role from a user.

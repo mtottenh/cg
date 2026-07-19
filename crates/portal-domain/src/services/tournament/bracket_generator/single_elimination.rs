@@ -1,8 +1,6 @@
 //! Single elimination bracket generation.
 
-use super::{
-    BracketGenerator, ByeInfo, GeneratedBracket, InitialAssignment,
-};
+use super::{BracketGenerator, ByeInfo, GeneratedBracket, InitialAssignment};
 use crate::entities::tournament::SeededParticipant;
 use crate::repositories::tournament::CreateTournamentMatch;
 use portal_core::types::{MatchFormat, MatchParticipantSource};

@@ -5,8 +5,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::{
-    DemoCategory, DemoId, DemoLinkType, DemoMatchLinkId, DemoPlayerId, DemoStatus, GameId,
-    DomainError, LeagueId, PlayerId, TournamentId, TournamentMatchId, UserId,
+    DemoCategory, DemoId, DemoLinkType, DemoMatchLinkId, DemoPlayerId, DemoStatus, DomainError,
+    GameId, LeagueId, PlayerId, TournamentId, TournamentMatchId, UserId,
 };
 
 use crate::entities::demo::{
@@ -73,11 +73,8 @@ pub trait DemoRepository: Send + Sync {
     ) -> Result<Demo, DomainError>;
 
     /// Set admin notes on a demo.
-    async fn set_admin_notes(
-        &self,
-        id: DemoId,
-        notes: Option<String>,
-    ) -> Result<Demo, DomainError>;
+    async fn set_admin_notes(&self, id: DemoId, notes: Option<String>)
+    -> Result<Demo, DomainError>;
 
     /// Find demos pending stats processing.
     async fn find_pending_processing(&self, limit: i64) -> Result<Vec<Demo>, DomainError>;
@@ -126,7 +123,8 @@ pub trait DemoMatchLinkRepository: Send + Sync {
     async fn find_by_id(&self, id: DemoMatchLinkId) -> Result<Option<DemoMatchLink>, DomainError>;
 
     /// Find links by multiple IDs.
-    async fn find_by_ids(&self, ids: &[DemoMatchLinkId]) -> Result<Vec<DemoMatchLink>, DomainError>;
+    async fn find_by_ids(&self, ids: &[DemoMatchLinkId])
+    -> Result<Vec<DemoMatchLink>, DomainError>;
 
     /// Find all links for a demo.
     async fn find_by_demo(&self, demo_id: DemoId) -> Result<Vec<DemoMatchLink>, DomainError>;

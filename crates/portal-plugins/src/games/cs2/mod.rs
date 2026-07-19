@@ -12,11 +12,11 @@ pub mod demo_client;
 pub mod demo_stats;
 pub mod evidence_validator;
 
-pub use demo_client::{validate_base_url as validate_demo_service_url, Cs2DemoClient};
+pub use demo_client::{Cs2DemoClient, validate_base_url as validate_demo_service_url};
 pub use demo_stats::Cs2DemoStats;
 pub use evidence_validator::Cs2EvidenceValidator;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -28,8 +28,8 @@ use crate::types::{
     MatchData, MatchFormat, MatchmakingCriteria, PlayerStatsContext, RankedParticipant,
     RatingChange, TournamentFormatId, VetoActionType,
 };
-use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
 use chrono::Utc;
+use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
 
 /// Counter-Strike 2 game plugin.
 #[derive(Debug, Clone, Default)]
@@ -329,12 +329,14 @@ impl GamePlugin for Cs2Plugin {
             .iter()
             .find(|t| t.team_id == player_data.team_id);
         let match_rounds = i64::from(match_team.and_then(|t| t.rounds_won).unwrap_or(0));
-        let enemy_rounds = i64::from(match_data
-            .teams
-            .iter()
-            .find(|t| t.team_id != player_data.team_id)
-            .and_then(|t| t.rounds_won)
-            .unwrap_or(0));
+        let enemy_rounds = i64::from(
+            match_data
+                .teams
+                .iter()
+                .find(|t| t.team_id != player_data.team_id)
+                .and_then(|t| t.rounds_won)
+                .unwrap_or(0),
+        );
         stats["rounds_played"] = json!(current_rounds + match_rounds + enemy_rounds);
 
         // Update match count
@@ -618,8 +620,10 @@ impl GamePlugin for Cs2Plugin {
         }
 
         // Calculate average ratings
-        let avg_rating_1: f64 = team1.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team1.len() as f64;
-        let avg_rating_2: f64 = team2.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team2.len() as f64;
+        let avg_rating_1: f64 =
+            team1.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team1.len() as f64;
+        let avg_rating_2: f64 =
+            team2.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team2.len() as f64;
 
         // Expected scores (Elo formula)
         // Using 2000 as divisor instead of 400 due to the larger CS2 Premier scale (0-35,000+)
@@ -715,13 +719,34 @@ impl GamePlugin for Cs2Plugin {
                 id: "bo1_veto".to_string(),
                 display_name: "Best of 1 Veto".to_string(),
                 sequence: vec![
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 0, action: VetoActionType::Decider },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 0,
+                        action: VetoActionType::Decider,
+                    },
                 ],
                 description: "Teams alternate banning maps until one remains".to_string(),
             },
@@ -730,13 +755,34 @@ impl GamePlugin for Cs2Plugin {
                 id: "bo3_veto".to_string(),
                 display_name: "Best of 3 Veto".to_string(),
                 sequence: vec![
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 1, action: VetoActionType::Pick },
-                    MapVetoAction { team: 2, action: VetoActionType::Pick },
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 0, action: VetoActionType::Decider },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 0,
+                        action: VetoActionType::Decider,
+                    },
                 ],
                 description: "Ban-Ban-Pick-Pick-Ban-Ban-Decider".to_string(),
             },
@@ -745,13 +791,34 @@ impl GamePlugin for Cs2Plugin {
                 id: "bo5_veto".to_string(),
                 display_name: "Best of 5 Veto".to_string(),
                 sequence: vec![
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 1, action: VetoActionType::Pick },
-                    MapVetoAction { team: 2, action: VetoActionType::Pick },
-                    MapVetoAction { team: 1, action: VetoActionType::Pick },
-                    MapVetoAction { team: 2, action: VetoActionType::Pick },
-                    MapVetoAction { team: 0, action: VetoActionType::Decider },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 0,
+                        action: VetoActionType::Decider,
+                    },
                 ],
                 description: "Ban-Ban-Pick-Pick-Pick-Pick-Decider".to_string(),
             },
@@ -898,19 +965,19 @@ impl EvidencePlugin for Cs2Plugin {
                     is_valid: true,
                     confidence: 0.0,
                     extracted_result: None,
-                    warnings: vec!["Cannot validate external URL evidence automatically".to_string()],
+                    warnings: vec![
+                        "Cannot validate external URL evidence automatically".to_string(),
+                    ],
                     errors: Vec::new(),
                 })
             }
-            EvidenceStorage::Inline { content: _ } => {
-                Ok(EvidenceValidation {
-                    is_valid: false,
-                    confidence: 0.0,
-                    extracted_result: None,
-                    warnings: Vec::new(),
-                    errors: vec!["Demo files cannot be stored inline".to_string()],
-                })
-            }
+            EvidenceStorage::Inline { content: _ } => Ok(EvidenceValidation {
+                is_valid: false,
+                confidence: 0.0,
+                extracted_result: None,
+                warnings: Vec::new(),
+                errors: vec!["Demo files cannot be stored inline".to_string()],
+            }),
         }
     }
 
@@ -1155,7 +1222,11 @@ impl GamePlugin for Cs2PluginWithEvidence {
             .calculate_player_stats(match_data, player_id, existing_stats)
     }
 
-    fn format_player_stats(&self, stats: &serde_json::Value, context: &PlayerStatsContext) -> Vec<DisplayStat> {
+    fn format_player_stats(
+        &self,
+        stats: &serde_json::Value,
+        context: &PlayerStatsContext,
+    ) -> Vec<DisplayStat> {
         self.inner.format_player_stats(stats, context)
     }
 
@@ -1261,8 +1332,7 @@ impl EvidencePlugin for Cs2PluginWithEvidence {
         let stats = self.demo_client.get_demo_stats(&demo_name).await?;
 
         // Validate using the existing validator (Steam IDs unavailable at this layer)
-        let validation =
-            Cs2EvidenceValidator::validate(&stats, claimed_result, &[], &[]);
+        let validation = Cs2EvidenceValidator::validate(&stats, claimed_result, &[], &[]);
 
         Ok(validation)
     }
@@ -1293,11 +1363,9 @@ impl EvidencePlugin for Cs2PluginWithEvidence {
             .and_then(|n| stats.score_for_team(n))
             .unwrap_or(0);
 
-        let recorded_at = chrono::NaiveDateTime::parse_from_str(
-            &stats.match_date,
-            "%Y-%m-%d %H:%M:%S",
-        )
-        .map_or_else(|_| Utc::now(), |ndt| ndt.and_utc());
+        let recorded_at =
+            chrono::NaiveDateTime::parse_from_str(&stats.match_date, "%Y-%m-%d %H:%M:%S")
+                .map_or_else(|_| Utc::now(), |ndt| ndt.and_utc());
 
         Ok(DemoMetadata {
             map_name: stats.map.clone(),
@@ -1338,10 +1406,7 @@ impl EvidencePlugin for Cs2PluginWithEvidence {
 
 /// Extract demo filename from a path (S3 key or URL).
 fn extract_demo_name(path: &str) -> String {
-    path.rsplit('/')
-        .next()
-        .unwrap_or(path)
-        .to_string()
+    path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
 #[cfg(test)]

@@ -56,7 +56,6 @@ where
     E: From<sqlx::Error>,
 {
     let tx = pool.begin().await.map_err(E::from)?;
-    
 
     // Note: The transaction is automatically committed or rolled back
     // when the closure returns. If Ok, commit happens. If Err, rollback happens.

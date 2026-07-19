@@ -53,7 +53,9 @@ where
     /// Get all permission names for a user.
     #[instrument(skip(self))]
     pub async fn get_permissions(&self, user_id: UserId) -> Result<Vec<String>, DomainError> {
-        self.permission_repo.get_user_permission_names(user_id).await
+        self.permission_repo
+            .get_user_permission_names(user_id)
+            .await
     }
 }
 

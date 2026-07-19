@@ -28,7 +28,8 @@ async fn test_auto_seed_random() {
 
     // Second player via direct DB insertion (already approved)
     let (user2_id, player2_id) = create_test_player(&app, "player2_autoseed").await;
-    let reg2 = insert_test_registration(&app, &tournament_id, player2_id, user2_id, "Player2").await;
+    let reg2 =
+        insert_test_registration(&app, &tournament_id, player2_id, user2_id, "Player2").await;
 
     // Auto-seed with random algorithm
     let response = app
@@ -74,7 +75,8 @@ async fn test_manual_seed() {
 
     // Second player via direct DB insertion (already approved)
     let (user2_id, player2_id) = create_test_player(&app, "player2_manual").await;
-    let reg2 = insert_test_registration(&app, &tournament_id, player2_id, user2_id, "Player2").await;
+    let reg2 =
+        insert_test_registration(&app, &tournament_id, player2_id, user2_id, "Player2").await;
 
     // Manual seed with explicit seeding order
     let response = app
@@ -98,8 +100,14 @@ async fn test_manual_seed() {
     assert_eq!(seeded.len(), 2);
 
     // Find each registration in the results
-    let reg1_entry = seeded.iter().find(|s| s["registration_id"] == reg1).unwrap();
-    let reg2_entry = seeded.iter().find(|s| s["registration_id"] == reg2).unwrap();
+    let reg1_entry = seeded
+        .iter()
+        .find(|s| s["registration_id"] == reg1)
+        .unwrap();
+    let reg2_entry = seeded
+        .iter()
+        .find(|s| s["registration_id"] == reg2)
+        .unwrap();
 
     assert_eq!(reg1_entry["seed"], 2);
     assert_eq!(reg2_entry["seed"], 1);

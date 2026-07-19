@@ -8,15 +8,17 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
+use portal_db::PgPool;
 use portal_db::entities::{
     LeagueTeamInvitationRow, LeagueTeamMemberRow, LeagueTeamRow, LeagueTeamSeasonRow,
 };
-use portal_db::PgPool;
 use serde::Serialize;
 use tabled::Tabled;
 use uuid::Uuid;
 
-use crate::output::{error, format_optional, format_timestamp, format_uuid, info, output_list, success, OutputFormat};
+use crate::output::{
+    OutputFormat, error, format_optional, format_timestamp, format_uuid, info, output_list, success,
+};
 
 /// League team management commands.
 #[derive(Args)]
@@ -610,7 +612,8 @@ async fn get_member(pool: &PgPool, member_id: Uuid, format: OutputFormat) -> Res
         println!(
             "  Jersey #:      {}",
             member
-                .jersey_number.map_or_else(|| "-".to_string(), |n| n.to_string())
+                .jersey_number
+                .map_or_else(|| "-".to_string(), |n| n.to_string())
         );
         println!("  Status:        {}", member.status);
         println!("  Joined:        {}", format_timestamp(&member.joined_at));
@@ -928,7 +931,8 @@ async fn list_team_seasons(pool: &PgPool, team_id: Uuid, format: OutputFormat) -
             losses: r.matches_lost,
             draws: r.matches_drawn,
             registered_at: r
-                .registered_at.map_or_else(|| "-".to_string(), |t| format_timestamp(&t)),
+                .registered_at
+                .map_or_else(|| "-".to_string(), |t| format_timestamp(&t)),
         })
         .collect();
 
@@ -936,13 +940,12 @@ async fn list_team_seasons(pool: &PgPool, team_id: Uuid, format: OutputFormat) -
 }
 
 async fn get_team_season(pool: &PgPool, team_season_id: Uuid, format: OutputFormat) -> Result<()> {
-    let ts = sqlx::query_as::<_, LeagueTeamSeasonRow>(
-        "SELECT * FROM league_team_seasons WHERE id = $1",
-    )
-    .bind(team_season_id)
-    .fetch_optional(pool)
-    .await
-    .context("Failed to fetch team season")?;
+    let ts =
+        sqlx::query_as::<_, LeagueTeamSeasonRow>("SELECT * FROM league_team_seasons WHERE id = $1")
+            .bind(team_season_id)
+            .fetch_optional(pool)
+            .await
+            .context("Failed to fetch team season")?;
 
     let Some(ts) = ts else {
         error(&format!("Team season not found: {team_season_id}"));
@@ -977,9 +980,13 @@ async fn get_team_season(pool: &PgPool, team_season_id: Uuid, format: OutputForm
         println!("  Status:        {}", ts.status);
         println!(
             "  Registered:    {}",
-            ts.registered_at.map_or_else(|| "-".to_string(), |t| format_timestamp(&t))
+            ts.registered_at
+                .map_or_else(|| "-".to_string(), |t| format_timestamp(&t))
         );
-        println!("  Notes:         {}", format_optional(&ts.registration_notes));
+        println!(
+            "  Notes:         {}",
+            format_optional(&ts.registration_notes)
+        );
         println!();
         println!("  Matches:");
         println!("    Played: {}", ts.matches_played);
@@ -1005,7 +1012,13 @@ async fn update_team_season_status(
     team_season_id: Uuid,
     status: &str,
 ) -> Result<()> {
-    let valid_statuses = ["pending", "approved", "rejected", "withdrawn", "disqualified"];
+    let valid_statuses = [
+        "pending",
+        "approved",
+        "rejected",
+        "withdrawn",
+        "disqualified",
+    ];
     if !valid_statuses.contains(&status) {
         error(&format!(
             "Invalid status: {status}. Valid values: {}",

@@ -7,10 +7,10 @@ use crate::dto::responses::LeagueSeasonResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::LeagueTeamState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{permissions, LeagueId, LeagueSeasonId};
+use portal_core::{LeagueId, LeagueSeasonId, permissions};
 
 /// Query parameters for listing seasons.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -51,7 +51,11 @@ pub async fn create_season(
 
     // Check league admin permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::SETTINGS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::SETTINGS_MANAGE,
+        )
         .await?;
 
     let cmd = req.try_into()?;
@@ -62,7 +66,10 @@ pub async fn create_season(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(LeagueSeasonResponse::from(season), request_id)),
+        Json(DataResponse::new(
+            LeagueSeasonResponse::from(season),
+            request_id,
+        )),
     ))
 }
 
@@ -120,7 +127,10 @@ pub async fn list_seasons(
     let seasons = state.league_season_service.list_seasons(league_id).await?;
 
     Ok(Json(DataResponse::new(
-        seasons.into_iter().map(LeagueSeasonResponse::from).collect(),
+        seasons
+            .into_iter()
+            .map(LeagueSeasonResponse::from)
+            .collect(),
         request_id,
     )))
 }

@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::tournament::TournamentRow;
 use crate::DbPool;
+use crate::entities::tournament::TournamentRow;
 use portal_core::types::TournamentStatus;
 use portal_core::{DomainError, GameId, LeagueId, TournamentId, UserId};
 use portal_domain::entities::tournament::Tournament;
@@ -389,12 +389,11 @@ impl TournamentRepository for PgTournamentRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM tournaments WHERE game_id = $1")
-                .bind(game_id.as_uuid())
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tournaments WHERE game_id = $1")
+            .bind(game_id.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok((rows.into_iter().map(Tournament::from).collect(), count.0))
     }
@@ -420,12 +419,11 @@ impl TournamentRepository for PgTournamentRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM tournaments WHERE league_id = $1")
-                .bind(league_id.as_uuid())
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tournaments WHERE league_id = $1")
+            .bind(league_id.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok((rows.into_iter().map(Tournament::from).collect(), count.0))
     }

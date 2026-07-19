@@ -7,9 +7,9 @@ use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::handlers::player_game_profiles::build_stats_context;
 use crate::state::PlayerState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use axum::Json;
 use portal_core::{GameId, PlayerId};
 use portal_domain::repositories::{PlayerSearchFilters, UpdatePlayer};
 use serde::Deserialize;
@@ -135,10 +135,8 @@ pub async fn search_players(
                 .unwrap_or_default();
 
             // Build a lookup map: player_id -> profile
-            let mut profile_map: HashMap<PlayerId, _> = profiles
-                .into_iter()
-                .map(|p| (p.player_id, p))
-                .collect();
+            let mut profile_map: HashMap<PlayerId, _> =
+                profiles.into_iter().map(|p| (p.player_id, p)).collect();
 
             // Build responses with display stats
             let mut responses = Vec::with_capacity(result.players.len());
@@ -149,17 +147,28 @@ pub async fn search_players(
                         .as_ref()
                         .map(|p| p.format_player_stats(&profile.game_specific_stats, &context))
                         .unwrap_or_default();
-                    responses.push(PlayerSearchResponse::with_display_stats(player, display_stats));
+                    responses.push(PlayerSearchResponse::with_display_stats(
+                        player,
+                        display_stats,
+                    ));
                 } else {
                     responses.push(PlayerSearchResponse::from(player));
                 }
             }
             responses
         } else {
-            result.players.into_iter().map(PlayerSearchResponse::from).collect()
+            result
+                .players
+                .into_iter()
+                .map(PlayerSearchResponse::from)
+                .collect()
         }
     } else {
-        result.players.into_iter().map(PlayerSearchResponse::from).collect()
+        result
+            .players
+            .into_iter()
+            .map(PlayerSearchResponse::from)
+            .collect()
     };
 
     Ok(Json(PaginatedResponse::new(

@@ -25,22 +25,29 @@ pub mod veto_delegate;
 
 pub use action_item::ActionItemResponse;
 pub use admin::PlatformStatsResponse;
+pub use auth::{LoginResponse, RegisterResponse};
 pub use availability::{
     AvailabilityOverrideResponse, AvailabilityWindowResponse, DateAvailabilityResponse,
     SuggestedTimeResponse, TimeSlotResponse,
 };
 pub use ban::{BanListResponse, BanResponse, PaginationMetaResponse};
-pub use auth::{LoginResponse, RegisterResponse};
 pub use demo::{
-    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoIdListResponse, DemoListResponse,
-    DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse, DemoPlayerResponse,
-    DemoDownloadResponse, DemoResponse, DemoStatusCountsResponse, DemoValidationResultResponse,
-    DemoWithPlayersResponse,
+    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoDownloadResponse,
+    DemoIdListResponse, DemoListResponse, DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse,
+    DemoMetadataResponse, DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse,
+    DemoValidationResultResponse, DemoWithPlayersResponse,
+};
+pub use dispute::{
+    DisputeListResponse, DisputeMessageResponse, DisputeResolutionResponse,
+    DisputeResolutionResultResponse, DisputeResponse, DisputeWithThreadResponse,
 };
 pub use evidence::{
     AccessUrlResponse, DemoPlayerStatsResponse, DemoStatsResponse, DemoValidationResponse,
     DiscoveredEvidenceResponse, EvidenceResponse, EvidenceSummaryResponse, ExtractedResultResponse,
     UploadInfoResponse, ValidationResultResponse,
+};
+pub use forfeit::{
+    DisqualificationResponse, ForfeitRecordResponse, ForfeitResponse, WithdrawalResponse,
 };
 pub use game::{
     GameDetailResponse, GameSummaryResponse, MapInfoResponse, MapPickBanFormatResponse,
@@ -68,28 +75,23 @@ pub use result::{
     GameResultResponse, ResultClaimResponse, ResultClaimSubmissionResponse,
     ResultConfirmationResponse, ResultDisputeResponse,
 };
-pub use role::{PermissionResponse, RoleResponse, RoleWithPermissionsResponse, UserRoleAssignmentResponse};
+pub use result_review::{
+    AcknowledgmentResponse, ResultReviewListResponse, ResultReviewResponse,
+    ResultReviewSummaryResponse, UnrecognizedPlayerResponse,
+};
+pub use role::{
+    PermissionResponse, RoleResponse, RoleWithPermissionsResponse, UserRoleAssignmentResponse,
+};
 pub use tournament::{
     CheckInStatusResponse, MatchStatusDetailsResponse, MatchStatusLogResponse,
     ScheduleProposalResponse, SeededParticipantResponse, TournamentBracketResponse,
-    TournamentMatchGameResponse, TournamentMatchResponse, TournamentRegistrationResponse,
-    TournamentMapPoolResponse, TournamentResponse, TournamentStageResponse,
+    TournamentMapPoolResponse, TournamentMatchGameResponse, TournamentMatchResponse,
+    TournamentRegistrationResponse, TournamentResponse, TournamentStageResponse,
     TournamentStandingResponse, TournamentSummaryResponse,
 };
 pub use user::UserResponse;
 pub use veto::{
     MapStatusResponse, VetoActionResponse, VetoActionResultResponse, VetoFormatActionResponse,
     VetoFormatResponse, VetoSessionResponse, VetoSessionStateResponse,
-};
-pub use forfeit::{
-    DisqualificationResponse, ForfeitRecordResponse, ForfeitResponse, WithdrawalResponse,
-};
-pub use dispute::{
-    DisputeListResponse, DisputeMessageResponse, DisputeResolutionResponse,
-    DisputeResolutionResultResponse, DisputeResponse, DisputeWithThreadResponse,
-};
-pub use result_review::{
-    AcknowledgmentResponse, ResultReviewListResponse, ResultReviewResponse,
-    ResultReviewSummaryResponse, UnrecognizedPlayerResponse,
 };
 pub use veto_delegate::{VetoDelegateListResponse, VetoDelegateResponse};

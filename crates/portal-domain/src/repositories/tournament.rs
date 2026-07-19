@@ -300,7 +300,10 @@ pub trait TournamentBracketRepository: Send + Sync {
     ) -> Result<Option<TournamentBracket>, DomainError>;
 
     /// Create a new bracket.
-    async fn create(&self, bracket: CreateTournamentBracket) -> Result<TournamentBracket, DomainError>;
+    async fn create(
+        &self,
+        bracket: CreateTournamentBracket,
+    ) -> Result<TournamentBracket, DomainError>;
 
     /// Update a bracket.
     async fn update(
@@ -317,7 +320,10 @@ pub trait TournamentBracketRepository: Send + Sync {
     ) -> Result<TournamentBracket, DomainError>;
 
     /// Advance current round.
-    async fn advance_round(&self, id: TournamentBracketId) -> Result<TournamentBracket, DomainError>;
+    async fn advance_round(
+        &self,
+        id: TournamentBracketId,
+    ) -> Result<TournamentBracket, DomainError>;
 
     /// List all brackets for a stage.
     async fn list_by_stage(
@@ -748,7 +754,10 @@ pub trait TournamentMatchGameRepository: Send + Sync {
     ) -> Result<Option<TournamentMatchGame>, DomainError>;
 
     /// Create a new game.
-    async fn create(&self, game: CreateTournamentMatchGame) -> Result<TournamentMatchGame, DomainError>;
+    async fn create(
+        &self,
+        game: CreateTournamentMatchGame,
+    ) -> Result<TournamentMatchGame, DomainError>;
 
     /// Update a game.
     async fn update(
@@ -927,7 +936,8 @@ pub trait TournamentMapPoolRepository: Send + Sync {
     ) -> Result<Option<TournamentMapPool>, DomainError>;
 
     /// Create or update map pool.
-    async fn upsert(&self, pool: UpsertTournamentMapPool) -> Result<TournamentMapPool, DomainError>;
+    async fn upsert(&self, pool: UpsertTournamentMapPool)
+    -> Result<TournamentMapPool, DomainError>;
 
     /// Delete a map pool.
     async fn delete(&self, id: TournamentMapPoolId) -> Result<(), DomainError>;
@@ -1030,8 +1040,10 @@ pub trait VetoActionRepository: Send + Sync {
     ) -> Result<Option<VetoAction>, DomainError>;
 
     /// List all actions for a session (ordered by action number).
-    async fn list_by_session(&self, session_id: VetoSessionId)
-        -> Result<Vec<VetoAction>, DomainError>;
+    async fn list_by_session(
+        &self,
+        session_id: VetoSessionId,
+    ) -> Result<Vec<VetoAction>, DomainError>;
 
     /// Create a new veto action.
     async fn create(&self, action: CreateVetoAction) -> Result<VetoAction, DomainError>;
@@ -1079,8 +1091,10 @@ pub trait ResultClaimRepository: Send + Sync {
     ) -> Result<Option<ResultClaim>, DomainError>;
 
     /// List all claims for a match (ordered by created_at desc).
-    async fn list_by_match(&self, match_id: TournamentMatchId)
-        -> Result<Vec<ResultClaim>, DomainError>;
+    async fn list_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<ResultClaim>, DomainError>;
 
     /// Create a new result claim.
     async fn create(&self, claim: CreateResultClaim) -> Result<ResultClaim, DomainError>;

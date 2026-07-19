@@ -74,8 +74,16 @@ impl From<ResultClaim> for ResultClaimResponse {
             confirmed_by_user_id: c.confirmed_by_user_id.map(|id| id.to_string()),
             auto_confirm_at: c.auto_confirm_at,
             was_auto_confirmed: c.was_auto_confirmed,
-            evidence_ids: c.evidence_ids.into_iter().map(|id| id.to_string()).collect(),
-            demo_link_ids: c.demo_link_ids.into_iter().map(|id| id.to_string()).collect(),
+            evidence_ids: c
+                .evidence_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            demo_link_ids: c
+                .demo_link_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
             submitter_notes: c.submitter_notes,
             created_at: c.created_at,
             updated_at: c.updated_at,
@@ -127,7 +135,11 @@ impl From<GameResult> for GameResultResponse {
             started_at: g.started_at,
             completed_at: g.completed_at,
             duration_seconds: g.duration_seconds,
-            evidence_ids: g.evidence_ids.into_iter().map(|id| id.to_string()).collect(),
+            evidence_ids: g
+                .evidence_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
             demo_link_id: g.demo_link_id.map(|id| id.to_string()),
         }
     }

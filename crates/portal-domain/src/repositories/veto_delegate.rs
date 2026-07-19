@@ -1,7 +1,9 @@
 //! Repository trait for veto delegate persistence.
 
 use async_trait::async_trait;
-use portal_core::{DomainError, LeagueTeamSeasonId, PlayerId, TournamentId, UserId, VetoDelegateId};
+use portal_core::{
+    DomainError, LeagueTeamSeasonId, PlayerId, TournamentId, UserId, VetoDelegateId,
+};
 
 use crate::entities::veto_delegate::{DelegatedByRole, VetoDelegate};
 

@@ -13,10 +13,10 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::LeagueTeamState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{permissions, LeagueSeasonId, LeagueTeamId};
+use portal_core::{LeagueSeasonId, LeagueTeamId, permissions};
 
 /// Query parameters for listing teams in a league.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -135,7 +135,10 @@ pub async fn register_team_for_season(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(LeagueTeamSeasonResponse::from(team_season), request_id)),
+        Json(DataResponse::new(
+            LeagueTeamSeasonResponse::from(team_season),
+            request_id,
+        )),
     ))
 }
 

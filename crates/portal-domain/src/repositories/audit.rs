@@ -25,11 +25,8 @@ pub trait EntityChangeRepository: Send + Sync {
     ) -> Result<Vec<EntityChange>, DomainError>;
 
     /// Count changes for an entity.
-    async fn count_by_entity(
-        &self,
-        entity_type: &str,
-        entity_id: Uuid,
-    ) -> Result<i64, DomainError>;
+    async fn count_by_entity(&self, entity_type: &str, entity_id: Uuid)
+    -> Result<i64, DomainError>;
 
     /// List changes for an entity's specific field.
     async fn list_by_field(

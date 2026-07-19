@@ -46,12 +46,7 @@ impl ScopeType {
     /// Get all available scope types.
     #[must_use]
     pub const fn all() -> &'static [Self] {
-        &[
-            Self::Team,
-            Self::League,
-            Self::Tournament,
-            Self::Match,
-        ]
+        &[Self::Team, Self::League, Self::Tournament, Self::Match]
     }
 }
 

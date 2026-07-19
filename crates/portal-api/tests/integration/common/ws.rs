@@ -5,13 +5,9 @@ use serde::Deserialize;
 use serde_json::json;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::time::timeout;
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::Message,
-    MaybeTlsStream, WebSocketStream,
-};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 /// WebSocket connection type for tests.
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -29,9 +25,7 @@ pub enum ServerMessage {
         lobby_state: serde_json::Value,
     },
     /// Authentication error.
-    AuthError {
-        error: String,
-    },
+    AuthError { error: String },
     /// Chat message.
     Chat {
         id: String,
@@ -41,13 +35,9 @@ pub enum ServerMessage {
         timestamp: String,
     },
     /// Chat history.
-    ChatHistory {
-        messages: Vec<serde_json::Value>,
-    },
+    ChatHistory { messages: Vec<serde_json::Value> },
     /// Veto state update.
-    VetoStateUpdate {
-        session: serde_json::Value,
-    },
+    VetoStateUpdate { session: serde_json::Value },
     /// Veto action performed.
     VetoActionPerformed {
         session: serde_json::Value,
@@ -72,14 +62,9 @@ pub enum ServerMessage {
         username: String,
     },
     /// Spectator count update.
-    SpectatorCount {
-        count: usize,
-    },
+    SpectatorCount { count: usize },
     /// Error message.
-    Error {
-        code: String,
-        message: String,
-    },
+    Error { code: String, message: String },
     /// Pong response.
     Pong,
     /// Veto action acknowledgment.

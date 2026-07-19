@@ -14,9 +14,7 @@ use crate::repositories::tournament::{ParticipantSlot, TournamentMatchRepository
 use super::bracket_generator::{ByeInfo, InitialAssignment};
 
 /// Build a position → match ID mapping from a list of matches.
-pub fn build_position_map(
-    matches: &[TournamentMatch],
-) -> HashMap<String, TournamentMatchId> {
+pub fn build_position_map(matches: &[TournamentMatch]) -> HashMap<String, TournamentMatchId> {
     matches
         .iter()
         .map(|m| (m.bracket_position.clone(), m.id))

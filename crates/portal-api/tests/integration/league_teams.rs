@@ -1,8 +1,7 @@
 //! League team API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use portal_test::prelude::*;
 use serde_json::json;
 use sqlx::Row;
@@ -91,7 +90,10 @@ async fn create_test_team(
 
     let body: serde_json::Value = response.json();
     let team_id = body["data"]["team"]["id"].as_str().unwrap().to_string();
-    let team_season_id = body["data"]["team_season"]["id"].as_str().unwrap().to_string();
+    let team_season_id = body["data"]["team_season"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     (team_id, team_season_id)
 }
 
@@ -260,7 +262,8 @@ async fn test_get_team() {
     let season_id = season["data"]["id"].as_str().unwrap();
 
     // Create a team
-    let (team_id, _team_season_id) = create_test_team(&app, season_id, "Get Test Team", "GTT").await;
+    let (team_id, _team_season_id) =
+        create_test_team(&app, season_id, "Get Test Team", "GTT").await;
 
     // Get the team (persistent identity)
     let response = app.get(&format!("/v1/league-teams/{}", team_id)).await;
@@ -325,7 +328,8 @@ async fn test_update_team() {
     let season = create_test_season(&app, league_id, "update-team-season").await;
     let season_id = season["data"]["id"].as_str().unwrap();
 
-    let (team_id, _team_season_id) = create_test_team(&app, season_id, "Original Name", "ORG").await;
+    let (team_id, _team_season_id) =
+        create_test_team(&app, season_id, "Original Name", "ORG").await;
 
     // Update the team (as owner)
     let response = app
@@ -359,10 +363,13 @@ async fn test_get_team_season() {
     let season = create_test_season(&app, league_id, "get-team-season-season").await;
     let season_id = season["data"]["id"].as_str().unwrap();
 
-    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Team Season Test", "TST").await;
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Team Season Test", "TST").await;
 
     // Get the team season (seasonal participation)
-    let response = app.get(&format!("/v1/league-team-seasons/{}", team_season_id)).await;
+    let response = app
+        .get(&format!("/v1/league-team-seasons/{}", team_season_id))
+        .await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
@@ -385,10 +392,16 @@ async fn test_get_team_members() {
     let season_id = season["data"]["id"].as_str().unwrap();
 
     // Create a team
-    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Members Test Team", "MTT").await;
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Members Test Team", "MTT").await;
 
     // Get team members via team_season_id (should have captain/owner)
-    let response = app.get(&format!("/v1/league-team-seasons/{}/members", team_season_id)).await;
+    let response = app
+        .get(&format!(
+            "/v1/league-team-seasons/{}/members",
+            team_season_id
+        ))
+        .await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
@@ -409,7 +422,8 @@ async fn test_leave_team() {
     let season_id = season["data"]["id"].as_str().unwrap();
 
     // Create a team
-    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Leave Test Team", "LTT").await;
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Leave Test Team", "LTT").await;
 
     // Create a second user to join the team
     let user2 = UserBuilder::new()
@@ -440,7 +454,10 @@ async fn test_leave_team() {
 
     // Get the invitation ID (captain gets team invitations)
     let invitations_response = app
-        .get_auth(&format!("/v1/league-team-seasons/{}/invitations", team_season_id))
+        .get_auth(&format!(
+            "/v1/league-team-seasons/{}/invitations",
+            team_season_id
+        ))
         .await;
     invitations_response.assert_status(StatusCode::OK);
     let invitations: serde_json::Value = invitations_response.json();
@@ -457,18 +474,31 @@ async fn test_leave_team() {
     .assert_status(StatusCode::OK);
 
     // Verify user2 is now a member
-    let members_response = app.get(&format!("/v1/league-team-seasons/{}/members", team_season_id)).await;
+    let members_response = app
+        .get(&format!(
+            "/v1/league-team-seasons/{}/members",
+            team_season_id
+        ))
+        .await;
     let members: serde_json::Value = members_response.json();
     assert_eq!(members["data"].as_array().unwrap().len(), 2);
 
     // User2 leaves the team via team_season_id
     let response = app
-        .post_with_token(&format!("/v1/league-team-seasons/{}/leave", team_season_id), &token2)
+        .post_with_token(
+            &format!("/v1/league-team-seasons/{}/leave", team_season_id),
+            &token2,
+        )
         .await;
     response.assert_status(StatusCode::NO_CONTENT);
 
     // Verify user2 is no longer an active member
-    let members_response = app.get(&format!("/v1/league-team-seasons/{}/members", team_season_id)).await;
+    let members_response = app
+        .get(&format!(
+            "/v1/league-team-seasons/{}/members",
+            team_season_id
+        ))
+        .await;
     let members: serde_json::Value = members_response.json();
     let active_members: Vec<_> = members["data"]
         .as_array()
@@ -495,7 +525,8 @@ async fn test_invite_player_to_team() {
     let season_id = season["data"]["id"].as_str().unwrap();
 
     // Create a team
-    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Invite Test Team", "ITT").await;
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Invite Test Team", "ITT").await;
 
     // Create a player to invite
     let user2 = UserBuilder::new()
@@ -543,7 +574,8 @@ async fn test_accept_team_invitation() {
     let season_id = season["data"]["id"].as_str().unwrap();
 
     // Create a team
-    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Accept Invite Team", "AIT").await;
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Accept Invite Team", "AIT").await;
 
     // Create invitee
     let user2 = UserBuilder::new()
@@ -601,7 +633,8 @@ async fn test_apply_to_team() {
     let season_id = season["data"]["id"].as_str().unwrap();
 
     // Create a team
-    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Apply Test Team", "ATT").await;
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Apply Test Team", "ATT").await;
 
     // Create applicant
     let user2 = UserBuilder::new()
@@ -641,7 +674,8 @@ async fn test_decline_invitation() {
     let season = create_test_season(&app, league_id, "decline-invite-season").await;
     let season_id = season["data"]["id"].as_str().unwrap();
 
-    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Decline Invite Team", "DIT").await;
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Decline Invite Team", "DIT").await;
 
     let user2 = UserBuilder::new()
         .username("decliner")
@@ -693,7 +727,8 @@ async fn test_get_my_team_invitations() {
     let season = create_test_season(&app, league_id, "my-invitations-season").await;
     let season_id = season["data"]["id"].as_str().unwrap();
 
-    let (_team_id, team_season_id) = create_test_team(&app, season_id, "My Invitations Team", "MIT").await;
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "My Invitations Team", "MIT").await;
 
     let user2 = UserBuilder::new()
         .username("my-invitations-user")
@@ -775,7 +810,8 @@ async fn test_transfer_ownership() {
     let season_id = season["data"]["id"].as_str().unwrap();
 
     // Create a team
-    let (team_id, team_season_id) = create_test_team(&app, season_id, "Transfer Owner Team", "TOT").await;
+    let (team_id, team_season_id) =
+        create_test_team(&app, season_id, "Transfer Owner Team", "TOT").await;
 
     // Create a second user to transfer ownership to
     let user2 = UserBuilder::new()
@@ -843,7 +879,8 @@ async fn test_disband_team() {
     let season_id = season["data"]["id"].as_str().unwrap();
 
     // Create a team
-    let (team_id, _team_season_id) = create_test_team(&app, season_id, "Disband Test Team", "DIS").await;
+    let (team_id, _team_season_id) =
+        create_test_team(&app, season_id, "Disband Test Team", "DIS").await;
 
     // Disband the team (DELETE instead of POST /disband)
     let response = app
@@ -872,7 +909,8 @@ async fn test_promote_to_captain() {
     let season = create_test_season(&app, league_id, "promote-captain-season").await;
     let season_id = season["data"]["id"].as_str().unwrap();
 
-    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Promote Captain Team", "PCT").await;
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Promote Captain Team", "PCT").await;
 
     // Create and add a second user to the team
     let user2 = UserBuilder::new()
@@ -913,7 +951,10 @@ async fn test_promote_to_captain() {
 
     // Promote to captain
     let response = app
-        .post_auth(&format!("/v1/league-team-seasons/{}/members/{}/promote", team_season_id, player2_id))
+        .post_auth(&format!(
+            "/v1/league-team-seasons/{}/members/{}/promote",
+            team_season_id, player2_id
+        ))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -932,7 +973,8 @@ async fn test_demote_from_captain() {
     let season = create_test_season(&app, league_id, "demote-captain-season").await;
     let season_id = season["data"]["id"].as_str().unwrap();
 
-    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Demote Captain Team", "DCT").await;
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Demote Captain Team", "DCT").await;
 
     // Create and add a second user as captain
     let user2 = UserBuilder::new()
@@ -972,13 +1014,19 @@ async fn test_demote_from_captain() {
     .assert_status(StatusCode::OK);
 
     // Promote to captain first
-    app.post_auth(&format!("/v1/league-team-seasons/{}/members/{}/promote", team_season_id, player2_id))
-        .await
-        .assert_status(StatusCode::OK);
+    app.post_auth(&format!(
+        "/v1/league-team-seasons/{}/members/{}/promote",
+        team_season_id, player2_id
+    ))
+    .await
+    .assert_status(StatusCode::OK);
 
     // Demote back to player
     let response = app
-        .post_auth(&format!("/v1/league-team-seasons/{}/members/{}/demote", team_season_id, player2_id))
+        .post_auth(&format!(
+            "/v1/league-team-seasons/{}/members/{}/demote",
+            team_season_id, player2_id
+        ))
         .await;
     response.assert_status(StatusCode::OK);
 

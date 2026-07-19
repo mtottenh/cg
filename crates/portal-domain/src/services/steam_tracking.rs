@@ -180,7 +180,10 @@ fn validate_auth_code(code: &str) -> Result<(), DomainError> {
             )),
         ));
     }
-    if !parts.iter().all(|p| p.chars().all(|c| c.is_ascii_alphanumeric())) {
+    if !parts
+        .iter()
+        .all(|p| p.chars().all(|c| c.is_ascii_alphanumeric()))
+    {
         return Err(DomainError::Validation(
             portal_core::ValidationError::field(portal_core::FieldError::format(
                 "game_auth_code",

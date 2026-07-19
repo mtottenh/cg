@@ -11,15 +11,15 @@ use portal_core::{
 };
 
 use crate::entities::tournament::{
-    CreateTournamentCommand, Tournament, TournamentBracket, TournamentMatch, TournamentRegistration,
-    TournamentStage, UpdateTournamentCommand,
+    CreateTournamentCommand, Tournament, TournamentBracket, TournamentMatch,
+    TournamentRegistration, TournamentStage, UpdateTournamentCommand,
 };
 use crate::repositories::tournament::{
-    CreateTournament, CreateTournamentBracket, CreateTournamentRegistration,
-    CreateTournamentStanding, CreateTournamentStage, TournamentBracketRepository,
-    TournamentFilters, TournamentMatchRepository,
-    TournamentRegistrationRepository, TournamentRepository, TournamentStageRepository,
-    TournamentStandingsRepository, UpdateTournament, UpdateTournamentStanding,
+    CreateTournament, CreateTournamentBracket, CreateTournamentRegistration, CreateTournamentStage,
+    CreateTournamentStanding, TournamentBracketRepository, TournamentFilters,
+    TournamentMatchRepository, TournamentRegistrationRepository, TournamentRepository,
+    TournamentStageRepository, TournamentStandingsRepository, UpdateTournament,
+    UpdateTournamentStanding,
 };
 
 use super::bracket_generator::{BracketGenerator, CrossLinkType};
@@ -218,7 +218,10 @@ where
     pub async fn open_registration(&self, id: TournamentId) -> Result<Tournament, DomainError> {
         let tournament = self.get_tournament(id).await?;
 
-        if !tournament.status.can_transition_to(TournamentStatus::Registration) {
+        if !tournament
+            .status
+            .can_transition_to(TournamentStatus::Registration)
+        {
             return Err(DomainError::InvalidTournamentTransition {
                 from: tournament.status.to_string(),
                 to: TournamentStatus::Registration.to_string(),
@@ -234,7 +237,10 @@ where
     pub async fn close_registration(&self, id: TournamentId) -> Result<Tournament, DomainError> {
         let tournament = self.get_tournament(id).await?;
 
-        if !tournament.status.can_transition_to(TournamentStatus::Scheduled) {
+        if !tournament
+            .status
+            .can_transition_to(TournamentStatus::Scheduled)
+        {
             return Err(DomainError::InvalidTournamentTransition {
                 from: tournament.status.to_string(),
                 to: TournamentStatus::Scheduled.to_string(),
@@ -250,7 +256,10 @@ where
     pub async fn reopen_registration(&self, id: TournamentId) -> Result<Tournament, DomainError> {
         let tournament = self.get_tournament(id).await?;
 
-        if !tournament.status.can_transition_to(TournamentStatus::Registration) {
+        if !tournament
+            .status
+            .can_transition_to(TournamentStatus::Registration)
+        {
             return Err(DomainError::InvalidTournamentTransition {
                 from: tournament.status.to_string(),
                 to: TournamentStatus::Registration.to_string(),
@@ -266,7 +275,10 @@ where
     pub async fn cancel_tournament(&self, id: TournamentId) -> Result<Tournament, DomainError> {
         let tournament = self.get_tournament(id).await?;
 
-        if !tournament.status.can_transition_to(TournamentStatus::Cancelled) {
+        if !tournament
+            .status
+            .can_transition_to(TournamentStatus::Cancelled)
+        {
             return Err(DomainError::InvalidTournamentTransition {
                 from: tournament.status.to_string(),
                 to: TournamentStatus::Cancelled.to_string(),
@@ -282,7 +294,10 @@ where
     pub async fn complete_tournament(&self, id: TournamentId) -> Result<Tournament, DomainError> {
         let tournament = self.get_tournament(id).await?;
 
-        if !tournament.status.can_transition_to(TournamentStatus::Completed) {
+        if !tournament
+            .status
+            .can_transition_to(TournamentStatus::Completed)
+        {
             return Err(DomainError::InvalidTournamentTransition {
                 from: tournament.status.to_string(),
                 to: TournamentStatus::Completed.to_string(),
@@ -298,7 +313,10 @@ where
     pub async fn finalize_tournament(&self, id: TournamentId) -> Result<Tournament, DomainError> {
         let tournament = self.get_tournament(id).await?;
 
-        if !tournament.status.can_transition_to(TournamentStatus::Finalized) {
+        if !tournament
+            .status
+            .can_transition_to(TournamentStatus::Finalized)
+        {
             return Err(DomainError::InvalidTournamentTransition {
                 from: tournament.status.to_string(),
                 to: TournamentStatus::Finalized.to_string(),
@@ -384,7 +402,10 @@ where
         }
 
         // Check capacity
-        let current_count = self.tournament_repo.count_registrations(tournament_id).await?;
+        let current_count = self
+            .tournament_repo
+            .count_registrations(tournament_id)
+            .await?;
         if current_count >= i64::from(tournament.max_participants) {
             return Err(DomainError::TournamentFull);
         }
@@ -433,7 +454,10 @@ where
         }
 
         // Check capacity
-        let current_count = self.tournament_repo.count_registrations(tournament_id).await?;
+        let current_count = self
+            .tournament_repo
+            .count_registrations(tournament_id)
+            .await?;
         if current_count >= i64::from(tournament.max_participants) {
             return Err(DomainError::TournamentFull);
         }
@@ -492,7 +516,9 @@ where
             return Err(DomainError::Conflict("Already checked in".to_string()));
         }
 
-        self.registration_repo.check_in(registration_id, checked_in_by).await
+        self.registration_repo
+            .check_in(registration_id, checked_in_by)
+            .await
     }
 
     /// Start a tournament by generating brackets.
@@ -1056,8 +1082,10 @@ where
             self, GroupStageFormat, GroupsConfig, PlayoffFormat,
         };
 
-        let config =
-            GroupsConfig::from_format_settings(&tournament.format_settings, seeded_participants.len())?;
+        let config = GroupsConfig::from_format_settings(
+            &tournament.format_settings,
+            seeded_participants.len(),
+        )?;
 
         // Validate minimum group sizes
         let min_per_group = seeded_participants.len() / config.group_count;
@@ -1288,9 +1316,7 @@ where
         let bracket = brackets
             .into_iter()
             .find(|b| b.bracket_type == BracketType::Swiss)
-            .ok_or_else(|| {
-                DomainError::InvalidState("No Swiss bracket found".to_string())
-            })?;
+            .ok_or_else(|| DomainError::InvalidState("No Swiss bracket found".to_string()))?;
 
         // Verify all current-round matches are complete
         let all_matches = self.match_repo.list_by_bracket(bracket.id).await?;
@@ -1461,10 +1487,7 @@ where
     }
 
     /// Scan a bracket for Pending matches that have both participants and mark them Ready.
-    async fn mark_ready_matches(
-        &self,
-        bracket_id: TournamentBracketId,
-    ) -> Result<(), DomainError> {
+    async fn mark_ready_matches(&self, bracket_id: TournamentBracketId) -> Result<(), DomainError> {
         let matches = self.match_repo.list_by_bracket(bracket_id).await?;
         for m in matches {
             if m.status == TournamentMatchStatus::Pending && m.has_both_participants() {

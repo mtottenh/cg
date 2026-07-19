@@ -224,11 +224,7 @@ where
         // Find user by username or email. If they don't exist, spend the
         // same Argon2 work as a real verify so an attacker can't enumerate
         // accounts via response timing.
-        let user_creds = match self
-            .user_repo
-            .find_for_auth(&cmd.username_or_email)
-            .await?
-        {
+        let user_creds = match self.user_repo.find_for_auth(&cmd.username_or_email).await? {
             Some(c) => c,
             None => {
                 verify_dummy_for_timing().await?;

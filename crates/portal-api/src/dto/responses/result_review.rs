@@ -78,7 +78,9 @@ impl From<ResultReview> for ResultReviewResponse {
             score_mismatch: review.score_mismatch,
             winner_mismatch: review.winner_mismatch,
             demo_link_id: review.demo_link_id.map(|id| id.to_string()),
-            validation_result: review.validation_result.map(DemoValidationResultResponse::from),
+            validation_result: review
+                .validation_result
+                .map(DemoValidationResultResponse::from),
             unrecognized_players: review
                 .unrecognized_players
                 .into_iter()

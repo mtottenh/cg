@@ -10,9 +10,9 @@ use crate::dto::common::DataResponse;
 use crate::dto::responses::{TournamentBracketResponse, TournamentMatchResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::state::TournamentState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::Json;
 use portal_core::{TournamentId, TournamentMatchId};
 
 /// Get brackets for a tournament.

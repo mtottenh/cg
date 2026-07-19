@@ -57,9 +57,7 @@ impl DemoValidationResult {
     pub fn has_roster_mismatch(&self) -> bool {
         self.warnings.iter().any(|w| {
             let lower = w.to_lowercase();
-            lower.contains("player")
-                || lower.contains("roster")
-                || lower.contains("unrecognized")
+            lower.contains("player") || lower.contains("roster") || lower.contains("unrecognized")
         })
     }
 
@@ -205,7 +203,9 @@ mod tests {
     #[test]
     fn test_has_roster_mismatch() {
         let mut result = DemoValidationResult::default();
-        result.warnings.push("Unrecognized player found".to_string());
+        result
+            .warnings
+            .push("Unrecognized player found".to_string());
         assert!(result.has_roster_mismatch());
     }
 

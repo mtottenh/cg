@@ -1,8 +1,8 @@
 //! League season builder for tests.
 
 use chrono::{DateTime, Duration, Utc};
-use portal_db::entities::LeagueSeasonRow;
 use portal_db::DbPool;
+use portal_db::entities::LeagueSeasonRow;
 use uuid::Uuid;
 
 use super::LeagueBuilder;
@@ -269,16 +269,15 @@ impl LeagueSeasonBuilder {
     /// If `league_id` is not set, creates a test league automatically.
     /// If `created_by` is not set, uses the league's creator.
     pub async fn build_persisted(self, pool: &DbPool) -> LeagueSeasonRow {
-        
-
         // Get or create league
         let (league_id, league_creator) = if let Some(id) = self.league_id {
             // Fetch the league's created_by
-            let creator = sqlx::query_scalar::<_, Uuid>("SELECT created_by FROM leagues WHERE id = $1")
-                .bind(id)
-                .fetch_one(pool)
-                .await
-                .expect("League not found");
+            let creator =
+                sqlx::query_scalar::<_, Uuid>("SELECT created_by FROM leagues WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(pool)
+                    .await
+                    .expect("League not found");
             (id, creator)
         } else {
             let league = LeagueBuilder::new().build_persisted(pool).await;

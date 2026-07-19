@@ -12,8 +12,8 @@ mod user;
 pub use action_item::{ActionItem, ActionItemRepository};
 pub use game::GameRepository;
 pub use league::{
-    LeagueInvitationRepository, LeagueMemberRepository, LeagueRepository, PgLeagueInvitationRepository,
-    PgLeagueMemberRepository, PgLeagueRepository,
+    LeagueInvitationRepository, LeagueMemberRepository, LeagueRepository,
+    PgLeagueInvitationRepository, PgLeagueMemberRepository, PgLeagueRepository,
 };
 pub use rbac::{BanRepository, PermissionRepository, RoleRepository};
 pub use stats::{PlatformStats, StatsRepository};

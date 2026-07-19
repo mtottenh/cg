@@ -180,9 +180,7 @@ where
                 .registration_repo
                 .find_by_id(registration_id)
                 .await?
-                .ok_or_else(|| {
-                    DomainError::TournamentRegistrationNotFound(registration_id)
-                })?;
+                .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
 
             if registration.tournament_id != tournament_id {
                 return Err(DomainError::InvalidState(format!(
@@ -229,10 +227,7 @@ where
             .ok_or_else(|| DomainError::TournamentNotFound(tournament_id))?;
 
         // Get seeded registrations ordered by seed
-        let registrations = self
-            .registration_repo
-            .list_seeded(tournament_id)
-            .await?;
+        let registrations = self.registration_repo.list_seeded(tournament_id).await?;
 
         let seeded: Vec<SeededParticipant> = registrations
             .into_iter()

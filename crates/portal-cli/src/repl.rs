@@ -7,9 +7,9 @@ use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 use reedline::{
-    default_emacs_keybindings, ColumnarMenu, DefaultCompleter, DefaultHinter, DefaultPrompt,
-    DefaultPromptSegment, Emacs, FileBackedHistory, KeyCode, KeyModifiers, MenuBuilder, Reedline,
-    ReedlineEvent, ReedlineMenu, Signal,
+    ColumnarMenu, DefaultCompleter, DefaultHinter, DefaultPrompt, DefaultPromptSegment, Emacs,
+    FileBackedHistory, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
+    Signal, default_emacs_keybindings,
 };
 use sqlx::PgPool;
 
@@ -18,7 +18,11 @@ use crate::output::OutputFormat;
 
 /// Commands available in REPL mode (subset of main CLI commands).
 #[derive(Parser)]
-#[command(name = "portal", about = "Portal CLI - Interactive Mode", disable_help_subcommand = true)]
+#[command(
+    name = "portal",
+    about = "Portal CLI - Interactive Mode",
+    disable_help_subcommand = true
+)]
 enum ReplCommands {
     /// User management commands
     User(user::UserCommand),
@@ -57,7 +61,11 @@ enum ReplCommands {
 /// Run the interactive REPL.
 pub async fn run(pool: &PgPool) -> Result<()> {
     println!("{}", "Portal CLI - Interactive Mode".cyan().bold());
-    println!("Type {} for available commands, {} to quit.\n", "help".green(), "exit".green());
+    println!(
+        "Type {} for available commands, {} to quit.\n",
+        "help".green(),
+        "exit".green()
+    );
 
     // Set up command completer
     let commands = vec![
@@ -171,8 +179,7 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     }
 
     let history = Box::new(
-        FileBackedHistory::with_file(1000, history_path)
-            .expect("Failed to create history file"),
+        FileBackedHistory::with_file(1000, history_path).expect("Failed to create history file"),
     );
 
     // Build the line editor
@@ -263,21 +270,43 @@ async fn execute_command(cmd: ReplCommands, pool: &PgPool) -> Result<()> {
 fn print_help() {
     println!("{}", "Available Commands:".cyan().bold());
     println!();
-    println!("  {}        User management (list, get, create, update, ban, unban)", "user".green());
+    println!(
+        "  {}        User management (list, get, create, update, ban, unban)",
+        "user".green()
+    );
     println!("  {}        Role and permission management", "role".green());
     println!("  {}      Player profile management", "player".green());
     println!("  {}        Game configuration", "game".green());
-    println!("  {}          Database utilities (status, stats, seed)", "db".green());
+    println!(
+        "  {}          Database utilities (status, stats, seed)",
+        "db".green()
+    );
     println!("  {}   Create initial admin user", "bootstrap".green());
-    println!("  {}         Ban management (list, create, lift)", "ban".green());
-    println!("  {}       Audit log viewing (list, entity, user, search)", "audit".green());
-    println!("  {} League team management (member, invitation, season)", "league-team".green());
+    println!(
+        "  {}         Ban management (list, create, lift)",
+        "ban".green()
+    );
+    println!(
+        "  {}       Audit log viewing (list, entity, user, search)",
+        "audit".green()
+    );
+    println!(
+        "  {} League team management (member, invitation, season)",
+        "league-team".green()
+    );
     println!();
     println!("  {}        Show this help", "help".green());
     println!("  {}        Exit the REPL", "exit".green());
     println!();
     println!("{}:", "Tips".cyan());
     println!("  - Use {} for command completion", "Tab".yellow());
-    println!("  - Use {} / {} to navigate history", "Up".yellow(), "Down".yellow());
-    println!("  - Add {} to any command for detailed help", "--help".yellow());
+    println!(
+        "  - Use {} / {} to navigate history",
+        "Up".yellow(),
+        "Down".yellow()
+    );
+    println!(
+        "  - Add {} to any command for detailed help",
+        "--help".yellow()
+    );
 }

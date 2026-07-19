@@ -5,17 +5,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{RatingError, StatsError};
+use portal_core::MatchFormat;
 use portal_core::types::evidence::{
     DemoFileMetadata, DiscoveredEvidenceData, EvidenceStorage, EvidenceValidationResult,
     GameMatchResult, MatchEvidenceContext,
 };
 use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
-use portal_core::MatchFormat;
 
 use crate::types::{
     DemoData, DemoPlayerData, DisplayStat, LobbyStateMachine, MapPickBanFormat, MatchConfig,
-    MatchData, MatchPlayerData, MatchTeamData, MatchmakingCriteria, PlayerInfo,
-    PlayerStatsContext, RankedParticipant, RatingChange, TournamentFormatId,
+    MatchData, MatchPlayerData, MatchTeamData, MatchmakingCriteria, PlayerInfo, PlayerStatsContext,
+    RankedParticipant, RatingChange, TournamentFormatId,
 };
 
 // ============================================================================
@@ -215,12 +215,9 @@ pub trait GamePlugin: Send + Sync {
 
     /// Get the rank tier for a given rating.
     fn rating_to_rank_tier(&self, rating: i32) -> Option<RankTier> {
-        self.rank_tiers()
-            .into_iter()
-            .find(|tier| {
-                rating >= tier.min_rating
-                    && tier.max_rating.is_none_or(|max| rating <= max)
-            })
+        self.rank_tiers().into_iter().find(|tier| {
+            rating >= tier.min_rating && tier.max_rating.is_none_or(|max| rating <= max)
+        })
     }
 
     // ========================================================================
@@ -393,17 +390,33 @@ pub trait TournamentPlugin: GamePlugin {
     fn default_veto_format(&self, match_format: MatchFormat) -> Option<String> {
         let formats = self.veto_formats();
         match match_format {
-            MatchFormat::Bo1 => formats.iter().find(|f| f.id.contains("bo1")).map(|f| f.id.clone()),
-            MatchFormat::Bo3 => formats.iter().find(|f| f.id.contains("bo3")).map(|f| f.id.clone()),
-            MatchFormat::Bo5 => formats.iter().find(|f| f.id.contains("bo5")).map(|f| f.id.clone()),
-            MatchFormat::Bo7 => formats.iter().find(|f| f.id.contains("bo7")).map(|f| f.id.clone()),
+            MatchFormat::Bo1 => formats
+                .iter()
+                .find(|f| f.id.contains("bo1"))
+                .map(|f| f.id.clone()),
+            MatchFormat::Bo3 => formats
+                .iter()
+                .find(|f| f.id.contains("bo3"))
+                .map(|f| f.id.clone()),
+            MatchFormat::Bo5 => formats
+                .iter()
+                .find(|f| f.id.contains("bo5"))
+                .map(|f| f.id.clone()),
+            MatchFormat::Bo7 => formats
+                .iter()
+                .find(|f| f.id.contains("bo7"))
+                .map(|f| f.id.clone()),
         }
     }
 
     /// Validate a map pool for a specific veto format.
     ///
     /// Returns an error if the map pool is insufficient for the veto format.
-    fn validate_map_pool_for_veto(&self, maps: &[String], veto_format_id: &str) -> Result<(), String> {
+    fn validate_map_pool_for_veto(
+        &self,
+        maps: &[String],
+        veto_format_id: &str,
+    ) -> Result<(), String> {
         // First validate the maps exist
         self.validate_map_pool(maps)?;
 
@@ -412,7 +425,9 @@ pub trait TournamentPlugin: GamePlugin {
             if maps.len() < format.min_map_pool {
                 return Err(format!(
                     "Map pool requires at least {} maps for {} format, got {}",
-                    format.min_map_pool, format.display_name, maps.len()
+                    format.min_map_pool,
+                    format.display_name,
+                    maps.len()
                 ));
             }
         }

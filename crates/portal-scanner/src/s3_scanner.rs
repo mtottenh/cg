@@ -54,6 +54,9 @@ pub async fn list_demo_files(
         }
     }
 
-    debug!(count = objects.len(), bucket, prefix, "Listed demo files from S3");
+    debug!(
+        count = objects.len(),
+        bucket, prefix, "Listed demo files from S3"
+    );
     Ok(objects)
 }

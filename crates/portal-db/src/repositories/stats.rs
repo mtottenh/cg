@@ -1,7 +1,7 @@
 //! Stats repository for admin dashboard.
 
-use crate::error::RepositoryError;
 use crate::DbPool;
+use crate::error::RepositoryError;
 
 /// Platform statistics for admin dashboard.
 #[derive(Debug)]

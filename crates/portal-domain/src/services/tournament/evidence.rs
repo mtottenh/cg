@@ -18,7 +18,9 @@ use crate::entities::evidence::{
 };
 use crate::entities::result_claim::GameResult;
 use crate::repositories::evidence::{CreateEvidence, CreateEvidenceAccessLog, EvidenceRepository};
-use crate::repositories::tournament::{TournamentMatchRepository, TournamentRegistrationRepository};
+use crate::repositories::tournament::{
+    TournamentMatchRepository, TournamentRegistrationRepository,
+};
 
 /// S3 client trait for presigned URLs.
 ///
@@ -216,8 +218,8 @@ where
             )
             .await?;
 
-        let url_expires_at = Utc::now()
-            + ChronoDuration::seconds(self.config.upload_url_ttl_seconds as i64);
+        let url_expires_at =
+            Utc::now() + ChronoDuration::seconds(self.config.upload_url_ttl_seconds as i64);
 
         info!(
             evidence_id = %evidence.id,
@@ -233,10 +235,7 @@ where
             upload_headers: {
                 let mut headers = HashMap::new();
                 headers.insert("Content-Type".to_string(), mime_type);
-                headers.insert(
-                    "Content-Length".to_string(),
-                    file_size_bytes.to_string(),
-                );
+                headers.insert("Content-Length".to_string(), file_size_bytes.to_string());
                 headers
             },
             expires_at: url_expires_at,
@@ -524,7 +523,10 @@ where
     /// Deletes any evidence that has been in `Pending` status for longer than
     /// the specified max age. Also removes the S3 object if one was partially uploaded.
     #[instrument(skip(self))]
-    pub async fn cleanup_stale_pending(&self, max_age: ChronoDuration) -> Result<Vec<Evidence>, DomainError> {
+    pub async fn cleanup_stale_pending(
+        &self,
+        max_age: ChronoDuration,
+    ) -> Result<Vec<Evidence>, DomainError> {
         let cutoff = Utc::now() - max_age;
         let stale = self.evidence_repo.find_stale_pending(cutoff).await?;
 
@@ -686,7 +688,10 @@ where
 
         // Update evidence with validation result
         self.evidence_repo
-            .mark_validated(evidence_id, serde_json::to_value(&validation).unwrap_or_default())
+            .mark_validated(
+                evidence_id,
+                serde_json::to_value(&validation).unwrap_or_default(),
+            )
             .await?;
 
         Ok(validation)

@@ -44,10 +44,8 @@ impl CliConfig {
 
     /// Try to load from default config locations.
     fn try_default_locations() -> Result<Option<Self>> {
-        let mut locations: Vec<std::path::PathBuf> = vec![
-            ".portal-cli.toml".into(),
-            "portal-cli.toml".into(),
-        ];
+        let mut locations: Vec<std::path::PathBuf> =
+            vec![".portal-cli.toml".into(), "portal-cli.toml".into()];
 
         if let Some(home) = dirs::home_dir() {
             locations.push(home.join(".portal-cli.toml"));

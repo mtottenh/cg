@@ -1,12 +1,12 @@
 //! Swiss System bracket generation.
 
-use super::{
-    BracketGenerator, GeneratedBracket, InitialAssignment,
-};
+use super::{BracketGenerator, GeneratedBracket, InitialAssignment};
 use crate::entities::tournament::SeededParticipant;
 use crate::repositories::tournament::CreateTournamentMatch;
 use portal_core::types::{MatchFormat, MatchParticipantSource};
-use portal_core::{DomainError, TournamentBracketId, TournamentId, TournamentRegistrationId, TournamentStageId};
+use portal_core::{
+    DomainError, TournamentBracketId, TournamentId, TournamentRegistrationId, TournamentStageId,
+};
 
 /// A participant's standing for Swiss pairing.
 #[derive(Debug, Clone)]
@@ -185,10 +185,8 @@ impl BracketGenerator {
                 if paired[j] {
                     continue;
                 }
-                let is_rematch = pairing_set.contains(&(
-                    sorted[i].registration_id,
-                    sorted[j].registration_id,
-                ));
+                let is_rematch =
+                    pairing_set.contains(&(sorted[i].registration_id, sorted[j].registration_id));
                 if !is_rematch {
                     paired[i] = true;
                     paired[j] = true;
@@ -283,7 +281,9 @@ impl BracketGenerator {
 mod tests {
     use super::*;
     use crate::services::tournament::bracket_generator::tests::create_test_participants;
-    use portal_core::{TournamentBracketId, TournamentId, TournamentRegistrationId, TournamentStageId};
+    use portal_core::{
+        TournamentBracketId, TournamentId, TournamentRegistrationId, TournamentStageId,
+    };
 
     #[test]
     fn test_swiss_initial_round_8_teams() {
@@ -336,9 +336,8 @@ mod tests {
 
     #[test]
     fn test_swiss_next_round_avoids_rematches() {
-        let reg_ids: Vec<TournamentRegistrationId> = (0..4)
-            .map(|_| TournamentRegistrationId::new())
-            .collect();
+        let reg_ids: Vec<TournamentRegistrationId> =
+            (0..4).map(|_| TournamentRegistrationId::new()).collect();
 
         let standings: Vec<SwissParticipantStanding> = vec![
             SwissParticipantStanding {
@@ -380,10 +379,7 @@ mod tests {
         ];
 
         // R1 pairings: 1v3 and 2v4 (completed)
-        let completed_pairings = vec![
-            (reg_ids[0], reg_ids[2]),
-            (reg_ids[1], reg_ids[3]),
-        ];
+        let completed_pairings = vec![(reg_ids[0], reg_ids[2]), (reg_ids[1], reg_ids[3])];
 
         let (result, bye) = BracketGenerator::swiss_next_round(
             TournamentId::new(),
@@ -413,9 +409,8 @@ mod tests {
 
     #[test]
     fn test_swiss_next_round_pairs_by_points() {
-        let reg_ids: Vec<TournamentRegistrationId> = (0..4)
-            .map(|_| TournamentRegistrationId::new())
-            .collect();
+        let reg_ids: Vec<TournamentRegistrationId> =
+            (0..4).map(|_| TournamentRegistrationId::new()).collect();
 
         // After R1: Teams 1,2 have 3 pts, Teams 3,4 have 0 pts
         let standings: Vec<SwissParticipantStanding> = vec![
@@ -457,10 +452,7 @@ mod tests {
             },
         ];
 
-        let completed_pairings = vec![
-            (reg_ids[0], reg_ids[2]),
-            (reg_ids[1], reg_ids[3]),
-        ];
+        let completed_pairings = vec![(reg_ids[0], reg_ids[2]), (reg_ids[1], reg_ids[3])];
 
         let (result, _) = BracketGenerator::swiss_next_round(
             TournamentId::new(),

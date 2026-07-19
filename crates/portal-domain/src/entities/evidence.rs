@@ -11,12 +11,10 @@ use std::net::IpAddr;
 
 // Re-export shared types from portal-core
 pub use portal_core::types::evidence::{
-    EvidenceStorage, EvidenceType,
-    DiscoveredEvidenceData as DiscoveredEvidence,
-    EvidenceValidationResult as EvidenceValidation,
-    ExtractedMatchResult as ExtractedResult,
-    DemoFileMetadata as DemoMetadata,
-    MatchEvidenceContext, ParticipantEvidenceContext as ParticipantContext,
+    DemoFileMetadata as DemoMetadata, DiscoveredEvidenceData as DiscoveredEvidence,
+    EvidenceStorage, EvidenceType, EvidenceValidationResult as EvidenceValidation,
+    ExtractedMatchResult as ExtractedResult, MatchEvidenceContext,
+    ParticipantEvidenceContext as ParticipantContext,
 };
 
 // =============================================================================
@@ -96,10 +94,7 @@ impl Evidence {
     /// Check if this is a URL-based evidence type.
     #[must_use]
     pub fn is_url(&self) -> bool {
-        matches!(
-            self.evidence_type,
-            EvidenceType::Video | EvidenceType::Link
-        )
+        matches!(self.evidence_type, EvidenceType::Video | EvidenceType::Link)
     }
 }
 

@@ -188,7 +188,11 @@ pub fn group_label(index: usize) -> String {
     if index < 26 {
         String::from((b'A' + index as u8) as char)
     } else {
-        format!("{}{}", group_label(index / 26 - 1), (b'A' + (index % 26) as u8) as char)
+        format!(
+            "{}{}",
+            group_label(index / 26 - 1),
+            (b'A' + (index % 26) as u8) as char
+        )
     }
 }
 
@@ -233,10 +237,22 @@ mod tests {
         // Row 1 (R→L): 5→D, 6→C, 7→B, 8→A
         // Row 2 (L→R): 9→A, 10→B, 11→C, 12→D
         // Row 3 (R→L): 13→D, 14→C, 15→B, 16→A
-        assert_eq!(groups[0].iter().map(|p| p.seed).collect::<Vec<_>>(), vec![1, 8, 9, 16]);
-        assert_eq!(groups[1].iter().map(|p| p.seed).collect::<Vec<_>>(), vec![2, 7, 10, 15]);
-        assert_eq!(groups[2].iter().map(|p| p.seed).collect::<Vec<_>>(), vec![3, 6, 11, 14]);
-        assert_eq!(groups[3].iter().map(|p| p.seed).collect::<Vec<_>>(), vec![4, 5, 12, 13]);
+        assert_eq!(
+            groups[0].iter().map(|p| p.seed).collect::<Vec<_>>(),
+            vec![1, 8, 9, 16]
+        );
+        assert_eq!(
+            groups[1].iter().map(|p| p.seed).collect::<Vec<_>>(),
+            vec![2, 7, 10, 15]
+        );
+        assert_eq!(
+            groups[2].iter().map(|p| p.seed).collect::<Vec<_>>(),
+            vec![3, 6, 11, 14]
+        );
+        assert_eq!(
+            groups[3].iter().map(|p| p.seed).collect::<Vec<_>>(),
+            vec![4, 5, 12, 13]
+        );
     }
 
     #[test]

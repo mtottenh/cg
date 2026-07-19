@@ -7,10 +7,10 @@ pub mod audit;
 pub mod availability;
 pub mod ban;
 pub mod demo;
-pub mod eligibility;
 pub mod demo_validation;
 pub mod discovered_match;
 pub mod dispute;
+pub mod eligibility;
 pub mod evidence;
 pub mod forfeit;
 pub mod league;
@@ -20,12 +20,12 @@ pub mod player;
 pub mod player_game_profile;
 pub mod player_match_history;
 pub mod player_mm_stats;
-pub mod refresh_token;
 pub mod player_rating_history;
+pub mod refresh_token;
 pub mod result_claim;
 pub mod result_review;
-pub mod schedule_proposal;
 pub mod saga;
+pub mod schedule_proposal;
 pub mod steam_tracking;
 pub mod tournament;
 pub mod user;
@@ -42,15 +42,32 @@ pub use availability::{
 };
 pub use ban::{Ban, BanFilters, BanType, CreateBanCommand, LiftBanCommand};
 pub use demo::{
-    AssociateDemoCommand, CategorizeDemoCommand, CreateDemoCommand, CreateDemoPlayerCommand,
-    Demo, DemoFilter, DemoListResult, DemoMatchLink, DemoPlayer, DemoPlayerStats,
-    LinkDemoToMatchCommand, ParsedDemoMetadata, SetDemoVisibilityCommand,
-    UnlinkDemoFromMatchCommand, UpdateDemoStatsCommand,
+    AssociateDemoCommand, CategorizeDemoCommand, CreateDemoCommand, CreateDemoPlayerCommand, Demo,
+    DemoFilter, DemoListResult, DemoMatchLink, DemoPlayer, DemoPlayerStats, LinkDemoToMatchCommand,
+    ParsedDemoMetadata, SetDemoVisibilityCommand, UnlinkDemoFromMatchCommand,
+    UpdateDemoStatsCommand,
 };
-pub use discovered_match::DiscoveredMatch;
-pub use eligibility::{EligibilityRestrictions, EligibilityViolation};
 pub use demo_validation::{
     DemoValidationEntry, DemoValidationResult, MatchDemoValidation, TeamSide, UnrecognizedPlayer,
+};
+pub use discovered_match::DiscoveredMatch;
+pub use dispute::{
+    AddDisputeMessageCommand, AssignDisputeCommand, AuthorType, Dispute, DisputeMessage,
+    DisputePriority, DisputeReason, DisputeResolution, DisputeResolutionResult, DisputeStatus,
+    DisputeWithThread, ProgressionChanges, RaiseDisputeCommand, ResolutionType,
+    ResolveDisputeCommand,
+};
+pub use eligibility::{EligibilityRestrictions, EligibilityViolation};
+pub use evidence::{
+    AddLinkEvidenceCommand, DemoMetadata, DiscoveredEvidence, Evidence, EvidenceAccessLog,
+    EvidenceAccessType, EvidenceAccessUrl, EvidenceSource, EvidenceStatus, EvidenceStorage,
+    EvidenceType, EvidenceUploadInfo, EvidenceValidation, ExtractedResult,
+    InitiateEvidenceUploadCommand, LinkDiscoveredEvidenceCommand, MatchEvidenceContext,
+    ParticipantContext,
+};
+pub use forfeit::{
+    DisqualifyCommand, ForfeitRecord, ForfeitResult, ForfeitTrigger, ForfeitType,
+    ProcessForfeitCommand, WithdrawFromTournamentCommand,
 };
 pub use league::{
     CreateLeagueCommand, League, LeagueAccessType, LeagueInvitation, LeagueInvitationStatus,
@@ -63,18 +80,24 @@ pub use league_team::{
     LeagueTeamInvitationWithTeam, LeagueTeamMember, LeagueTeamMemberWithPlayer, LeagueTeamSummary,
     PlayerLeagueTeamMembership, UpdateLeagueSeasonCommand, UpdateLeagueTeamCommand,
 };
-pub use match_lifecycle::{
-    CreateMatchStatusLogCommand, MatchStatusLog, TransitionTrigger,
-};
+pub use match_lifecycle::{CreateMatchStatusLogCommand, MatchStatusLog, TransitionTrigger};
 pub use player::{Player, SocialLinks};
 pub use player_game_profile::PlayerGameProfile;
 pub use player_match_history::PlayerMatchHistory;
 pub use player_mm_stats::PlayerMmStats;
 pub use player_rating_history::PlayerRatingHistory;
+pub use refresh_token::RefreshToken;
+pub use result_claim::{
+    CancelResultClaimCommand, ClaimStatus, ConfirmResultClaimCommand, CreateResultClaimCommand,
+    DisputeResultClaimCommand, GameResult, GameResultInput, ResultClaim, ResultValidationError,
+};
+pub use result_review::{ResultReview, ResultReviewStatus};
+pub use saga::{SagaContext, SagaExecution, SagaStatus, StepRecord, StepStatus};
 pub use schedule_proposal::{
     AcceptProposalCommand, CounterProposeCommand, CreateScheduleProposalCommand,
     RejectProposalCommand, ScheduleProposal,
 };
+pub use steam_tracking::{CreateSteamTrackingCommand, SteamTracking, UpdatePollResultCommand};
 pub use tournament::{
     ByeAssignment, CreateTournamentBracketCommand, CreateTournamentCommand,
     CreateTournamentStageCommand, GameStatus, GeneratedMatch, HeadToHead, HeadToHeadRecord,
@@ -89,34 +112,7 @@ pub use veto::{
     RecordCoinFlipCommand, SelectSideCommand, VetoAction, VetoActionResult, VetoActionType,
     VetoFormat, VetoFormatAction, VetoSession, VetoSessionState, VetoStatus,
 };
-pub use result_claim::{
-    CancelResultClaimCommand, ClaimStatus, ConfirmResultClaimCommand, CreateResultClaimCommand,
-    DisputeResultClaimCommand, GameResult, GameResultInput, ResultClaim, ResultValidationError,
-};
-pub use evidence::{
-    AddLinkEvidenceCommand, DemoMetadata, DiscoveredEvidence, Evidence, EvidenceAccessLog,
-    EvidenceAccessType, EvidenceAccessUrl, EvidenceSource, EvidenceStatus, EvidenceStorage,
-    EvidenceType, EvidenceUploadInfo, EvidenceValidation, ExtractedResult,
-    InitiateEvidenceUploadCommand, LinkDiscoveredEvidenceCommand, MatchEvidenceContext,
-    ParticipantContext,
-};
-pub use saga::{
-    SagaContext, SagaExecution, SagaStatus, StepRecord, StepStatus,
-};
-pub use forfeit::{
-    DisqualifyCommand, ForfeitRecord, ForfeitResult, ForfeitTrigger, ForfeitType,
-    ProcessForfeitCommand, WithdrawFromTournamentCommand,
-};
-pub use dispute::{
-    AddDisputeMessageCommand, AssignDisputeCommand, AuthorType, Dispute, DisputeMessage,
-    DisputePriority, DisputeReason, DisputeResolution, DisputeResolutionResult,
-    DisputeStatus, DisputeWithThread, ProgressionChanges, RaiseDisputeCommand,
-    ResolveDisputeCommand, ResolutionType,
-};
-pub use result_review::{ResultReview, ResultReviewStatus};
-pub use steam_tracking::{CreateSteamTrackingCommand, SteamTracking, UpdatePollResultCommand};
 pub use veto_delegate::{
     CreateVetoDelegateCommand, DelegatedByRole, RevokeVetoDelegateCommand, VetoDelegate,
 };
 pub use veto_lobby_message::{VetoLobbyMessage, VetoMessageType};
-pub use refresh_token::RefreshToken;

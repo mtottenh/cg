@@ -7,7 +7,9 @@ use portal_db::PgPool;
 use serde::Serialize;
 use tabled::Tabled;
 
-use crate::output::{error, format_optional, format_timestamp, format_uuid, info, output_list, success, OutputFormat};
+use crate::output::{
+    OutputFormat, error, format_optional, format_timestamp, format_uuid, info, output_list, success,
+};
 
 /// Demo management commands.
 #[derive(Args)]
@@ -218,7 +220,15 @@ async fn list_demos(
     }
     query.push_str(&format!(" ORDER BY d.created_at DESC LIMIT {limit}"));
 
-    let rows: Vec<(uuid::Uuid, String, String, String, bool, chrono::DateTime<chrono::Utc>, Option<String>)> = if let Some(g) = game {
+    let rows: Vec<(
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        bool,
+        chrono::DateTime<chrono::Utc>,
+        Option<String>,
+    )> = if let Some(g) = game {
         let game_uuid: uuid::Uuid = g.parse().context("Invalid game ID")?;
         sqlx::query_as(&query)
             .bind(game_uuid)
@@ -234,19 +244,21 @@ async fn list_demos(
 
     let table_rows: Vec<DemoTableRow> = rows
         .into_iter()
-        .map(|(id, file_name, cat, stat, hidden, created, map_name)| DemoTableRow {
-            id: format_uuid(&id),
-            file_name: if file_name.len() > 40 {
-                format!("{}...", &file_name[..37])
-            } else {
-                file_name
+        .map(
+            |(id, file_name, cat, stat, hidden, created, map_name)| DemoTableRow {
+                id: format_uuid(&id),
+                file_name: if file_name.len() > 40 {
+                    format!("{}...", &file_name[..37])
+                } else {
+                    file_name
+                },
+                map: map_name.unwrap_or_else(|| "-".to_string()),
+                category: cat,
+                status: stat,
+                hidden: if hidden { "Yes" } else { "No" }.to_string(),
+                created_at: format_timestamp(&created),
             },
-            map: map_name.unwrap_or_else(|| "-".to_string()),
-            category: cat,
-            status: stat,
-            hidden: if hidden { "Yes" } else { "No" }.to_string(),
-            created_at: format_timestamp(&created),
-        })
+        )
         .collect();
 
     output_list(&table_rows, format)
@@ -280,9 +292,14 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
     .context("Failed to fetch demo")?;
 
     // Query match info separately
-    let match_info: Option<(Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>)> =
-        sqlx::query_as(
-            r"
+    let match_info: Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+        Option<i32>,
+    )> = sqlx::query_as(
+        r"
             SELECT metadata->>'map_name',
                    metadata->>'team1_name',
                    metadata->>'team2_name',
@@ -291,11 +308,11 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
             FROM demos
             WHERE id = $1
             ",
-        )
-        .bind(demo_id)
-        .fetch_optional(pool)
-        .await
-        .context("Failed to fetch demo match info")?;
+    )
+    .bind(demo_id)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to fetch demo match info")?;
 
     if let Some(d) = basic {
         let mi = match_info.unwrap_or((None, None, None, None, None));
@@ -372,16 +389,18 @@ async fn get_demo_players(pool: &PgPool, id: &str, format: OutputFormat) -> Resu
 
     let table_rows: Vec<DemoPlayerTableRow> = rows
         .into_iter()
-        .map(|(steam_id, name, team, k, d, a, adr, hs)| DemoPlayerTableRow {
-            steam_id,
-            player_name: name,
-            team: team.unwrap_or_else(|| "-".to_string()),
-            kills: k,
-            deaths: d,
-            assists: a,
-            adr: format!("{adr:.1}"),
-            hs_pct: format!("{hs:.1}%"),
-        })
+        .map(
+            |(steam_id, name, team, k, d, a, adr, hs)| DemoPlayerTableRow {
+                steam_id,
+                player_name: name,
+                team: team.unwrap_or_else(|| "-".to_string()),
+                kills: k,
+                deaths: d,
+                assists: a,
+                adr: format!("{adr:.1}"),
+                hs_pct: format!("{hs:.1}%"),
+            },
+        )
         .collect();
 
     output_list(&table_rows, format)
@@ -455,9 +474,9 @@ async fn categorize_demo(pool: &PgPool, id: &str, category: &str) -> Result<()> 
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
     // Validate category
-    let _cat: DemoCategory = category
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid category. Use: uncategorized, pug, league, scrim, ignored"))?;
+    let _cat: DemoCategory = category.parse().map_err(|_| {
+        anyhow::anyhow!("Invalid category. Use: uncategorized, pug, league, scrim, ignored")
+    })?;
 
     sqlx::query(
         r"

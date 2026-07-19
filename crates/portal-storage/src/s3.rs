@@ -2,8 +2,8 @@
 
 use crate::{StorageBackend, StorageError, StoreRequest, StoredFile};
 use async_trait::async_trait;
-use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::Client;
+use aws_sdk_s3::presigning::PresigningConfig;
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 use tracing::instrument;

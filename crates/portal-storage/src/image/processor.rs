@@ -44,14 +44,12 @@ impl ImageProcessor {
     /// Detect the MIME type of image data using magic bytes.
     #[must_use]
     pub fn detect_mime_type(data: &[u8]) -> Option<&'static str> {
-        infer::get(data).and_then(|kind| {
-            match kind.mime_type() {
-                "image/png" => Some("image/png"),
-                "image/jpeg" => Some("image/jpeg"),
-                "image/webp" => Some("image/webp"),
-                "image/gif" => Some("image/gif"),
-                _ => None,
-            }
+        infer::get(data).and_then(|kind| match kind.mime_type() {
+            "image/png" => Some("image/png"),
+            "image/jpeg" => Some("image/jpeg"),
+            "image/webp" => Some("image/webp"),
+            "image/gif" => Some("image/gif"),
+            _ => None,
         })
     }
 
@@ -158,7 +156,11 @@ impl ImageProcessor {
         })
     }
 
-    const fn validate_dimensions(width: u32, height: u32, config: &ImageConfig) -> Result<(), ImageError> {
+    const fn validate_dimensions(
+        width: u32,
+        height: u32,
+        config: &ImageConfig,
+    ) -> Result<(), ImageError> {
         let (min_w, min_h) = config.min_dimensions;
         let (max_w, max_h) = config.max_dimensions;
 
@@ -197,10 +199,8 @@ impl ImageProcessor {
                     .map_err(|e| ImageError::encoding_failed(e.to_string()))?;
             }
             image::ImageFormat::Jpeg => {
-                let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-                    &mut buffer,
-                    config.quality,
-                );
+                let encoder =
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, config.quality);
                 img.write_with_encoder(encoder)
                     .map_err(|e| ImageError::encoding_failed(e.to_string()))?;
             }
@@ -236,7 +236,10 @@ mod tests {
     #[test]
     fn test_detect_png() {
         let png_data = create_test_png(100, 100);
-        assert_eq!(ImageProcessor::detect_mime_type(&png_data), Some("image/png"));
+        assert_eq!(
+            ImageProcessor::detect_mime_type(&png_data),
+            Some("image/png")
+        );
     }
 
     #[test]

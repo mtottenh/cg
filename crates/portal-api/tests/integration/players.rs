@@ -1,8 +1,7 @@
 //! Players API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use serde_json::json;
 
 /// Generate a valid PNG image of the given dimensions.
@@ -10,7 +9,8 @@ fn generate_test_png(width: u32, height: u32) -> Vec<u8> {
     let img = image::RgbaImage::from_pixel(width, height, image::Rgba([100, 150, 200, 255]));
     let mut buf = Vec::new();
     let mut cursor = std::io::Cursor::new(&mut buf);
-    img.write_to(&mut cursor, image::ImageFormat::Png).expect("failed to write test PNG");
+    img.write_to(&mut cursor, image::ImageFormat::Png)
+        .expect("failed to write test PNG");
     buf
 }
 
@@ -29,7 +29,10 @@ async fn test_search_players() {
     let body: serde_json::Value = response.json();
     let items = &body["data"];
     assert!(items.is_array(), "data should be an array");
-    assert!(!items.as_array().unwrap().is_empty(), "should contain at least the dev player");
+    assert!(
+        !items.as_array().unwrap().is_empty(),
+        "should contain at least the dev player"
+    );
 }
 
 #[tokio::test]
@@ -68,7 +71,10 @@ async fn test_search_players_with_query() {
     let body: serde_json::Value = response.json();
     let items = body["data"].as_array().unwrap();
 
-    let names: Vec<&str> = items.iter().filter_map(|i| i["display_name"].as_str()).collect();
+    let names: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i["display_name"].as_str())
+        .collect();
     assert!(names.contains(&"AlphaPlayer"), "should find AlphaPlayer");
     assert!(!names.contains(&"BetaPlayer"), "should not find BetaPlayer");
 }
@@ -203,7 +209,13 @@ async fn test_upload_avatar() {
 
     let png = generate_test_png(256, 256);
     let response = app
-        .post_multipart_auth("/v1/players/me/avatar", "file", "avatar.png", "image/png", &png)
+        .post_multipart_auth(
+            "/v1/players/me/avatar",
+            "file",
+            "avatar.png",
+            "image/png",
+            &png,
+        )
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -221,7 +233,13 @@ async fn test_upload_banner() {
     // 4:1 aspect ratio within allowed range (3.5-4.5)
     let png = generate_test_png(400, 100);
     let response = app
-        .post_multipart_auth("/v1/players/me/banner", "file", "banner.png", "image/png", &png)
+        .post_multipart_auth(
+            "/v1/players/me/banner",
+            "file",
+            "banner.png",
+            "image/png",
+            &png,
+        )
         .await;
     response.assert_status(StatusCode::OK);
 

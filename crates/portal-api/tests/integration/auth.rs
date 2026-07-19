@@ -1,8 +1,7 @@
 //! Auth API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use portal_core::UserId;
 use portal_db::RoleRepository;
 use portal_domain::{generate_access_token_with_expiry, validate_token};
@@ -32,7 +31,10 @@ async fn test_register_user() {
     assert_eq!(body["data"]["user"]["email"], "newuser@example.com");
     assert_eq!(body["data"]["player"]["display_name"], "New User");
     // User and player should have the same ID
-    assert_eq!(body["data"]["user"]["id"], body["data"]["player"]["user_id"]);
+    assert_eq!(
+        body["data"]["user"]["id"],
+        body["data"]["player"]["user_id"]
+    );
 }
 
 #[tokio::test]
@@ -184,10 +186,7 @@ async fn test_register_returns_access_token() {
     // Verify the token is valid JWT with correct claims
     let claims = validate_token(token, "test-jwt-secret").expect("Token should be valid");
     assert_eq!(claims.username, "tokenuser");
-    assert_eq!(
-        claims.sub,
-        body["data"]["user"]["id"].as_str().unwrap()
-    );
+    assert_eq!(claims.sub, body["data"]["user"]["id"].as_str().unwrap());
 }
 
 #[tokio::test]
@@ -433,7 +432,9 @@ async fn test_login_token_can_access_protected_endpoint() {
 async fn test_invalid_token_rejected() {
     let app = TestApp::new().await;
 
-    let response = app.get_with_token("/v1/users/me", "invalid-jwt-token").await;
+    let response = app
+        .get_with_token("/v1/users/me", "invalid-jwt-token")
+        .await;
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
@@ -464,14 +465,9 @@ async fn test_wrong_secret_token_rejected() {
     // Generate a token with a different secret
     let user_id = Uuid::new_v4();
     let player_id = Uuid::new_v4();
-    let bad_token = generate_access_token_with_expiry(
-        user_id,
-        player_id,
-        "testuser",
-        "wrong-secret",
-        15,
-    )
-    .unwrap();
+    let bad_token =
+        generate_access_token_with_expiry(user_id, player_id, "testuser", "wrong-secret", 15)
+            .unwrap();
 
     let response = app.get_with_token("/v1/users/me", &bad_token).await;
     response.assert_status(StatusCode::UNAUTHORIZED);

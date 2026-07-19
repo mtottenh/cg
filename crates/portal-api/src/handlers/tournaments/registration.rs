@@ -21,9 +21,9 @@ use crate::dto::responses::{CheckInStatusResponse, TournamentRegistrationRespons
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::state::TournamentState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{PlayerId, TournamentId};
 
 /// Query parameter for filtering registrations by status.
@@ -77,14 +77,23 @@ pub async fn register_team(
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<RegisterTeamRequest>,
-) -> ApiResult<(StatusCode, Json<DataResponse<TournamentRegistrationResponse>>)> {
+) -> ApiResult<(
+    StatusCode,
+    Json<DataResponse<TournamentRegistrationResponse>>,
+)> {
     let request_id = get_request_id(&headers);
 
     let team_season_id = req.parse_team_season_id()?;
 
     // Eligibility check: fetch tournament and team members, run restrictions
-    let tournament = state.tournament_service.get_tournament(tournament_id).await?;
-    let members = state.league_team_service.get_members(team_season_id).await?;
+    let tournament = state
+        .tournament_service
+        .get_tournament(tournament_id)
+        .await?;
+    let members = state
+        .league_team_service
+        .get_members(team_season_id)
+        .await?;
     let player_ids: Vec<PlayerId> = members.iter().map(|m| m.player_id).collect();
     check_eligibility_for_players(&state, &tournament, &player_ids).await?;
 
@@ -132,13 +141,19 @@ pub async fn register_player(
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<RegisterPlayerRequest>,
-) -> ApiResult<(StatusCode, Json<DataResponse<TournamentRegistrationResponse>>)> {
+) -> ApiResult<(
+    StatusCode,
+    Json<DataResponse<TournamentRegistrationResponse>>,
+)> {
     let request_id = get_request_id(&headers);
 
     let player_id = auth.player_id;
 
     // Eligibility check: fetch tournament and run restrictions for this player
-    let tournament = state.tournament_service.get_tournament(tournament_id).await?;
+    let tournament = state
+        .tournament_service
+        .get_tournament(tournament_id)
+        .await?;
     check_eligibility_for_players(&state, &tournament, &[player_id]).await?;
 
     let registration = state
@@ -190,7 +205,12 @@ pub async fn get_registrations(
 
     let (registrations, total) = state
         .tournament_service
-        .get_registrations(tournament_id, status, pagination.limit(), pagination.offset())
+        .get_registrations(
+            tournament_id,
+            status,
+            pagination.limit(),
+            pagination.offset(),
+        )
         .await?;
 
     let data: Vec<TournamentRegistrationResponse> =
@@ -520,8 +540,7 @@ pub async fn process_no_shows(
         .process_no_shows(tournament_id)
         .await?;
 
-    let data: Vec<TournamentRegistrationResponse> =
-        no_shows.into_iter().map(Into::into).collect();
+    let data: Vec<TournamentRegistrationResponse> = no_shows.into_iter().map(Into::into).collect();
 
     Ok(Json(DataResponse::new(data, request_id)))
 }

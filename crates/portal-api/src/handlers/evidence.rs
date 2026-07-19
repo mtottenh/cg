@@ -15,9 +15,9 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::state::EvidenceState;
-use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
 use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode, header};
 use portal_core::{EvidenceId, TournamentMatchId};
 use portal_domain::entities::evidence::{MatchEvidenceContext, ParticipantContext};
 use portal_domain::entities::result_claim::GameResult as DomainGameResult;
@@ -366,15 +366,21 @@ pub async fn delete_evidence(
     auth: AuthenticatedUser,
     Path((match_id, evidence_id)): Path<(TournamentMatchId, EvidenceId)>,
 ) -> ApiResult<StatusCode> {
-
     // Before deleting, check if there's a corresponding demo_match_link to clean up.
     // Both `link_discovered` (catalog: prefix) and `link_demo` (with demo_id) store
     // `catalog_demo_id` in the evidence metadata.
     let evidence = state.evidence_service.get_evidence(evidence_id).await?;
-    if let Some(demo_id_str) = evidence.plugin_metadata.get("catalog_demo_id").and_then(|v| v.as_str()) {
+    if let Some(demo_id_str) = evidence
+        .plugin_metadata
+        .get("catalog_demo_id")
+        .and_then(|v| v.as_str())
+    {
         if let Ok(demo_id) = demo_id_str.parse::<portal_core::DemoId>() {
             // Best-effort: ignore errors if the link was already removed
-            let _ = state.demo_service.unlink_from_match(demo_id, match_id).await;
+            let _ = state
+                .demo_service
+                .unlink_from_match(demo_id, match_id)
+                .await;
         }
     }
 
@@ -456,8 +462,10 @@ pub async fn discover_evidence(
         discovered.truncate(limit.max(0) as usize);
     }
 
-    let responses: Vec<DiscoveredEvidenceResponse> =
-        discovered.into_iter().map(DiscoveredEvidenceResponse::from).collect();
+    let responses: Vec<DiscoveredEvidenceResponse> = discovered
+        .into_iter()
+        .map(DiscoveredEvidenceResponse::from)
+        .collect();
 
     Ok(Json(DataResponse::new(responses, request_id)))
 }
@@ -667,7 +675,11 @@ async fn build_evidence_key_prefix(
 ) -> Option<String> {
     use portal_domain::entities::evidence::EvidenceType;
 
-    let match_ = state.tournament_match_repo.find_by_id(match_id).await.ok()??;
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await
+        .ok()??;
 
     let tournament = state
         .tournament_service
@@ -676,7 +688,12 @@ async fn build_evidence_key_prefix(
         .ok()?;
 
     let league_slug = if let Some(lid) = tournament.league_id {
-        state.league_service.get_league(lid).await.ok().map(|l| l.slug)
+        state
+            .league_service
+            .get_league(lid)
+            .await
+            .ok()
+            .map(|l| l.slug)
     } else {
         None
     };
@@ -715,10 +732,8 @@ async fn build_evidence_key_prefix(
 /// Invalidation: none is needed while those invariants hold. If tournament
 /// migration or plugin reassignment ever becomes a real operation, add an
 /// invalidation hook on the write path.
-fn plugin_cache() -> &'static dashmap::DashMap<
-    portal_core::TournamentId,
-    Arc<dyn portal_plugins::GamePlugin>,
-> {
+fn plugin_cache()
+-> &'static dashmap::DashMap<portal_core::TournamentId, Arc<dyn portal_plugins::GamePlugin>> {
     static CACHE: std::sync::OnceLock<
         dashmap::DashMap<portal_core::TournamentId, Arc<dyn portal_plugins::GamePlugin>>,
     > = std::sync::OnceLock::new();
@@ -763,15 +778,12 @@ async fn resolve_evidence_plugin(
         .map_err(|e| ApiError::internal(format!("Failed to load game: {e}")))?
         .ok_or_else(|| ApiError::not_found("Game not found"))?;
 
-    let plugin = state
-        .plugin_manager
-        .get(&game.plugin_id)
-        .ok_or_else(|| {
-            ApiError::bad_request(format!(
-                "No plugin registered for game '{}' (plugin_id: '{}')",
-                game.display_name, game.plugin_id
-            ))
-        })?;
+    let plugin = state.plugin_manager.get(&game.plugin_id).ok_or_else(|| {
+        ApiError::bad_request(format!(
+            "No plugin registered for game '{}' (plugin_id: '{}')",
+            game.display_name, game.plugin_id
+        ))
+    })?;
 
     plugin_cache().insert(match_.tournament_id, Arc::clone(&plugin));
 
@@ -1056,9 +1068,7 @@ pub async fn link_demo(
         .map_err(|_| ApiError::not_found(format!("Demo not found: {}", req.demo_name)))?;
 
     // Build DiscoveredEvidence with proper Demo type
-    use portal_domain::entities::evidence::{
-        DiscoveredEvidence, EvidenceStorage, EvidenceType,
-    };
+    use portal_domain::entities::evidence::{DiscoveredEvidence, EvidenceStorage, EvidenceType};
     let discovered = DiscoveredEvidence {
         external_id: format!("demo:{}", req.demo_name),
         evidence_type: EvidenceType::Demo,
@@ -1149,7 +1159,9 @@ pub async fn local_evidence_upload(
         .ok()
         .is_some_and(|v| v.eq_ignore_ascii_case("s3"))
     {
-        return Err(ApiError::not_found("Local upload endpoint disabled in S3 mode"));
+        return Err(ApiError::not_found(
+            "Local upload endpoint disabled in S3 mode",
+        ));
     }
 
     if body.len() > LOCAL_EVIDENCE_MAX_BYTES {
@@ -1168,7 +1180,9 @@ pub async fn local_evidence_upload(
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
     {
-        return Err(ApiError::bad_request("Parent directory components not allowed"));
+        return Err(ApiError::bad_request(
+            "Parent directory components not allowed",
+        ));
     }
     if path.is_empty() {
         return Err(ApiError::bad_request("Empty path"));

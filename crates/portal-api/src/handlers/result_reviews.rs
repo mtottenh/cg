@@ -9,9 +9,9 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::ResultReviewState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use axum::Json;
 use portal_core::{ResultReviewId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::repositories::tournament::TournamentMatchRepository;
 use portal_domain::services::tournament::MatchCompletionInput;
@@ -58,7 +58,9 @@ pub async fn get_result_review(
         .result_review_service
         .get_for_match(match_id)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("No result review found for match {match_id}")))?;
+        .ok_or_else(|| {
+            ApiError::not_found(format!("No result review found for match {match_id}"))
+        })?;
 
     Ok(Json(DataResponse::new(
         ResultReviewResponse::from(review),
@@ -107,7 +109,9 @@ pub async fn acknowledge_result_review(
         .result_review_service
         .get_for_match(match_id)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("No result review found for match {match_id}")))?;
+        .ok_or_else(|| {
+            ApiError::not_found(format!("No result review found for match {match_id}"))
+        })?;
 
     // Acknowledge
     let updated_review = state
@@ -180,7 +184,10 @@ pub async fn list_pending_reviews(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let limit = params.limit();
@@ -193,7 +200,10 @@ pub async fn list_pending_reviews(
 
     Ok(Json(DataResponse::new(
         ResultReviewListResponse {
-            reviews: reviews.into_iter().map(ResultReviewSummaryResponse::from).collect(),
+            reviews: reviews
+                .into_iter()
+                .map(ResultReviewSummaryResponse::from)
+                .collect(),
             total,
         },
         request_id,
@@ -228,7 +238,10 @@ pub async fn get_result_review_by_id(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let review = state
@@ -275,7 +288,10 @@ pub async fn approve_result_review(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let review = state
@@ -331,7 +347,10 @@ pub async fn reject_result_review(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let review = state
@@ -380,9 +399,7 @@ async fn resume_saga_after_review(
         .tournament_match_repo
         .find_by_id(match_id)
         .await?
-        .ok_or_else(|| {
-            portal_core::DomainError::TournamentMatchNotFound(match_id)
-        })?;
+        .ok_or_else(|| portal_core::DomainError::TournamentMatchNotFound(match_id))?;
 
     let winner_registration_id = match_.winner_registration_id.ok_or_else(|| {
         portal_core::DomainError::InvalidState("Match has no winner set".to_string())

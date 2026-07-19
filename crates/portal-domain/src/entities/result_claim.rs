@@ -5,7 +5,9 @@
 //! auto-confirm after a timeout.
 
 use chrono::{DateTime, Utc};
-use portal_core::{DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId, UserId};
+use portal_core::{
+    DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId, UserId,
+};
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
@@ -82,7 +84,10 @@ impl ResultClaim {
     pub const fn is_terminal(&self) -> bool {
         matches!(
             self.status,
-            ClaimStatus::Confirmed | ClaimStatus::Disputed | ClaimStatus::Superseded | ClaimStatus::Cancelled
+            ClaimStatus::Confirmed
+                | ClaimStatus::Disputed
+                | ClaimStatus::Superseded
+                | ClaimStatus::Cancelled
         )
     }
 
@@ -110,7 +115,10 @@ impl ResultClaim {
     /// Get the series score as (participant1, participant2) tuple.
     #[must_use]
     pub const fn scores(&self) -> (i32, i32) {
-        (self.claimed_participant1_score, self.claimed_participant2_score)
+        (
+            self.claimed_participant1_score,
+            self.claimed_participant2_score,
+        )
     }
 
     /// Get the total number of games in this claim.
@@ -143,8 +151,10 @@ impl ClaimStatus {
     pub const fn can_transition_to(&self, target: Self) -> bool {
         matches!(
             (self, target),
-            (Self::Pending,
-Self::Confirmed | Self::Disputed | Self::Superseded | Self::Cancelled)
+            (
+                Self::Pending,
+                Self::Confirmed | Self::Disputed | Self::Superseded | Self::Cancelled
+            )
         )
     }
 }

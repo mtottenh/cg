@@ -15,8 +15,8 @@ use portal_domain::repositories::tournament::{
     TournamentMatchRepository, TournamentRegistrationRepository, TournamentRepository,
 };
 use portal_domain::services::tournament::MatchStatsUpdater;
-use portal_plugins::types::{DemoData, DemoPlayerData, MatchData};
 use portal_plugins::PluginManager;
+use portal_plugins::types::{DemoData, DemoPlayerData, MatchData};
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -126,9 +126,7 @@ where
             .tournament_repo
             .find_by_id(match_.tournament_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentNotFound(match_.tournament_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentNotFound(match_.tournament_id))?;
         let game_id = tournament.game_id;
 
         // 3. Look up the plugin for this game
@@ -159,16 +157,12 @@ where
             .registration_repo
             .find_by_id(winner_registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(winner_registration_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(winner_registration_id))?;
         let loser_reg = self
             .registration_repo
             .find_by_id(loser_registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(loser_registration_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(loser_registration_id))?;
 
         // For now, only handle individual player registrations.
         // Team stats aggregation would require looking up team members.

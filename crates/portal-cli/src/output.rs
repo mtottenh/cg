@@ -5,7 +5,7 @@ use clap::ValueEnum;
 use colored::Colorize;
 use serde::Serialize;
 use std::fmt::Display;
-use tabled::{settings::Style, Table, Tabled};
+use tabled::{Table, Tabled, settings::Style};
 
 /// Output format for CLI results.
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]

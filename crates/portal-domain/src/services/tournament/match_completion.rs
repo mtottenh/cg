@@ -14,8 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use portal_core::types::{BracketType, TournamentMatchStatus};
 use portal_core::{
-    DomainError, ResultClaimId, ResultReviewId, SagaId, TournamentMatchId,
-    TournamentRegistrationId,
+    DomainError, ResultClaimId, ResultReviewId, SagaId, TournamentMatchId, TournamentRegistrationId,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, instrument, warn};
@@ -265,16 +264,13 @@ where
                 Ok(SagaResult::success(execution, output))
             }
             Err(DomainError::SagaPaused(ref msg)) => {
-                saga_coordinator
-                    .pause_saga(&mut execution, msg)
-                    .await?;
+                saga_coordinator.pause_saga(&mut execution, msg).await?;
                 Ok(SagaResult::paused(execution))
             }
             Err(e) => {
                 // Attempt compensation if needed
                 if self.should_compensate(&execution) {
-                    if let Err(comp_err) =
-                        self.compensate(&saga_coordinator, &mut execution).await
+                    if let Err(comp_err) = self.compensate(&saga_coordinator, &mut execution).await
                     {
                         error!(
                             saga_id = %execution.id,
@@ -309,9 +305,7 @@ where
                 ));
             }
             if review.status == ResultReviewStatus::Rejected {
-                return Err(DomainError::ResultRejectedByReview(
-                    review.id.to_string(),
-                ));
+                return Err(DomainError::ResultRejectedByReview(review.id.to_string()));
             }
         }
 
@@ -342,8 +336,7 @@ where
             }
             Err(e) => {
                 if self.should_compensate(&execution) {
-                    if let Err(comp_err) =
-                        self.compensate(&saga_coordinator, &mut execution).await
+                    if let Err(comp_err) = self.compensate(&saga_coordinator, &mut execution).await
                     {
                         error!(
                             saga_id = %execution.id,
@@ -386,9 +379,7 @@ where
                 )));
             }
             if review.status == ResultReviewStatus::Rejected {
-                return Err(DomainError::ResultRejectedByReview(
-                    review.id.to_string(),
-                ));
+                return Err(DomainError::ResultRejectedByReview(review.id.to_string()));
             }
         }
 
@@ -409,9 +400,7 @@ where
             .match_repo
             .find_by_id(input.match_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentMatchNotFound(input.match_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(input.match_id))?;
 
         self.run_progression_steps_inner(saga_coordinator, execution, input, &match_)
             .await
@@ -498,9 +487,7 @@ where
             .match_repo
             .find_by_id(input.match_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentMatchNotFound(input.match_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(input.match_id))?;
 
         // Validate match is in valid state for completion.
         // The match may already be completed (by confirm_claim) — that's OK,
@@ -510,10 +497,7 @@ where
                 .status
                 .can_transition_to(TournamentMatchStatus::Completed)
         {
-            let err = format!(
-                "Match in {} status cannot be completed",
-                match_.status
-            );
+            let err = format!("Match in {} status cannot be completed", match_.status);
             saga_coordinator
                 .fail_step(execution, STEP_NAME, &err)
                 .await?;
@@ -524,14 +508,13 @@ where
         let p1 = match_.participant1_registration_id;
         let p2 = match_.participant2_registration_id;
 
-        let valid_winner = p1 == Some(input.winner_registration_id)
-            || p2 == Some(input.winner_registration_id);
-        let valid_loser = p1 == Some(input.loser_registration_id)
-            || p2 == Some(input.loser_registration_id);
+        let valid_winner =
+            p1 == Some(input.winner_registration_id) || p2 == Some(input.winner_registration_id);
+        let valid_loser =
+            p1 == Some(input.loser_registration_id) || p2 == Some(input.loser_registration_id);
 
         if !valid_winner || !valid_loser {
-            let err =
-                "Winner or loser is not a participant in this match".to_string();
+            let err = "Winner or loser is not a participant in this match".to_string();
             saga_coordinator
                 .fail_step(execution, STEP_NAME, &err)
                 .await?;
@@ -614,18 +597,10 @@ where
         // Determine captain registration IDs
         let captain1 = match_
             .participant1_registration_id
-            .ok_or_else(|| {
-                DomainError::InvalidState(
-                    "Match participant 1 not set".to_string(),
-                )
-            })?;
+            .ok_or_else(|| DomainError::InvalidState("Match participant 1 not set".to_string()))?;
         let captain2 = match_
             .participant2_registration_id
-            .ok_or_else(|| {
-                DomainError::InvalidState(
-                    "Match participant 2 not set".to_string(),
-                )
-            })?;
+            .ok_or_else(|| DomainError::InvalidState("Match participant 2 not set".to_string()))?;
 
         // Create review if issues found
         let review = self
@@ -677,9 +652,7 @@ where
             .bracket_repo
             .find_by_id(match_.bracket_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentBracketNotFound(match_.bracket_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentBracketNotFound(match_.bracket_id))?;
 
         saga_coordinator
             .complete_step(execution, STEP_NAME, None)
@@ -701,9 +674,7 @@ where
             .match_repo
             .find_by_id(input.match_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentMatchNotFound(input.match_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(input.match_id))?;
 
         // If the match is already completed (e.g., by confirm_claim), skip
         if match_.status == TournamentMatchStatus::Completed {
@@ -993,8 +964,7 @@ where
             .flatten()
         {
             if let Some(target) = self.match_repo.find_by_id(target_id).await? {
-                if target.status == TournamentMatchStatus::Pending
-                    && target.has_both_participants()
+                if target.status == TournamentMatchStatus::Pending && target.has_both_participants()
                 {
                     self.match_repo
                         .update_status(target_id, TournamentMatchStatus::Ready)
@@ -1074,9 +1044,7 @@ where
             game_losses_delta: input.winner_score,
             points_delta: 0,
         };
-        self.standings_repo
-            .update_after_match(loser_update)
-            .await?;
+        self.standings_repo.update_after_match(loser_update).await?;
 
         // Recalculate positions
         self.standings_repo
@@ -1200,11 +1168,7 @@ where
         );
 
         // Delete progression logs for this saga
-        if let Ok(logs) = self
-            .progression_log_repo
-            .find_by_saga(execution.id)
-            .await
-        {
+        if let Ok(logs) = self.progression_log_repo.find_by_saga(execution.id).await {
             info!(
                 saga_id = %execution.id,
                 log_count = logs.len(),
@@ -1213,9 +1177,7 @@ where
             // Note: actual deletion would depend on business requirements
         }
 
-        saga_coordinator
-            .complete_compensation(execution)
-            .await?;
+        saga_coordinator.complete_compensation(execution).await?;
 
         Ok(())
     }
@@ -1253,15 +1215,12 @@ where
             .match_repo
             .find_by_id(target_match_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentMatchNotFound(target_match_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentMatchNotFound(target_match_id))?;
 
         // Check which slot expects input from this match
         // Check participant 1 source
-        if let Some(
-            MatchParticipantSource::WinnerOf(pos) | MatchParticipantSource::LoserOf(pos),
-        ) = &target_match.participant1_source
+        if let Some(MatchParticipantSource::WinnerOf(pos) | MatchParticipantSource::LoserOf(pos)) =
+            &target_match.participant1_source
         {
             if pos == &source_match.bracket_position {
                 return Ok(ParticipantSlot::One);
@@ -1269,9 +1228,8 @@ where
         }
 
         // Check participant 2 source
-        if let Some(
-            MatchParticipantSource::WinnerOf(pos) | MatchParticipantSource::LoserOf(pos),
-        ) = &target_match.participant2_source
+        if let Some(MatchParticipantSource::WinnerOf(pos) | MatchParticipantSource::LoserOf(pos)) =
+            &target_match.participant2_source
         {
             if pos == &source_match.bracket_position {
                 return Ok(ParticipantSlot::Two);
@@ -1341,10 +1299,7 @@ where
         self.definition()
     }
 
-    async fn execute(
-        &self,
-        input: Self::Input,
-    ) -> Result<SagaResult<Self::Output>, DomainError> {
+    async fn execute(&self, input: Self::Input) -> Result<SagaResult<Self::Output>, DomainError> {
         self.execute_completion(input).await
     }
 }

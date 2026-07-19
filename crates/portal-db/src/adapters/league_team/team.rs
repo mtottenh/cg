@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::league_team::{LeagueTeamRow, LeagueTeamSeasonRow};
 use crate::DbPool;
+use crate::entities::league_team::{LeagueTeamRow, LeagueTeamSeasonRow};
 use portal_core::types::{LeagueTeamRole, LeagueTeamStatus};
 use portal_core::{DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, PlayerId};
 use portal_domain::entities::league_team::{LeagueTeam, LeagueTeamSeason};
@@ -32,13 +32,11 @@ impl PgLeagueTeamRepository {
 #[async_trait]
 impl LeagueTeamRepository for PgLeagueTeamRepository {
     async fn find_by_id(&self, id: LeagueTeamId) -> Result<Option<LeagueTeam>, DomainError> {
-        let row = sqlx::query_as::<_, LeagueTeamRow>(
-            "SELECT * FROM league_teams WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row = sqlx::query_as::<_, LeagueTeamRow>("SELECT * FROM league_teams WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(row.map(LeagueTeam::from))
     }
@@ -225,11 +223,12 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         // Get total count
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM league_teams WHERE league_id = $1")
-            .bind(league_id.as_uuid())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM league_teams WHERE league_id = $1")
+                .bind(league_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok((rows.into_iter().map(LeagueTeam::from).collect(), count.0))
     }
@@ -314,11 +313,7 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         Ok(LeagueTeam::from(row))
     }
 
-    async fn name_exists(
-        &self,
-        league_id: LeagueId,
-        name: &str,
-    ) -> Result<bool, DomainError> {
+    async fn name_exists(&self, league_id: LeagueId, name: &str) -> Result<bool, DomainError> {
         let normalized = Self::normalize_name(name);
         let count: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM league_teams WHERE league_id = $1 AND name_normalized = $2",
@@ -473,6 +468,9 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok((LeagueTeam::from(team_row), LeagueTeamSeason::from(team_season_row)))
+        Ok((
+            LeagueTeam::from(team_row),
+            LeagueTeamSeason::from(team_season_row),
+        ))
     }
 }

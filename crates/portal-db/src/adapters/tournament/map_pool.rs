@@ -3,11 +3,13 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::tournament::TournamentMapPoolRow;
 use crate::DbPool;
+use crate::entities::tournament::TournamentMapPoolRow;
 use portal_core::{DomainError, TournamentId, TournamentMapPoolId, TournamentStageId};
 use portal_domain::entities::tournament::TournamentMapPool;
-use portal_domain::repositories::tournament::{TournamentMapPoolRepository, UpsertTournamentMapPool};
+use portal_domain::repositories::tournament::{
+    TournamentMapPoolRepository, UpsertTournamentMapPool,
+};
 
 /// `PostgreSQL` implementation of `TournamentMapPoolRepository`.
 #[derive(Debug, Clone)]

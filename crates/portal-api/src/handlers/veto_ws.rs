@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use axum::{
     extract::{
-        ws::{Message, WebSocket},
         Path, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
     },
     response::IntoResponse,
 };
@@ -67,9 +67,7 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
         Ok(Ok((conn, lobby_state))) => (conn, lobby_state),
         Ok(Err(err)) => {
             warn!(%match_id, %connection_id, error = %err, "Authentication failed");
-            let msg = ServerMessage::AuthError {
-                error: err.clone(),
-            };
+            let msg = ServerMessage::AuthError { error: err.clone() };
             let _ = sender
                 .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
                 .await;
@@ -130,7 +128,9 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
             try_auto_coin_flip(&state, match_id, &lobby).await;
         }
     } else if connection.is_spectator() {
-        lobby.broadcast(LobbyBroadcast::SpectatorCountUpdate(lobby.spectator_count()));
+        lobby.broadcast(LobbyBroadcast::SpectatorCountUpdate(
+            lobby.spectator_count(),
+        ));
     }
 
     // Send chat history
@@ -220,7 +220,9 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
                 ));
             }
         } else if removed.is_spectator() {
-            lobby.broadcast(LobbyBroadcast::SpectatorCountUpdate(lobby.spectator_count()));
+            lobby.broadcast(LobbyBroadcast::SpectatorCountUpdate(
+                lobby.spectator_count(),
+            ));
         }
     }
 
@@ -237,7 +239,13 @@ async fn wait_for_auth(
     receiver: &mut futures_util::stream::SplitStream<WebSocket>,
     match_id: TournamentMatchId,
     state: &VetoWsState,
-) -> Result<(VetoConnection, crate::websocket::messages::LobbyStatePayload), String> {
+) -> Result<
+    (
+        VetoConnection,
+        crate::websocket::messages::LobbyStatePayload,
+    ),
+    String,
+> {
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => {
@@ -268,15 +276,20 @@ async fn authenticate_user(
     token: &str,
     match_id: TournamentMatchId,
     state: &VetoWsState,
-) -> Result<(VetoConnection, crate::websocket::messages::LobbyStatePayload), String> {
+) -> Result<
+    (
+        VetoConnection,
+        crate::websocket::messages::LobbyStatePayload,
+    ),
+    String,
+> {
     use portal_domain::repositories::TournamentMatchRepository;
 
     // Validate JWT
-    let claims = validate_token(token, &state.jwt_secret).map_err(|e| format!("Invalid token: {e}"))?;
+    let claims =
+        validate_token(token, &state.jwt_secret).map_err(|e| format!("Invalid token: {e}"))?;
 
-    let user_id = claims
-        .user_id()
-        .map_err(|_| "Invalid user ID in token")?;
+    let user_id = claims.user_id().map_err(|_| "Invalid user ID in token")?;
     let user_id = portal_core::UserId::from(user_id);
     let player_id = portal_core::PlayerId::from(claims.player_id);
 
@@ -356,14 +369,17 @@ async fn authenticate_user(
             .has_permission(user_id, "tournament.manage")
             .await
             .unwrap_or(false)
-        {
-            connection = Some(VetoConnection::admin(user_id, player_id, claims.username.clone()));
-        }
+    {
+        connection = Some(VetoConnection::admin(
+            user_id,
+            player_id,
+            claims.username.clone(),
+        ));
+    }
 
     // Default to spectator if not authorized for any role
-    let connection = connection.unwrap_or_else(|| {
-        VetoConnection::spectator(user_id, player_id, claims.username)
-    });
+    let connection = connection
+        .unwrap_or_else(|| VetoConnection::spectator(user_id, player_id, claims.username));
 
     // Build lobby state with real match data
     let lobby_state = crate::websocket::messages::LobbyStatePayload {
@@ -456,13 +472,7 @@ async fn handle_chat_message(
 
             let message = state
                 .veto_lobby_chat_service
-                .send_team_message(
-                    match_id,
-                    connection.user_id,
-                    registration_id,
-                    None,
-                    content,
-                )
+                .send_team_message(match_id, connection.user_id, registration_id, None, content)
                 .await
                 .map_err(|e| e.to_string())?;
 
@@ -523,9 +533,9 @@ async fn handle_veto_action(
     }
 
     // Get registration ID from connection
-    let registration_id = connection.registration_id.ok_or_else(|| {
-        "Connection has no registration ID".to_string()
-    })?;
+    let registration_id = connection
+        .registration_id
+        .ok_or_else(|| "Connection has no registration ID".to_string())?;
 
     // Get the veto session state
     let session_state = state
@@ -554,16 +564,24 @@ async fn handle_veto_action(
                     // Broadcast to lobby (the REST handlers do this, so we mirror the behavior)
                     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
                         if action_result.veto_complete {
-                            let () = lobby.broadcast(LobbyBroadcast::VetoComplete(VetoCompleteBroadcast {
-                                session: VetoSessionResponse::from(action_result.session.clone()),
-                                selected_maps: action_result.session.selected_maps.clone(),
-                            }));
+                            let () = lobby.broadcast(LobbyBroadcast::VetoComplete(
+                                VetoCompleteBroadcast {
+                                    session: VetoSessionResponse::from(
+                                        action_result.session.clone(),
+                                    ),
+                                    selected_maps: action_result.session.selected_maps.clone(),
+                                },
+                            ));
                         } else {
-                            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
-                                session: VetoSessionResponse::from(action_result.session.clone()),
-                                action: VetoActionResponse::from(action_result.action.clone()),
-                                is_complete: false,
-                            }));
+                            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(
+                                VetoActionBroadcast {
+                                    session: VetoSessionResponse::from(
+                                        action_result.session.clone(),
+                                    ),
+                                    action: VetoActionResponse::from(action_result.action.clone()),
+                                    is_complete: false,
+                                },
+                            ));
                         }
                     }
                     // Send success acknowledgment to sender
@@ -593,7 +611,10 @@ async fn handle_veto_action(
                 }
             }
         }
-        ClientVetoAction::SelectSide { action_number, side } => {
+        ClientVetoAction::SelectSide {
+            action_number,
+            side,
+        } => {
             // Select a side for a picked map
             // The service will validate that this is the correct team to select side
             let result = state
@@ -612,12 +633,16 @@ async fn handle_veto_action(
                     // Broadcast to lobby
                     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
                         // Re-fetch session state to get the latest
-                        if let Ok(new_session_state) = state.veto_service.get_session_state(match_id).await {
-                            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
-                                session: VetoSessionResponse::from(new_session_state.session),
-                                action: VetoActionResponse::from(updated_action.clone()),
-                                is_complete: false,
-                            }));
+                        if let Ok(new_session_state) =
+                            state.veto_service.get_session_state(match_id).await
+                        {
+                            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(
+                                VetoActionBroadcast {
+                                    session: VetoSessionResponse::from(new_session_state.session),
+                                    action: VetoActionResponse::from(updated_action.clone()),
+                                    is_complete: false,
+                                },
+                            ));
                         }
                     }
                     // Send success acknowledgment
@@ -731,8 +756,7 @@ async fn try_auto_coin_flip(
     }));
 
     // Broadcast updated session state
-    let session_response =
-        crate::dto::responses::VetoSessionResponse::from(updated_session);
+    let session_response = crate::dto::responses::VetoSessionResponse::from(updated_session);
     lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
         session: session_response,
     }));

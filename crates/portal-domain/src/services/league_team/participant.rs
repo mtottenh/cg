@@ -88,7 +88,10 @@ where
             .participant_repo
             .find_by_id(participant_id)
             .await?
-            .ok_or_else(|| DomainError::LookupFailed { resource: "participant", query: participant_id.to_string() })?;
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "participant",
+                query: participant_id.to_string(),
+            })?;
 
         // Verify the player is the participant
         if participant.player_id != player_id {

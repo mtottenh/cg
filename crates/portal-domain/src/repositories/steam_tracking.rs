@@ -34,10 +34,8 @@ pub trait SteamTrackingRepository: Send + Sync {
     async fn delete(&self, id: SteamTrackingId) -> Result<(), DomainError>;
 
     /// Get all active tracking entries for a game.
-    async fn find_active_by_game(
-        &self,
-        game_id: GameId,
-    ) -> Result<Vec<SteamTracking>, DomainError>;
+    async fn find_active_by_game(&self, game_id: GameId)
+    -> Result<Vec<SteamTracking>, DomainError>;
 
     /// Update poll result (last_known_code, error, timestamps).
     async fn update_poll_result(

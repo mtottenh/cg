@@ -5,10 +5,10 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use portal_db::repositories::RoleRepository;
 use portal_db::PgPool;
+use portal_db::repositories::RoleRepository;
 
-use crate::output::{error, info, success, warn, OutputFormat};
+use crate::output::{OutputFormat, error, info, success, warn};
 
 /// Bootstrap commands for initial setup.
 #[derive(Args)]
@@ -86,7 +86,9 @@ async fn bootstrap_admin(
 
         if !existing_admins.is_empty() {
             error("A super_admin user already exists.");
-            info("Use --force to create another admin, or use 'role assign' to grant admin to an existing user.");
+            info(
+                "Use --force to create another admin, or use 'role assign' to grant admin to an existing user.",
+            );
             std::process::exit(1);
         }
     }
@@ -155,7 +157,7 @@ async fn bootstrap_admin(
 
     // Get super_admin role
     let role = sqlx::query_as::<_, portal_db::entities::RoleRow>(
-        "SELECT * FROM roles WHERE name = 'super_admin'"
+        "SELECT * FROM roles WHERE name = 'super_admin'",
     )
     .fetch_optional(&mut *tx)
     .await

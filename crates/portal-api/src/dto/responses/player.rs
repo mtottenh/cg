@@ -162,7 +162,10 @@ impl PlayerSearchResponse {
             avatar_url: player.avatar_url,
             country_code: player.country_code,
             looking_for_team: player.looking_for_team,
-            display_stats: display_stats.into_iter().map(DisplayStatResponse::from).collect(),
+            display_stats: display_stats
+                .into_iter()
+                .map(DisplayStatResponse::from)
+                .collect(),
         }
     }
 }

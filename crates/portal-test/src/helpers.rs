@@ -19,8 +19,8 @@
 //! let token = create_test_token(user_id, player_id, "testuser", "jwt-secret");
 //! ```
 
-use portal_db::repositories::{GameRepository, RoleRepository};
 use portal_db::DbPool;
+use portal_db::repositories::{GameRepository, RoleRepository};
 use portal_domain::generate_access_token;
 use uuid::Uuid;
 

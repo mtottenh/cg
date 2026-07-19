@@ -1,7 +1,9 @@
 //! Dispute response DTOs.
 
 use chrono::{DateTime, Utc};
-use portal_domain::entities::dispute::{Dispute, DisputeMessage, DisputeResolution, DisputeResolutionResult, DisputeWithThread};
+use portal_domain::entities::dispute::{
+    Dispute, DisputeMessage, DisputeResolution, DisputeResolutionResult, DisputeWithThread,
+};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -73,8 +75,14 @@ impl From<Dispute> for DisputeResponse {
             disputed_by_user_id: d.disputed_by_user_id.to_string(),
             reason: d.reason.to_string(),
             description: d.description,
-            evidence_ids: d.evidence_ids.into_iter().map(|id| id.to_string()).collect(),
-            original_winner_registration_id: d.original_winner_registration_id.map(|id| id.to_string()),
+            evidence_ids: d
+                .evidence_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            original_winner_registration_id: d
+                .original_winner_registration_id
+                .map(|id| id.to_string()),
             original_participant1_score: d.original_participant1_score,
             original_participant2_score: d.original_participant2_score,
             status: d.status.to_string(),
@@ -147,7 +155,11 @@ impl From<DisputeMessage> for DisputeMessageResponse {
             author_user_id: m.author_user_id.to_string(),
             author_type: m.author_type.to_string(),
             message: m.message,
-            evidence_ids: m.evidence_ids.into_iter().map(|id| id.to_string()).collect(),
+            evidence_ids: m
+                .evidence_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
             is_internal: m.is_internal,
             created_at: m.created_at,
         }
@@ -190,11 +202,20 @@ pub struct DisputeResolutionResultResponse {
 impl From<DisputeResolutionResult> for DisputeResolutionResultResponse {
     fn from(r: DisputeResolutionResult) -> Self {
         let progression_affected = r.progression_changes.is_some();
-        let (reverted_matches, updated_matches) = r.progression_changes
-            .map(|c| (
-                c.reverted_matches.into_iter().map(|id| id.to_string()).collect(),
-                c.updated_matches.into_iter().map(|id| id.to_string()).collect(),
-            ))
+        let (reverted_matches, updated_matches) = r
+            .progression_changes
+            .map(|c| {
+                (
+                    c.reverted_matches
+                        .into_iter()
+                        .map(|id| id.to_string())
+                        .collect(),
+                    c.updated_matches
+                        .into_iter()
+                        .map(|id| id.to_string())
+                        .collect(),
+                )
+            })
             .unwrap_or_default();
 
         Self {

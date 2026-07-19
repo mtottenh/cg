@@ -1,7 +1,7 @@
 //! Ban repository adapter.
 
-use crate::entities::BanRow;
 use crate::DbPool;
+use crate::entities::BanRow;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use portal_core::{BanId, DomainError, UserId};
@@ -66,7 +66,9 @@ impl BanRepository for PgBanRepository {
 
     async fn create(&self, cmd: CreateBanCommand) -> Result<Ban, DomainError> {
         let starts_at = cmd.starts_at.unwrap_or_else(Utc::now);
-        let ends_at = cmd.duration_seconds.map(|secs| starts_at + Duration::seconds(secs));
+        let ends_at = cmd
+            .duration_seconds
+            .map(|secs| starts_at + Duration::seconds(secs));
 
         let ban = sqlx::query_as::<_, BanRow>(
             r"
@@ -179,7 +181,10 @@ impl BanRepository for PgBanRepository {
         }
 
         if filters.active_only {
-            conditions.push("lifted_at IS NULL AND starts_at <= NOW() AND (ends_at IS NULL OR ends_at > NOW())".to_string());
+            conditions.push(
+                "lifted_at IS NULL AND starts_at <= NOW() AND (ends_at IS NULL OR ends_at > NOW())"
+                    .to_string(),
+            );
         }
 
         if filters.scope_type.is_some() {

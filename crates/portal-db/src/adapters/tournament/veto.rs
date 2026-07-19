@@ -1,7 +1,7 @@
 //! PostgreSQL implementations of VetoSessionRepository and VetoActionRepository.
 
-use crate::entities::{NewVetoAction, NewVetoSession, VetoActionRow, VetoSessionRow};
 use crate::DbPool;
+use crate::entities::{NewVetoAction, NewVetoSession, VetoActionRow, VetoSessionRow};
 use async_trait::async_trait;
 use portal_core::{
     DomainError, TournamentMatchId, TournamentRegistrationId, UserId, VetoActionId, VetoSessionId,
@@ -33,13 +33,11 @@ impl PgVetoSessionRepository {
 #[async_trait]
 impl VetoSessionRepository for PgVetoSessionRepository {
     async fn find_by_id(&self, id: VetoSessionId) -> Result<Option<VetoSession>, DomainError> {
-        let row = sqlx::query_as::<_, VetoSessionRow>(
-            r"SELECT * FROM veto_sessions WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find veto session: {e}")))?;
+        let row = sqlx::query_as::<_, VetoSessionRow>(r"SELECT * FROM veto_sessions WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to find veto session: {e}")))?;
 
         row.map(session_row_to_domain).transpose()
     }
@@ -48,13 +46,14 @@ impl VetoSessionRepository for PgVetoSessionRepository {
         &self,
         match_id: TournamentMatchId,
     ) -> Result<Option<VetoSession>, DomainError> {
-        let row = sqlx::query_as::<_, VetoSessionRow>(
-            r"SELECT * FROM veto_sessions WHERE match_id = $1",
-        )
-        .bind(match_id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find veto session by match: {e}")))?;
+        let row =
+            sqlx::query_as::<_, VetoSessionRow>(r"SELECT * FROM veto_sessions WHERE match_id = $1")
+                .bind(match_id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| {
+                    DomainError::Internal(format!("Failed to find veto session by match: {e}"))
+                })?;
 
         row.map(session_row_to_domain).transpose()
     }
@@ -257,13 +256,11 @@ impl PgVetoActionRepository {
 #[async_trait]
 impl VetoActionRepository for PgVetoActionRepository {
     async fn find_by_id(&self, id: VetoActionId) -> Result<Option<VetoAction>, DomainError> {
-        let row = sqlx::query_as::<_, VetoActionRow>(
-            r"SELECT * FROM veto_actions WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find veto action: {e}")))?;
+        let row = sqlx::query_as::<_, VetoActionRow>(r"SELECT * FROM veto_actions WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to find veto action: {e}")))?;
 
         row.map(action_row_to_domain).transpose()
     }
@@ -403,7 +400,9 @@ fn session_row_to_domain(row: VetoSessionRow) -> Result<VetoSession, DomainError
             .first_action_registration_id
             .map(TournamentRegistrationId::from_uuid),
         current_action_number: row.current_action_number as u32,
-        current_team_turn: row.current_team_turn.map(TournamentRegistrationId::from_uuid),
+        current_team_turn: row
+            .current_team_turn
+            .map(TournamentRegistrationId::from_uuid),
         remaining_maps: row.remaining_maps,
         selected_maps: row.selected_maps,
         status,

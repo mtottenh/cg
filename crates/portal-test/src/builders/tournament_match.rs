@@ -1,11 +1,14 @@
 //! Tournament match builder for tests.
 
-use portal_db::adapters::PgTournamentMatchRepository;
+use portal_core::types::{MatchFormat, MatchParticipantSource};
+use portal_core::{
+    TournamentBracketId, TournamentId, TournamentMatchId, TournamentRegistrationId,
+    TournamentStageId,
+};
 use portal_db::DbPool;
+use portal_db::adapters::PgTournamentMatchRepository;
 use portal_domain::entities::tournament::TournamentMatch;
 use portal_domain::repositories::tournament::{CreateTournamentMatch, TournamentMatchRepository};
-use portal_core::types::{MatchFormat, MatchParticipantSource};
-use portal_core::{TournamentBracketId, TournamentId, TournamentMatchId, TournamentRegistrationId, TournamentStageId};
 
 /// Builder for creating test tournament matches.
 #[derive(Debug, Clone)]
@@ -249,15 +252,17 @@ impl TournamentMatchBuilder {
     ///
     /// Panics if `bracket_id`, `stage_id`, or `tournament_id` is not set.
     pub async fn build_persisted(self, pool: &DbPool) -> TournamentMatch {
-        let bracket_id = self.bracket_id.expect("bracket_id must be set before building");
+        let bracket_id = self
+            .bracket_id
+            .expect("bracket_id must be set before building");
         let stage_id = self.stage_id.expect("stage_id must be set before building");
         let tournament_id = self
             .tournament_id
             .expect("tournament_id must be set before building");
 
-        let bracket_position = self.bracket_position.unwrap_or_else(|| {
-            format!("R{}-M{}", self.round, self.match_number)
-        });
+        let bracket_position = self
+            .bracket_position
+            .unwrap_or_else(|| format!("R{}-M{}", self.round, self.match_number));
 
         let repo = PgTournamentMatchRepository::new(pool.clone());
 

@@ -5,8 +5,8 @@
 
 use chrono::{DateTime, Utc};
 use portal_core::{
-    DemoCategory, DemoId, DemoLinkType, DemoMatchLinkId, DemoPlayerId, DemoStatus, GameId, LeagueId,
-    PlayerId, TournamentId, TournamentMatchId, UserId,
+    DemoCategory, DemoId, DemoLinkType, DemoMatchLinkId, DemoPlayerId, DemoStatus, GameId,
+    LeagueId, PlayerId, TournamentId, TournamentMatchId, UserId,
 };
 use serde::{Deserialize, Serialize};
 

@@ -1,7 +1,7 @@
 //! Routes for veto delegate management.
 
-use axum::routing::{delete, get, post};
 use axum::Router;
+use axum::routing::{delete, get, post};
 
 use crate::handlers::veto_delegates;
 use crate::state::AppState;

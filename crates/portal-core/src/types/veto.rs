@@ -127,13 +127,34 @@ impl VetoFormatConfig {
             display_name: "Best of 1".to_string(),
             description: "6 bans alternating, 1 decider".to_string(),
             sequence: vec![
-                VetoFormatActionConfig { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 0, action_type: VetoActionType::Decider },
+                VetoFormatActionConfig {
+                    team: 1,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 2,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 1,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 2,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 1,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 2,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 0,
+                    action_type: VetoActionType::Decider,
+                },
             ],
             min_map_pool: 7,
         }
@@ -147,13 +168,34 @@ impl VetoFormatConfig {
             display_name: "Best of 3".to_string(),
             description: "Ban-Ban-Pick-Pick-Ban-Ban-Decider".to_string(),
             sequence: vec![
-                VetoFormatActionConfig { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 1, action_type: VetoActionType::Pick },
-                VetoFormatActionConfig { team: 2, action_type: VetoActionType::Pick },
-                VetoFormatActionConfig { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 0, action_type: VetoActionType::Decider },
+                VetoFormatActionConfig {
+                    team: 1,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 2,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 1,
+                    action_type: VetoActionType::Pick,
+                },
+                VetoFormatActionConfig {
+                    team: 2,
+                    action_type: VetoActionType::Pick,
+                },
+                VetoFormatActionConfig {
+                    team: 1,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 2,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 0,
+                    action_type: VetoActionType::Decider,
+                },
             ],
             min_map_pool: 7,
         }
@@ -167,13 +209,34 @@ impl VetoFormatConfig {
             display_name: "Best of 5".to_string(),
             description: "Ban-Ban-Pick-Pick-Pick-Pick-Decider".to_string(),
             sequence: vec![
-                VetoFormatActionConfig { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatActionConfig { team: 1, action_type: VetoActionType::Pick },
-                VetoFormatActionConfig { team: 2, action_type: VetoActionType::Pick },
-                VetoFormatActionConfig { team: 1, action_type: VetoActionType::Pick },
-                VetoFormatActionConfig { team: 2, action_type: VetoActionType::Pick },
-                VetoFormatActionConfig { team: 0, action_type: VetoActionType::Decider },
+                VetoFormatActionConfig {
+                    team: 1,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 2,
+                    action_type: VetoActionType::Ban,
+                },
+                VetoFormatActionConfig {
+                    team: 1,
+                    action_type: VetoActionType::Pick,
+                },
+                VetoFormatActionConfig {
+                    team: 2,
+                    action_type: VetoActionType::Pick,
+                },
+                VetoFormatActionConfig {
+                    team: 1,
+                    action_type: VetoActionType::Pick,
+                },
+                VetoFormatActionConfig {
+                    team: 2,
+                    action_type: VetoActionType::Pick,
+                },
+                VetoFormatActionConfig {
+                    team: 0,
+                    action_type: VetoActionType::Decider,
+                },
             ],
             min_map_pool: 7,
         }
@@ -200,13 +263,19 @@ impl VetoFormatConfig {
     /// Count picks in this format (maps that will be played).
     #[must_use]
     pub fn pick_count(&self) -> usize {
-        self.sequence.iter().filter(|a| matches!(a.action_type, VetoActionType::Pick)).count()
+        self.sequence
+            .iter()
+            .filter(|a| matches!(a.action_type, VetoActionType::Pick))
+            .count()
     }
 
     /// Count deciders in this format.
     #[must_use]
     pub fn decider_count(&self) -> usize {
-        self.sequence.iter().filter(|a| matches!(a.action_type, VetoActionType::Decider)).count()
+        self.sequence
+            .iter()
+            .filter(|a| matches!(a.action_type, VetoActionType::Decider))
+            .count()
     }
 
     /// Get total maps that will be selected (picks + deciders).

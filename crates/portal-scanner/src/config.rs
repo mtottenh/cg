@@ -36,14 +36,15 @@ impl ScannerConfig {
             s3_bucket: std::env::var("SCANNER_S3_BUCKET")
                 .unwrap_or_else(|_| "cs2-10mans-demo-files".to_string()),
             s3_prefix: std::env::var("SCANNER_S3_PREFIX").unwrap_or_default(),
-            s3_endpoint: Some(std::env::var("SCANNER_S3_ENDPOINT")
-                .unwrap_or_else(|_| "https://gb-lon-1.linodeobjects.com".to_string())),
+            s3_endpoint: Some(
+                std::env::var("SCANNER_S3_ENDPOINT")
+                    .unwrap_or_else(|_| "https://gb-lon-1.linodeobjects.com".to_string()),
+            ),
             s3_region: std::env::var("SCANNER_S3_REGION")
                 .unwrap_or_else(|_| "gb-lon-1".to_string()),
             api_url: std::env::var("PORTAL_API_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),
-            api_key: std::env::var("PORTAL_API_KEY")
-                .expect("PORTAL_API_KEY is required"),
+            api_key: std::env::var("PORTAL_API_KEY").expect("PORTAL_API_KEY is required"),
             demo_service_url: std::env::var("CS2_DEMO_SERVICE_URL")
                 .unwrap_or_else(|_| "https://demos.cs210mans.uk".to_string()),
             interval_secs: std::env::var("SCANNER_INTERVAL_SECS")
@@ -54,8 +55,7 @@ impl ScannerConfig {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(60),
-            game_id: std::env::var("SCANNER_GAME_ID")
-                .expect("SCANNER_GAME_ID is required"),
+            game_id: std::env::var("SCANNER_GAME_ID").expect("SCANNER_GAME_ID is required"),
         }
     }
 }

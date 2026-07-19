@@ -3,10 +3,10 @@
 use crate::entities::league_team::{
     CreateLeagueSeasonCommand, LeagueSeason, UpdateLeagueSeasonCommand,
 };
+use crate::repositories::LeagueRepository;
 use crate::repositories::league_team::{
     CreateLeagueSeason, LeagueSeasonRepository, UpdateLeagueSeason,
 };
-use crate::repositories::LeagueRepository;
 use portal_core::types::{RosterLockStatus, SeasonStatus};
 use portal_core::{DomainError, LeagueId, LeagueSeasonId, UserId};
 use std::sync::Arc;
@@ -171,7 +171,10 @@ where
 
     /// List seasons for a league.
     #[instrument(skip(self))]
-    pub async fn list_seasons(&self, league_id: LeagueId) -> Result<Vec<LeagueSeason>, DomainError> {
+    pub async fn list_seasons(
+        &self,
+        league_id: LeagueId,
+    ) -> Result<Vec<LeagueSeason>, DomainError> {
         self.season_repo.list_by_league(league_id).await
     }
 

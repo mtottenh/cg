@@ -1,7 +1,7 @@
 //! API key repository adapter.
 
-use crate::entities::ApiKeyRow;
 use crate::DbPool;
+use crate::entities::ApiKeyRow;
 use async_trait::async_trait;
 use portal_core::{ApiKeyId, DomainError, UserId};
 use portal_domain::entities::api_key::ApiKey;
@@ -70,13 +70,11 @@ impl PgApiKeyRepository {
 #[async_trait]
 impl ApiKeyRepository for PgApiKeyRepository {
     async fn find_by_hash(&self, key_hash: &str) -> Result<Option<ApiKey>, DomainError> {
-        let row = sqlx::query_as::<_, ApiKeyRow>(
-            "SELECT * FROM api_keys WHERE key_hash = $1",
-        )
-        .bind(key_hash)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row = sqlx::query_as::<_, ApiKeyRow>("SELECT * FROM api_keys WHERE key_hash = $1")
+            .bind(key_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         match row {
             Some(r) => {
@@ -88,13 +86,11 @@ impl ApiKeyRepository for PgApiKeyRepository {
     }
 
     async fn find_by_id(&self, id: ApiKeyId) -> Result<Option<ApiKey>, DomainError> {
-        let row = sqlx::query_as::<_, ApiKeyRow>(
-            "SELECT * FROM api_keys WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row = sqlx::query_as::<_, ApiKeyRow>("SELECT * FROM api_keys WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         match row {
             Some(r) => {
@@ -148,13 +144,11 @@ impl ApiKeyRepository for PgApiKeyRepository {
     }
 
     async fn deactivate(&self, id: ApiKeyId) -> Result<(), DomainError> {
-        sqlx::query(
-            "UPDATE api_keys SET is_active = FALSE, updated_at = NOW() WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        sqlx::query("UPDATE api_keys SET is_active = FALSE, updated_at = NOW() WHERE id = $1")
+            .bind(id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
     }

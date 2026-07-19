@@ -11,9 +11,9 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::state::GamesState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_db::entities::{GameRow, UpdateGame};
 
 /// Extract request ID from headers.
@@ -135,27 +135,26 @@ pub async fn get_game(
     };
 
     // Get match formats and pick/ban formats from plugin
-    let (supported_match_formats, default_match_format, map_pick_ban_formats) = if let Some(p) =
-        &plugin
-    {
-        (
-            p.supported_match_formats()
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-            p.default_match_format().to_string(),
-            p.map_pick_ban_formats()
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        )
-    } else {
-        (
-            vec!["bo1".to_string(), "bo3".to_string(), "bo5".to_string()],
-            "bo1".to_string(),
-            vec![],
-        )
-    };
+    let (supported_match_formats, default_match_format, map_pick_ban_formats) =
+        if let Some(p) = &plugin {
+            (
+                p.supported_match_formats()
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+                p.default_match_format().to_string(),
+                p.map_pick_ban_formats()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            )
+        } else {
+            (
+                vec!["bo1".to_string(), "bo3".to_string(), "bo5".to_string()],
+                "bo1".to_string(),
+                vec![],
+            )
+        };
 
     let map_pool = extract_map_pool(&game);
 
@@ -371,27 +370,26 @@ pub async fn update_game(
         vec![]
     };
 
-    let (supported_match_formats, default_match_format, map_pick_ban_formats) = if let Some(p) =
-        &plugin
-    {
-        (
-            p.supported_match_formats()
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-            p.default_match_format().to_string(),
-            p.map_pick_ban_formats()
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        )
-    } else {
-        (
-            vec!["bo1".to_string(), "bo3".to_string(), "bo5".to_string()],
-            "bo1".to_string(),
-            vec![],
-        )
-    };
+    let (supported_match_formats, default_match_format, map_pick_ban_formats) =
+        if let Some(p) = &plugin {
+            (
+                p.supported_match_formats()
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+                p.default_match_format().to_string(),
+                p.map_pick_ban_formats()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            )
+        } else {
+            (
+                vec!["bo1".to_string(), "bo3".to_string(), "bo5".to_string()],
+                "bo1".to_string(),
+                vec![],
+            )
+        };
 
     let map_pool = extract_map_pool(&game);
 
@@ -541,7 +539,9 @@ pub async fn enable_game(
         .unwrap_or(false);
 
     if !is_admin {
-        return Err(ApiError::forbidden("Admin permission required to enable games"));
+        return Err(ApiError::forbidden(
+            "Admin permission required to enable games",
+        ));
     }
 
     // Enable the game

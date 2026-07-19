@@ -1,7 +1,7 @@
 //! PostgreSQL implementation of EvidenceRepository.
 
-use crate::entities::{EvidenceAccessLogRow, EvidenceRow, NewEvidence, NewEvidenceAccessLog};
 use crate::DbPool;
+use crate::entities::{EvidenceAccessLogRow, EvidenceRow, NewEvidence, NewEvidenceAccessLog};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::{DomainError, EvidenceId, TournamentMatchId, TournamentRegistrationId, UserId};
@@ -36,18 +36,19 @@ impl PgEvidenceRepository {
 #[async_trait]
 impl EvidenceRepository for PgEvidenceRepository {
     async fn find_by_id(&self, id: EvidenceId) -> Result<Option<Evidence>, DomainError> {
-        let row = sqlx::query_as::<_, EvidenceRow>(
-            r"SELECT * FROM match_evidence WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find evidence: {e}")))?;
+        let row = sqlx::query_as::<_, EvidenceRow>(r"SELECT * FROM match_evidence WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to find evidence: {e}")))?;
 
         row.map(evidence_row_to_domain).transpose()
     }
 
-    async fn find_by_match(&self, match_id: TournamentMatchId) -> Result<Vec<Evidence>, DomainError> {
+    async fn find_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<Evidence>, DomainError> {
         let rows = sqlx::query_as::<_, EvidenceRow>(
             r"SELECT * FROM match_evidence WHERE match_id = $1 AND status NOT IN ('pending', 'deleted') ORDER BY created_at DESC",
         )
@@ -78,7 +79,10 @@ impl EvidenceRepository for PgEvidenceRepository {
 
     async fn create(&self, evidence: CreateEvidence) -> Result<Evidence, DomainError> {
         let (storage_type, storage_path, storage_bucket) = storage_to_db(&evidence.storage);
-        let status = evidence.status.unwrap_or(EvidenceStatus::Active).to_string();
+        let status = evidence
+            .status
+            .unwrap_or(EvidenceStatus::Active)
+            .to_string();
 
         let new_evidence = NewEvidence {
             match_id: evidence.match_id.as_uuid(),
@@ -93,7 +97,9 @@ impl EvidenceRepository for PgEvidenceRepository {
             storage_path,
             storage_bucket,
             plugin_metadata: evidence.plugin_metadata,
-            uploaded_by_registration_id: evidence.uploaded_by_registration_id.map(|id| id.as_uuid()),
+            uploaded_by_registration_id: evidence
+                .uploaded_by_registration_id
+                .map(|id| id.as_uuid()),
             uploaded_by_user_id: evidence.uploaded_by_user_id.map(|id| id.as_uuid()),
             discovered_by_plugin: evidence.discovered_by_plugin,
             discovered_at: evidence.discovered_at,
@@ -276,7 +282,10 @@ impl EvidenceRepository for PgEvidenceRepository {
         rows.into_iter().map(evidence_row_to_domain).collect()
     }
 
-    async fn log_access(&self, log: CreateEvidenceAccessLog) -> Result<EvidenceAccessLog, DomainError> {
+    async fn log_access(
+        &self,
+        log: CreateEvidenceAccessLog,
+    ) -> Result<EvidenceAccessLog, DomainError> {
         let new_log = NewEvidenceAccessLog {
             evidence_id: log.evidence_id.as_uuid(),
             accessed_by_user_id: log.accessed_by_user_id.map(|id| id.as_uuid()),
@@ -304,7 +313,10 @@ impl EvidenceRepository for PgEvidenceRepository {
         access_log_row_to_domain(row)
     }
 
-    async fn get_access_log(&self, evidence_id: EvidenceId) -> Result<Vec<EvidenceAccessLog>, DomainError> {
+    async fn get_access_log(
+        &self,
+        evidence_id: EvidenceId,
+    ) -> Result<Vec<EvidenceAccessLog>, DomainError> {
         let rows = sqlx::query_as::<_, EvidenceAccessLogRow>(
             r"SELECT * FROM evidence_access_log WHERE evidence_id = $1 ORDER BY accessed_at DESC",
         )
@@ -316,14 +328,19 @@ impl EvidenceRepository for PgEvidenceRepository {
         rows.into_iter().map(access_log_row_to_domain).collect()
     }
 
-    async fn find_stale_pending(&self, created_before: DateTime<Utc>) -> Result<Vec<Evidence>, DomainError> {
+    async fn find_stale_pending(
+        &self,
+        created_before: DateTime<Utc>,
+    ) -> Result<Vec<Evidence>, DomainError> {
         let rows = sqlx::query_as::<_, EvidenceRow>(
             r"SELECT * FROM match_evidence WHERE status = 'pending' AND created_at < $1",
         )
         .bind(created_before)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find stale pending evidence: {e}")))?;
+        .map_err(|e| {
+            DomainError::Internal(format!("Failed to find stale pending evidence: {e}"))
+        })?;
 
         rows.into_iter().map(evidence_row_to_domain).collect()
     }
@@ -367,7 +384,9 @@ fn evidence_row_to_domain(row: EvidenceRow) -> Result<Evidence, DomainError> {
         validated: row.validated,
         validated_at: row.validated_at,
         validation_result: row.validation_result,
-        uploaded_by_registration_id: row.uploaded_by_registration_id.map(TournamentRegistrationId::from_uuid),
+        uploaded_by_registration_id: row
+            .uploaded_by_registration_id
+            .map(TournamentRegistrationId::from_uuid),
         uploaded_by_user_id: row.uploaded_by_user_id.map(UserId::from_uuid),
         discovered_by_plugin: row.discovered_by_plugin,
         discovered_at: row.discovered_at,
@@ -408,12 +427,8 @@ fn storage_to_db(storage: &EvidenceStorage) -> (String, Option<String>, Option<S
         EvidenceStorage::S3 { bucket, key } => {
             ("s3".to_string(), Some(key.clone()), Some(bucket.clone()))
         }
-        EvidenceStorage::Url { url } => {
-            ("url".to_string(), Some(url.clone()), None)
-        }
-        EvidenceStorage::Inline { content } => {
-            ("inline".to_string(), Some(content.clone()), None)
-        }
+        EvidenceStorage::Url { url } => ("url".to_string(), Some(url.clone()), None),
+        EvidenceStorage::Inline { content } => ("inline".to_string(), Some(content.clone()), None),
     }
 }
 
@@ -425,18 +440,15 @@ fn db_to_storage(
 ) -> Result<EvidenceStorage, DomainError> {
     match storage_type {
         "s3" => {
-            let key = storage_path.ok_or_else(|| {
-                DomainError::Internal("S3 storage missing key".to_string())
-            })?;
-            let bucket = storage_bucket.ok_or_else(|| {
-                DomainError::Internal("S3 storage missing bucket".to_string())
-            })?;
+            let key = storage_path
+                .ok_or_else(|| DomainError::Internal("S3 storage missing key".to_string()))?;
+            let bucket = storage_bucket
+                .ok_or_else(|| DomainError::Internal("S3 storage missing bucket".to_string()))?;
             Ok(EvidenceStorage::S3 { bucket, key })
         }
         "url" => {
-            let url = storage_path.ok_or_else(|| {
-                DomainError::Internal("URL storage missing URL".to_string())
-            })?;
+            let url = storage_path
+                .ok_or_else(|| DomainError::Internal("URL storage missing URL".to_string()))?;
             Ok(EvidenceStorage::Url { url })
         }
         "inline" => {
@@ -472,7 +484,10 @@ mod tests {
         };
         let (storage_type, storage_path, storage_bucket) = storage_to_db(&storage);
         assert_eq!(storage_type, "url");
-        assert_eq!(storage_path, Some("https://example.com/video.mp4".to_string()));
+        assert_eq!(
+            storage_path,
+            Some("https://example.com/video.mp4".to_string())
+        );
         assert_eq!(storage_bucket, None);
     }
 
@@ -495,7 +510,11 @@ mod tests {
 
     #[test]
     fn test_db_to_storage_url() {
-        let result = db_to_storage("url", Some("https://example.com/video.mp4".to_string()), None);
+        let result = db_to_storage(
+            "url",
+            Some("https://example.com/video.mp4".to_string()),
+            None,
+        );
         assert!(result.is_ok());
         match result.unwrap() {
             EvidenceStorage::Url { url } => {

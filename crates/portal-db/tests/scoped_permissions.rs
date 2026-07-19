@@ -6,9 +6,9 @@
 //! Run with: `cargo test -p portal-db --test scoped_permissions`
 
 use portal_core::{PermissionScope, ScopeType, UserId};
+use portal_db::DbPool;
 use portal_db::entities::NewUserRole;
 use portal_db::repositories::{PermissionRepository, RoleRepository};
-use portal_db::DbPool;
 use portal_test::database::TestDb;
 use uuid::Uuid;
 
@@ -38,7 +38,10 @@ async fn get_role_id(pool: &DbPool, role_name: &str) -> Uuid {
         .bind(role_name)
         .fetch_one(pool)
         .await
-        .expect(&format!("Role '{}' should exist from migrations", role_name));
+        .expect(&format!(
+            "Role '{}' should exist from migrations",
+            role_name
+        ));
     role.0
 }
 
@@ -78,18 +81,32 @@ async fn test_scoped_permission_granted_in_correct_scope() {
     // Check permission in team A scope - should be granted
     let team_a_scope = PermissionScope::team(team_a_id);
     let has_perm_a = perm_repo
-        .user_has_scoped_permission(UserId::from(user_id), "team.settings.manage", Some(&team_a_scope))
+        .user_has_scoped_permission(
+            UserId::from(user_id),
+            "team.settings.manage",
+            Some(&team_a_scope),
+        )
         .await
         .unwrap();
-    assert!(has_perm_a, "User should have team.settings.manage in team A");
+    assert!(
+        has_perm_a,
+        "User should have team.settings.manage in team A"
+    );
 
     // Check permission in team B scope - should be denied
     let team_b_scope = PermissionScope::team(team_b_id);
     let has_perm_b = perm_repo
-        .user_has_scoped_permission(UserId::from(user_id), "team.settings.manage", Some(&team_b_scope))
+        .user_has_scoped_permission(
+            UserId::from(user_id),
+            "team.settings.manage",
+            Some(&team_b_scope),
+        )
         .await
         .unwrap();
-    assert!(!has_perm_b, "User should NOT have team.settings.manage in team B");
+    assert!(
+        !has_perm_b,
+        "User should NOT have team.settings.manage in team B"
+    );
 }
 
 /// Test that a global role grants permission in any scope.
@@ -123,10 +140,17 @@ async fn test_global_role_applies_to_all_scopes() {
     // Check permission in any team scope - should be granted due to global role
     let team_scope = PermissionScope::team(any_team_id);
     let has_admin_perm = perm_repo
-        .user_has_scoped_permission(UserId::from(user_id), "admin.teams.manage_any", Some(&team_scope))
+        .user_has_scoped_permission(
+            UserId::from(user_id),
+            "admin.teams.manage_any",
+            Some(&team_scope),
+        )
         .await
         .unwrap();
-    assert!(has_admin_perm, "Global admin role should grant admin.teams.manage_any in any scope");
+    assert!(
+        has_admin_perm,
+        "Global admin role should grant admin.teams.manage_any in any scope"
+    );
 }
 
 /// Test that revoking scoped roles removes permissions.
@@ -177,7 +201,10 @@ async fn test_revoke_scoped_roles() {
         .user_has_scoped_permission(UserId::from(user_id), "team.settings.manage", Some(&scope))
         .await
         .unwrap();
-    assert!(!has_perm_after, "Permission should be denied after revocation");
+    assert!(
+        !has_perm_after,
+        "Permission should be denied after revocation"
+    );
 }
 
 /// Test counting role holders in a scope.
@@ -252,7 +279,10 @@ async fn test_assign_scoped_role_by_name() {
         .user_has_scoped_permission(UserId::from(user_id), "team.matches.play", Some(&scope))
         .await
         .unwrap();
-    assert!(has_perm, "team_player should have team.matches.play permission");
+    assert!(
+        has_perm,
+        "team_player should have team.matches.play permission"
+    );
 }
 
 /// Test that different team roles have different permissions.
@@ -289,7 +319,13 @@ async fn test_team_role_permission_hierarchy() {
         .unwrap();
 
     // Captain should have all team permissions
-    for perm in ["team.roster.manage", "team.settings.manage", "team.roles.manage", "team.matches.play", "team.delete"] {
+    for perm in [
+        "team.roster.manage",
+        "team.settings.manage",
+        "team.roles.manage",
+        "team.matches.play",
+        "team.delete",
+    ] {
         let has = perm_repo
             .user_has_scoped_permission(UserId::from(captain_id), perm, Some(&scope))
             .await
@@ -311,10 +347,17 @@ async fn test_team_role_permission_hierarchy() {
     assert!(has_play, "Officer should have team.matches.play");
 
     let has_settings = perm_repo
-        .user_has_scoped_permission(UserId::from(officer_id), "team.settings.manage", Some(&scope))
+        .user_has_scoped_permission(
+            UserId::from(officer_id),
+            "team.settings.manage",
+            Some(&scope),
+        )
         .await
         .unwrap();
-    assert!(!has_settings, "Officer should NOT have team.settings.manage");
+    assert!(
+        !has_settings,
+        "Officer should NOT have team.settings.manage"
+    );
 
     // Player should only have play
     let player_has_play = perm_repo
@@ -327,7 +370,10 @@ async fn test_team_role_permission_hierarchy() {
         .user_has_scoped_permission(UserId::from(player_id), "team.roster.manage", Some(&scope))
         .await
         .unwrap();
-    assert!(!player_has_roster, "Player should NOT have team.roster.manage");
+    assert!(
+        !player_has_roster,
+        "Player should NOT have team.roster.manage"
+    );
 }
 
 /// Test getting all permissions for a user in a specific scope.
@@ -355,9 +401,18 @@ async fn test_get_user_permissions_in_scope() {
 
     // Officer should have team.roster.manage, team.matches.play, team.view.internal
     let perm_names: Vec<_> = permissions.iter().map(|p| p.name.as_str()).collect();
-    assert!(perm_names.contains(&"team.roster.manage"), "Should have roster permission");
-    assert!(perm_names.contains(&"team.matches.play"), "Should have play permission");
-    assert!(!perm_names.contains(&"team.settings.manage"), "Should NOT have settings permission");
+    assert!(
+        perm_names.contains(&"team.roster.manage"),
+        "Should have roster permission"
+    );
+    assert!(
+        perm_names.contains(&"team.matches.play"),
+        "Should have play permission"
+    );
+    assert!(
+        !perm_names.contains(&"team.settings.manage"),
+        "Should NOT have settings permission"
+    );
 }
 
 /// Test that permission check without scope uses global permissions only.
@@ -382,7 +437,10 @@ async fn test_permission_without_scope_checks_global_only() {
         .user_has_scoped_permission(UserId::from(user_id), "team.settings.manage", None)
         .await
         .unwrap();
-    assert!(!has_perm_global, "Scoped permission should NOT be found without scope context");
+    assert!(
+        !has_perm_global,
+        "Scoped permission should NOT be found without scope context"
+    );
 
     // But with scope, it should work
     let scope = PermissionScope::team(team_id);
@@ -390,5 +448,8 @@ async fn test_permission_without_scope_checks_global_only() {
         .user_has_scoped_permission(UserId::from(user_id), "team.settings.manage", Some(&scope))
         .await
         .unwrap();
-    assert!(has_perm_scoped, "Permission should be found with scope context");
+    assert!(
+        has_perm_scoped,
+        "Permission should be found with scope context"
+    );
 }

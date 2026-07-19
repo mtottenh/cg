@@ -5,9 +5,9 @@ use crate::entities::tournament::{
     TournamentRegistrationRow, TournamentRow, TournamentStageRow, TournamentStandingRow,
 };
 use portal_core::{
-    GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentBracketId, TournamentId,
-    TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId, TournamentRegistrationId,
-    TournamentStageId, UserId,
+    GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentBracketId,
+    TournamentId, TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId,
+    TournamentRegistrationId, TournamentStageId, UserId,
 };
 use portal_domain::entities::tournament::{
     GameStatus, Tournament, TournamentBracket, TournamentMapPool, TournamentMatch,
@@ -199,9 +199,7 @@ impl From<TournamentMatchGameRow> for TournamentMatchGame {
             match_id: TournamentMatchId::from_uuid(row.match_id),
             game_number: row.game_number,
             map_id: row.map_id,
-            map_picked_by: row
-                .map_picked_by
-                .map(TournamentRegistrationId::from_uuid),
+            map_picked_by: row.map_picked_by.map(TournamentRegistrationId::from_uuid),
             side_selection_by: row
                 .side_selection_by
                 .map(TournamentRegistrationId::from_uuid),

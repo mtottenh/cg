@@ -18,8 +18,10 @@ pub trait UserRepository: Send + Sync {
 
     /// Find a user for authentication by username or email.
     /// Returns user data including password hash for credential verification.
-    async fn find_for_auth(&self, username_or_email: &str)
-        -> Result<Option<UserWithCredentials>, DomainError>;
+    async fn find_for_auth(
+        &self,
+        username_or_email: &str,
+    ) -> Result<Option<UserWithCredentials>, DomainError>;
 
     /// Create a new user.
     async fn create(&self, cmd: CreateUser) -> Result<User, DomainError>;

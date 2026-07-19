@@ -10,9 +10,9 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::LeagueTeamState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{LeagueTeamSeasonId, PlayerId};
 
 /// Get a team's seasonal participation.
@@ -119,7 +119,10 @@ pub async fn add_team_member(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(LeagueTeamMemberResponse::from(member), request_id)),
+        Json(DataResponse::new(
+            LeagueTeamMemberResponse::from(member),
+            request_id,
+        )),
     ))
 }
 
@@ -185,7 +188,6 @@ pub async fn leave_team(
     auth: AuthenticatedUser,
     Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<StatusCode> {
-
     state
         .league_team_service
         .leave_team(team_season_id, auth.player_id)

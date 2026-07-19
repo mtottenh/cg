@@ -63,12 +63,11 @@ pub async fn print_credentials(
 
     // Verify at least the admin user exists
     let admin = scenario::persona("admin");
-    let exists: Option<(uuid::Uuid,)> =
-        sqlx::query_as("SELECT id FROM users WHERE id = $1")
-            .bind(admin.user_id())
-            .fetch_optional(pool)
-            .await
-            .context("Failed to query users")?;
+    let exists: Option<(uuid::Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE id = $1")
+        .bind(admin.user_id())
+        .fetch_optional(pool)
+        .await
+        .context("Failed to query users")?;
 
     if exists.is_none() {
         anyhow::bail!("Seed users not found. Run `seed full` first.");
@@ -86,15 +85,14 @@ pub async fn print_credentials(
     .await
     .context("Failed to query season")?;
 
-    let (season_id, season_name, season_slug, season_status) = season_row
-        .unwrap_or_else(|| {
-            (
-                uuid::Uuid::nil(),
-                "Unknown".to_string(),
-                "unknown".to_string(),
-                "unknown".to_string(),
-            )
-        });
+    let (season_id, season_name, season_slug, season_status) = season_row.unwrap_or_else(|| {
+        (
+            uuid::Uuid::nil(),
+            "Unknown".to_string(),
+            "unknown".to_string(),
+            "unknown".to_string(),
+        )
+    });
 
     // Check admin role
     // Admin status is enforced by RBAC, not by JWT claim (see

@@ -295,6 +295,10 @@ mod tests {
         let all = all_permissions();
         let total: usize = all.iter().map(|(_, _, perms)| perms.len()).sum();
         // Ensure we have a reasonable number of permissions defined
-        assert!(total >= 15, "Expected at least 15 permissions, got {}", total);
+        assert!(
+            total >= 15,
+            "Expected at least 15 permissions, got {}",
+            total
+        );
     }
 }

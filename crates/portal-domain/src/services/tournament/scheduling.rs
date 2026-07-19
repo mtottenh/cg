@@ -40,11 +40,7 @@ where
     TRR: TournamentRegistrationRepository,
 {
     /// Create a new scheduling service.
-    pub fn new(
-        proposal_repo: Arc<SPR>,
-        match_repo: Arc<TMR>,
-        registration_repo: Arc<TRR>,
-    ) -> Self {
+    pub fn new(proposal_repo: Arc<SPR>, match_repo: Arc<TMR>, registration_repo: Arc<TRR>) -> Self {
         Self {
             proposal_repo,
             match_repo,
@@ -103,7 +99,11 @@ where
         }
 
         // Check if there's already a pending proposal
-        if let Some(existing) = self.proposal_repo.find_pending_by_match_id(match_id).await? {
+        if let Some(existing) = self
+            .proposal_repo
+            .find_pending_by_match_id(match_id)
+            .await?
+        {
             return Err(DomainError::Conflict(format!(
                 "Match {} already has a pending proposal: {}",
                 match_id, existing.id
@@ -138,8 +138,9 @@ where
             .proposal_repo
             .find_by_id(command.proposal_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::LookupFailed { resource: "ScheduleProposal", query: command.proposal_id.to_string() }
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "ScheduleProposal",
+                query: command.proposal_id.to_string(),
             })?;
 
         // Check proposal can be responded to
@@ -167,8 +168,12 @@ where
             .await?
             .ok_or_else(|| DomainError::TournamentMatchNotFound(proposal.match_id))?;
 
-        self.validate_responder_is_opponent(command.accepted_by_user_id, &proposal, &tournament_match)
-            .await?;
+        self.validate_responder_is_opponent(
+            command.accepted_by_user_id,
+            &proposal,
+            &tournament_match,
+        )
+        .await?;
 
         // Update proposal
         proposal.status = ProposalStatus::Accepted;
@@ -203,8 +208,9 @@ where
             .proposal_repo
             .find_by_id(command.proposal_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::LookupFailed { resource: "ScheduleProposal", query: command.proposal_id.to_string() }
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "ScheduleProposal",
+                query: command.proposal_id.to_string(),
             })?;
 
         if !proposal.can_respond() {
@@ -221,8 +227,12 @@ where
             .await?
             .ok_or_else(|| DomainError::TournamentMatchNotFound(proposal.match_id))?;
 
-        self.validate_responder_is_opponent(command.rejected_by_user_id, &proposal, &tournament_match)
-            .await?;
+        self.validate_responder_is_opponent(
+            command.rejected_by_user_id,
+            &proposal,
+            &tournament_match,
+        )
+        .await?;
 
         proposal.status = ProposalStatus::Rejected;
         proposal.responded_at = Some(Utc::now());
@@ -242,8 +252,9 @@ where
             .proposal_repo
             .find_by_id(command.original_proposal_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::LookupFailed { resource: "ScheduleProposal", query: command.original_proposal_id.to_string() }
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "ScheduleProposal",
+                query: command.original_proposal_id.to_string(),
             })?;
 
         if !original_proposal.can_respond() {
@@ -329,7 +340,11 @@ where
         }
 
         // Cancel any pending proposals
-        if let Some(pending) = self.proposal_repo.find_pending_by_match_id(match_id).await? {
+        if let Some(pending) = self
+            .proposal_repo
+            .find_pending_by_match_id(match_id)
+            .await?
+        {
             let mut cancelled = pending;
             cancelled.status = ProposalStatus::Cancelled;
             self.proposal_repo.update(&cancelled).await?;

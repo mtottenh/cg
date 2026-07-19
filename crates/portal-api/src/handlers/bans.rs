@@ -6,9 +6,9 @@ use crate::dto::responses::{BanListResponse, BanResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
 use crate::state::BanState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{BanId, UserId};
 use portal_domain::entities::{BanFilters, BanType, CreateBanCommand, LiftBanCommand};
 use validator::Validate;
@@ -63,7 +63,10 @@ pub async fn list_bans(
 
     let filters = BanFilters {
         user_id: query.user_id.map(UserId::from),
-        ban_type: query.ban_type.as_ref().and_then(|t| t.parse::<BanType>().ok()),
+        ban_type: query
+            .ban_type
+            .as_ref()
+            .and_then(|t| t.parse::<BanType>().ok()),
         active_only: query.active_only,
         scope_type: query.scope_type,
         scope_id: query.scope_id,
@@ -115,7 +118,9 @@ pub async fn get_ban(
         return Err(ApiError::forbidden("Admin access required"));
     }
 
-    let ban_id: BanId = id.parse().map_err(|_| ApiError::bad_request("Invalid ban ID"))?;
+    let ban_id: BanId = id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid ban ID"))?;
 
     let ban = state.ban_service.get_ban(ban_id).await?;
 
@@ -226,7 +231,9 @@ pub async fn lift_ban(
         return Err(ApiError::forbidden("Admin access required"));
     }
 
-    let ban_id: BanId = id.parse().map_err(|_| ApiError::bad_request("Invalid ban ID"))?;
+    let ban_id: BanId = id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid ban ID"))?;
 
     let cmd = LiftBanCommand {
         ban_id,

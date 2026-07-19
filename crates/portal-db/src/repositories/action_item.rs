@@ -1,8 +1,8 @@
 //! Action item repository for captain pending actions.
 
-use chrono::{DateTime, Utc};
 use crate::DbPool;
 use crate::error::RepositoryError;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 /// A pending action item for a captain/player.
@@ -40,7 +40,10 @@ impl ActionItemRepository {
     }
 
     /// Get all pending action items for a player.
-    pub async fn list_by_player(&self, player_id: Uuid) -> Result<Vec<ActionItem>, RepositoryError> {
+    pub async fn list_by_player(
+        &self,
+        player_id: Uuid,
+    ) -> Result<Vec<ActionItem>, RepositoryError> {
         let rows = sqlx::query_as::<_, ActionItem>(
             r"
             WITH my_registrations AS (

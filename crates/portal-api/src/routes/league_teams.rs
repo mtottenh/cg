@@ -8,8 +8,8 @@
 
 use crate::handlers::{league_teams, uploads};
 use crate::state::AppState;
-use axum::routing::{delete, get, patch, post};
 use axum::Router;
+use axum::routing::{delete, get, patch, post};
 
 /// League season routes (nested under /league-seasons).
 pub fn season_routes() -> Router<AppState> {
@@ -20,7 +20,10 @@ pub fn season_routes() -> Router<AppState> {
         .route("/{season_id}", get(league_teams::get_season))
         .route("/{season_id}", patch(league_teams::update_season))
         // Teams in a season (list team seasons, create new team)
-        .route("/{season_id}/teams", get(league_teams::list_teams_in_season))
+        .route(
+            "/{season_id}/teams",
+            get(league_teams::list_teams_in_season),
+        )
         .route("/{season_id}/teams", post(league_teams::create_team))
         .route(
             "/{season_id}/teams/register",

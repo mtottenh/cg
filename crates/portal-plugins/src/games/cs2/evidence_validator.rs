@@ -42,10 +42,8 @@ impl Cs2EvidenceValidator {
         }
 
         // 2. Verify players participated
-        let (p1_present, p1_count, p1_total) =
-            Self::verify_players(stats, participant1_steam_ids);
-        let (p2_present, p2_count, p2_total) =
-            Self::verify_players(stats, participant2_steam_ids);
+        let (p1_present, p1_count, p1_total) = Self::verify_players(stats, participant1_steam_ids);
+        let (p2_present, p2_count, p2_total) = Self::verify_players(stats, participant2_steam_ids);
 
         if !p1_present {
             warnings.push(format!(
@@ -180,10 +178,7 @@ impl Cs2EvidenceValidator {
     /// Verify that expected players are in the demo.
     ///
     /// Returns (all_present, count_present, total_expected).
-    fn verify_players(
-        stats: &Cs2DemoStats,
-        expected_steam_ids: &[String],
-    ) -> (bool, usize, usize) {
+    fn verify_players(stats: &Cs2DemoStats, expected_steam_ids: &[String]) -> (bool, usize, usize) {
         if expected_steam_ids.is_empty() {
             return (true, 0, 0);
         }

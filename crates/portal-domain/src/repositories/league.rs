@@ -154,7 +154,10 @@ pub trait LeagueInvitationRepository: Send + Sync {
     ) -> Result<Option<LeagueInvitation>, DomainError>;
 
     /// Create a new invitation/application.
-    async fn create(&self, invitation: CreateLeagueInvitation) -> Result<LeagueInvitation, DomainError>;
+    async fn create(
+        &self,
+        invitation: CreateLeagueInvitation,
+    ) -> Result<LeagueInvitation, DomainError>;
 
     /// Update invitation status (accept/reject).
     async fn update_status(
@@ -178,10 +181,14 @@ pub trait LeagueInvitationRepository: Send + Sync {
     ) -> Result<Vec<LeagueInvitation>, DomainError>;
 
     /// List pending invitations/applications for a user.
-    async fn list_pending_for_user(&self, user_id: UserId) -> Result<Vec<LeagueInvitation>, DomainError>;
+    async fn list_pending_for_user(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<LeagueInvitation>, DomainError>;
 
     /// Cancel all pending invitations for a user in a league.
-    async fn cancel_pending(&self, league_id: LeagueId, user_id: UserId) -> Result<(), DomainError>;
+    async fn cancel_pending(&self, league_id: LeagueId, user_id: UserId)
+    -> Result<(), DomainError>;
 
     /// Count pending applications for a league.
     async fn count_pending_applications(&self, league_id: LeagueId) -> Result<i64, DomainError>;

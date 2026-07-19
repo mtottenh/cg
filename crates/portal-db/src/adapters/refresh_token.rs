@@ -1,7 +1,7 @@
 //! Refresh token repository adapter.
 
-use crate::entities::RefreshTokenRow;
 use crate::DbPool;
+use crate::entities::RefreshTokenRow;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::DomainError;
@@ -69,7 +69,10 @@ impl RefreshTokenRepository for PgRefreshTokenRepository {
         Ok(RefreshToken::from(row))
     }
 
-    async fn find_active_by_hash(&self, token_hash: &str) -> Result<Option<RefreshToken>, DomainError> {
+    async fn find_active_by_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<RefreshToken>, DomainError> {
         let row = sqlx::query_as::<_, RefreshTokenRow>(
             "SELECT * FROM refresh_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
         )

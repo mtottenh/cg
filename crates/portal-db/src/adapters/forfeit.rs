@@ -1,7 +1,7 @@
 //! Forfeit record repository adapter.
 
-use crate::entities::ForfeitRecordRow;
 use crate::DbPool;
+use crate::entities::ForfeitRecordRow;
 use async_trait::async_trait;
 use portal_core::{DomainError, ForfeitRecordId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::entities::forfeit::{ForfeitRecord, ForfeitType};
@@ -16,7 +16,9 @@ impl From<ForfeitRecordRow> for ForfeitRecord {
         Self {
             id: ForfeitRecordId::from(row.id),
             match_id: TournamentMatchId::from(row.match_id),
-            forfeiting_registration_id: TournamentRegistrationId::from(row.forfeiting_registration_id),
+            forfeiting_registration_id: TournamentRegistrationId::from(
+                row.forfeiting_registration_id,
+            ),
             forfeit_type: row.forfeit_type.parse().unwrap_or(ForfeitType::NoShow),
             reason: row.reason,
             triggered_by_user_id: row.triggered_by_user_id.map(portal_core::UserId::from),
@@ -71,13 +73,12 @@ impl ForfeitRecordRepository for PgForfeitRecordRepository {
     }
 
     async fn find_by_id(&self, id: ForfeitRecordId) -> Result<Option<ForfeitRecord>, DomainError> {
-        let record = sqlx::query_as::<_, ForfeitRecordRow>(
-            "SELECT * FROM forfeit_records WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let record =
+            sqlx::query_as::<_, ForfeitRecordRow>("SELECT * FROM forfeit_records WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(record.map(ForfeitRecord::from))
     }

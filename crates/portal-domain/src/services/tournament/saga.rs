@@ -221,10 +221,7 @@ where
 
     /// Complete the saga successfully.
     #[instrument(skip(self, execution))]
-    pub async fn complete_saga(
-        &self,
-        execution: &mut SagaExecution,
-    ) -> Result<(), DomainError> {
+    pub async fn complete_saga(&self, execution: &mut SagaExecution) -> Result<(), DomainError> {
         execution.complete();
         self.saga_repo.update(execution).await?;
 
@@ -367,7 +364,8 @@ mod tests {
     #[test]
     fn test_saga_result_success() {
         let execution = create_test_execution();
-        let result: SagaResult<String> = SagaResult::success(execution.clone(), "output".to_string());
+        let result: SagaResult<String> =
+            SagaResult::success(execution.clone(), "output".to_string());
 
         assert!(result.success);
         assert!(result.output.is_some());

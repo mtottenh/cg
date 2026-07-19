@@ -1,10 +1,10 @@
 //! Validated JSON extractor.
 
 use crate::error::{ApiError, FieldErrorDto};
-use axum::extract::rejection::JsonRejection;
-use axum::extract::FromRequest;
-use axum::http::Request;
 use axum::Json;
+use axum::extract::FromRequest;
+use axum::extract::rejection::JsonRejection;
+use axum::http::Request;
 use serde::de::DeserializeOwned;
 use validator::Validate;
 
@@ -19,7 +19,10 @@ where
 {
     type Rejection = ApiError;
 
-    async fn from_request(req: Request<axum::body::Body>, state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request(
+        req: Request<axum::body::Body>,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
         // Extract JSON
         let Json(value) = Json::<T>::from_request(req, state)
             .await
@@ -33,9 +36,10 @@ where
                 .flat_map(|(field, errs)| {
                     errs.iter().map(move |e| FieldErrorDto {
                         field: field.to_string(),
-                        message: e
-                            .message
-                            .clone().map_or_else(|| format!("Validation failed for {field}"), |m| m.to_string()),
+                        message: e.message.clone().map_or_else(
+                            || format!("Validation failed for {field}"),
+                            |m| m.to_string(),
+                        ),
                         code: e.code.to_string(),
                     })
                 })

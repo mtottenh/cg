@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::league_team::{LeagueTeamSeasonRow, LeagueTeamSummaryRow};
 use crate::DbPool;
+use crate::entities::league_team::{LeagueTeamSeasonRow, LeagueTeamSummaryRow};
 use portal_core::types::{LeagueTeamRole, LeagueTeamSeasonStatus};
 use portal_core::{DomainError, LeagueSeasonId, LeagueTeamId, LeagueTeamSeasonId, PlayerId};
 use portal_domain::entities::league_team::{LeagueTeamSeason, LeagueTeamSummary};
@@ -59,10 +59,7 @@ impl LeagueTeamSeasonRepository for PgLeagueTeamSeasonRepository {
         Ok(row.map(LeagueTeamSeason::from))
     }
 
-    async fn create(
-        &self,
-        cmd: CreateLeagueTeamSeason,
-    ) -> Result<LeagueTeamSeason, DomainError> {
+    async fn create(&self, cmd: CreateLeagueTeamSeason) -> Result<LeagueTeamSeason, DomainError> {
         let id = uuid::Uuid::now_v7();
         let now = Utc::now();
 
@@ -235,18 +232,23 @@ impl LeagueTeamSeasonRepository for PgLeagueTeamSeasonRepository {
         }
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM league_team_seasons WHERE season_id = $1",
-        )
-        .bind(season_id.as_uuid())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM league_team_seasons WHERE season_id = $1")
+                .bind(season_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok((rows.into_iter().map(LeagueTeamSeason::from).collect(), count.0))
+        Ok((
+            rows.into_iter().map(LeagueTeamSeason::from).collect(),
+            count.0,
+        ))
     }
 
-    async fn list_by_team(&self, team_id: LeagueTeamId) -> Result<Vec<LeagueTeamSeason>, DomainError> {
+    async fn list_by_team(
+        &self,
+        team_id: LeagueTeamId,
+    ) -> Result<Vec<LeagueTeamSeason>, DomainError> {
         let rows = sqlx::query_as::<_, LeagueTeamSeasonRow>(
             "SELECT * FROM league_team_seasons WHERE team_id = $1 ORDER BY created_at DESC",
         )
@@ -307,15 +309,17 @@ impl LeagueTeamSeasonRepository for PgLeagueTeamSeasonRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM v_league_team_summary WHERE season_id = $1",
-        )
-        .bind(season_id.as_uuid())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM v_league_team_summary WHERE season_id = $1")
+                .bind(season_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok((rows.into_iter().map(LeagueTeamSummary::from).collect(), count.0))
+        Ok((
+            rows.into_iter().map(LeagueTeamSummary::from).collect(),
+            count.0,
+        ))
     }
 
     async fn update(

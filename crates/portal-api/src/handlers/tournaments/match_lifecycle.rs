@@ -18,9 +18,9 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::TournamentState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::Json;
 use portal_core::types::TournamentMatchStatus;
 use portal_core::{TournamentMatchId, TournamentRegistrationId};
 
@@ -272,7 +272,10 @@ pub async fn admin_match_transition(
     let request_id = get_request_id(&headers);
 
     perm_checker
-        .require_permission(&auth, portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let match_id: TournamentMatchId = match_id

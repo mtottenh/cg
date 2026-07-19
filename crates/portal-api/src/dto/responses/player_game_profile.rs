@@ -1,6 +1,8 @@
 //! Player game profile response DTOs.
 
-use portal_domain::entities::{PlayerGameProfile, PlayerMatchHistory, PlayerMmStats, PlayerRatingHistory};
+use portal_domain::entities::{
+    PlayerGameProfile, PlayerMatchHistory, PlayerMmStats, PlayerRatingHistory,
+};
 use portal_plugins::types::DisplayStat;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -122,7 +124,10 @@ impl PlayerGameProfileResponse {
             win_rate,
             win_streak: profile.win_streak,
             best_win_streak: profile.best_win_streak,
-            display_stats: display_stats.into_iter().map(DisplayStatResponse::from).collect(),
+            display_stats: display_stats
+                .into_iter()
+                .map(DisplayStatResponse::from)
+                .collect(),
             first_match_at: profile.first_match_at.map(|t| t.to_rfc3339()),
             last_match_at: profile.last_match_at.map(|t| t.to_rfc3339()),
         }

@@ -2,12 +2,12 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
+use portal_db::PgPool;
 use portal_db::entities::{NewRole, NewUserRole};
 use portal_db::repositories::{PermissionRepository, RoleRepository};
-use portal_db::PgPool;
 use uuid::Uuid;
 
-use crate::output::{error, format_uuid, output_list, success, OutputFormat, RoleTableRow};
+use crate::output::{OutputFormat, RoleTableRow, error, format_uuid, output_list, success};
 
 /// Role management commands.
 #[derive(Args)]
@@ -123,31 +123,13 @@ impl RoleCommand {
                 role,
                 scope_type,
                 scope_id,
-            } => {
-                assign_role(
-                    &role_repo,
-                    *user_id,
-                    role,
-                    scope_type.as_deref(),
-                    *scope_id,
-                )
-                .await
-            }
+            } => assign_role(&role_repo, *user_id, role, scope_type.as_deref(), *scope_id).await,
             RoleSubcommand::Revoke {
                 user_id,
                 role,
                 scope_type,
                 scope_id,
-            } => {
-                revoke_role(
-                    &role_repo,
-                    *user_id,
-                    role,
-                    scope_type.as_deref(),
-                    *scope_id,
-                )
-                .await
-            }
+            } => revoke_role(&role_repo, *user_id, role, scope_type.as_deref(), *scope_id).await,
             RoleSubcommand::ListPermissions => list_permissions(&perm_repo, format).await,
         }
     }
@@ -235,7 +217,10 @@ async fn create_role(
         color: None,
     };
 
-    let role = repo.create(new_role).await.context("Failed to create role")?;
+    let role = repo
+        .create(new_role)
+        .await
+        .context("Failed to create role")?;
 
     success(&format!("Created role: {} ({})", name, role.id));
     Ok(())
@@ -291,9 +276,7 @@ async fn add_permission(
         .await
         .context("Failed to add permission")?;
 
-    success(&format!(
-        "Added permission '{permission}' to role '{role}'"
-    ));
+    success(&format!("Added permission '{permission}' to role '{role}'"));
     Ok(())
 }
 

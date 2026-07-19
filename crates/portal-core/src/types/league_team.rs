@@ -253,13 +253,19 @@ impl LeagueTeamSeasonStatus {
     /// Check if the team roster can be modified this season.
     #[must_use]
     pub const fn can_modify_roster(&self) -> bool {
-        matches!(self, Self::Forming | Self::Pending | Self::Registered | Self::Active)
+        matches!(
+            self,
+            Self::Forming | Self::Pending | Self::Registered | Self::Active
+        )
     }
 
     /// Check if the team's season participation is in a terminal state.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
-        matches!(self, Self::Eliminated | Self::Disqualified | Self::Withdrawn)
+        matches!(
+            self,
+            Self::Eliminated | Self::Disqualified | Self::Withdrawn
+        )
     }
 }
 

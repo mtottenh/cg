@@ -2,8 +2,8 @@
 
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{
-    ApplyToLeagueRequest, CreateLeagueRequest, InviteToLeagueRequest, UpdateLeagueMemberRoleRequest,
-    UpdateLeagueRequest,
+    ApplyToLeagueRequest, CreateLeagueRequest, InviteToLeagueRequest,
+    UpdateLeagueMemberRoleRequest, UpdateLeagueRequest,
 };
 use crate::dto::responses::{
     LeagueInvitationResponse, LeagueMemberBasicResponse, LeagueMemberResponse, LeagueResponse,
@@ -12,10 +12,10 @@ use crate::dto::responses::{
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::LeaguesState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{permissions, GameId, LeagueId, ScopeType, UserId};
+use portal_core::{GameId, LeagueId, ScopeType, UserId, permissions};
 use portal_domain::entities::league::LeagueMembershipType;
 
 /// Check league entry requirements using the eligibility service.
@@ -266,7 +266,11 @@ pub async fn update_league(
 
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::SETTINGS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::SETTINGS_MANAGE,
+        )
         .await?;
 
     // Convert request to domain command
@@ -305,11 +309,13 @@ pub async fn list_members(
     Path(league_id): Path<LeagueId>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<Vec<LeagueMemberResponse>>> {
-
     let offset = i64::from((params.page.max(1) - 1) * params.per_page);
     let limit = i64::from(params.per_page.clamp(1, 100));
 
-    let (members, _total) = state.league_service.get_members(league_id, limit, offset).await?;
+    let (members, _total) = state
+        .league_service
+        .get_members(league_id, limit, offset)
+        .await?;
 
     let response: Vec<LeagueMemberResponse> = members
         .into_iter()
@@ -341,7 +347,6 @@ pub async fn join_league(
     auth: AuthenticatedUser,
     Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<LeagueMemberBasicResponse>> {
-
     // Check entry requirements via game plugin before joining
     let league = state.league_service.get_league(league_id).await?;
     check_league_entry_requirements(&state, &league, auth.player_id).await?;
@@ -374,7 +379,6 @@ pub async fn leave_league(
     auth: AuthenticatedUser,
     Path(league_id): Path<LeagueId>,
 ) -> ApiResult<StatusCode> {
-
     state
         .league_service
         .leave_league(league_id, auth.user_id)
@@ -409,10 +413,13 @@ pub async fn update_member_role(
     Path((league_id, user_id)): Path<(LeagueId, UserId)>,
     ValidatedJson(req): ValidatedJson<UpdateLeagueMemberRoleRequest>,
 ) -> ApiResult<Json<LeagueMemberBasicResponse>> {
-
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     // Parse membership type
@@ -450,10 +457,13 @@ pub async fn remove_member(
     perm_checker: PermissionChecker,
     Path((league_id, user_id)): Path<(LeagueId, UserId)>,
 ) -> ApiResult<StatusCode> {
-
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     state
@@ -548,7 +558,11 @@ pub async fn invite_user(
 
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     let invitation = state
@@ -587,10 +601,13 @@ pub async fn list_invitations(
     perm_checker: PermissionChecker,
     Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<Vec<LeagueInvitationResponse>>> {
-
     // Check RBAC permission to view invitations
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     let all_pending = state
@@ -601,7 +618,9 @@ pub async fn list_invitations(
     // Filter to only show invitations (sent by admins)
     let response: Vec<LeagueInvitationResponse> = all_pending
         .into_iter()
-        .filter(|inv| inv.invitation_type == portal_domain::entities::league::LeagueInvitationType::Invite)
+        .filter(|inv| {
+            inv.invitation_type == portal_domain::entities::league::LeagueInvitationType::Invite
+        })
         .map(LeagueInvitationResponse::from)
         .collect();
 
@@ -630,10 +649,13 @@ pub async fn list_applications(
     perm_checker: PermissionChecker,
     Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<Vec<LeagueInvitationResponse>>> {
-
     // Check RBAC permission to view applications
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     let all_pending = state
@@ -644,7 +666,10 @@ pub async fn list_applications(
     // Filter to only show applications (submitted by users)
     let response: Vec<LeagueInvitationResponse> = all_pending
         .into_iter()
-        .filter(|inv| inv.invitation_type == portal_domain::entities::league::LeagueInvitationType::Application)
+        .filter(|inv| {
+            inv.invitation_type
+                == portal_domain::entities::league::LeagueInvitationType::Application
+        })
         .map(LeagueInvitationResponse::from)
         .collect();
 
@@ -683,7 +708,11 @@ pub async fn approve_application(
 
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     let member = state
@@ -726,7 +755,11 @@ pub async fn reject_application(
 
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     state
@@ -756,10 +789,7 @@ pub async fn get_my_leagues(
     State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
 ) -> ApiResult<Json<Vec<UserLeagueMembershipResponse>>> {
-    let memberships = state
-        .league_service
-        .get_user_leagues(auth.user_id)
-        .await?;
+    let memberships = state.league_service.get_user_leagues(auth.user_id).await?;
 
     let response: Vec<UserLeagueMembershipResponse> = memberships
         .into_iter()

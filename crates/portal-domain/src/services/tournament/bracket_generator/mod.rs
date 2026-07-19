@@ -18,7 +18,7 @@ use crate::repositories::tournament::CreateTournamentMatch;
 
 // Re-export from submodules
 pub use double_elimination::{CrossBracketLink, CrossLinkType, GeneratedDoubleElimination};
-pub use groups::{GroupsConfig, GroupStageFormat, PlayoffFormat};
+pub use groups::{GroupStageFormat, GroupsConfig, PlayoffFormat};
 pub use swiss::SwissParticipantStanding;
 
 /// Generated bracket structure ready for database insertion.

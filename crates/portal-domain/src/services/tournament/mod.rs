@@ -48,7 +48,11 @@ pub use bracket_generator::{
     SwissParticipantStanding,
 };
 pub use checkin::{CheckInService, CheckInStatus};
-pub use evidence::{EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig};
+pub use dispute::DisputeService;
+pub use evidence::{
+    EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig,
+};
+pub use forfeit::ForfeitService;
 pub use match_completion::{
     DemoValidationOutcome, MatchCompletionInput, MatchCompletionOutput, MatchCompletionSaga,
     MatchDemoValidator, MatchStatsUpdater, ReviewCreator,
@@ -57,6 +61,7 @@ pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails};
 pub use progression::{Advancement, LoserResult, ProgressionResult, ProgressionService};
 pub use registration::RegistrationService;
 pub use result::ResultService;
+pub use result_review::ResultReviewService;
 pub use saga::{Saga, SagaCoordinator, SagaDefinition, SagaResult, SagaStep};
 pub use scheduling::SchedulingService;
 pub use seeding::{SeededParticipant, SeedingService};
@@ -64,7 +69,4 @@ pub use service::TournamentService;
 pub use standings::StandingsService;
 pub use veto::{SideSelectionProvider, VetoFormatProvider, VetoService};
 pub use veto_authorization::{VetoAuthorizationRole, VetoAuthorizationService};
-pub use forfeit::ForfeitService;
-pub use dispute::DisputeService;
-pub use result_review::ResultReviewService;
 pub use veto_lobby_chat::{VetoLobbyChatConfig, VetoLobbyChatService};

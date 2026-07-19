@@ -1,8 +1,7 @@
 //! League API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use portal_test::prelude::*;
 use serde_json::json;
 use sqlx::Row;
@@ -261,7 +260,9 @@ async fn test_list_leagues_by_game() {
     .assert_status(StatusCode::CREATED);
 
     // List leagues filtered by game
-    let response = app.get(&format!("/v1/leagues?game_id={}", cs2_game_id)).await;
+    let response = app
+        .get(&format!("/v1/leagues?game_id={}", cs2_game_id))
+        .await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
@@ -1042,9 +1043,7 @@ async fn test_remove_member() {
     response.assert_status(StatusCode::NO_CONTENT);
 
     // Verify user2 is no longer a member
-    let members_response = app
-        .get(&format!("/v1/leagues/{}/members", league_id))
-        .await;
+    let members_response = app.get(&format!("/v1/leagues/{}/members", league_id)).await;
     let members: Vec<serde_json::Value> = members_response.json();
     assert!(!members.iter().any(|m| m["user_id"] == user2.id.to_string()));
 }
@@ -1078,14 +1077,12 @@ async fn grant_league_admin_permission(app: &TestApp) {
 
     // The dev user should already have scoped permissions from creating the league
     // But for tests that need explicit permission, we can assign the global role
-    sqlx::query(
-        "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
-    )
-    .bind(dev_user_id)
-    .bind(role_id)
-    .execute(app.pool())
-    .await
-    .expect("Failed to assign role");
+    sqlx::query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(dev_user_id)
+        .bind(role_id)
+        .execute(app.pool())
+        .await
+        .expect("Failed to assign role");
 }
 
 /// Create a JWT token for a user.

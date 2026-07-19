@@ -10,15 +10,17 @@ use crate::dto::responses::{LoginResponse, RegisterResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::ValidatedJson;
 use crate::state::AuthState;
+use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use chrono::{Duration, Utc};
 use portal_core::DomainError;
 use portal_db::NewUserRole;
 use portal_domain::repositories::refresh_token::RefreshTokenRepository;
-use portal_domain::{generate_access_token_with_expiry, generate_refresh_token, hash_refresh_token};
 use portal_domain::services::{LoginCommand, RegisterUserCommand};
+use portal_domain::{
+    generate_access_token_with_expiry, generate_refresh_token, hash_refresh_token,
+};
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -92,8 +94,8 @@ pub async fn register(
     // Generate and store refresh token
     let raw_refresh = generate_refresh_token();
     let refresh_hash = hash_refresh_token(&raw_refresh);
-    let refresh_expires = Utc::now()
-        + Duration::minutes(state.token_config.refresh_token_expiry_minutes);
+    let refresh_expires =
+        Utc::now() + Duration::minutes(state.token_config.refresh_token_expiry_minutes);
     state
         .refresh_token_repo
         .create(user.id.as_uuid(), &refresh_hash, refresh_expires)
@@ -154,11 +156,15 @@ pub async fn login(
     // Generate and store refresh token
     let raw_refresh = generate_refresh_token();
     let refresh_hash = hash_refresh_token(&raw_refresh);
-    let refresh_expires = Utc::now()
-        + Duration::minutes(state.token_config.refresh_token_expiry_minutes);
+    let refresh_expires =
+        Utc::now() + Duration::minutes(state.token_config.refresh_token_expiry_minutes);
     state
         .refresh_token_repo
-        .create(auth_result.user_id.as_uuid(), &refresh_hash, refresh_expires)
+        .create(
+            auth_result.user_id.as_uuid(),
+            &refresh_hash,
+            refresh_expires,
+        )
         .await?;
 
     let response = LoginResponse {
@@ -246,10 +252,7 @@ pub async fn refresh(
     }
 
     // Look up user to get current info for the new JWT
-    let user = state
-        .user_service
-        .get_user(stored.user_id.into())
-        .await?;
+    let user = state.user_service.get_user(stored.user_id.into()).await?;
 
     // Look up player for the user
     let player = state
@@ -269,8 +272,8 @@ pub async fn refresh(
     // Issue new refresh token (rotation)
     let raw_refresh = generate_refresh_token();
     let refresh_hash = hash_refresh_token(&raw_refresh);
-    let refresh_expires = Utc::now()
-        + Duration::minutes(state.token_config.refresh_token_expiry_minutes);
+    let refresh_expires =
+        Utc::now() + Duration::minutes(state.token_config.refresh_token_expiry_minutes);
     state
         .refresh_token_repo
         .create(user.id.as_uuid(), &refresh_hash, refresh_expires)

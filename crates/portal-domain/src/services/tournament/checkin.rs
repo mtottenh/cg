@@ -47,9 +47,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(registration_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         // Check if already checked in
         if registration.checked_in {
@@ -69,9 +67,7 @@ where
             .tournament_repo
             .find_by_id(registration.tournament_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentNotFound(registration.tournament_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentNotFound(registration.tournament_id))?;
 
         // Check if check-in is open (or not required)
         if tournament.check_in_required && !tournament.is_check_in_open() {
@@ -104,9 +100,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(registration_id)
-            })?;
+            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         // Check if already checked in
         if registration.checked_in {

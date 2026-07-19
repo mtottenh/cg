@@ -2,9 +2,9 @@
 //!
 //! Handles availability windows, overrides, and time suggestions for match scheduling.
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{AvailabilityExceptionId, AvailabilityWindowId, PlayerId, TournamentMatchId};
 use portal_domain::entities::{
     CreateAvailabilityOverride, CreateAvailabilityWindow, OverrideType, UpdateAvailabilityWindow,
@@ -102,8 +102,7 @@ pub async fn get_player_windows(
         .get_player_windows(auth.player_id)
         .await?;
 
-    let response: Vec<AvailabilityWindowResponse> =
-        windows.into_iter().map(Into::into).collect();
+    let response: Vec<AvailabilityWindowResponse> = windows.into_iter().map(Into::into).collect();
 
     Ok(Json(DataResponse::new(response, request_id)))
 }
@@ -142,7 +141,9 @@ pub async fn update_player_window(
         .ok_or_else(|| ApiError::not_found("Availability window not found"))?;
 
     if existing.player_id != Some(auth.player_id) {
-        return Err(ApiError::forbidden("Cannot modify another player's availability"));
+        return Err(ApiError::forbidden(
+            "Cannot modify another player's availability",
+        ));
     }
 
     let command = UpdateAvailabilityWindow {
@@ -185,7 +186,6 @@ pub async fn delete_player_window(
     auth: AuthenticatedUser,
     Path(window_id): Path<AvailabilityWindowId>,
 ) -> ApiResult<StatusCode> {
-
     // Verify ownership
     let existing = state
         .availability_service
@@ -194,7 +194,9 @@ pub async fn delete_player_window(
         .ok_or_else(|| ApiError::not_found("Availability window not found"))?;
 
     if existing.player_id != Some(auth.player_id) {
-        return Err(ApiError::forbidden("Cannot delete another player's availability"));
+        return Err(ApiError::forbidden(
+            "Cannot delete another player's availability",
+        ));
     }
 
     state.availability_service.delete_window(window_id).await?;
@@ -302,7 +304,6 @@ pub async fn delete_player_override(
     auth: AuthenticatedUser,
     Path(override_id): Path<AvailabilityExceptionId>,
 ) -> ApiResult<StatusCode> {
-
     // Verify ownership
     let existing = state
         .availability_service
@@ -311,10 +312,15 @@ pub async fn delete_player_override(
         .ok_or_else(|| ApiError::not_found("Availability override not found"))?;
 
     if existing.player_id != Some(auth.player_id) {
-        return Err(ApiError::forbidden("Cannot delete another player's availability"));
+        return Err(ApiError::forbidden(
+            "Cannot delete another player's availability",
+        ));
     }
 
-    state.availability_service.delete_override(override_id).await?;
+    state
+        .availability_service
+        .delete_override(override_id)
+        .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -48,9 +48,7 @@ where
                 // Check if scope matches
                 let same_scope = match (&existing.scope_type, &cmd.scope_type) {
                     (None, None) => true,
-                    (Some(a), Some(b)) => {
-                        a == b && existing.scope_id == cmd.scope_id
-                    }
+                    (Some(a), Some(b)) => a == b && existing.scope_id == cmd.scope_id,
                     _ => false,
                 };
 
@@ -77,7 +75,9 @@ where
 
         // Business rule: Can't lift an already lifted ban
         if ban.is_lifted() {
-            return Err(DomainError::InvalidState("Ban has already been lifted".into()));
+            return Err(DomainError::InvalidState(
+                "Ban has already been lifted".into(),
+            ));
         }
 
         // Business rule: Can't lift an expired ban

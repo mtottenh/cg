@@ -3,9 +3,9 @@
 pub mod audit;
 pub mod ban;
 pub mod demo;
+pub mod discovered_match;
 pub mod eligibility;
 pub mod eligibility_service;
-pub mod discovered_match;
 pub mod league;
 pub mod league_team;
 pub mod permission;
@@ -19,6 +19,7 @@ pub use audit::{AuditService, ChangeContext, ChangeDetector, FieldChange};
 pub use ban::BanService;
 pub use demo::{CatalogResult, DemoPlayerInput, DemoService};
 pub use discovered_match::DiscoveredMatchService;
+pub use eligibility_service::EligibilityService;
 pub use league::LeagueService;
 pub use league_team::{
     LeagueSeasonParticipantService, LeagueSeasonService, LeagueTeamInvitationService,
@@ -26,8 +27,7 @@ pub use league_team::{
 };
 pub use permission::PermissionService;
 pub use player::{PlayerSearchResult, PlayerService};
-pub use steam_tracking::SteamTrackingService;
 pub use player_game_profile::PlayerGameProfileService;
-pub use eligibility_service::EligibilityService;
+pub use steam_tracking::SteamTrackingService;
 pub use tournament::{BracketGenerator, GeneratedBracket, TournamentService};
 pub use user::{AuthResult, LoginCommand, RegisterUserCommand, UserService};

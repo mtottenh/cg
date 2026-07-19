@@ -8,7 +8,9 @@ use crate::repositories::league_team::{
 };
 use crate::services::league_team::LeagueTeamService;
 use portal_core::types::{LeagueTeamRole, LeagueTeamStatus, SeasonStatus};
-use portal_core::{DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamSeasonId, PlayerId};
+use portal_core::{
+    DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamSeasonId, PlayerId,
+};
 use std::sync::Arc;
 
 fn create_service(
@@ -94,9 +96,7 @@ async fn test_create_team_success() {
         .returning(move |_| Ok(Some(season_clone.clone())));
 
     // Check name/tag uniqueness
-    team_repo
-        .expect_name_exists()
-        .returning(|_, _| Ok(false));
+    team_repo.expect_name_exists().returning(|_, _| Ok(false));
     team_repo.expect_tag_exists().returning(|_, _| Ok(false));
 
     // Check player not already in a team this season
@@ -206,9 +206,7 @@ async fn test_create_team_name_taken() {
         .expect_find_primary_team_in_season()
         .returning(|_, _| Ok(None));
 
-    team_repo
-        .expect_name_exists()
-        .returning(|_, _| Ok(true)); // Name already taken
+    team_repo.expect_name_exists().returning(|_, _| Ok(true)); // Name already taken
 
     let service = create_service(team_repo, team_season_repo, member_repo, season_repo);
 
@@ -248,9 +246,7 @@ async fn test_create_team_player_already_in_team() {
         .expect_find_by_id()
         .returning(move |_| Ok(Some(season.clone())));
 
-    team_repo
-        .expect_name_exists()
-        .returning(|_, _| Ok(false));
+    team_repo.expect_name_exists().returning(|_, _| Ok(false));
     team_repo.expect_tag_exists().returning(|_, _| Ok(false));
 
     // Player already in another team

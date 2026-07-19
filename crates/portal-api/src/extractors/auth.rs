@@ -3,8 +3,8 @@
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::extract::{FromRef, FromRequestParts};
-use axum::http::request::Parts;
 use axum::http::HeaderMap;
+use axum::http::request::Parts;
 use portal_core::{PlayerId, UserId};
 use portal_domain::validate_token;
 use std::sync::Arc;
@@ -81,16 +81,14 @@ impl AuthenticatedUser {
                 portal_core::DomainError::TokenExpired => {
                     ApiError::unauthorized("Token has expired")
                 }
-                portal_core::DomainError::InvalidToken => {
-                    ApiError::unauthorized("Invalid token")
-                }
+                portal_core::DomainError::InvalidToken => ApiError::unauthorized("Invalid token"),
                 _ => ApiError::unauthorized("Authentication failed"),
             }
         })?;
 
-        let user_id = claims.user_id().map_err(|_| {
-            ApiError::unauthorized("Invalid user ID in token")
-        })?;
+        let user_id = claims
+            .user_id()
+            .map_err(|_| ApiError::unauthorized("Invalid user ID in token"))?;
 
         Ok(Self {
             user_id: UserId::from(user_id),
@@ -140,7 +138,9 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         // Try to extract user, return None if not authenticated
-        let user = AuthenticatedUser::from_request_parts(parts, state).await.ok();
+        let user = AuthenticatedUser::from_request_parts(parts, state)
+            .await
+            .ok();
         Ok(Self(user))
     }
 }

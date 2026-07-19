@@ -1,7 +1,7 @@
 //! Game routes.
 
-use axum::routing::{get, patch, post, put};
 use axum::Router;
+use axum::routing::{get, patch, post, put};
 
 use crate::handlers::games;
 use crate::state::AppState;

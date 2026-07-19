@@ -15,11 +15,11 @@ use crate::dto::responses::{TournamentResponse, TournamentSummaryResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::state::TournamentState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::types::TournamentStatus;
 use portal_core::TournamentId;
+use portal_core::types::TournamentStatus;
 use portal_domain::repositories::tournament::TournamentFilters;
 
 // =============================================================================
@@ -91,7 +91,10 @@ pub async fn get_tournament(
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let tournament = state.tournament_service.get_tournament(tournament_id).await?;
+    let tournament = state
+        .tournament_service
+        .get_tournament(tournament_id)
+        .await?;
 
     Ok(Json(DataResponse::new(
         TournamentResponse::from(tournament),
@@ -119,7 +122,10 @@ pub async fn get_tournament_by_slug(
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let tournament = state.tournament_service.get_tournament_by_slug(&slug).await?;
+    let tournament = state
+        .tournament_service
+        .get_tournament_by_slug(&slug)
+        .await?;
 
     Ok(Json(DataResponse::new(
         TournamentResponse::from(tournament),
@@ -212,8 +218,7 @@ pub async fn list_tournaments(
         .list_tournaments(filters, pagination.limit(), pagination.offset())
         .await?;
 
-    let data: Vec<TournamentSummaryResponse> =
-        tournaments.into_iter().map(Into::into).collect();
+    let data: Vec<TournamentSummaryResponse> = tournaments.into_iter().map(Into::into).collect();
 
     Ok(Json(PaginatedResponse::new(
         data,
@@ -308,7 +313,10 @@ pub async fn publish_tournament(
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let tournament = state.tournament_service.publish_tournament(tournament_id).await?;
+    let tournament = state
+        .tournament_service
+        .publish_tournament(tournament_id)
+        .await?;
 
     Ok(Json(DataResponse::new(
         TournamentResponse::from(tournament),
@@ -375,7 +383,10 @@ pub async fn start_tournament(
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let tournament = state.tournament_service.start_tournament(tournament_id).await?;
+    let tournament = state
+        .tournament_service
+        .start_tournament(tournament_id)
+        .await?;
 
     Ok(Json(DataResponse::new(
         TournamentResponse::from(tournament),

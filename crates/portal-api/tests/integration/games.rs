@@ -1,8 +1,7 @@
 //! Games API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use serde_json::json;
 use sqlx::Row;
 
@@ -196,14 +195,12 @@ async fn grant_games_admin_permission(app: &TestApp) {
     let role_id: uuid::Uuid = role_row.get("id");
 
     // Assign role to dev user
-    sqlx::query(
-        "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
-    )
-    .bind(dev_user_id)
-    .bind(role_id)
-    .execute(app.pool())
-    .await
-    .expect("Failed to assign role");
+    sqlx::query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(dev_user_id)
+        .bind(role_id)
+        .execute(app.pool())
+        .await
+        .expect("Failed to assign role");
 }
 
 #[tokio::test]
@@ -573,7 +570,9 @@ async fn test_remove_map() {
     response.assert_status(StatusCode::OK);
 
     // Remove it
-    let response = app.delete_auth("/v1/games/cs2/maps/catalog/de_removable").await;
+    let response = app
+        .delete_auth("/v1/games/cs2/maps/catalog/de_removable")
+        .await;
     response.assert_status(StatusCode::NO_CONTENT);
 
     // Verify it's gone by checking maps
@@ -895,10 +894,7 @@ async fn test_update_team_size_requires_admin() {
     let app = TestApp::new().await;
 
     let response = app
-        .patch_json(
-            "/v1/games/cs2/team-size",
-            &json!({ "min": 1 }),
-        )
+        .patch_json("/v1/games/cs2/team-size", &json!({ "min": 1 }))
         .await;
 
     response.assert_status(StatusCode::FORBIDDEN);

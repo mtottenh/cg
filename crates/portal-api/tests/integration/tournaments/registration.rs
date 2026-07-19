@@ -117,10 +117,7 @@ async fn test_register_team_happy_path() {
 
     // The registration shows up in the tournament's registration list.
     let response = app
-        .get_auth(&format!(
-            "/v1/tournaments/{}/registrations",
-            tournament_id
-        ))
+        .get_auth(&format!("/v1/tournaments/{}/registrations", tournament_id))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();

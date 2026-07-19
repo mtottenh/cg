@@ -1,7 +1,7 @@
 //! Player service with business logic.
 
-use crate::entities::league_team::PlayerLeagueTeamMembership;
 use crate::entities::Player;
+use crate::entities::league_team::PlayerLeagueTeamMembership;
 use crate::repositories::league_team::LeagueTeamMemberRepository;
 use crate::repositories::{PlayerRepository, PlayerSearchFilters, UpdatePlayer};
 use portal_core::{DomainError, FieldError, LeagueSeasonId, PlayerId, UserId, ValidationError};

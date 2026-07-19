@@ -899,3 +899,27 @@ async fn test_update_team_size_requires_admin() {
 
     response.assert_status(StatusCode::FORBIDDEN);
 }
+
+// ============================================================================
+// HEALTH PROBES (here rather than a dedicated file — two small tests)
+// ============================================================================
+
+#[tokio::test]
+async fn test_health_probes_db() {
+    let app = TestApp::new().await;
+    let response = app.get("/health").await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(response.text(), "OK");
+}
+
+#[tokio::test]
+async fn test_health_ready_reports_dependencies() {
+    let app = TestApp::new().await;
+    let response = app.get("/health/ready").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["db"], "ok");
+    // No CS2_DEMO_SERVICE_URL configured in tests.
+    assert_eq!(body["demo_service"], "unconfigured");
+}

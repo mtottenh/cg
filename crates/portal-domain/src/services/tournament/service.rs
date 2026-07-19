@@ -563,7 +563,11 @@ where
             TournamentFormat::DoubleElimination => StageFormat::DoubleElimination,
             TournamentFormat::RoundRobin => StageFormat::RoundRobin,
             TournamentFormat::Swiss => StageFormat::Swiss,
-            TournamentFormat::GroupsAndPlayoffs => StageFormat::SingleElimination,
+            // Handled by the early start_groups_and_playoffs branch above —
+            // reaching this arm would mean that guard was removed.
+            TournamentFormat::GroupsAndPlayoffs => {
+                unreachable!("GroupsAndPlayoffs is handled by start_groups_and_playoffs")
+            }
         };
 
         let stages = self.stage_repo.list_by_tournament(id).await?;

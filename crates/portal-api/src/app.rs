@@ -8,12 +8,70 @@ use crate::state::AppState;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
+use axum::extract::State;
+use axum::http::StatusCode;
 use axum::http::{HeaderValue, Request, header};
 use axum::middleware;
+use axum::response::IntoResponse;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::info_span;
+
+/// Liveness + database probe. A static "OK" cannot distinguish a healthy
+/// server from one whose database vanished, so this pings the pool; 503
+/// on failure lets systemd/Caddy/orchestrators act on it.
+async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    match sqlx::query("SELECT 1").execute(&state.db_pool).await {
+        Ok(_) => (StatusCode::OK, "OK"),
+        Err(e) => {
+            tracing::error!(error = %e, "health check: database unreachable");
+            (StatusCode::SERVICE_UNAVAILABLE, "database unreachable")
+        }
+    }
+}
+
+/// Readiness with dependency detail. The demo-stats service being down is
+/// reported as degraded but does NOT fail readiness — the portal serves
+/// everything except CS2 stats without it, and taking the whole API out of
+/// rotation over an optional dependency would be worse than degrading.
+async fn health_ready(State(state): State<AppState>) -> impl IntoResponse {
+    let db_ok = sqlx::query("SELECT 1")
+        .execute(&state.db_pool)
+        .await
+        .is_ok();
+
+    let demo_service = match state.cs2_demo_base_url.as_deref() {
+        None => "unconfigured",
+        Some(base) => {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(2))
+                .build();
+            match client {
+                // Any HTTP response (even 404) proves reachability.
+                Ok(c) => match c.get(format!("{base}/health")).send().await {
+                    Ok(_) => "ok",
+                    Err(_) => "unreachable",
+                },
+                Err(_) => "unreachable",
+            }
+        }
+    };
+
+    let status = if db_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status,
+        axum::Json(serde_json::json!({
+            "status": if db_ok { "ok" } else { "unavailable" },
+            "db": if db_ok { "ok" } else { "unreachable" },
+            "demo_service": demo_service,
+        })),
+    )
+}
 
 /// Global body-size cap for ordinary API requests (JSON, small forms).
 ///
@@ -123,8 +181,11 @@ pub fn create_app(state: AppState) -> Router {
         .merge(swagger_routes())
         // Uploads: PUT for evidence, GET served statically
         .nest("/uploads", uploads_router)
-        // Health check
-        .route("/health", axum::routing::get(|| async { "OK" }))
+        // Health checks: /health is the liveness+DB probe (an orchestrator
+        // must be able to tell a healthy server from one whose database
+        // vanished); /health/ready adds dependency detail.
+        .route("/health", axum::routing::get(health))
+        .route("/health/ready", axum::routing::get(health_ready))
         // Middleware. Layer application order is bottom-up: the last .layer
         // added wraps all inner work, so request_id runs before TraceLayer
         // gets to make its span — giving the span access to the id.

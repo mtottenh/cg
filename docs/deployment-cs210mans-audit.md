@@ -84,9 +84,11 @@ NOT commit): **90 players** (89 steam-auth, exactly 1 email+bcrypt account:
 tournaments/fixtures/results/pugs/bans — no competition history exists to
 migrate. The DB is newer than `players.csv` (12 players joined after the CSV
 export; latest 2026-01-07, i.e. the site was live until the January reboot
-broke podman). **Migrate from the dump, not the CSV.** Also preserve the
-`backend_logo_store` / `backend_map_store` volumes (team logos, map images)
-from `/var/lib/containers/storage/volumes/` for the team import.
+broke podman). **Migrate from the dump, not the CSV.**
+
+**Decision (2026-07-19): migrate players only.** Teams are reset on the new
+platform — no team/roster/logo import, which also drops the need to preserve
+the `backend_logo_store` / `backend_map_store` volumes.
 
 Ours: `users` (argon2id password) 1:1 `players` (`steam_id_64` set-once).
 
@@ -107,9 +109,8 @@ Plan, in order of preference per account type:
   `tenmans_import`) so it's queryable, and archive `players.csv` in the
   repo's `docs/import/` for reference. Decide later whether the new
   matchmaking design consumes it.
-- **Teams:** the CSV carries `Current Team` / `Is Captain`; the old DB has
-  full team tables. Recreate league teams from the dump via `portal-cli`
-  once leagues are set up — manual-ish, one-time, ~10 teams.
+- **Teams:** not migrated (decision above) — teams re-form on the new
+  platform.
 - **Demo files:** already in the object-storage bucket; the scanner's batch
   catalog endpoint can ingest them into the demo catalog as-is.
 

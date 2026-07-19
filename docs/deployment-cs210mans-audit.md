@@ -99,11 +99,20 @@ Plan, in order of preference per account type:
   (username = old `name`, `steam_id_64` = old `Steam ID`, created_at
   preserved) with no usable password, and let **Steam login (§4)** match on
   `steam_id_64` at first sign-in. Nothing for the user to do.
-- **Email users:** small set (needs the DB dump to enumerate). Two options:
-  (a) import the bcrypt hash and add a verify-then-rehash-to-argon2 fallback
-  in our login path; (b) import with no password and require "reset
-  password" once. Recommendation: **(b)** — the fallback code isn't worth
-  carrying for a handful of accounts on a site where everyone has Steam.
+- **Email users:** resolved — the dump showed exactly one (`gwoody`), and
+  they have a Steam ID like everyone else, so they're imported as a Steam
+  account (real email preserved on the user row). No bcrypt compatibility,
+  no reset flow needed.
+
+**Status: DONE (2026-07-19).** Steam sign-in shipped (`dfb45d8` api,
+`f9d9d08` web — OpenID 2.0 endpoints, `users.auth_provider`, verifier test
+seam, frontend button + `/auth/steam/complete`; 545 backend tests, 17/17
+auth e2e). Import shipped (`a84361d`): `portal-cli user import-steam
+--file tenmans_players.json [--dry-run]` provisions via the same
+`login_with_steam` path — verified on a scratch DB: 89/90 imported (legacy
+SYSTEM row skipped), idempotent on re-run, `created_at` backdated,
+gwoody's email restored. At cutover, run migrations then the import with
+the JSON export (kept at `C:\Users\Max\tenmans_players.json`, not in git).
 - **ELO (current/highest):** our platform has no generic ladder rating yet.
   Import as a `player_rating_history` snapshot per player (source-tagged
   `tenmans_import`) so it's queryable, and archive `players.csv` in the

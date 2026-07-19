@@ -237,6 +237,25 @@ where
                     user.status
                 )));
             }
+            // Self-heal: accounts provisioned before a persona was
+            // obtainable carry the `steam_<id64>` placeholder as their
+            // display name. Once we do know the persona, upgrade the
+            // placeholder — but never overwrite a name the player (or a
+            // previous enrichment) actually chose.
+            let player = match persona_name.map(str::trim).filter(|p| !p.is_empty()) {
+                Some(persona) if player.display_name == format!("steam_{steam_id_64}") => {
+                    self.player_repo
+                        .update(
+                            player.id,
+                            UpdatePlayer {
+                                display_name: Some(persona.chars().take(32).collect()),
+                                ..UpdatePlayer::default()
+                            },
+                        )
+                        .await?
+                }
+                _ => player,
+            };
             self.user_repo.update_last_login(user.id).await?;
             return Ok((user, player, false));
         }

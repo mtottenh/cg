@@ -152,17 +152,13 @@ pub async fn steam_callback(
         ));
     }
 
-    // Optional enrichment: persona name via the Steam Web API. Degrades
-    // to None when no API key is configured or the call fails.
-    let persona_name = match state.steam_auth_config.api_key.as_deref() {
-        Some(api_key) => {
-            state
-                .steam_verifier
-                .fetch_persona_name(api_key, steam_id_64)
-                .await
-        }
-        None => None,
-    };
+    // Enrichment: persona name via the Steam Web API when an API key is
+    // configured, else the public keyless profile endpoint. Degrades to
+    // None when both fail — sign-in never depends on it.
+    let persona_name = state
+        .steam_verifier
+        .fetch_persona_name(state.steam_auth_config.api_key.as_deref(), steam_id_64)
+        .await;
 
     // Find the account owning this SteamID64, or provision one.
     let (user, player, created) = state

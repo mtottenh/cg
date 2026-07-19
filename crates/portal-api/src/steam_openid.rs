@@ -78,9 +78,13 @@ pub trait SteamOpenIdVerifier: Send + Sync {
     /// whether Steam answered `is_valid:true`.
     async fn check_authentication(&self, params: &[(String, String)]) -> Result<bool, DomainError>;
 
-    /// Fetch the persona (display) name for a SteamID64 via the Steam
-    /// Web API. Best-effort enrichment: any failure returns `None`.
-    async fn fetch_persona_name(&self, api_key: &str, steam_id_64: i64) -> Option<String>;
+    /// Fetch the persona (display) name for a SteamID64.
+    ///
+    /// With an API key, uses `ISteamUser.GetPlayerSummaries`; without
+    /// one, falls back to the public community profile XML endpoint
+    /// (`steamcommunity.com/profiles/<id64>?xml=1`), which needs no
+    /// credentials. Best-effort enrichment: any failure returns `None`.
+    async fn fetch_persona_name(&self, api_key: Option<&str>, steam_id_64: i64) -> Option<String>;
 }
 
 /// Production [`SteamOpenIdVerifier`] backed by `reqwest`.
@@ -141,7 +145,21 @@ impl SteamOpenIdVerifier for HttpSteamOpenIdVerifier {
         Ok(body.lines().any(|line| line.trim() == "is_valid:true"))
     }
 
-    async fn fetch_persona_name(&self, api_key: &str, steam_id_64: i64) -> Option<String> {
+    async fn fetch_persona_name(&self, api_key: Option<&str>, steam_id_64: i64) -> Option<String> {
+        // Preferred: the Steam Web API (stable JSON contract).
+        if let Some(key) = api_key
+            && let Some(name) = self.fetch_persona_via_web_api(key, steam_id_64).await
+        {
+            return Some(name);
+        }
+        // Keyless fallback: the public community profile XML document.
+        self.fetch_persona_via_profile_xml(steam_id_64).await
+    }
+}
+
+impl HttpSteamOpenIdVerifier {
+    /// `ISteamUser.GetPlayerSummaries` (requires an API key).
+    async fn fetch_persona_via_web_api(&self, api_key: &str, steam_id_64: i64) -> Option<String> {
         let url = reqwest::Url::parse_with_params(
             "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/",
             &[("key", api_key), ("steamids", &steam_id_64.to_string())],
@@ -156,6 +174,38 @@ impl SteamOpenIdVerifier for HttpSteamOpenIdVerifier {
             .get("personaname")?
             .as_str()
             .map(std::string::ToString::to_string)
+    }
+
+    /// Public, keyless persona lookup via the community profile XML
+    /// (`steamcommunity.com/profiles/<id64>?xml=1`). Works for any
+    /// profile that isn't fully hidden.
+    async fn fetch_persona_via_profile_xml(&self, steam_id_64: i64) -> Option<String> {
+        let url = format!("https://steamcommunity.com/profiles/{steam_id_64}?xml=1");
+        let response = self.client.get(url).send().await.ok()?;
+        let body = response.text().await.ok()?;
+        extract_persona_from_profile_xml(&body)
+    }
+}
+
+/// Pull the persona name out of a community profile XML document.
+///
+/// The document carries it as `<steamID><![CDATA[Name]]></steamID>`
+/// (CDATA optional). A tiny string extraction beats pulling in an XML
+/// dependency for one field of one endpoint.
+#[must_use]
+pub fn extract_persona_from_profile_xml(xml: &str) -> Option<String> {
+    let start = xml.find("<steamID>")? + "<steamID>".len();
+    let end = xml[start..].find("</steamID>")? + start;
+    let raw = xml[start..end].trim();
+    let name = raw
+        .strip_prefix("<![CDATA[")
+        .and_then(|s| s.strip_suffix("]]>"))
+        .unwrap_or(raw)
+        .trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
     }
 }
 
@@ -182,6 +232,32 @@ mod tests {
                 "https://steamcommunity.com/openid/id/76561197960287930"
             ),
             Some(76_561_197_960_287_930)
+        );
+    }
+
+    #[test]
+    fn extracts_persona_from_profile_xml() {
+        let xml = r"<?xml version=\?><profile>
+            <steamID64>76561197971721556</steamID64>
+            <steamID><![CDATA[Murphy]]></steamID>
+            <onlineState>offline</onlineState></profile>";
+        assert_eq!(
+            extract_persona_from_profile_xml(xml),
+            Some("Murphy".to_string())
+        );
+        // Without CDATA wrapping
+        assert_eq!(
+            extract_persona_from_profile_xml("<profile><steamID>Plain Name</steamID></profile>"),
+            Some("Plain Name".to_string())
+        );
+        // Missing / empty element
+        assert_eq!(
+            extract_persona_from_profile_xml("<profile></profile>"),
+            None
+        );
+        assert_eq!(
+            extract_persona_from_profile_xml("<steamID><![CDATA[]]></steamID>"),
+            None
         );
     }
 

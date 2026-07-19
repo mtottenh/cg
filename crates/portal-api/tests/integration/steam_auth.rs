@@ -9,8 +9,8 @@ use axum::http::StatusCode;
 use portal_api::steam_openid::SteamOpenIdVerifier;
 use portal_core::DomainError;
 use serde_json::json;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 const TEST_STEAM_ID: i64 = 76_561_197_960_287_930;
 
@@ -18,9 +18,9 @@ const TEST_STEAM_ID: i64 = 76_561_197_960_287_930;
 struct MockSteamVerifier {
     /// What `check_authentication` should answer.
     valid: bool,
-    /// Persona name returned by the (keyless in tests, so normally
-    /// unused) Steam Web API stub.
-    persona: Option<String>,
+    /// Persona name returned by the persona-lookup stub. Mutable so a
+    /// test can simulate the persona becoming available between logins.
+    persona: Mutex<Option<String>>,
     /// Number of `check_authentication` calls observed.
     calls: AtomicUsize,
 }
@@ -29,7 +29,7 @@ impl MockSteamVerifier {
     fn valid() -> Arc<Self> {
         Arc::new(Self {
             valid: true,
-            persona: None,
+            persona: Mutex::new(None),
             calls: AtomicUsize::new(0),
         })
     }
@@ -37,9 +37,19 @@ impl MockSteamVerifier {
     fn invalid() -> Arc<Self> {
         Arc::new(Self {
             valid: false,
-            persona: None,
+            persona: Mutex::new(None),
             calls: AtomicUsize::new(0),
         })
+    }
+
+    fn with_persona(persona: &str) -> Arc<Self> {
+        let verifier = Self::valid();
+        verifier.set_persona(Some(persona));
+        verifier
+    }
+
+    fn set_persona(&self, persona: Option<&str>) {
+        *self.persona.lock().unwrap() = persona.map(ToString::to_string);
     }
 }
 
@@ -55,8 +65,12 @@ impl SteamOpenIdVerifier for MockSteamVerifier {
         Ok(self.valid)
     }
 
-    async fn fetch_persona_name(&self, _api_key: &str, _steam_id_64: i64) -> Option<String> {
-        self.persona.clone()
+    async fn fetch_persona_name(
+        &self,
+        _api_key: Option<&str>,
+        _steam_id_64: i64,
+    ) -> Option<String> {
+        self.persona.lock().unwrap().clone()
     }
 }
 
@@ -405,4 +419,93 @@ async fn test_steam_callback_maps_to_existing_player_with_steam_id() {
         .await
         .expect("count");
     assert_eq!(count, 1);
+}
+
+// ===========================================
+// Persona-name enrichment
+// ===========================================
+
+#[tokio::test]
+async fn test_steam_callback_uses_persona_for_username_and_display_name() {
+    let app = TestApp::new_with_steam_verifier(MockSteamVerifier::with_persona("Murphy")).await;
+
+    let response = app
+        .get(&callback_uri(TEST_STEAM_ID, &default_return_to()))
+        .await;
+    response.assert_status(StatusCode::FOUND);
+    let (access_token, _) =
+        tokens_from_fragment(&response.header("location").expect("Location header"));
+
+    let me = app.get_with_token("/v1/users/me", &access_token).await;
+    me.assert_status(StatusCode::OK);
+    let me_body: serde_json::Value = me.json();
+    assert_eq!(me_body["data"]["username"], "Murphy");
+
+    let (display_name,): (String,) =
+        sqlx::query_as("SELECT display_name FROM players WHERE steam_id_64 = $1")
+            .bind(TEST_STEAM_ID)
+            .fetch_one(app.pool())
+            .await
+            .expect("player row");
+    assert_eq!(display_name, "Murphy");
+}
+
+#[tokio::test]
+async fn test_steam_login_heals_placeholder_display_name() {
+    // First login: persona lookup fails → placeholder identity.
+    let verifier = MockSteamVerifier::valid();
+    let app = TestApp::new_with_steam_verifier(Arc::<MockSteamVerifier>::clone(&verifier)).await;
+
+    let response = app
+        .get(&callback_uri(TEST_STEAM_ID, &default_return_to()))
+        .await;
+    response.assert_status(StatusCode::FOUND);
+
+    let (display_name,): (String,) =
+        sqlx::query_as("SELECT display_name FROM players WHERE steam_id_64 = $1")
+            .bind(TEST_STEAM_ID)
+            .fetch_one(app.pool())
+            .await
+            .expect("player row");
+    assert_eq!(display_name, format!("steam_{TEST_STEAM_ID}"));
+
+    // Second login: persona now resolvable → placeholder display name is
+    // upgraded in place (username, the stable handle, is left alone).
+    verifier.set_persona(Some("Murphy"));
+    let response = app
+        .get(&callback_uri(TEST_STEAM_ID, &default_return_to()))
+        .await;
+    response.assert_status(StatusCode::FOUND);
+
+    let (display_name, username): (String, String) = sqlx::query_as(
+        "SELECT p.display_name, u.username FROM players p
+         JOIN users u ON u.id = p.user_id WHERE p.steam_id_64 = $1",
+    )
+    .bind(TEST_STEAM_ID)
+    .fetch_one(app.pool())
+    .await
+    .expect("player row");
+    assert_eq!(display_name, "Murphy");
+    assert_eq!(username, format!("steam_{TEST_STEAM_ID}"));
+
+    // Third login with a different persona: the healed name is a real
+    // name now, not a placeholder — it must NOT be overwritten again...
+    // unless the player kept the persona, which is indistinguishable.
+    // (Guard: only the exact placeholder is ever rewritten.)
+    verifier.set_persona(Some("SomeoneElse"));
+    let response = app
+        .get(&callback_uri(TEST_STEAM_ID, &default_return_to()))
+        .await;
+    response.assert_status(StatusCode::FOUND);
+
+    let (display_name,): (String,) =
+        sqlx::query_as("SELECT display_name FROM players WHERE steam_id_64 = $1")
+            .bind(TEST_STEAM_ID)
+            .fetch_one(app.pool())
+            .await
+            .expect("player row");
+    assert_eq!(
+        display_name, "Murphy",
+        "a non-placeholder display name must never be auto-overwritten"
+    );
 }

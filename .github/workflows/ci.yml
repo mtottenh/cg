@@ -86,6 +86,49 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --features portal-api/test-utils -- -D warnings
 
+  coverage:
+    name: Coverage (cargo llvm-cov)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Informational: publishes the measured coverage so gaps are visible.
+    # Not a gate (yet) — add `--fail-under-lines N` once a baseline is agreed.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: portal
+          POSTGRES_PASSWORD: portal
+          POSTGRES_DB: portal_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U portal -d portal_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Apply migrations
+        run: |
+          for f in migrations/*.sql; do
+            PGPASSWORD=portal psql -h localhost -U portal -d portal_ci -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+      - name: Coverage (integration + unit)
+        run: |
+          cargo llvm-cov --workspace --features portal-api/test-utils \
+            --no-fail-fast --summary-only --json --output-path coverage.json
+          cargo llvm-cov report --summary-only | tee coverage-summary.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.json
+            coverage-summary.txt
+          retention-days: 30
+
   web-unit:
     name: Web (vitest)
     runs-on: ubuntu-24.04

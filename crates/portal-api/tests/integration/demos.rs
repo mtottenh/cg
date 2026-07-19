@@ -765,3 +765,288 @@ async fn create_cs2_tournament_with_match(app: &TestApp, slug: &str) -> TestMatc
         participant2_reg_id,
     }
 }
+
+// ============================================================================
+// CATEGORY D: ADMIN DEMO VERBS (catalog / notes / categorize / visibility /
+// associate / status counts / pending / download)
+// ============================================================================
+
+/// Helper: catalog a single demo via POST /v1/admin/demos and return its ID.
+async fn catalog_single_demo(app: &TestApp, s3_key: &str) -> String {
+    let game_id = get_game_id(app.pool(), "cs2").await;
+
+    let response = app
+        .post_json(
+            "/v1/admin/demos",
+            &json!({
+                "game_id": game_id.to_string(),
+                "file_name": s3_key.rsplit('/').next().unwrap(),
+                "s3_bucket": "test-bucket",
+                "s3_key": s3_key,
+                "file_size_bytes": 42000000
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    body["data"]["id"].as_str().unwrap().to_string()
+}
+
+/// Test single-demo cataloging: 201 on create, 200 (same demo) on re-catalog.
+#[tokio::test]
+async fn test_catalog_demo_single() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    let game_id = get_game_id(app.pool(), "cs2").await;
+    let request_body = json!({
+        "game_id": game_id.to_string(),
+        "file_name": "single_catalog.dem",
+        "s3_bucket": "test-bucket",
+        "s3_key": "demos/single_catalog.dem",
+        "file_size_bytes": 12345678
+    });
+
+    let response = app.post_json("/v1/admin/demos", &request_body).await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let demo_id = body["data"]["id"].as_str().unwrap().to_string();
+    assert_eq!(body["data"]["file_name"], "single_catalog.dem");
+    assert_eq!(body["data"]["status"], "pending");
+    assert_eq!(body["data"]["category"], "uncategorized");
+
+    // Re-cataloging the same S3 key is idempotent: 200 with the same demo
+    let response = app.post_json("/v1/admin/demos", &request_body).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"], demo_id);
+}
+
+/// Test setting and clearing admin notes.
+#[tokio::test]
+async fn test_set_demo_notes() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+    let demo_id = catalog_single_demo(&app, "demos/notes_test.dem").await;
+
+    // Set notes
+    let response = app
+        .patch_json(
+            &format!("/v1/admin/demos/{demo_id}/notes"),
+            &json!({ "notes": "Suspicious rounds 3-7" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["admin_notes"], "Suspicious rounds 3-7");
+
+    // Visible via GET /v1/demos/{id}
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["admin_notes"], "Suspicious rounds 3-7");
+
+    // Null clears the notes
+    let response = app
+        .patch_json(
+            &format!("/v1/admin/demos/{demo_id}/notes"),
+            &json!({ "notes": null }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"]["admin_notes"].is_null());
+}
+
+/// Test categorizing a demo records category and auditing fields.
+#[tokio::test]
+async fn test_categorize_demo() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+    let demo_id = catalog_single_demo(&app, "demos/categorize_test.dem").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/categorize"),
+            &json!({ "category": "league" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["category"], "league");
+    assert!(body["data"]["categorized_by_user_id"].is_string());
+    assert!(body["data"]["categorized_at"].is_string());
+
+    // Effect is visible via GET
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["category"], "league");
+
+    // Unknown category is rejected
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/categorize"),
+            &json!({ "category": "not-a-category" }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// Test hiding and unhiding a demo.
+#[tokio::test]
+async fn test_set_demo_visibility() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+    let demo_id = catalog_single_demo(&app, "demos/visibility_test.dem").await;
+
+    // Hide
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/visibility"),
+            &json!({ "is_hidden": true }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["is_hidden"], true);
+    assert!(body["data"]["hidden_by_user_id"].is_string());
+
+    // Admins can still read a hidden demo
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["is_hidden"], true);
+
+    // A regular user (not linked to the demo) is refused
+    let user2 = UserBuilder::new()
+        .username("demo-viewer")
+        .email("demo-viewer@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let token2 = create_test_token(user2.id, user2.id, "demo-viewer", TEST_JWT_SECRET);
+    let response = app
+        .get_with_token(&format!("/v1/demos/{demo_id}"), &token2)
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Unhide
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/visibility"),
+            &json!({ "is_hidden": false }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["is_hidden"], false);
+}
+
+/// Test associating a demo with a league and a tournament.
+#[tokio::test]
+async fn test_associate_demo() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+    let demo_id = catalog_single_demo(&app, "demos/associate_test.dem").await;
+
+    let league = LeagueBuilder::new()
+        .name("Demo Associate League")
+        .build_persisted(app.pool())
+        .await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/associate"),
+            &json!({ "league_id": league.id.to_string() }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["league_id"], league.id.to_string());
+
+    // Effect is visible via GET
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["league_id"], league.id.to_string());
+}
+
+/// Test the admin status-count dashboard endpoint.
+#[tokio::test]
+async fn test_get_demo_status_counts() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    let demo1 = catalog_single_demo(&app, "demos/counts_1.dem").await;
+    let _demo2 = catalog_single_demo(&app, "demos/counts_2.dem").await;
+
+    // Fail one so we exercise more than one bucket
+    app.post_json(
+        &format!("/v1/admin/demos/{demo1}/stats-failed"),
+        &json!({ "error": "corrupt header" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let response = app.get_auth("/v1/admin/demos/stats").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["pending"], 1);
+    assert_eq!(body["data"]["failed"], 1);
+    assert_eq!(body["data"]["ready"], 0);
+    assert_eq!(body["data"]["processing"], 0);
+    assert_eq!(body["data"]["archived"], 0);
+}
+
+/// Test listing demos pending processing.
+#[tokio::test]
+async fn test_get_pending_demos() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    let demo_id = catalog_single_demo(&app, "demos/pending_list.dem").await;
+
+    let response = app.get_auth("/v1/admin/demos/pending").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let demos = body["data"].as_array().unwrap();
+    assert_eq!(demos.len(), 1);
+    assert_eq!(demos[0]["id"], demo_id);
+    assert_eq!(demos[0]["status"], "pending");
+
+    // Limit parameter is honored
+    let response = app.get_auth("/v1/admin/demos/pending?limit=0").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"].as_array().unwrap().is_empty());
+}
+
+/// Test the demo download endpoint returns S3 coordinates and a URL.
+#[tokio::test]
+async fn test_get_demo_download() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    let demo_id = catalog_single_demo(&app, "demos/download_test.dem").await;
+
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/download")).await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"], demo_id);
+    assert_eq!(body["data"]["file_name"], "download_test.dem");
+    assert_eq!(body["data"]["s3_bucket"], "test-bucket");
+    assert_eq!(body["data"]["s3_key"], "demos/download_test.dem");
+
+    // Without a configured demo-service base URL the handler falls back to
+    // s3:// coordinates; either way the URL embeds bucket and key.
+    let download_url = body["data"]["download_url"].as_str().unwrap();
+    assert!(download_url.contains("test-bucket"));
+    assert!(download_url.contains("demos/download_test.dem"));
+
+    // Missing demo is a 404
+    let response = app
+        .get_auth("/v1/demos/00000000-0000-0000-0000-000000000000/download")
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
+}

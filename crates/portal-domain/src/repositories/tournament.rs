@@ -540,6 +540,36 @@ pub trait TournamentMatchRepository: Send + Sync {
         veto_required: bool,
     ) -> Result<TournamentMatch, DomainError>;
 
+    /// Cross-tournament query: matches in `scheduled` status whose
+    /// `scheduled_at` is at or before `before`.
+    ///
+    /// Feeds the lifecycle automation loop that opens check-in windows.
+    async fn list_scheduled_due(
+        &self,
+        before: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError>;
+
+    /// Cross-tournament query: matches in `checking_in` status whose
+    /// `check_in_deadline` has passed.
+    ///
+    /// Feeds the lifecycle automation loop that processes no-shows.
+    async fn list_checkin_expired(
+        &self,
+        now: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError>;
+
+    /// Set the check-in deadline for a match.
+    ///
+    /// Written when the automation loop opens the check-in window; nothing
+    /// else sets it.
+    async fn set_check_in_deadline(
+        &self,
+        id: TournamentMatchId,
+        deadline: DateTime<Utc>,
+    ) -> Result<TournamentMatch, DomainError>;
+
     /// Transition every match in `ids` from Pending → Ready in one
     /// statement.
     ///

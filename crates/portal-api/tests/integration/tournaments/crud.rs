@@ -286,3 +286,38 @@ async fn test_update_tournament() {
     assert_eq!(body["data"]["description"], "Updated description");
     assert_eq!(body["data"]["max_participants"], 32);
 }
+
+#[tokio::test]
+async fn test_update_tournament_after_start_rejected() {
+    let app = TestApp::new().await;
+
+    // Helper leaves the tournament in_progress (started, matches created)
+    let (tournament_id, _match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "update-started-test").await;
+
+    // The service rejects any update once the tournament has started —
+    // including participant-limit changes.
+    let response = app
+        .patch_json(
+            &format!("/v1/tournaments/{tournament_id}"),
+            &json!({ "max_participants": 32 }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    // Name/description changes are rejected for the same reason.
+    let response = app
+        .patch_json(
+            &format!("/v1/tournaments/{tournament_id}"),
+            &json!({ "name": "Too Late Rename" }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    // The tournament is unchanged.
+    let response = app.get(&format!("/v1/tournaments/{tournament_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["max_participants"], 16);
+    assert_eq!(body["data"]["status"], "in_progress");
+}

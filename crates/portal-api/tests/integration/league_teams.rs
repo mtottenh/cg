@@ -1101,3 +1101,296 @@ async fn test_cannot_join_two_teams_same_season() {
 
     response.assert_status(StatusCode::CONFLICT);
 }
+
+// ============================================================================
+// TEAM IMAGE UPLOAD TESTS
+// ============================================================================
+
+/// Generate a valid PNG image of the given dimensions.
+fn generate_test_png(width: u32, height: u32) -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(width, height, image::Rgba([40, 90, 160, 255]));
+    let mut buf = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut buf);
+    img.write_to(&mut cursor, image::ImageFormat::Png)
+        .expect("failed to write test PNG");
+    buf
+}
+
+#[tokio::test]
+async fn test_upload_team_logo() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "logo-upload-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "logo-upload-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    // Dev user creates the team and becomes owner (has team.settings.manage)
+    let (team_id, _team_season_id) =
+        create_test_team(&app, season_id, "Logo Upload Team", "LUT").await;
+
+    // Square PNG within TeamLogo constraints (min 64x64, ~1:1 aspect)
+    let png = generate_test_png(512, 512);
+    let response = app
+        .post_multipart_auth(
+            &format!("/v1/league-teams/{team_id}/logo"),
+            "file",
+            "logo.png",
+            "image/png",
+            &png,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    let logo_url = body["data"]["logo_url"]
+        .as_str()
+        .expect("logo_url should be set after upload");
+    assert!(!logo_url.is_empty());
+
+    // Persisted on the team
+    let response = app.get(&format!("/v1/league-teams/{team_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["logo_url"], logo_url);
+}
+
+#[tokio::test]
+async fn test_upload_team_banner() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "banner-upload-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "banner-upload-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (team_id, _team_season_id) =
+        create_test_team(&app, season_id, "Banner Upload Team", "BUT").await;
+
+    // 4:1 aspect PNG within TeamBanner constraints (min 480x120)
+    let png = generate_test_png(1920, 480);
+    let response = app
+        .post_multipart_auth(
+            &format!("/v1/league-teams/{team_id}/banner"),
+            "file",
+            "banner.png",
+            "image/png",
+            &png,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    let banner_url = body["data"]["banner_url"]
+        .as_str()
+        .expect("banner_url should be set after upload");
+    assert!(!banner_url.is_empty());
+
+    // Persisted on the team
+    let response = app.get(&format!("/v1/league-teams/{team_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["banner_url"], banner_url);
+}
+
+#[tokio::test]
+async fn test_upload_team_logo_rejects_invalid_image() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "bad-logo-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "bad-logo-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (team_id, _team_season_id) =
+        create_test_team(&app, season_id, "Bad Logo Team", "BLT").await;
+
+    // Below the 64x64 minimum for TeamLogo
+    let png = generate_test_png(32, 32);
+    let response = app
+        .post_multipart_auth(
+            &format!("/v1/league-teams/{team_id}/logo"),
+            "file",
+            "tiny.png",
+            "image/png",
+            &png,
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+// ============================================================================
+// SEASON RE-REGISTRATION TESTS
+// ============================================================================
+
+#[tokio::test]
+async fn test_register_team_for_new_season() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "reregister-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+
+    // Team is created (and owned by the dev user) in season 1
+    let season1 = create_test_season(&app, league_id, "reregister-season-1").await;
+    let season1_id = season1["data"]["id"].as_str().unwrap();
+    let (team_id, _team_season_id) =
+        create_test_team(&app, season1_id, "Reregister Team", "RRT").await;
+
+    // A second season opens for registration
+    let season2 = create_test_season(&app, league_id, "reregister-season-2").await;
+    let season2_id = season2["data"]["id"].as_str().unwrap();
+
+    // Owner registers the existing team for the new season
+    let response = app
+        .post_json(
+            &format!("/v1/league-seasons/{season2_id}/teams/register"),
+            &json!({ "team_id": team_id }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["team_id"], team_id);
+    assert_eq!(body["data"]["season_id"], *season2_id);
+    assert_eq!(body["data"]["status"], "forming");
+
+    // Registering twice for the same season conflicts
+    let response = app
+        .post_json(
+            &format!("/v1/league-seasons/{season2_id}/teams/register"),
+            &json!({ "team_id": team_id }),
+        )
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+}
+
+// ============================================================================
+// INVITATION CANCELLATION TESTS
+// ============================================================================
+
+#[tokio::test]
+async fn test_cancel_invitation() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "cancel-invite-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "cancel-invite-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Cancel Invite Team", "CIT").await;
+
+    // Create an invitee
+    let user2 = UserBuilder::new()
+        .username("cancel-invitee")
+        .email("cancel-invitee@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let token2 = create_token_for_user(user2.id);
+
+    let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
+        .bind(user2.id)
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    let player2_id: uuid::Uuid = player_row.get("id");
+
+    // Captain (dev user) invites
+    let invite_response = app
+        .post_json(
+            &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+            &json!({
+                "player_id": player2_id.to_string(),
+                "role": "player"
+            }),
+        )
+        .await;
+    invite_response.assert_status(StatusCode::CREATED);
+    let invitation: serde_json::Value = invite_response.json();
+    let invitation_id = invitation["data"]["id"].as_str().unwrap();
+
+    // Captain cancels the invitation
+    let response = app
+        .delete_auth(&format!("/v1/league-team-invitations/{invitation_id}"))
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+
+    // The invitee no longer sees a pending invitation
+    let response = app
+        .get_with_token("/v1/league-team-invitations/me", &token2)
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body["data"].as_array().unwrap().is_empty(),
+        "cancelled invitation should not appear in the invitee's pending list"
+    );
+
+    // Accepting a cancelled invitation fails
+    let response = app
+        .post_with_token(
+            &format!("/v1/league-team-invitations/{invitation_id}/accept"),
+            &token2,
+        )
+        .await;
+    assert_ne!(
+        response.status,
+        StatusCode::OK,
+        "accepting a cancelled invitation must not succeed; body: {}",
+        response.text()
+    );
+}
+
+// ============================================================================
+// PLAYER LEAGUE TEAMS (BY PLAYER ID) TESTS
+// ============================================================================
+
+#[tokio::test]
+async fn test_get_player_league_teams() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "player-teams-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "player-teams-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    // Dev user creates a team (dev player id == dev user id)
+    create_test_team(&app, season_id, "Player Teams Test", "PTT").await;
+    let dev_player_id = "00000000-0000-0000-0000-000000000001";
+
+    // Public endpoint — no auth required
+    let response = app
+        .get(&format!("/v1/players/{dev_player_id}/league-teams"))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    let teams = body["data"].as_array().unwrap();
+    assert!(!teams.is_empty());
+    assert!(teams.iter().any(|t| t["team_name"] == "Player Teams Test"));
+
+    // A player with no memberships gets an empty list
+    let user2 = UserBuilder::new()
+        .username("teamless-player")
+        .email("teamless@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let response = app
+        .get(&format!("/v1/players/{}/league-teams", user2.id))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"].as_array().unwrap().is_empty());
+}

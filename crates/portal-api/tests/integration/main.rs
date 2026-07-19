@@ -12,6 +12,7 @@ mod forfeit;
 mod games;
 mod league_teams;
 mod leagues;
+mod lifecycle_automation;
 mod match_completion_saga;
 mod players;
 mod result_review;

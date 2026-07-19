@@ -216,6 +216,106 @@ async fn test_withdraw_registration() {
     assert_eq!(body["data"]["status"], "withdrawn");
 }
 
+// ============================================================================
+// ADMIN MODERATION: REJECT / DISQUALIFY / ADMIN CHECK-IN
+// ============================================================================
+
+#[tokio::test]
+async fn test_reject_registration() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament_with_registration(&app, "reject-reg-test").await;
+
+    // Register a player (pending status)
+    let registration_id = register_player(&app, &tournament_id, "RejectMe").await;
+
+    // Reject it with a reason
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/registrations/{registration_id}/reject"),
+            &json!({ "reason": "Roster incomplete" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Rejected registrations are stored as withdrawn
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"], registration_id);
+    assert_eq!(body["data"]["status"], "withdrawn");
+
+    // Rejecting a non-pending registration is invalid
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/registrations/{registration_id}/reject"),
+            &json!({ "reason": "Again" }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_disqualify_approved_registration() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament_with_registration(&app, "dq-reg-test").await;
+
+    // Register and approve a player
+    let registration_id = register_player(&app, &tournament_id, "DqMe").await;
+    approve_registration(&app, &tournament_id, &registration_id).await;
+
+    // Disqualify (reason is required)
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/registrations/{registration_id}/disqualify"),
+            &json!({ "reason": "Cheating detected" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "disqualified");
+
+    // Disqualified is terminal — a second disqualify is invalid
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/registrations/{registration_id}/disqualify"),
+            &json!({ "reason": "Still cheating" }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_admin_check_in_sets_checked_in() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament_with_registration(&app, "admin-checkin-test").await;
+
+    // Register and approve a player (not checked in yet)
+    let registration_id = register_player(&app, &tournament_id, "CheckMeIn").await;
+    approve_registration(&app, &tournament_id, &registration_id).await;
+
+    // Admin check-in bypasses the check-in window
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{tournament_id}/registrations/{registration_id}/admin-check-in"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["checked_in"], true);
+    assert!(
+        body["data"]["checked_in_at"].is_string(),
+        "checked_in_at should be set"
+    );
+
+    // Checking in twice conflicts
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{tournament_id}/registrations/{registration_id}/admin-check-in"
+        ))
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+}
+
 #[tokio::test]
 async fn test_get_check_in_status() {
     let app = TestApp::new().await;

@@ -32,7 +32,10 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 ///
 /// Tries the plugin manager first (game-specific formats), then falls back
 /// to the built-in standard formats.
-fn resolve_veto_format(format_id: &str, state: &VetoState) -> ApiResult<VetoFormatConfig> {
+pub(crate) fn resolve_veto_format(
+    format_id: &str,
+    state: &VetoState,
+) -> ApiResult<VetoFormatConfig> {
     // Try plugin-provided formats
     for plugin in state.plugin_manager.list_plugins() {
         if let Some(tp) = plugin.as_tournament_plugin()
@@ -561,7 +564,7 @@ async fn enrich_map_metadata(
 ///
 /// Now that both plugin and domain share the same `SideSelectionMode` from portal-core,
 /// no manual conversion is needed.
-fn resolve_side_selection_mode(
+pub(crate) fn resolve_side_selection_mode(
     tournament: &portal_domain::entities::tournament::Tournament,
     plugin_manager: &portal_plugins::PluginManager,
 ) -> portal_core::SideSelectionMode {

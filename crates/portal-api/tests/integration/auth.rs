@@ -425,6 +425,128 @@ async fn test_login_token_can_access_protected_endpoint() {
 }
 
 // ===========================================
+// Refresh Token Tests
+// ===========================================
+
+#[tokio::test]
+async fn test_refresh_token_happy_path() {
+    let app = TestApp::new().await;
+
+    // Register a user — the response carries the initial refresh token
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/register",
+            &json!({
+                "username": "refreshuser",
+                "email": "refreshuser@example.com",
+                "password": "SecurePass123!",
+                "display_name": "Refresh User"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let body: serde_json::Value = response.json();
+    let refresh_token = body["data"]["refresh_token"].as_str().unwrap().to_string();
+    assert!(
+        !refresh_token.is_empty(),
+        "Registration should return a refresh token"
+    );
+
+    // Exchange it for a new token pair
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/refresh",
+            &json!({ "refresh_token": refresh_token.as_str() }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    let new_access = body["data"]["access_token"].as_str().unwrap();
+    let new_refresh = body["data"]["refresh_token"].as_str().unwrap();
+    assert_eq!(body["data"]["username"], "refreshuser");
+    assert_ne!(
+        new_refresh, refresh_token,
+        "Rotation should issue a different refresh token"
+    );
+
+    // The new access token works on a protected endpoint
+    let response = app.get_with_token("/v1/users/me", new_access).await;
+    response.assert_status(StatusCode::OK);
+    let user_body: serde_json::Value = response.json();
+    assert_eq!(user_body["data"]["username"], "refreshuser");
+}
+
+#[tokio::test]
+async fn test_refresh_token_invalid_rejected() {
+    let app = TestApp::new().await;
+
+    // A garbage token that never existed is rejected
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/refresh",
+            &json!({ "refresh_token": "definitely-not-a-real-refresh-token" }),
+        )
+        .await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+
+    // An empty token fails validation
+    let response = app
+        .post_json_no_auth("/v1/auth/refresh", &json!({ "refresh_token": "" }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_refresh_token_reuse_rejected() {
+    let app = TestApp::new().await;
+
+    // Register a user
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/register",
+            &json!({
+                "username": "replayuser",
+                "email": "replayuser@example.com",
+                "password": "SecurePass123!",
+                "display_name": "Replay User"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let old_refresh = body["data"]["refresh_token"].as_str().unwrap().to_string();
+
+    // First refresh succeeds and rotates the token
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/refresh",
+            &json!({ "refresh_token": old_refresh.as_str() }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let new_refresh = body["data"]["refresh_token"].as_str().unwrap().to_string();
+
+    // Replaying the rotated (revoked) token is rejected
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/refresh",
+            &json!({ "refresh_token": old_refresh.as_str() }),
+        )
+        .await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+
+    // Replay detection revokes every active token for the user, so the
+    // newly issued refresh token is dead too.
+    let response = app
+        .post_json_no_auth("/v1/auth/refresh", &json!({ "refresh_token": new_refresh }))
+        .await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+}
+
+// ===========================================
 // JWT Token Validation Tests
 // ===========================================
 

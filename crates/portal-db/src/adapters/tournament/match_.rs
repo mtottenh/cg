@@ -209,6 +209,76 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         Ok(TournamentMatch::from(row))
     }
 
+    async fn list_scheduled_due(
+        &self,
+        before: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError> {
+        let rows = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            SELECT * FROM tournament_matches
+            WHERE status = 'scheduled' AND scheduled_at IS NOT NULL AND scheduled_at <= $1
+            ORDER BY scheduled_at
+            LIMIT $2
+            ",
+        )
+        .bind(before)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(TournamentMatch::from).collect())
+    }
+
+    async fn list_checkin_expired(
+        &self,
+        now: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError> {
+        let rows = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            SELECT * FROM tournament_matches
+            WHERE status = 'checking_in'
+              AND check_in_deadline IS NOT NULL
+              AND check_in_deadline < $1
+            ORDER BY check_in_deadline
+            LIMIT $2
+            ",
+        )
+        .bind(now)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(TournamentMatch::from).collect())
+    }
+
+    async fn set_check_in_deadline(
+        &self,
+        id: TournamentMatchId,
+        deadline: DateTime<Utc>,
+    ) -> Result<TournamentMatch, DomainError> {
+        let now = Utc::now();
+
+        let row = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            UPDATE tournament_matches SET check_in_deadline = $2, updated_at = $3
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(deadline)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentMatch::from(row))
+    }
+
     async fn mark_pending_as_ready_bulk(
         &self,
         ids: &[TournamentMatchId],

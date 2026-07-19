@@ -19,6 +19,7 @@
 
 pub mod adapters;
 pub mod app;
+pub mod background;
 pub mod dto;
 pub mod error;
 pub mod extractors;
@@ -30,6 +31,7 @@ pub mod state;
 pub mod websocket;
 
 pub use app::create_app;
+pub use background::spawn_lifecycle_task;
 pub use state::{
     AdminState, AppState, AuthState, AvailabilityState, BanState, DemoState, DisputeState,
     EvidenceState, ForfeitState, GamesState, InternalState, LeagueTeamState, LeaguesState,

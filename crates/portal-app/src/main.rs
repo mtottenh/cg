@@ -1,7 +1,9 @@
 //! Gaming Portal server entry point.
 
 use anyhow::Result;
-use portal_api::{AppState, TokenConfig, create_app, spawn_timeout_warning_task};
+use portal_api::{
+    AppState, TokenConfig, create_app, spawn_lifecycle_task, spawn_timeout_warning_task,
+};
 use portal_db::{PoolConfig, create_pool};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -73,6 +75,7 @@ async fn main() -> Result<()> {
     // shutdown — previously the handle was dropped and a panic in the loop
     // would be silently swallowed.
     let timeout_handle = spawn_timeout_warning_task(state.clone(), Arc::clone(&shutdown));
+    let lifecycle_handle = spawn_lifecycle_task(state.clone(), Arc::clone(&shutdown));
 
     // Keep a handle to the pool so we can drain it after the server stops.
     let pool_for_shutdown = state.db_pool.clone();
@@ -124,6 +127,11 @@ async fn main() -> Result<()> {
         Ok(Ok(())) => info!("timeout warning task exited cleanly"),
         Ok(Err(e)) => warn!(error = %e, "timeout warning task panicked"),
         Err(_) => warn!("timeout warning task did not exit within 10s; abandoning"),
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(10), lifecycle_handle).await {
+        Ok(Ok(())) => info!("lifecycle automation task exited cleanly"),
+        Ok(Err(e)) => warn!(error = %e, "lifecycle automation task panicked"),
+        Err(_) => warn!("lifecycle automation task did not exit within 10s; abandoning"),
     }
 
     info!("closing database pool");

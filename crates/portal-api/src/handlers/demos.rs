@@ -35,6 +35,25 @@ fn get_request_id(headers: &HeaderMap) -> &str {
         .unwrap_or("unknown")
 }
 
+/// Demo-catalog MUTATIONS require the real manage permission
+/// (`admin.demos.manage`, seeded to super_admin/platform_admin). `is_admin`
+/// (`users.view_all`) remains only a READ override — hidden-demo visibility
+/// and the pipeline dashboards.
+async fn require_demos_manage(state: &DemoState, auth: &AuthenticatedUser) -> Result<(), ApiError> {
+    let allowed = state
+        .permission_service
+        .has_permission(auth.user_id, portal_core::permissions::admin::DEMOS_MANAGE)
+        .await
+        .unwrap_or(false);
+    if allowed {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "Missing required permission: admin.demos.manage",
+        ))
+    }
+}
+
 /// List demos with filtering.
 #[utoipa::path(
     get,
@@ -208,16 +227,7 @@ pub async fn catalog_demo(
     request.validate()?;
     let request_id = get_request_id(&headers);
 
-    // Check admin permission
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     let result = state
         .demo_service
@@ -273,16 +283,7 @@ pub async fn categorize_demo(
     request.validate()?;
     let request_id = get_request_id(&headers);
 
-    // Check admin permission
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     let category: DemoCategory = request
         .category
@@ -328,16 +329,7 @@ pub async fn set_demo_visibility(
     request.validate()?;
     let request_id = get_request_id(&headers);
 
-    // Check admin permission
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     let demo = state
         .demo_service
@@ -378,16 +370,7 @@ pub async fn associate_demo(
     request.validate()?;
     let request_id = get_request_id(&headers);
 
-    // Check admin permission
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     let demo = state
         .demo_service
@@ -433,16 +416,7 @@ pub async fn link_demo_to_match(
     request.validate()?;
     let request_id = get_request_id(&headers);
 
-    // Check admin permission
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     let link_type: DemoLinkType = request
         .link_type
@@ -682,16 +656,7 @@ pub async fn process_unlinked_demos(
 ) -> ApiResult<Json<DataResponse<ProcessUnlinkedDemosResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // Check admin permission
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
 
@@ -794,16 +759,7 @@ pub async fn unlink_demo_from_match(
     auth: AuthenticatedUser,
     Path((demo_id, match_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    // Check admin permission
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     let demo_id = demo_id
         .parse::<DemoId>()
@@ -849,15 +805,7 @@ pub async fn batch_catalog_demos(
     request.validate()?;
     let request_id = get_request_id(&headers);
 
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     let game_id = GameId::from(request.game_id);
     let mut created = Vec::new();
@@ -936,15 +884,7 @@ pub async fn submit_demo_stats(
     request.validate()?;
     let request_id = get_request_id(&headers);
 
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     // Look up the demo to get its game_id
     let demo = state.demo_service.get_demo(demo_id).await?;
@@ -1035,15 +975,7 @@ pub async fn mark_demo_stats_failed(
     request.validate()?;
     let request_id = get_request_id(&headers);
 
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     let demo = state
         .demo_service
@@ -1077,15 +1009,7 @@ pub async fn delete_demo(
     auth: AuthenticatedUser,
     Path(demo_id): Path<DemoId>,
 ) -> ApiResult<StatusCode> {
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     state.demo_service.delete_demo(demo_id).await?;
 
@@ -1120,15 +1044,7 @@ pub async fn set_demo_notes(
     request.validate()?;
     let request_id = get_request_id(&headers);
 
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    require_demos_manage(&state, &auth).await?;
 
     let demo = state
         .demo_service

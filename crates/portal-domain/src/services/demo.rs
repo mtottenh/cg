@@ -295,6 +295,18 @@ where
             })
             .await?;
 
+        // Manual links stamp the demo's tournament like auto-links do, so
+        // per-tournament stat rollups see admin-corrected links too. League
+        // association is preserved as-is.
+        if let Some(match_) = self.match_repo.find_by_id(match_id).await? {
+            let demo = self.get_demo(demo_id).await?;
+            if demo.tournament_id != Some(match_.tournament_id) {
+                self.demo_repo
+                    .associate(demo_id, demo.league_id, Some(match_.tournament_id))
+                    .await?;
+            }
+        }
+
         info!(demo_id = %demo_id, match_id = %match_id, "Linked demo to match");
         Ok(link)
     }
@@ -316,6 +328,32 @@ where
             })?;
 
         self.link_repo.delete(link.id).await?;
+
+        // If the demo's tournament stamp came from this match and no other
+        // link still points at that tournament, clear it — otherwise stat
+        // rollups keep counting a demo an admin explicitly disconnected.
+        let demo = self.get_demo(demo_id).await?;
+        if let Some(stamped) = demo.tournament_id
+            && let Some(match_) = self.match_repo.find_by_id(match_id).await?
+            && match_.tournament_id == stamped
+        {
+            let remaining = self.link_repo.find_by_demo(demo_id).await?;
+            let mut still_stamped = false;
+            for l in &remaining {
+                if let Some(m) = self.match_repo.find_by_id(l.match_id).await?
+                    && m.tournament_id == stamped
+                {
+                    still_stamped = true;
+                    break;
+                }
+            }
+            if !still_stamped {
+                self.demo_repo
+                    .associate(demo_id, demo.league_id, None)
+                    .await?;
+            }
+        }
+
         info!(demo_id = %demo_id, match_id = %match_id, "Unlinked demo from match");
         Ok(())
     }

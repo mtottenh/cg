@@ -212,6 +212,10 @@ pub mod admin {
     /// Manage system settings.
     pub const SYSTEM_MANAGE: &str = "admin.system.manage";
 
+    /// Manage the demo catalog - catalog, categorize, link/unlink to
+    /// matches, delete.
+    pub const DEMOS_MANAGE: &str = "admin.demos.manage";
+
     /// All admin permissions for iteration.
     pub const ALL: &[&str] = &[
         USERS_VIEW,
@@ -222,6 +226,7 @@ pub mod admin {
         TOURNAMENTS_MANAGE_ANY,
         AUDIT_VIEW,
         SYSTEM_MANAGE,
+        DEMOS_MANAGE,
     ];
 }
 

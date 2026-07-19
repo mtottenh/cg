@@ -1391,3 +1391,150 @@ async fn test_process_unlinked_requires_admin() {
     let response = app.post_auth("/v1/admin/demos/process-unlinked").await;
     response.assert_status(StatusCode::FORBIDDEN);
 }
+
+// ============================================================================
+// DEMO LINK ADMINISTRATION (correction) + RBAC
+// ============================================================================
+
+/// Catalog a demo via the admin API; returns its id.
+async fn catalog_test_demo(app: &TestApp, key_suffix: &str) -> String {
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    let response = app
+        .post_json(
+            "/v1/admin/demos",
+            &json!({
+                "game_id": game_id,
+                "file_name": format!("link-admin-{key_suffix}.dem"),
+                "s3_bucket": "portal-demos",
+                "s3_key": format!("demos/link-admin-{key_suffix}.dem.bz2"),
+                "file_size_bytes": 1000
+            }),
+        )
+        .await;
+    assert!(
+        response.status == StatusCode::CREATED || response.status == StatusCode::OK,
+        "catalog failed: {}",
+        response.text()
+    );
+    let body: serde_json::Value = response.json();
+    body["data"]["id"].as_str().unwrap().to_string()
+}
+
+/// Manual admin link stamps the demo's tournament; unlinking the last link
+/// to that tournament clears the stamp — the correction flow admins use
+/// when the auto-linker (or a human) got it wrong.
+#[tokio::test]
+async fn test_admin_link_stamps_and_unlink_clears_tournament() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+    let (tournament_id, match_id, _, _) =
+        crate::tournaments::create_tournament_with_matches(&app, "link-admin-test").await;
+    let demo_id = catalog_test_demo(&app, "stamp").await;
+
+    // Link → stamped.
+    app.post_json(
+        &format!("/v1/admin/demos/{demo_id}/link"),
+        &json!({ "match_id": match_id, "link_type": "manual" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}")).await;
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["tournament_id"].as_str(),
+        Some(tournament_id.as_str()),
+        "manual link should stamp the tournament"
+    );
+
+    // Unlink → stamp cleared (it was the only link).
+    app.delete_auth(&format!("/v1/admin/demos/{demo_id}/link/{match_id}"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}")).await;
+    let body: serde_json::Value = response.json();
+    assert!(
+        body["data"]["tournament_id"].is_null(),
+        "unlinking the last link must clear the tournament stamp: {body}"
+    );
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/links")).await;
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+}
+
+/// Demo-catalog mutations require admin.demos.manage — a moderator
+/// (users.view_all holder) can read dashboards but cannot link, unlink,
+/// or otherwise mutate the catalog.
+#[tokio::test]
+async fn test_demo_mutations_denied_for_moderator() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+    let (_, match_id, _, _) =
+        crate::tournaments::create_tournament_with_matches(&app, "link-rbac-test").await;
+    let demo_id = catalog_test_demo(&app, "rbac").await;
+
+    let moderator = UserBuilder::new()
+        .username("demo_link_moderator")
+        .build_persisted(app.pool())
+        .await;
+    assign_role_to_user(app.pool(), moderator.id, "moderator").await;
+    let mod_token = create_test_token(
+        moderator.id,
+        moderator.id,
+        "demo_link_moderator",
+        TEST_JWT_SECRET,
+    );
+
+    // Moderator can read the admin pipeline dashboard (view gate)...
+    app.get_with_token("/v1/admin/demos/stats", &mod_token)
+        .await
+        .assert_status(StatusCode::OK);
+
+    // ...but every catalog mutation is 403.
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    let attempts: Vec<(&str, String, Option<serde_json::Value>)> = vec![
+        (
+            "POST",
+            "/v1/admin/demos".to_string(),
+            Some(json!({
+                "game_id": game_id,
+                "file_name": "mod.dem",
+                "s3_bucket": "b",
+                "s3_key": "k.dem.bz2"
+            })),
+        ),
+        (
+            "POST",
+            format!("/v1/admin/demos/{demo_id}/link"),
+            Some(json!({ "match_id": match_id, "link_type": "manual" })),
+        ),
+        (
+            "DELETE",
+            format!("/v1/admin/demos/{demo_id}/link/{match_id}"),
+            None,
+        ),
+        (
+            "POST",
+            format!("/v1/admin/demos/{demo_id}/visibility"),
+            Some(json!({ "is_hidden": true })),
+        ),
+        ("DELETE", format!("/v1/admin/demos/{demo_id}"), None),
+        ("POST", "/v1/admin/demos/process-unlinked".to_string(), None),
+    ];
+    for (method, uri, body) in attempts {
+        let response = match (method, &body) {
+            ("POST", Some(b)) => app.post_json_with_token(&uri, b, &mod_token).await,
+            ("POST", None) => app.post_with_token(&uri, &mod_token).await,
+            ("DELETE", _) => app.delete_with_token(&uri, &mod_token).await,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            response.status,
+            StatusCode::FORBIDDEN,
+            "{method} {uri} should be 403 for moderator, got {}: {}",
+            response.status,
+            response.text()
+        );
+    }
+}

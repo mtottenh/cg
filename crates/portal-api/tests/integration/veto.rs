@@ -675,6 +675,162 @@ async fn test_individual_registration_player_can_perform_veto_action() {
 }
 
 // ============================================================================
+// SIDE SELECTION MODE RESOLUTION (picker_choice default)
+// ============================================================================
+
+/// Seven standard CS2 active-duty maps — enough for a bo3 map pool.
+const CS2_MAP_POOL: [&str; 7] = [
+    "de_dust2",
+    "de_mirage",
+    "de_inferno",
+    "de_nuke",
+    "de_overpass",
+    "de_ancient",
+    "de_anubis",
+];
+
+/// Bug C regression: a CS2 tournament that does not request an explicit side
+/// selection mode should inherit the CS2 plugin default (`picker_choice`), not
+/// silently fall back to `knife`. Previously `resolve_side_selection_mode`
+/// looked the plugin up by the game's UUID instead of its `plugin_id` slug, so
+/// every session defaulted to `knife`.
+#[tokio::test]
+async fn test_create_veto_session_defaults_to_picker_choice_for_cs2() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _reg1, _reg2, _player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(
+            &app,
+            "veto-side-mode-default",
+        )
+        .await;
+
+    // Create the session WITHOUT specifying side_selection_mode.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/veto"),
+            &json!({
+                "veto_format_id": "bo3_veto",
+                "map_pool": CS2_MAP_POOL,
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["side_selection_mode"], "picker_choice",
+        "CS2 session should default to the plugin's picker_choice mode, not knife. Body: {body:?}"
+    );
+}
+
+// ============================================================================
+// PICKER-CHOICE SIDE SELECTION (opponent selects, picker rejected)
+// ============================================================================
+
+/// Perform the next veto action (ban or pick) on the first remaining map as
+/// the given token, asserting success and returning the parsed response body.
+async fn veto_act_first_remaining(app: &TestApp, match_id: &str, token: &str) -> serde_json::Value {
+    let state = app.get(&format!("/v1/matches/{match_id}/veto")).await;
+    state.assert_status(StatusCode::OK);
+    let state_body: serde_json::Value = state.json();
+    let map = state_body["data"]["session"]["remaining_maps"][0]
+        .as_str()
+        .expect("a remaining map")
+        .to_string();
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/veto/action"),
+            &json!({ "map_id": map }),
+            token,
+        )
+        .await;
+    assert!(
+        response.status.is_success(),
+        "action should succeed. Status: {}, Body: {:?}",
+        response.status,
+        response.text()
+    );
+    response.json()
+}
+
+/// Bug B regression: in `picker_choice` mode the OPPONENT of the team that
+/// picked a map selects the starting side (standard CS convention). The
+/// picker attempting to select the side is rejected.
+///
+/// Flow (bo3, Ban-Ban-Pick-...): reg1 wins the flip and acts first, so reg1 is
+/// "team 1". Action 3 is team 1's PICK → reg1 is the picker, reg2 the opponent.
+#[tokio::test]
+async fn test_picker_choice_opponent_selects_side_and_picker_rejected() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, reg1, reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "veto-side-select")
+            .await;
+
+    // Create a picker_choice bo3 session (dev user acts for reg1, and is admin).
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/veto"),
+            &json!({
+                "veto_format_id": "bo3_veto",
+                "map_pool": CS2_MAP_POOL,
+                "side_selection_mode": "picker_choice",
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // Start and record a coin flip: reg2 (player2, a non-admin) wins and goes
+    // first, so reg2 is "team 1" and becomes the picker at action 3. reg1 (the
+    // dev user) is the opponent who gets to select the side.
+    app.post_auth(&format!("/v1/matches/{match_id}/veto/start"))
+        .await
+        .assert_status(StatusCode::OK);
+    app.post_json(
+        &format!("/v1/matches/{match_id}/veto/coin-flip"),
+        &json!({ "winner_registration_id": reg2, "winner_goes_first": true }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // Action 1: team 1 (reg2 = player2) bans.
+    veto_act_first_remaining(&app, &match_id, &player2_token).await;
+    // Action 2: team 2 (reg1 = dev user) bans.
+    veto_act_first_remaining(&app, &match_id, "dev-token").await;
+    // Action 3: team 1 (reg2 = player2) PICKS.
+    let pick = veto_act_first_remaining(&app, &match_id, &player2_token).await;
+    assert_eq!(
+        pick["data"]["action"]["action_type"], "pick",
+        "action 3 should be a pick. Body: {pick:?}"
+    );
+    assert_eq!(pick["data"]["action"]["action_number"], 3);
+
+    // The PICKER (reg2 / player2, a non-admin) may NOT select the side.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/veto/side"),
+            &json!({ "action_number": 3, "side": "ct" }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // The OPPONENT (reg1 / dev user) selects the side successfully.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/veto/side"),
+            &json!({ "action_number": 3, "side": "ct" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["side_selection"], "ct");
+    assert_eq!(
+        body["data"]["side_selected_by_registration_id"], reg1,
+        "the recorded side must be attributed to the opponent (reg1), not the picker. Body: {body:?}"
+    );
+}
+
+// ============================================================================
 // VETO LIFECYCLE AUTHORIZATION (start / coin flip)
 // ============================================================================
 

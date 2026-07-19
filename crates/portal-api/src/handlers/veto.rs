@@ -105,7 +105,15 @@ pub async fn create_veto_session(
             .tournament_service
             .get_tournament(match_.tournament_id)
             .await?;
-        resolve_side_selection_mode(&tournament, &state.plugin_manager)
+        let plugin_id = state
+            .game_repo
+            .find_by_id(tournament.game_id.as_uuid())
+            .await
+            .ok()
+            .flatten()
+            .map(|g| g.plugin_id)
+            .unwrap_or_default();
+        resolve_side_selection_mode(&tournament, &plugin_id, &state.plugin_manager)
     };
 
     // Resolve map pool: explicit request → tournament pool → game default
@@ -594,6 +602,7 @@ async fn enrich_map_metadata(
 /// no manual conversion is needed.
 pub(crate) fn resolve_side_selection_mode(
     tournament: &portal_domain::entities::tournament::Tournament,
+    plugin_id: &str,
     plugin_manager: &portal_plugins::PluginManager,
 ) -> portal_core::SideSelectionMode {
     use portal_core::SideSelectionMode;
@@ -608,8 +617,9 @@ pub(crate) fn resolve_side_selection_mode(
         return mode;
     }
 
-    // Fall back to plugin default — no conversion needed, same type
-    if let Some(plugin) = plugin_manager.get(&tournament.game_id.to_string())
+    // Fall back to plugin default — plugins are keyed by plugin_id (a slug
+    // like "cs2"), not the game's UUID. No conversion needed, same type.
+    if let Some(plugin) = plugin_manager.get(plugin_id)
         && let Some(tp) = plugin.as_tournament_plugin()
     {
         return tp.default_side_selection_mode();

@@ -299,7 +299,15 @@ async fn ensure_veto_session(
         Vec::new()
     };
 
-    let side_mode = resolve_side_selection_mode(&tournament, &state.plugin_manager);
+    let plugin_id = state
+        .game_repo
+        .find_by_id(tournament.game_id.as_uuid())
+        .await
+        .ok()
+        .flatten()
+        .map(|g| g.plugin_id)
+        .unwrap_or_default();
+    let side_mode = resolve_side_selection_mode(&tournament, &plugin_id, &state.plugin_manager);
 
     let session = match state
         .veto_service

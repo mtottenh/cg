@@ -477,7 +477,7 @@ where
                 ));
             }
             SideSelectionMode::PickerChoice => {
-                // Picker chooses side — reject for decider maps
+                // The opponent (non-picker) chooses side — reject for decider maps
                 if action.is_decider() {
                     return Err(DomainError::InvalidState(
                         "Side selection is not available for decider maps".to_string(),
@@ -490,17 +490,17 @@ where
             .performed_by_registration_id
             .ok_or_else(|| DomainError::InvalidState("Action has no performer".to_string()))?;
 
-        // In picker_choice mode, the picker selects the side
-        if acting_for_registration != picker {
+        // In picker_choice mode, the OPPONENT (non-picker) selects the side.
+        if acting_for_registration == picker {
             return Err(DomainError::NotAuthorized(
-                "Only the picker can select the side".to_string(),
+                "The opponent of the picker selects the side".to_string(),
             ));
         }
 
-        // Record side selection
+        // Record side selection, attributed to the opponent who selected it.
         let action = self
             .action_repo
-            .update_side_selection(action.id, side.to_string(), picker)
+            .update_side_selection(action.id, side.to_string(), acting_for_registration)
             .await?;
 
         info!(

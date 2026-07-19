@@ -1334,12 +1334,12 @@ async fn test_ws_side_selection_after_pick() {
     do_veto_action(&mut ws_b, &mut ws_a, "de_nuke", false).await;
     do_veto_action(&mut ws_a, &mut ws_b, "de_mirage", true).await;
 
-    // Team A (the picker) selects side "ct" for action 3
-    ws_select_side(&mut ws_a, 3, "ct").await;
+    // Team B (the OPPONENT of the picker) selects side "ct" for action 3.
+    ws_select_side(&mut ws_b, 3, "ct").await;
 
-    // Team A should receive ack
-    let response_a = wait_for_veto_response(&mut ws_a).await;
-    match response_a {
+    // Team B (the selector) should receive ack
+    let response_b = wait_for_veto_response(&mut ws_b).await;
+    match response_b {
         Some(ServerMessage::VetoActionAck { success, .. }) => {
             assert!(success, "Side selection should succeed");
         }
@@ -1353,9 +1353,9 @@ async fn test_ws_side_selection_after_pick() {
         other => panic!("Expected ack or performed for side selection, got: {other:?}"),
     }
 
-    // Team B should receive VetoActionPerformed with side selection
-    let response_b = wait_for_veto_response(&mut ws_b).await;
-    match response_b {
+    // Team A should receive VetoActionPerformed with side selection
+    let response_a = wait_for_veto_response(&mut ws_a).await;
+    match response_a {
         Some(ServerMessage::VetoActionPerformed { action, .. }) => {
             assert_eq!(
                 action["side_selection"].as_str(),
@@ -1368,10 +1368,10 @@ async fn test_ws_side_selection_after_pick() {
 }
 
 #[tokio::test]
-async fn test_ws_opponent_cannot_select_picker_side() {
+async fn test_ws_picker_cannot_select_side() {
     let mut app = TestApp::new().await;
-    // picker_choice mode: only the team that picked the map may choose its
-    // starting side.
+    // picker_choice mode: the OPPONENT of the team that picked the map chooses
+    // its starting side (standard CS convention). The picker may not.
     let setup = setup_veto_e2e_with_format_and_mode(
         &app,
         "bo3",
@@ -1394,18 +1394,18 @@ async fn test_ws_opponent_cannot_select_picker_side() {
     do_veto_action(&mut ws_b, &mut ws_a, "de_nuke", false).await;
     do_veto_action(&mut ws_a, &mut ws_b, "de_mirage", true).await;
 
-    // Team B (not the picker) tries to select side — should fail
-    ws_select_side(&mut ws_b, 3, "ct").await;
+    // Team A (the picker) tries to select side — should fail
+    ws_select_side(&mut ws_a, 3, "ct").await;
 
-    let response = wait_for_veto_response(&mut ws_b).await;
+    let response = wait_for_veto_response(&mut ws_a).await;
     match response {
         Some(ServerMessage::Error { code, message }) => {
             assert_eq!(code, "side_select_error", "Should be side_select_error");
             assert!(
-                message.contains("picker"),
-                "Error should mention the picker: {message}"
+                message.contains("opponent"),
+                "Error should mention the opponent: {message}"
             );
         }
-        other => panic!("Expected Error for non-picker selecting side, got: {other:?}"),
+        other => panic!("Expected Error for the picker selecting side, got: {other:?}"),
     }
 }

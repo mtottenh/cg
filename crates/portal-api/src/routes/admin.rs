@@ -135,6 +135,10 @@ pub fn routes() -> Router<AppState> {
             post(demos::process_unlinked_demos),
         )
         .route(
+            "/demos/auto-link",
+            get(demos::get_auto_link_setting).put(demos::update_auto_link_setting),
+        )
+        .route(
             "/demos/{demo_id}/link/{match_id}",
             delete(demos::unlink_demo_from_match),
         )

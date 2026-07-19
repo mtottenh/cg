@@ -35,17 +35,17 @@ use portal_db::{
     PgPlayerRatingHistoryRepository, PgPlayerRepository, PgProgressionLogRepository,
     PgRefreshTokenRepository, PgResultClaimRepository, PgResultReviewRepository,
     PgSagaExecutionRepository, PgScheduleProposalRepository, PgSteamTrackingRepository,
-    PgSuggestedTimeRepository, PgTournamentBracketRepository, PgTournamentMapPoolRepository,
-    PgTournamentMatchRepository, PgTournamentRegistrationRepository, PgTournamentRepository,
-    PgTournamentStageRepository, PgTournamentStandingsRepository, PgUserRepository,
-    PgVetoActionRepository, PgVetoDelegateRepository, PgVetoLobbyMessageRepository,
-    PgVetoSessionRepository, RoleRepository, StatsRepository,
+    PgSuggestedTimeRepository, PgSystemSettingsRepository, PgTournamentBracketRepository,
+    PgTournamentMapPoolRepository, PgTournamentMatchRepository, PgTournamentRegistrationRepository,
+    PgTournamentRepository, PgTournamentStageRepository, PgTournamentStandingsRepository,
+    PgUserRepository, PgVetoActionRepository, PgVetoDelegateRepository,
+    PgVetoLobbyMessageRepository, PgVetoSessionRepository, RoleRepository, StatsRepository,
 };
 use portal_domain::services::{
     AwardService, BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
     LeagueSeasonService, LeagueService, LeagueTeamInvitationService, LeagueTeamService,
     PermissionService, PlayerGameProfileService, PlayerService, SteamTrackingService,
-    TournamentService, UserService,
+    SystemSettingsService, TournamentService, UserService,
     tournament::{
         AvailabilityService, CheckInService, DisputeService, EvidenceService,
         EvidenceServiceConfig, ForfeitService, MatchCompletionSaga, MatchLifecycleService,
@@ -61,6 +61,7 @@ use std::sync::Arc;
 /// Type aliases for services with concrete repository implementations.
 pub type AppSteamTrackingService =
     SteamTrackingService<PgSteamTrackingRepository, PgPlayerRepository>;
+pub type AppSystemSettingsService = SystemSettingsService<PgSystemSettingsRepository>;
 pub type AppDiscoveredMatchService = DiscoveredMatchService<PgDiscoveredMatchRepository>;
 pub type AppUserService = UserService<PgUserRepository, PgPlayerRepository>;
 pub type AppPlayerService = PlayerService<PgPlayerRepository, PgLeagueTeamMemberRepository>;
@@ -291,6 +292,8 @@ pub struct AppState {
     pub api_key_repo: Arc<PgApiKeyRepository>,
     /// Steam tracking service.
     pub steam_tracking_service: AppSteamTrackingService,
+    /// System settings service (runtime-togglable platform settings).
+    pub system_settings_service: AppSystemSettingsService,
     /// Discovered match service.
     pub discovered_match_service: AppDiscoveredMatchService,
     /// Player rating history repository for rating submissions.
@@ -430,6 +433,8 @@ impl AppState {
         );
         let steam_tracking_service =
             SteamTrackingService::new(Arc::clone(&steam_tracking_repo), Arc::clone(&player_repo));
+        let system_settings_service =
+            SystemSettingsService::new(Arc::new(PgSystemSettingsRepository::new(db_pool.clone())));
         let discovered_match_service =
             DiscoveredMatchService::new(Arc::clone(&discovered_match_repo));
         let player_game_profile_repo =
@@ -764,6 +769,7 @@ impl AppState {
             cs2_demo_base_url,
             api_key_repo,
             steam_tracking_service,
+            system_settings_service,
             discovered_match_service,
             rating_history_repo,
             mm_stats_repo,

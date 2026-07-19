@@ -25,6 +25,7 @@ mod refresh_token;
 mod result_review;
 mod saga;
 mod steam_tracking;
+mod system_settings;
 mod tournament;
 mod user;
 mod veto_delegate;
@@ -58,6 +59,7 @@ pub use refresh_token::PgRefreshTokenRepository;
 pub use result_review::PgResultReviewRepository;
 pub use saga::{PgProgressionLogRepository, PgSagaExecutionRepository};
 pub use steam_tracking::PgSteamTrackingRepository;
+pub use system_settings::PgSystemSettingsRepository;
 pub use tournament::{
     MatchCompletionTxInput, MatchCompletionTxOutput, PgMatchStatusLogRepository,
     PgResultClaimRepository, PgScheduleProposalRepository, PgTournamentBracketRepository,

@@ -26,6 +26,7 @@ pub mod refresh_token;
 pub mod result_review;
 pub mod schedule_proposal;
 pub mod steam_tracking;
+pub mod system_settings;
 pub mod tournament;
 pub mod user;
 pub mod veto_delegate;

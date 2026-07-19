@@ -5,12 +5,12 @@ use crate::dto::requests::{
     AssociateDemoRequest, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
     GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest,
     PendingDemosQuery, ProcessUnlinkedDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest,
-    SubmitDemoStatsRequest,
+    SubmitDemoStatsRequest, UpdateAutoLinkSettingRequest,
 };
 use crate::dto::responses::{
-    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoDownloadResponse, DemoListResponse,
-    DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoPlayerResponse, DemoResponse,
-    DemoStatusCountsResponse, ProcessUnlinkedDemosResponse,
+    AutoLinkSettingResponse, BatchCatalogErrorResponse, BatchCatalogResultResponse,
+    DemoDownloadResponse, DemoListResponse, DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse,
+    DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse, ProcessUnlinkedDemosResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
@@ -25,6 +25,7 @@ use portal_core::{
 };
 use portal_domain::entities::demo::{Demo, DemoFilter, DemoPlayerStats, ParsedDemoMetadata};
 use portal_domain::services::DemoPlayerInput;
+use portal_domain::services::system_settings;
 use validator::Validate;
 
 /// Extract request ID from headers.
@@ -644,6 +645,7 @@ pub async fn get_pending_demos(
         (status = 200, description = "Backfill pass results", body = DataResponse<ProcessUnlinkedDemosResponse>),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Admin access required", body = ApiError),
+        (status = 409, description = "Auto-linking is disabled", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "admin"
@@ -658,12 +660,97 @@ pub async fn process_unlinked_demos(
 
     require_demos_manage(&state, &auth).await?;
 
+    if !state
+        .system_settings_service
+        .get_bool(system_settings::DEMO_AUTO_LINK_ENABLED, true)
+        .await?
+    {
+        return Err(ApiError::conflict(
+            "Demo auto-linking is disabled; enable it before running the backfill",
+        ));
+    }
+
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
 
     let result = state.demo_service.process_unlinked_demos(limit).await?;
 
     Ok(Json(DataResponse::new(
         ProcessUnlinkedDemosResponse::from(result),
+        request_id,
+    )))
+}
+
+/// Get the demo auto-link setting.
+///
+/// When disabled, stats ingestion skips the automatic demo→match linking
+/// pass and the backfill endpoint refuses to run. Manual linking and
+/// evidence uploads (which link directly to their match) are unaffected.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/demos/auto-link",
+    responses(
+        (status = 200, description = "Current auto-link setting", body = DataResponse<AutoLinkSettingResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn get_auto_link_setting(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+) -> ApiResult<Json<DataResponse<AutoLinkSettingResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    require_demos_manage(&state, &auth).await?;
+
+    let enabled = state
+        .system_settings_service
+        .get_bool(system_settings::DEMO_AUTO_LINK_ENABLED, true)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        AutoLinkSettingResponse { enabled },
+        request_id,
+    )))
+}
+
+/// Update the demo auto-link setting.
+///
+/// Admin kill-switch: turn off if auto-linking is misbehaving; demos then
+/// only link to matches manually or via evidence uploads.
+#[utoipa::path(
+    put,
+    path = "/v1/admin/demos/auto-link",
+    request_body = UpdateAutoLinkSettingRequest,
+    responses(
+        (status = 200, description = "Updated auto-link setting", body = DataResponse<AutoLinkSettingResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn update_auto_link_setting(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Json(request): Json<UpdateAutoLinkSettingRequest>,
+) -> ApiResult<Json<DataResponse<AutoLinkSettingResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    require_demos_manage(&state, &auth).await?;
+
+    state
+        .system_settings_service
+        .set_bool(system_settings::DEMO_AUTO_LINK_ENABLED, request.enabled)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        AutoLinkSettingResponse {
+            enabled: request.enabled,
+        },
         request_id,
     )))
 }
@@ -937,9 +1024,16 @@ pub async fn submit_demo_stats(
         .collect();
 
     let raw_stats = request.raw_stats.clone();
+    // Auto-link kill-switch: a settings read failure must not block
+    // ingestion, so fall back to enabled.
+    let auto_link = state
+        .system_settings_service
+        .get_bool(system_settings::DEMO_AUTO_LINK_ENABLED, true)
+        .await
+        .unwrap_or(true);
     let demo = state
         .demo_service
-        .save_demo_stats(demo_id, metadata, request.raw_stats, players)
+        .save_demo_stats(demo_id, metadata, request.raw_stats, players, auto_link)
         .await?;
 
     // Project EAV stat facts from the raw stats via the game plugin.

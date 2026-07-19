@@ -216,3 +216,11 @@ pub struct MarkDemoFailedRequest {
     #[validate(length(min = 1, max = 2000))]
     pub error: String,
 }
+
+/// Request to update the demo auto-link setting.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct UpdateAutoLinkSettingRequest {
+    /// Whether the automatic demo→match linking pass runs at stats
+    /// ingestion. Manual linking and evidence uploads are unaffected.
+    pub enabled: bool,
+}

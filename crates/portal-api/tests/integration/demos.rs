@@ -1521,11 +1521,19 @@ async fn test_demo_mutations_denied_for_moderator() {
         ),
         ("DELETE", format!("/v1/admin/demos/{demo_id}"), None),
         ("POST", "/v1/admin/demos/process-unlinked".to_string(), None),
+        (
+            "PUT",
+            "/v1/admin/demos/auto-link".to_string(),
+            Some(json!({ "enabled": false })),
+        ),
+        ("GET", "/v1/admin/demos/auto-link".to_string(), None),
     ];
     for (method, uri, body) in attempts {
         let response = match (method, &body) {
             ("POST", Some(b)) => app.post_json_with_token(&uri, b, &mod_token).await,
             ("POST", None) => app.post_with_token(&uri, &mod_token).await,
+            ("PUT", Some(b)) => app.put_json_with_token(&uri, b, &mod_token).await,
+            ("GET", _) => app.get_with_token(&uri, &mod_token).await,
             ("DELETE", _) => app.delete_with_token(&uri, &mod_token).await,
             _ => unreachable!(),
         };
@@ -1537,4 +1545,85 @@ async fn test_demo_mutations_denied_for_moderator() {
             response.text()
         );
     }
+}
+
+/// Auto-link kill-switch: with the setting disabled, stats submission skips
+/// auto-linking and the backfill endpoint refuses with 409; re-enabling and
+/// running the backfill links the demo.
+#[tokio::test]
+async fn test_auto_link_toggle_disables_and_reenables() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, reg1, reg2, _token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "auto-link-toggle")
+            .await;
+
+    let t = chrono::Utc::now() + chrono::Duration::hours(1);
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+        &json!({ "scheduled_at": t.to_rfc3339() }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    set_registration_steam_id(&app, &reg1, 76_561_198_000_000_401).await;
+    set_registration_steam_id(&app, &reg2, 76_561_198_000_000_402).await;
+
+    // Default setting is enabled.
+    let response = app.get_auth("/v1/admin/demos/auto-link").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["enabled"], true);
+
+    // Disable auto-linking.
+    let response = app
+        .put_json("/v1/admin/demos/auto-link", &json!({ "enabled": false }))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["enabled"], false);
+
+    // Full-overlap stats submission no longer links.
+    let demo_id = catalog_single_demo(&app, "demos/auto_link_toggle.dem").await;
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/stats"),
+            &auto_link_stats_body(&["76561198000000401", "76561198000000402"], &t.to_rfc3339()),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body["data"]["tournament_id"].is_null(),
+        "demo must not be stamped while auto-linking is disabled"
+    );
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/links")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"].as_array().unwrap().is_empty());
+
+    // The backfill endpoint refuses while disabled.
+    app.post_auth("/v1/admin/demos/process-unlinked")
+        .await
+        .assert_status(StatusCode::CONFLICT);
+
+    // Re-enable and backfill: the demo links and the tournament is stamped.
+    app.put_json("/v1/admin/demos/auto-link", &json!({ "enabled": true }))
+        .await
+        .assert_status(StatusCode::OK);
+    let response = app.post_auth("/v1/admin/demos/process-unlinked").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"]["linked"].as_i64().unwrap() >= 1);
+
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/links")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let links = body["data"].as_array().unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0]["match_id"], match_id);
+
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["tournament_id"], tournament_id);
 }

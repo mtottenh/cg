@@ -35,7 +35,7 @@ pub use demo::{
     CategorizeDemoRequest, DemoPlayerInputDto, GetDemosForMatchQuery, LinkDemoToMatchRequest,
     ListDemosQuery, MarkDemoFailedRequest, PendingDemosQuery, ProcessUnlinkedDemosQuery,
     SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
-    UnlinkDemoFromMatchRequest,
+    UnlinkDemoFromMatchRequest, UpdateAutoLinkSettingRequest,
 };
 pub use dispute::{
     AddDisputeMessageRequest, AdminDisputeMessageRequest, AssignDisputeRequest, ListDisputesQuery,

@@ -421,3 +421,10 @@ pub struct DemoDownloadResponse {
     /// Download URL.
     pub download_url: String,
 }
+
+/// Current state of the demo auto-link setting.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AutoLinkSettingResponse {
+    /// Whether the automatic demo→match linking pass is enabled.
+    pub enabled: bool,
+}

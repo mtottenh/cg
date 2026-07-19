@@ -51,8 +51,8 @@ use super::{
     AppPermissionService, AppPlayerGameProfileService, AppPlayerService, AppProgressionService,
     AppRegistrationService, AppResultReviewService, AppResultService, AppSchedulingService,
     AppSeedingService, AppStandingsService, AppState, AppSteamTrackingService,
-    AppTournamentService, AppUserService, AppVetoAuthorizationService, AppVetoLobbyChatService,
-    AppVetoService, TokenConfig,
+    AppSystemSettingsService, AppTournamentService, AppUserService, AppVetoAuthorizationService,
+    AppVetoLobbyChatService, AppVetoService, TokenConfig,
 };
 use crate::websocket::VetoLobbyManager;
 use portal_plugins::PluginManager;
@@ -650,6 +650,8 @@ pub struct DemoState {
     pub plugin_manager: Arc<PluginManager>,
     /// Demo stat-fact repository (EAV projection written at ingest).
     pub demo_stats_repo: Arc<PgDemoPlayerStatsRepository>,
+    /// System settings service (auto-link kill-switch).
+    pub system_settings_service: AppSystemSettingsService,
 }
 
 impl FromRef<AppState> for DemoState {
@@ -661,6 +663,7 @@ impl FromRef<AppState> for DemoState {
             game_repo: s.game_repo.clone(),
             plugin_manager: Arc::clone(&s.plugin_manager),
             demo_stats_repo: Arc::clone(&s.demo_stats_repo),
+            system_settings_service: s.system_settings_service.clone(),
         }
     }
 }
@@ -867,6 +870,8 @@ pub struct InternalState {
     pub plugin_manager: Arc<PluginManager>,
     /// Demo stat-fact repository (EAV projection written at ingest).
     pub demo_stats_repo: Arc<PgDemoPlayerStatsRepository>,
+    /// System settings service (auto-link kill-switch).
+    pub system_settings_service: AppSystemSettingsService,
 }
 
 impl FromRef<AppState> for InternalState {
@@ -885,6 +890,7 @@ impl FromRef<AppState> for InternalState {
             mm_stats_repo: Arc::clone(&s.mm_stats_repo),
             plugin_manager: Arc::clone(&s.plugin_manager),
             demo_stats_repo: Arc::clone(&s.demo_stats_repo),
+            system_settings_service: s.system_settings_service.clone(),
         }
     }
 }

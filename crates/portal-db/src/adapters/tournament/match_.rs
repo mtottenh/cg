@@ -990,6 +990,8 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
                        AND COALESCE(t.started_at, t.starts_at) - $3 * INTERVAL '1 hour' <= $2
                        AND COALESCE(t.completed_at, t.ends_at, NOW()) + $3 * INTERVAL '1 hour' >= $2)
                   )
+                ORDER BY ABS(EXTRACT(EPOCH FROM
+                    (COALESCE(m.scheduled_at, t.started_at, t.starts_at) - $2)))
                 LIMIT $4
             )
             SELECT c.match_id,

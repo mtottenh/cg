@@ -13,6 +13,7 @@ pub mod permission;
 pub mod player;
 pub mod player_game_profile;
 pub mod steam_tracking;
+pub mod system_settings;
 pub mod tournament;
 pub mod user;
 
@@ -31,5 +32,6 @@ pub use permission::PermissionService;
 pub use player::{PlayerSearchResult, PlayerService};
 pub use player_game_profile::PlayerGameProfileService;
 pub use steam_tracking::SteamTrackingService;
+pub use system_settings::SystemSettingsService;
 pub use tournament::{BracketGenerator, GeneratedBracket, TournamentService};
 pub use user::{AuthResult, LoginCommand, RegisterUserCommand, UserService};

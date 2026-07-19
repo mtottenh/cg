@@ -25,12 +25,14 @@ use crate::dto::requests::{
     SeedAssignment, SelectSideRequest, SetDemoNotesRequest, SetDemoVisibilityRequest,
     SetMapPoolRequest, SetRankTiersRequest, SetTournamentMapPoolRequest, SocialLinksRequest,
     SubmitDemoStatsRequest, SubmitMatchResultRequest, SubmitResultClaimRequest,
-    TransferOwnershipRequest, UpdateAvailabilityWindowRequest, UpdateGameRequest,
-    UpdateLeagueMemberRoleRequest, UpdateLeagueRequest, UpdateLeagueSeasonRequest,
-    UpdateLeagueTeamMemberRequest, UpdateLeagueTeamRequest, UpdateMapRequest,
-    UpdatePlayerProfileRequest, UpdateRoleRequest, UpdateTeamSizeRequest, UpdateTournamentRequest,
-    ValidateDemoRequest, ValidateEvidenceRequest, WithdrawFromTournamentRequest,
+    TransferOwnershipRequest, UpdateAutoLinkSettingRequest, UpdateAvailabilityWindowRequest,
+    UpdateGameRequest, UpdateLeagueMemberRoleRequest, UpdateLeagueRequest,
+    UpdateLeagueSeasonRequest, UpdateLeagueTeamMemberRequest, UpdateLeagueTeamRequest,
+    UpdateMapRequest, UpdatePlayerProfileRequest, UpdateRoleRequest, UpdateTeamSizeRequest,
+    UpdateTournamentRequest, ValidateDemoRequest, ValidateEvidenceRequest,
+    WithdrawFromTournamentRequest,
 };
+use crate::dto::responses::AutoLinkSettingResponse;
 use crate::dto::responses::demo::{
     BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoDownloadResponse, DemoListResponse,
     DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse, DemoPlayerResponse,
@@ -358,6 +360,8 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::delete_demo,
         demos::set_demo_notes,
         demos::process_unlinked_demos,
+        demos::get_auto_link_setting,
+        demos::update_auto_link_setting,
         // Result reviews
         result_reviews::get_result_review,
         result_reviews::acknowledge_result_review,
@@ -649,6 +653,8 @@ use utoipa_swagger_ui::SwaggerUi;
             SetDemoNotesRequest,
             DemoDownloadResponse,
             ProcessUnlinkedDemosResponse,
+            UpdateAutoLinkSettingRequest,
+            AutoLinkSettingResponse,
             // Steam Tracking
             crate::handlers::steam_tracking::RegisterSteamTrackingRequest,
             crate::handlers::steam_tracking::UpdateSteamTrackingRequest,

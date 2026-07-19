@@ -889,9 +889,19 @@ pub async fn internal_submit_demo_stats(
         .collect();
 
     let raw_stats = request.raw_stats.clone();
+    // Auto-link kill-switch: a settings read failure must not block
+    // ingestion, so fall back to enabled.
+    let auto_link = state
+        .system_settings_service
+        .get_bool(
+            portal_domain::services::system_settings::DEMO_AUTO_LINK_ENABLED,
+            true,
+        )
+        .await
+        .unwrap_or(true);
     let demo = state
         .demo_service
-        .save_demo_stats(demo_id, metadata, request.raw_stats, players)
+        .save_demo_stats(demo_id, metadata, request.raw_stats, players, auto_link)
         .await?;
 
     // Project EAV stat facts from the raw stats via the game plugin.

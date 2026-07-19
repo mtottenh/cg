@@ -139,6 +139,8 @@ where
     /// Save parsed demo stats.
     ///
     /// Idempotent: deletes existing player entries before re-inserting.
+    /// `auto_link` gates the automatic demo→match linking pass (admin
+    /// kill-switch); identity resolution and stats persistence always run.
     #[instrument(skip(self, metadata, stats_json, players))]
     pub async fn save_demo_stats(
         &self,
@@ -146,6 +148,7 @@ where
         metadata: ParsedDemoMetadata,
         stats_json: serde_json::Value,
         players: Vec<DemoPlayerInput>,
+        auto_link: bool,
     ) -> Result<Demo, DomainError> {
         // Update demo with stats
         let demo = self
@@ -182,14 +185,19 @@ where
         }
 
         // Attempt to auto-link the demo to a tournament match. Non-fatal:
-        // a failed pass must never fail stats ingestion.
-        let demo = match self.try_auto_link(&demo).await {
-            Ok(Some(updated)) => updated,
-            Ok(None) => demo,
-            Err(e) => {
-                warn!(demo_id = %id, error = %e, "Demo auto-link pass failed");
-                demo
+        // a failed pass must never fail stats ingestion. Skipped entirely
+        // when the admin kill-switch is off.
+        let demo = if auto_link {
+            match self.try_auto_link(&demo).await {
+                Ok(Some(updated)) => updated,
+                Ok(None) => demo,
+                Err(e) => {
+                    warn!(demo_id = %id, error = %e, "Demo auto-link pass failed");
+                    demo
+                }
             }
+        } else {
+            demo
         };
 
         info!(demo_id = %id, "Saved demo stats");

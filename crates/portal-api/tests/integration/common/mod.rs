@@ -322,6 +322,26 @@ impl TestApp {
         .await
     }
 
+    /// Make a PUT request with JSON body and a specific token.
+    pub async fn put_json_with_token<T: serde::Serialize>(
+        &self,
+        uri: &str,
+        body: &T,
+        token: &str,
+    ) -> TestResponse {
+        let json = serde_json::to_string(body).unwrap();
+        self.request(
+            Request::builder()
+                .method("PUT")
+                .uri(uri)
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::from(json))
+                .unwrap(),
+        )
+        .await
+    }
+
     /// Make a POST request (with auth, no body).
     pub async fn post_auth(&self, uri: &str) -> TestResponse {
         self.request(

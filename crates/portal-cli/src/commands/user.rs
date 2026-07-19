@@ -113,6 +113,39 @@ enum UserSubcommand {
         #[arg(long)]
         reason: Option<String>,
     },
+
+    /// Import legacy players as Steam-provider accounts.
+    ///
+    /// Reads a JSON array of `{steam_id, name, email, created_at}` (the
+    /// tenmans_be export) and provisions each as a Steam sign-in account,
+    /// exactly as if they had signed in through Steam. Idempotent: rows
+    /// whose SteamID64 already has a player are counted as existing and
+    /// left untouched. Rows without a valid SteamID64 are skipped.
+    ImportSteam {
+        /// Path to the JSON export file
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// Parse and validate only; write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// One row of the legacy player export.
+#[derive(serde::Deserialize)]
+struct LegacyPlayer {
+    steam_id: String,
+    name: String,
+    email: Option<String>,
+    created_at: Option<String>,
+}
+
+impl LegacyPlayer {
+    /// Valid SteamID64, or `None` for internal rows (e.g. the legacy
+    /// `SYSTEM` actor uses steam_id `0`).
+    fn steam_id_64(&self) -> Option<i64> {
+        self.steam_id.parse::<i64>().ok().filter(|id| *id > 0)
+    }
 }
 
 impl UserCommand {
@@ -190,8 +223,117 @@ impl UserCommand {
             UserSubcommand::Unban { id, reason } => {
                 unban_user(&user_repo, &ban_repo, *id, reason.as_deref()).await
             }
+
+            UserSubcommand::ImportSteam { file, dry_run } => {
+                import_steam_players(pool, file, *dry_run).await
+            }
         }
     }
+}
+
+/// Import legacy players through the same provisioning path as Steam
+/// sign-in, then backdate `created_at` and restore the real email where
+/// the legacy site had one.
+async fn import_steam_players(pool: &PgPool, file: &std::path::Path, dry_run: bool) -> Result<()> {
+    use portal_db::{NewUserRole, PgPlayerRepository, PgUserRepository, RoleRepository};
+    use portal_domain::services::UserService;
+    use std::sync::Arc;
+
+    let raw = std::fs::read_to_string(file)
+        .with_context(|| format!("Failed to read {}", file.display()))?;
+    let rows: Vec<LegacyPlayer> = serde_json::from_str(&raw).context("Invalid JSON export")?;
+
+    let service = UserService::new(
+        Arc::new(PgUserRepository::new(pool.clone())),
+        Arc::new(PgPlayerRepository::new(pool.clone())),
+    );
+    let role_repo = RoleRepository::new(pool.clone());
+    let default_role = role_repo
+        .find_by_name("user")
+        .await
+        .context("Failed to look up default role")?;
+
+    let (mut created, mut existing, mut skipped) = (0u32, 0u32, 0u32);
+    for row in &rows {
+        let Some(steam_id_64) = row.steam_id_64() else {
+            println!("skip (no valid SteamID64): {}", row.name);
+            skipped += 1;
+            continue;
+        };
+        if dry_run {
+            created += 1;
+            continue;
+        }
+
+        let (user, player, was_created) = service
+            .login_with_steam(steam_id_64, Some(&row.name))
+            .await
+            .with_context(|| format!("Failed to provision {} ({steam_id_64})", row.name))?;
+
+        if !was_created {
+            existing += 1;
+            continue;
+        }
+        created += 1;
+
+        if let Some(role) = &default_role {
+            role_repo
+                .assign_to_user(NewUserRole {
+                    user_id: user.id.into(),
+                    role_id: role.id,
+                    scope_type: None,
+                    scope_id: None,
+                    granted_by: None,
+                    expires_at: None,
+                })
+                .await
+                .with_context(|| format!("Failed to grant default role to {}", row.name))?;
+        }
+
+        // Backdate to the legacy signup time so account age survives.
+        if let Some(ts) = row
+            .created_at
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        {
+            let ts = ts.to_utc();
+            sqlx::query("UPDATE users SET created_at = $1 WHERE id = $2")
+                .bind(ts)
+                .bind(uuid::Uuid::from(user.id))
+                .execute(pool)
+                .await?;
+            sqlx::query("UPDATE players SET created_at = $1 WHERE id = $2")
+                .bind(ts)
+                .bind(uuid::Uuid::from(player.id))
+                .execute(pool)
+                .await?;
+        }
+
+        // Restore the real email over the steam_<id>@steam.invalid
+        // placeholder (only the legacy email-auth account has one).
+        if let Some(email) = row.email.as_deref().filter(|e| !e.is_empty()) {
+            sqlx::query("UPDATE users SET email = $1 WHERE id = $2")
+                .bind(email)
+                .bind(uuid::Uuid::from(user.id))
+                .execute(pool)
+                .await
+                .with_context(|| format!("Failed to set email for {}", row.name))?;
+        }
+    }
+
+    if dry_run {
+        success(&format!(
+            "[dry-run] {} importable, {} skipped of {} rows",
+            created,
+            skipped,
+            rows.len()
+        ));
+    } else {
+        success(&format!(
+            "Imported {created} players ({existing} already present, {skipped} skipped)"
+        ));
+    }
+    Ok(())
 }
 
 async fn list_users(
@@ -489,4 +631,27 @@ async fn unban_user(
 
     success(&format!("Lifted {} ban(s) for user: {id}", lifted.len()));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LegacyPlayer;
+
+    #[test]
+    fn legacy_export_parses_and_validates_steam_ids() {
+        let rows: Vec<LegacyPlayer> = serde_json::from_str(
+            r#"[
+              {"steam_id":"0","name":"SYSTEM","email":null,"created_at":"2025-01-26T16:58:55Z"},
+              {"steam_id":"76561198014255226","name":"gwoody","email":"g@example.com","created_at":"2025-02-04T21:38:15Z"},
+              {"steam_id":"not-a-number","name":"broken","email":null,"created_at":null}
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].steam_id_64(), None, "SYSTEM row must be skipped");
+        assert_eq!(rows[1].steam_id_64(), Some(76_561_198_014_255_226));
+        assert_eq!(rows[1].email.as_deref(), Some("g@example.com"));
+        assert_eq!(rows[2].steam_id_64(), None);
+    }
 }

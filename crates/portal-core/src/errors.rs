@@ -32,7 +32,11 @@ pub struct FieldError {
 impl FieldError {
     /// Create a new field error.
     #[must_use]
-    pub fn new(field: impl Into<String>, message: impl Into<String>, code: impl Into<String>) -> Self {
+    pub fn new(
+        field: impl Into<String>,
+        message: impl Into<String>,
+        code: impl Into<String>,
+    ) -> Self {
         Self {
             field: field.into(),
             message: message.into(),
@@ -177,6 +181,10 @@ pub enum DomainError {
     /// The requested game was not found.
     #[error("game not found: {0}")]
     GameNotFound(GameId),
+
+    /// The requested game was not found (looked up by slug rather than id).
+    #[error("game not found: {0}")]
+    GameNotFoundBySlug(String),
 
     /// The requested match was not found.
     #[error("match not found: {0}")]
@@ -546,6 +554,7 @@ impl DomainError {
                 | Self::PlayerNotFound(_)
                 | Self::TeamNotFound(_)
                 | Self::GameNotFound(_)
+                | Self::GameNotFoundBySlug(_)
                 | Self::MatchNotFound(_)
                 | Self::TournamentNotFound(_)
                 | Self::TournamentStageNotFound(_)

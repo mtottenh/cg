@@ -155,7 +155,13 @@ impl From<RepositoryError> for DomainError {
                 "Player" => typed!(id, PlayerId, PlayerNotFound),
                 // Team has no typed ID yet (matchmaking/lobby feature pending).
                 "Team" => Self::TeamNotFound(id),
-                "Game" => typed!(id, GameId, GameNotFound),
+                // Games are addressed by slug at the API boundary, so the id
+                // here may legitimately be a non-UUID user-supplied string —
+                // still a 404, not a malformed-adapter-id 500.
+                "Game" => match id.parse::<GameId>() {
+                    Ok(parsed) => Self::GameNotFound(parsed),
+                    Err(_) => Self::GameNotFoundBySlug(id),
+                },
                 "Match" => typed!(id, MatchId, MatchNotFound),
                 "Tournament" => typed!(id, TournamentId, TournamentNotFound),
                 "TournamentStage" => typed!(id, TournamentStageId, TournamentStageNotFound),

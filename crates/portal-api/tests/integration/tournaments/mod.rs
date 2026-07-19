@@ -9,14 +9,30 @@ mod registration;
 mod scheduling;
 mod seeding;
 
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use portal_test::prelude::*;
 use serde_json::json;
 use uuid::Uuid;
 
 /// Helper to transition a match to Ready status using admin endpoint.
+///
+/// Bracket generation may already emit matches in `ready` (both slots
+/// filled), and the state machine rejects same-state transitions — so this
+/// is a no-op when the match is already ready.
 pub async fn transition_match_to_ready(app: &TestApp, tournament_id: &str, match_id: &str) {
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{}/matches/{}/status",
+            tournament_id, match_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    if body["data"]["current_status"].as_str() == Some("ready") {
+        return;
+    }
+
     let response = app
         .post_json(
             &format!(
@@ -101,7 +117,10 @@ pub async fn create_tournament_with_registration(app: &TestApp, slug: &str) -> S
 
     // Open registration
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/open-registration", tournament_id))
+        .post_auth(&format!(
+            "/v1/tournaments/{}/open-registration",
+            tournament_id
+        ))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -177,7 +196,10 @@ pub async fn create_tournament_with_matches(
 
     // Open registration
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/open-registration", tournament_id))
+        .post_auth(&format!(
+            "/v1/tournaments/{}/open-registration",
+            tournament_id
+        ))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -211,7 +233,10 @@ pub async fn create_tournament_with_matches(
 
     let body: serde_json::Value = response.json();
     let matches = body["data"].as_array().unwrap();
-    assert!(!matches.is_empty(), "Tournament should have at least one match");
+    assert!(
+        !matches.is_empty(),
+        "Tournament should have at least one match"
+    );
 
     let match_id = matches[0]["id"].as_str().unwrap().to_string();
 
@@ -223,4 +248,3 @@ pub async fn create_tournament_with_matches(
 
     (tournament_id, match_id, reg1, reg2)
 }
-

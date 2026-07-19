@@ -72,9 +72,11 @@ cargo clippy -- -D warnings
 cargo check
 
 # Tests (need Docker for testcontainers)
-cargo test
-cargo test -p portal-api
-RUST_LOG=debug cargo test test_name -- --nocapture
+# IMPORTANT: the integration target has required-features = ["test-utils"];
+# plain `cargo test` silently runs ZERO integration tests.
+cargo test -p portal-api --features test-utils
+cargo test --workspace                                   # unit tests only
+RUST_LOG=debug cargo test -p portal-api --features test-utils test_name -- --nocapture
 
 # Migrations (manual; usually auto on server start)
 sqlx migrate run --database-url postgres://portal:portal@localhost:5433/portal_dev

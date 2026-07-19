@@ -3,9 +3,8 @@
 //! Tests the full workflow: result confirmation → demo validation → review creation →
 //! review resolution → bracket progression.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use portal_test::prelude::*;
 use serde_json::json;
 use sqlx::Row;
@@ -15,22 +14,7 @@ use uuid::Uuid;
 // HELPERS
 // ============================================================================
 
-/// Helper to transition a match to Ready status using admin endpoint.
-async fn transition_match_to_ready(app: &TestApp, tournament_id: &str, match_id: &str) {
-    let response = app
-        .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/transition",
-                tournament_id, match_id
-            ),
-            &json!({
-                "to_status": "ready",
-                "override_reason": "Test setup"
-            }),
-        )
-        .await;
-    response.assert_status(StatusCode::OK);
-}
+use crate::tournaments::transition_match_to_ready;
 
 /// Helper to transition a match from Ready → Scheduled → InProgress.
 async fn transition_match_to_in_progress(app: &TestApp, tournament_id: &str, match_id: &str) {
@@ -147,9 +131,12 @@ async fn create_4player_tournament(app: &TestApp, slug: &str) -> FourPlayerTourn
         .assert_status(StatusCode::OK);
 
     // Open registration
-    app.post_auth(&format!("/v1/tournaments/{}/open-registration", tournament_id))
-        .await
-        .assert_status(StatusCode::OK);
+    app.post_auth(&format!(
+        "/v1/tournaments/{}/open-registration",
+        tournament_id
+    ))
+    .await
+    .assert_status(StatusCode::OK);
 
     // Register 4 players:
     // Player 1 = dev user (registered via API, so registered_by = dev_user_id)
@@ -273,11 +260,7 @@ async fn create_4player_tournament(app: &TestApp, slug: &str) -> FourPlayerTourn
         .to_string();
 
     let dev_is_p1 = p1 == dev_reg_id;
-    let opponent_reg_id = if dev_is_p1 {
-        p2.clone()
-    } else {
-        p1.clone()
-    };
+    let opponent_reg_id = if dev_is_p1 { p2.clone() } else { p1.clone() };
 
     // Query the opponent's user_id from their registration (column is `registered_by`)
     let opponent_reg_uuid: Uuid = opponent_reg_id.parse().unwrap();
@@ -395,14 +378,7 @@ async fn test_confirm_result_triggers_progression() {
     let t = create_4player_tournament(&app, "saga-progression").await;
 
     // Submit result claim (dev user wins 2-1)
-    let claim_id = submit_claim(
-        &app,
-        &t.test_match_id,
-        &t.dev_reg_id,
-        t.dev_is_p1,
-        &[],
-    )
-    .await;
+    let claim_id = submit_claim(&app, &t.test_match_id, &t.dev_reg_id, t.dev_is_p1, &[]).await;
 
     // Confirm as opponent (different user)
     let body = confirm_claim_as_user(
@@ -417,7 +393,10 @@ async fn test_confirm_result_triggers_progression() {
     // Check response
     let data = &body["data"];
     assert_eq!(data["match_status"], "completed");
-    assert_eq!(data["bracket_advanced"], true, "Bracket should have advanced");
+    assert_eq!(
+        data["bracket_advanced"], true,
+        "Bracket should have advanced"
+    );
     assert!(
         data["review_pending"].is_null(),
         "No review should be pending"
@@ -425,10 +404,7 @@ async fn test_confirm_result_triggers_progression() {
 
     // Verify the winner was placed in the final match
     let response = app
-        .get(&format!(
-            "/v1/tournaments/{}/matches",
-            t.tournament_id
-        ))
+        .get(&format!("/v1/tournaments/{}/matches", t.tournament_id))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -448,8 +424,7 @@ async fn test_confirm_result_triggers_progression() {
         .as_str()
         .unwrap_or("");
 
-    let winner_in_final =
-        final_p1 == t.dev_reg_id || final_p2 == t.dev_reg_id;
+    let winner_in_final = final_p1 == t.dev_reg_id || final_p2 == t.dev_reg_id;
     assert!(
         winner_in_final,
         "Winner ({}) should be placed in the final. Final has p1={}, p2={}",
@@ -476,7 +451,13 @@ async fn test_confirm_result_with_valid_demos_progresses() {
     let demo = DemoBuilder::new()
         .game_id(game_id)
         .file_name("valid_demo.dem")
-        .cs2_metadata("de_dust2", "Player1", "Player2", demo_t1_score, demo_t2_score)
+        .cs2_metadata(
+            "de_dust2",
+            "Player1",
+            "Player2",
+            demo_t1_score,
+            demo_t2_score,
+        )
         .tournament_id(tournament_uuid)
         .build_persisted(app.pool())
         .await;
@@ -511,7 +492,10 @@ async fn test_confirm_result_with_valid_demos_progresses() {
 
     // Demo scores match → no review → bracket advances
     let data = &body["data"];
-    assert_eq!(data["bracket_advanced"], true, "Should advance with valid demo");
+    assert_eq!(
+        data["bracket_advanced"], true,
+        "Should advance with valid demo"
+    );
     assert!(
         data["review_pending"].is_null(),
         "No review needed for valid demo"
@@ -583,10 +567,7 @@ async fn test_confirm_with_mismatched_demo_creates_review() {
 
     // Verify a review exists for this match
     let review_response = app
-        .get_auth(&format!(
-            "/v1/matches/{}/result-review",
-            t.test_match_id
-        ))
+        .get_auth(&format!("/v1/matches/{}/result-review", t.test_match_id))
         .await;
     review_response.assert_status(StatusCode::OK);
 
@@ -598,10 +579,7 @@ async fn test_confirm_with_mismatched_demo_creates_review() {
 
     // Verify the winner was NOT placed in the final
     let response = app
-        .get(&format!(
-            "/v1/tournaments/{}/matches",
-            t.tournament_id
-        ))
+        .get(&format!("/v1/tournaments/{}/matches", t.tournament_id))
         .await;
     let matches_body: serde_json::Value = response.json();
     let matches = matches_body["data"].as_array().unwrap();
@@ -618,8 +596,7 @@ async fn test_confirm_with_mismatched_demo_creates_review() {
         .as_str()
         .unwrap_or("");
 
-    let winner_in_final =
-        final_p1 == t.dev_reg_id || final_p2 == t.dev_reg_id;
+    let winner_in_final = final_p1 == t.dev_reg_id || final_p2 == t.dev_reg_id;
     assert!(
         !winner_in_final,
         "Winner should NOT be in the final yet (progression paused)"
@@ -677,10 +654,7 @@ async fn test_approve_review_resumes_progression() {
 
     // Get the review ID
     let review_response = app
-        .get_auth(&format!(
-            "/v1/matches/{}/result-review",
-            t.test_match_id
-        ))
+        .get_auth(&format!("/v1/matches/{}/result-review", t.test_match_id))
         .await;
     review_response.assert_status(StatusCode::OK);
     let review_body: serde_json::Value = review_response.json();
@@ -697,10 +671,7 @@ async fn test_approve_review_resumes_progression() {
 
     // Verify the winner is now placed in the final
     let response = app
-        .get(&format!(
-            "/v1/tournaments/{}/matches",
-            t.tournament_id
-        ))
+        .get(&format!("/v1/tournaments/{}/matches", t.tournament_id))
         .await;
     let matches_body: serde_json::Value = response.json();
     let matches = matches_body["data"].as_array().unwrap();
@@ -717,8 +688,7 @@ async fn test_approve_review_resumes_progression() {
         .as_str()
         .unwrap_or("");
 
-    let winner_in_final =
-        final_p1 == t.dev_reg_id || final_p2 == t.dev_reg_id;
+    let winner_in_final = final_p1 == t.dev_reg_id || final_p2 == t.dev_reg_id;
     assert!(
         winner_in_final,
         "After approval, winner ({}) should be placed in the final. Final has p1={}, p2={}",
@@ -777,10 +747,7 @@ async fn test_reject_review_reverts_match() {
 
     // Get the review ID
     let review_response = app
-        .get_auth(&format!(
-            "/v1/matches/{}/result-review",
-            t.test_match_id
-        ))
+        .get_auth(&format!("/v1/matches/{}/result-review", t.test_match_id))
         .await;
     review_response.assert_status(StatusCode::OK);
     let review_body: serde_json::Value = review_response.json();
@@ -797,10 +764,7 @@ async fn test_reject_review_reverts_match() {
 
     // Verify match status reverted to in_progress
     let response = app
-        .get(&format!(
-            "/v1/tournaments/{}/matches",
-            t.tournament_id
-        ))
+        .get(&format!("/v1/tournaments/{}/matches", t.tournament_id))
         .await;
     let matches_body: serde_json::Value = response.json();
     let matches = matches_body["data"].as_array().unwrap();

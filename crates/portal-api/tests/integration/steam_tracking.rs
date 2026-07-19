@@ -5,15 +5,14 @@
 //! - Internal bot endpoints (API key auth)
 //! - Full poller → enricher flow
 
-
+use crate::common::{TestApp, TestResponse};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use crate::common::{TestApp, TestResponse};
 use http_body_util::BodyExt;
 use portal_api::extractors::api_key::hash_api_key;
 use portal_db::DbPool;
 use portal_test::builders::UserBuilder;
-use portal_test::helpers::{create_test_token, TEST_JWT_SECRET};
+use portal_test::helpers::{TEST_JWT_SECRET, create_test_token};
 use serde_json::json;
 use tower::util::ServiceExt;
 use uuid::Uuid;
@@ -30,10 +29,7 @@ const TEST_AUTH_CODE: &str = "ABCD-EFGHI-JKLM";
 /// Permissions are linked via the `api_key_permissions` join table, referencing
 /// rows in the shared `permissions` table (seeded by migration 0054).
 async fn create_test_api_key(pool: &DbPool, service_name: &str, permissions: &[&str]) -> String {
-    let raw_key = format!(
-        "cgp_test{}",
-        Uuid::now_v7().to_string().replace('-', "")
-    );
+    let raw_key = format!("cgp_test{}", Uuid::now_v7().to_string().replace('-', ""));
     let key_hash = hash_api_key(&raw_key);
     let key_prefix = &raw_key[..8];
 
@@ -93,12 +89,7 @@ async fn create_player_without_steam(pool: &DbPool) -> (Uuid, Uuid, String) {
 // -- Raw request helpers for API key auth (TestApp only has JWT helpers) ------
 
 async fn raw_request(app: &TestApp, req: Request<Body>) -> TestResponse {
-    let response = app
-        .app
-        .clone()
-        .oneshot(req)
-        .await
-        .expect("request failed");
+    let response = app.app.clone().oneshot(req).await.expect("request failed");
 
     let status = response.status();
     let body = response
@@ -186,10 +177,18 @@ async fn test_register_steam_tracking() {
     response.assert_status(StatusCode::CREATED);
 
     let body: serde_json::Value = response.json();
-    assert_eq!(body["data"]["steam_id_64"], TEST_STEAM_ID.parse::<i64>().unwrap());
+    assert_eq!(
+        body["data"]["steam_id_64"],
+        TEST_STEAM_ID.parse::<i64>().unwrap()
+    );
     assert!(body["data"]["is_active"].as_bool().unwrap());
     // Auth code should be masked
-    assert!(body["data"]["game_auth_code_prefix"].as_str().unwrap().contains("..."));
+    assert!(
+        body["data"]["game_auth_code_prefix"]
+            .as_str()
+            .unwrap()
+            .contains("...")
+    );
 }
 
 #[tokio::test]
@@ -299,11 +298,16 @@ async fn test_get_steam_tracking() {
     .assert_status(StatusCode::CREATED);
 
     // Get tracking status
-    let response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
-    assert_eq!(body["data"]["steam_id_64"], TEST_STEAM_ID.parse::<i64>().unwrap());
+    assert_eq!(
+        body["data"]["steam_id_64"],
+        TEST_STEAM_ID.parse::<i64>().unwrap()
+    );
     assert!(body["data"]["is_active"].as_bool().unwrap());
 }
 
@@ -312,7 +316,9 @@ async fn test_get_steam_tracking_not_found() {
     let app = TestApp::new().await;
     let (_user_id, _player_id, token) = create_player_with_steam(app.pool()).await;
 
-    let response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
@@ -379,7 +385,9 @@ async fn test_delete_steam_tracking() {
     response.assert_status(StatusCode::NO_CONTENT);
 
     // Verify it's gone
-    let response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
@@ -400,8 +408,12 @@ async fn test_internal_endpoint_requires_api_key() {
 async fn test_internal_endpoint_invalid_api_key() {
     let app = TestApp::new().await;
 
-    let response =
-        api_key_get(&app, "/v1/internal/steam-tracking/active?game=cs2", "bad-key").await;
+    let response = api_key_get(
+        &app,
+        "/v1/internal/steam-tracking/active?game=cs2",
+        "bad-key",
+    )
+    .await;
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
@@ -446,13 +458,15 @@ async fn test_get_active_tracking_entries() {
 
     // Bot fetches active entries
     let key = create_test_api_key(app.pool(), "cs2-poller", &["steam_tracking.read"]).await;
-    let response =
-        api_key_get(&app, "/v1/internal/steam-tracking/active?game=cs2", &key).await;
+    let response = api_key_get(&app, "/v1/internal/steam-tracking/active?game=cs2", &key).await;
     response.assert_status(StatusCode::OK);
 
     let body: Vec<serde_json::Value> = response.json();
     assert_eq!(body.len(), 1);
-    assert_eq!(body[0]["steam_id_64"], TEST_STEAM_ID.parse::<i64>().unwrap());
+    assert_eq!(
+        body[0]["steam_id_64"],
+        TEST_STEAM_ID.parse::<i64>().unwrap()
+    );
     assert_eq!(body[0]["game_auth_code"], TEST_AUTH_CODE);
     assert!(body[0]["last_known_code"].is_null());
 }
@@ -571,19 +585,16 @@ async fn test_submit_discovered_matches() {
     .assert_status(StatusCode::CREATED);
 
     // Get the tracking ID
-    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
         .as_str()
         .unwrap()
         .to_string();
 
     // Submit discovered matches
-    let key = create_test_api_key(
-        app.pool(),
-        "cs2-poller",
-        &["discovered_matches.write"],
-    )
-    .await;
+    let key = create_test_api_key(app.pool(), "cs2-poller", &["discovered_matches.write"]).await;
 
     let response = api_key_post_json(
         &app,
@@ -634,18 +645,15 @@ async fn test_submit_discovered_matches_idempotent() {
     .await
     .assert_status(StatusCode::CREATED);
 
-    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
         .as_str()
         .unwrap()
         .to_string();
 
-    let key = create_test_api_key(
-        app.pool(),
-        "cs2-poller",
-        &["discovered_matches.write"],
-    )
-    .await;
+    let key = create_test_api_key(app.pool(), "cs2-poller", &["discovered_matches.write"]).await;
 
     let match_payload = json!({
         "tracking_id": tracking_id,
@@ -659,7 +667,13 @@ async fn test_submit_discovered_matches_idempotent() {
     });
 
     // Submit once
-    let r1 = api_key_post_json(&app, "/v1/internal/discovered-matches", &match_payload, &key).await;
+    let r1 = api_key_post_json(
+        &app,
+        "/v1/internal/discovered-matches",
+        &match_payload,
+        &key,
+    )
+    .await;
     r1.assert_status(StatusCode::CREATED);
     let id1 = r1.json::<Vec<serde_json::Value>>()[0]["id"]
         .as_str()
@@ -667,7 +681,13 @@ async fn test_submit_discovered_matches_idempotent() {
         .to_string();
 
     // Submit again (same share_code) — should return same ID (upsert)
-    let r2 = api_key_post_json(&app, "/v1/internal/discovered-matches", &match_payload, &key).await;
+    let r2 = api_key_post_json(
+        &app,
+        "/v1/internal/discovered-matches",
+        &match_payload,
+        &key,
+    )
+    .await;
     r2.assert_status(StatusCode::CREATED);
     let id2 = r2.json::<Vec<serde_json::Value>>()[0]["id"]
         .as_str()
@@ -694,18 +714,16 @@ async fn test_get_pending_matches() {
     .await
     .assert_status(StatusCode::CREATED);
 
-    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
         .as_str()
         .unwrap()
         .to_string();
 
-    let write_key = create_test_api_key(
-        app.pool(),
-        "cs2-poller",
-        &["discovered_matches.write"],
-    )
-    .await;
+    let write_key =
+        create_test_api_key(app.pool(), "cs2-poller", &["discovered_matches.write"]).await;
 
     api_key_post_json(
         &app,
@@ -726,12 +744,8 @@ async fn test_get_pending_matches() {
     .assert_status(StatusCode::CREATED);
 
     // Enricher bot fetches pending matches
-    let read_key = create_test_api_key(
-        app.pool(),
-        "cs2-enricher",
-        &["discovered_matches.read"],
-    )
-    .await;
+    let read_key =
+        create_test_api_key(app.pool(), "cs2-enricher", &["discovered_matches.read"]).await;
 
     let response = api_key_get(
         &app,
@@ -765,7 +779,9 @@ async fn test_claim_match() {
     .await
     .assert_status(StatusCode::CREATED);
 
-    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
         .as_str()
         .unwrap()
@@ -839,7 +855,9 @@ async fn test_submit_enriched_match() {
     .await
     .assert_status(StatusCode::CREATED);
 
-    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
         .as_str()
         .unwrap()
@@ -939,7 +957,9 @@ async fn test_mark_match_failed() {
     .await
     .assert_status(StatusCode::CREATED);
 
-    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
         .as_str()
         .unwrap()
@@ -1003,7 +1023,9 @@ async fn test_mark_match_failed() {
     .await;
     let pending_matches: Vec<serde_json::Value> = pending.json();
     assert!(
-        pending_matches.iter().any(|m| m["id"].as_str().unwrap() == match_id),
+        pending_matches
+            .iter()
+            .any(|m| m["id"].as_str().unwrap() == match_id),
         "Failed match should reappear in pending list (retry_count < max_retries)"
     );
     let failed_match = pending_matches
@@ -1187,7 +1209,11 @@ async fn test_full_poller_to_enricher_flow() {
     .await;
     let final_pending_list: Vec<serde_json::Value> = final_pending.json();
 
-    assert_eq!(final_pending_list.len(), 1, "Only the failed match should be pending");
+    assert_eq!(
+        final_pending_list.len(),
+        1,
+        "Only the failed match should be pending"
+    );
     assert_eq!(
         final_pending_list[0]["id"].as_str().unwrap(),
         second_match_id,
@@ -1201,9 +1227,7 @@ async fn test_full_poller_to_enricher_flow() {
 // =============================================================================
 
 /// Helper: set steam_id + steam_id_64 on a player and ensure the CS2 game exists.
-async fn setup_player_with_steam_id_64(
-    pool: &DbPool,
-) -> (Uuid, Uuid, String, i64) {
+async fn setup_player_with_steam_id_64(pool: &DbPool) -> (Uuid, Uuid, String, i64) {
     let steam_id_64: i64 = 76561198012345678;
     let user = UserBuilder::new().build_persisted(pool).await;
     let player_id = user.id;
@@ -1271,8 +1295,7 @@ async fn test_enriched_with_player_ratings_updates_profile() {
     let app = TestApp::new().await;
 
     // Setup: player with steam_id_64
-    let (_user_id, player_id, token, steam_id_64) =
-        setup_player_with_steam_id_64(app.pool()).await;
+    let (_user_id, player_id, token, steam_id_64) = setup_player_with_steam_id_64(app.pool()).await;
     let account_id = steam_id_64_to_account_id(steam_id_64);
 
     // Register steam tracking
@@ -1287,7 +1310,9 @@ async fn test_enriched_with_player_ratings_updates_profile() {
     .await
     .assert_status(StatusCode::CREATED);
 
-    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
         .as_str()
         .unwrap()
@@ -1330,28 +1355,31 @@ async fn test_enriched_with_player_ratings_updates_profile() {
     .await;
     enriched_response.assert_status(StatusCode::OK);
 
-    // Verify: player game profile was created and rating set
-    let profile: Option<(i32, Option<String>)> = sqlx::query_as(
-        "SELECT rating, rank_tier FROM player_game_profiles WHERE player_id = $1",
+    // Verify: player game profile was created. Current/peak rating are
+    // derived from player_rating_history at query time — the profiles table
+    // no longer stores the live rating.
+    let profile: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM player_game_profiles WHERE player_id = $1")
+            .bind(player_id)
+            .fetch_optional(app.pool())
+            .await
+            .expect("query failed");
+    assert!(profile.is_some(), "Player game profile should exist");
+
+    // Verify: rating history entry was created with the submitted rating
+    let history: Vec<(i32,)> = sqlx::query_as(
+        "SELECT rating FROM player_rating_history WHERE player_id = $1 AND source = 'demo_rank_update'",
     )
     .bind(player_id)
-    .fetch_optional(app.pool())
+    .fetch_all(app.pool())
     .await
     .expect("query failed");
 
-    let (rating, _rank_tier) = profile.expect("Player game profile should exist");
-    assert_eq!(rating, 15250, "Rating should be updated to 15250");
-
-    // Verify: rating history entry was created
-    let history_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM player_rating_history WHERE player_id = $1 AND source = 'demo_rank_update'",
-    )
-    .bind(player_id)
-    .fetch_one(app.pool())
-    .await
-    .expect("query failed");
-
-    assert_eq!(history_count.0, 1, "Should have one rating history entry");
+    assert_eq!(history.len(), 1, "Should have one rating history entry");
+    assert_eq!(
+        history[0].0, 15250,
+        "History entry should carry the submitted rating"
+    );
 }
 
 #[tokio::test]
@@ -1373,7 +1401,9 @@ async fn test_enriched_without_player_ratings_backward_compatible() {
     .await
     .assert_status(StatusCode::CREATED);
 
-    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
         .as_str()
         .unwrap()
@@ -1429,7 +1459,9 @@ async fn test_enriched_unknown_account_id_silently_skipped() {
     .await
     .assert_status(StatusCode::CREATED);
 
-    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
         .as_str()
         .unwrap()
@@ -1474,15 +1506,17 @@ async fn test_enriched_unknown_account_id_silently_skipped() {
     enriched_response.assert_status(StatusCode::OK);
 
     // No profile should be created for our registered player (different account_id)
-    let profile_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM player_game_profiles WHERE player_id = $1",
-    )
-    .bind(player_id)
-    .fetch_one(app.pool())
-    .await
-    .expect("query failed");
+    let profile_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM player_game_profiles WHERE player_id = $1")
+            .bind(player_id)
+            .fetch_one(app.pool())
+            .await
+            .expect("query failed");
 
-    assert_eq!(profile_count.0, 0, "No profile should be created for unrelated player");
+    assert_eq!(
+        profile_count.0, 0,
+        "No profile should be created for unrelated player"
+    );
 }
 
 #[tokio::test]
@@ -1490,8 +1524,7 @@ async fn test_enriched_non_premier_ratings_ignored() {
     let app = TestApp::new().await;
 
     // Setup
-    let (_user_id, player_id, token, steam_id_64) =
-        setup_player_with_steam_id_64(app.pool()).await;
+    let (_user_id, player_id, token, steam_id_64) = setup_player_with_steam_id_64(app.pool()).await;
     let account_id = steam_id_64_to_account_id(steam_id_64);
 
     app.post_json_with_token(
@@ -1505,7 +1538,9 @@ async fn test_enriched_non_premier_ratings_ignored() {
     .await
     .assert_status(StatusCode::CREATED);
 
-    let tracking_response = app.get_with_token("/v1/players/me/steam-tracking", &token).await;
+    let tracking_response = app
+        .get_with_token("/v1/players/me/steam-tracking", &token)
+        .await;
     let tracking_id = tracking_response.json::<serde_json::Value>()["data"]["id"]
         .as_str()
         .unwrap()
@@ -1549,13 +1584,12 @@ async fn test_enriched_non_premier_ratings_ignored() {
     enriched_response.assert_status(StatusCode::OK);
 
     // No profile should be created — only Premier (11) is processed
-    let profile_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM player_game_profiles WHERE player_id = $1",
-    )
-    .bind(player_id)
-    .fetch_one(app.pool())
-    .await
-    .expect("query failed");
+    let profile_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM player_game_profiles WHERE player_id = $1")
+            .bind(player_id)
+            .fetch_one(app.pool())
+            .await
+            .expect("query failed");
 
     assert_eq!(profile_count.0, 0, "Non-Premier ratings should be ignored");
 }

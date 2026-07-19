@@ -5,9 +5,8 @@
 //! - Category B: Demo-match linking operations
 //! - Category C: Batch catalog and stats ingestion API
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use portal_test::prelude::*;
 use serde_json::json;
 
@@ -62,7 +61,7 @@ async fn test_get_demo_not_found() {
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
-/// Test getting demo players for a non-existent demo returns empty list.
+/// Test getting demo players for a non-existent demo returns 404.
 #[tokio::test]
 async fn test_get_demo_players_empty() {
     let app = TestApp::new().await;
@@ -71,13 +70,12 @@ async fn test_get_demo_players_empty() {
         .get_auth("/v1/demos/00000000-0000-0000-0000-000000000000/players")
         .await;
 
-    // Returns 200 with empty array (endpoint doesn't verify demo existence)
-    response.assert_status(StatusCode::OK);
-    let body: serde_json::Value = response.json();
-    assert!(body["data"].as_array().unwrap().is_empty());
+    // The endpoint verifies demo existence: missing demo is a 404, not an
+    // empty list.
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
-/// Test getting demo links for a non-existent demo returns empty list.
+/// Test getting demo links for a non-existent demo returns 404.
 #[tokio::test]
 async fn test_get_demo_links_empty() {
     let app = TestApp::new().await;
@@ -86,10 +84,9 @@ async fn test_get_demo_links_empty() {
         .get_auth("/v1/demos/00000000-0000-0000-0000-000000000000/links")
         .await;
 
-    // Returns 200 with empty array (endpoint doesn't verify demo existence)
-    response.assert_status(StatusCode::OK);
-    let body: serde_json::Value = response.json();
-    assert!(body["data"].as_array().unwrap().is_empty());
+    // The endpoint verifies demo existence: missing demo is a 404, not an
+    // empty list.
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 // ============================================================================
@@ -199,8 +196,7 @@ async fn test_admin_demo_endpoints_require_auth() {
 
 /// Helper to grant admin role to the dev user.
 async fn make_dev_user_admin(app: &TestApp) {
-    let dev_user_id =
-        uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    let dev_user_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
     assign_role_to_user(app.pool(), dev_user_id, "platform_admin").await;
 }
 
@@ -278,7 +274,10 @@ async fn test_batch_catalog_demos_idempotent() {
     assert_eq!(body["data"]["created"].as_array().unwrap().len(), 1);
     assert!(body["data"]["existing"].as_array().unwrap().is_empty());
 
-    let created_id = body["data"]["created"][0]["id"].as_str().unwrap().to_string();
+    let created_id = body["data"]["created"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Second call — same S3 key, should return as existing
     let response = app.post_json("/v1/admin/demos/batch", &request_body).await;
@@ -358,9 +357,7 @@ async fn test_submit_demo_stats() {
     assert_eq!(demo["status"], "ready");
 
     // Verify players were created
-    let response = app
-        .get_auth(&format!("/v1/demos/{demo_id}/players"))
-        .await;
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/players")).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     let players = body["data"].as_array().unwrap();
@@ -564,10 +561,7 @@ async fn test_discover_evidence_finds_catalog_demos() {
     // Call discover endpoint — should return 200 even though catalog results
     // are empty (no steam_ids in context yet). Verifies the merged pipeline works.
     let response = app
-        .get_auth(&format!(
-            "/v1/matches/{}/evidence/discover",
-            info.match_id
-        ))
+        .get_auth(&format!("/v1/matches/{}/evidence/discover", info.match_id))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
@@ -638,9 +632,7 @@ async fn test_link_catalog_discovered_evidence() {
     assert!(evidence["id"].as_str().is_some());
 
     // Verify a DemoMatchLink was created
-    let response = app
-        .get_auth(&format!("/v1/demos/{demo_id}/links"))
-        .await;
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}/links")).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     let links = body["data"].as_array().unwrap();
@@ -692,9 +684,11 @@ async fn create_cs2_tournament_with_match(app: &TestApp, slug: &str) -> TestMatc
         .assert_status(StatusCode::OK);
 
     // Open registration
-    app.post_auth(&format!("/v1/tournaments/{tournament_id}/open-registration"))
-        .await
-        .assert_status(StatusCode::OK);
+    app.post_auth(&format!(
+        "/v1/tournaments/{tournament_id}/open-registration"
+    ))
+    .await
+    .assert_status(StatusCode::OK);
 
     // Register player 1 (dev user)
     let response = app
@@ -748,7 +742,10 @@ async fn create_cs2_tournament_with_match(app: &TestApp, slug: &str) -> TestMatc
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     let matches = body["data"].as_array().unwrap();
-    assert!(!matches.is_empty(), "Tournament should have at least one match");
+    assert!(
+        !matches.is_empty(),
+        "Tournament should have at least one match"
+    );
 
     let match_data = &matches[0];
     let match_id = match_data["id"].as_str().unwrap().to_string();

@@ -1,8 +1,7 @@
 //! Dispute API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use serde_json::json;
 
 // ============================================================================
@@ -294,7 +293,8 @@ async fn test_raise_dispute_requires_auth() {
 async fn test_get_dispute_invalid_id() {
     let app = TestApp::new().await;
 
-    let response = app.get("/v1/disputes/not-a-uuid").await;
+    // Auth required before any id validation — unauthenticated is 401.
+    let response = app.get_auth("/v1/disputes/not-a-uuid").await;
     response.assert_status(StatusCode::BAD_REQUEST);
 }
 
@@ -303,7 +303,7 @@ async fn test_get_dispute_not_found() {
     let app = TestApp::new().await;
 
     let response = app
-        .get("/v1/disputes/00000000-0000-0000-0000-000000000001")
+        .get_auth("/v1/disputes/00000000-0000-0000-0000-000000000001")
         .await;
 
     response.assert_status(StatusCode::NOT_FOUND);
@@ -404,9 +404,7 @@ async fn test_admin_list_disputes_success() {
 async fn test_admin_list_disputes_with_pagination() {
     let app = TestApp::new().await;
 
-    let response = app
-        .get_auth("/v1/admin/disputes?page=1&page_size=10")
-        .await;
+    let response = app.get_auth("/v1/admin/disputes?page=1&page_size=10").await;
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();

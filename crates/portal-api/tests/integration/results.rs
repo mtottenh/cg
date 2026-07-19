@@ -1,29 +1,13 @@
 //! Result submission API integration tests.
 
-
-use axum::http::StatusCode;
 use crate::common::TestApp;
+use axum::http::StatusCode;
 use portal_test::prelude::*;
 use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
 
-/// Helper to transition a match to Ready status using admin endpoint.
-async fn transition_match_to_ready(app: &TestApp, tournament_id: &str, match_id: &str) {
-    let response = app
-        .post_json(
-            &format!(
-                "/v1/admin/tournaments/{}/matches/{}/transition",
-                tournament_id, match_id
-            ),
-            &json!({
-                "to_status": "ready",
-                "override_reason": "Test setup: transitioning match to Ready for result tests"
-            }),
-        )
-        .await;
-    response.assert_status(StatusCode::OK);
-}
+use crate::tournaments::transition_match_to_ready;
 
 /// Helper to transition a match to InProgress status (for result submission tests).
 /// The transition path is: Ready → Scheduled → InProgress
@@ -59,7 +43,6 @@ async fn transition_match_to_in_progress(app: &TestApp, tournament_id: &str, mat
         .await;
     response.assert_status(StatusCode::OK);
 }
-
 
 /// Helper to register a player and return the registration ID.
 async fn register_player(app: &TestApp, tournament_id: &str, participant_name: &str) -> String {
@@ -133,7 +116,10 @@ async fn create_tournament_with_matches(app: &TestApp, slug: &str) -> TestMatchI
 
     // Open registration
     let response = app
-        .post_auth(&format!("/v1/tournaments/{}/open-registration", tournament_id))
+        .post_auth(&format!(
+            "/v1/tournaments/{}/open-registration",
+            tournament_id
+        ))
         .await;
     response.assert_status(StatusCode::OK);
 
@@ -179,7 +165,10 @@ async fn create_tournament_with_matches(app: &TestApp, slug: &str) -> TestMatchI
 
     let body: serde_json::Value = response.json();
     let matches = body["data"].as_array().unwrap();
-    assert!(!matches.is_empty(), "Tournament should have at least one match");
+    assert!(
+        !matches.is_empty(),
+        "Tournament should have at least one match"
+    );
 
     let match_data = &matches[0];
     let match_id = match_data["id"].as_str().unwrap().to_string();
@@ -693,7 +682,10 @@ async fn test_submit_result_with_real_match_and_demo_links() {
     // Verify demo_link_ids are returned in the response
     let returned_demo_link_ids = claim["demo_link_ids"].as_array().unwrap();
     assert_eq!(returned_demo_link_ids.len(), 1);
-    assert_eq!(returned_demo_link_ids[0].as_str().unwrap(), demo_link.id.to_string());
+    assert_eq!(
+        returned_demo_link_ids[0].as_str().unwrap(),
+        demo_link.id.to_string()
+    );
 }
 
 #[tokio::test]
@@ -943,7 +935,10 @@ async fn test_submit_result_nonexistent_demo_link_rejected() {
 
     let body: serde_json::Value = response.json();
     assert!(
-        body["detail"].as_str().unwrap().contains("Demo-match link not found"),
+        body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Demo-match link not found"),
         "Error should indicate demo-match link not found"
     );
 }
@@ -1096,14 +1091,20 @@ async fn test_result_claim_history_preserves_demo_links() {
 
     // Get result claim history
     let response = app
-        .get(&format!("/v1/matches/{}/result/history", match_info.match_id))
+        .get(&format!(
+            "/v1/matches/{}/result/history",
+            match_info.match_id
+        ))
         .await;
 
     response.assert_status(StatusCode::OK);
 
     let body: serde_json::Value = response.json();
     let history = body["data"].as_array().unwrap();
-    assert!(!history.is_empty(), "History should have at least one entry");
+    assert!(
+        !history.is_empty(),
+        "History should have at least one entry"
+    );
 
     // Verify the first claim in history has demo_link_ids
     let first_claim = &history[0];

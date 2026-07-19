@@ -1,8 +1,8 @@
 //! API error types following RFC 7807.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use portal_core::{DomainError, ValidationError};
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -148,6 +148,9 @@ impl From<DomainError> for ApiError {
             DomainError::PlayerNotFound(id) => Self::not_found(format!("Player not found: {id}")),
             DomainError::TeamNotFound(id) => Self::not_found(format!("Team not found: {id}")),
             DomainError::GameNotFound(id) => Self::not_found(format!("Game not found: {id}")),
+            DomainError::GameNotFoundBySlug(slug) => {
+                Self::not_found(format!("Game not found: {slug}"))
+            }
             DomainError::MatchNotFound(id) => Self::not_found(format!("Match not found: {id}")),
             DomainError::TournamentNotFound(id) => {
                 Self::not_found(format!("Tournament not found: {id}"))
@@ -176,9 +179,7 @@ impl From<DomainError> for ApiError {
             DomainError::TournamentRegistrationNotFound(id) => {
                 Self::not_found(format!("Tournament registration not found: {id}"))
             }
-            DomainError::DisputeNotFound(id) => {
-                Self::not_found(format!("Dispute not found: {id}"))
-            }
+            DomainError::DisputeNotFound(id) => Self::not_found(format!("Dispute not found: {id}")),
             DomainError::ForfeitRecordNotFound(id) => {
                 Self::not_found(format!("Forfeit record not found: {id}"))
             }
@@ -191,15 +192,13 @@ impl From<DomainError> for ApiError {
             DomainError::VetoSessionNotFound(id) => {
                 Self::not_found(format!("Veto session not found: {id}"))
             }
-            DomainError::DemoNotFound(id) => {
-                Self::not_found(format!("Demo not found: {id}"))
-            }
+            DomainError::DemoNotFound(id) => Self::not_found(format!("Demo not found: {id}")),
             DomainError::DemoMatchLinkNotFound(id) => {
                 Self::not_found(format!("Demo-match link not found: {id}"))
             }
-            DomainError::DemoNotLinkedToMatch(link_id, match_id) => {
-                Self::bad_request(format!("Demo link {link_id} is not linked to match {match_id}"))
-            }
+            DomainError::DemoNotLinkedToMatch(link_id, match_id) => Self::bad_request(format!(
+                "Demo link {link_id} is not linked to match {match_id}"
+            )),
             DomainError::ResultReviewNotFound(id) => {
                 Self::not_found(format!("Result review not found: {id}"))
             }
@@ -221,7 +220,9 @@ impl From<DomainError> for ApiError {
             DomainError::InvalidToken => Self::unauthorized("Invalid or missing token"),
             DomainError::TokenExpired => Self::unauthorized("Token has expired"),
             DomainError::RefreshTokenExpired => Self::unauthorized("Refresh token has expired"),
-            DomainError::RefreshTokenRevoked => Self::unauthorized("Refresh token has been revoked"),
+            DomainError::RefreshTokenRevoked => {
+                Self::unauthorized("Refresh token has been revoked")
+            }
             DomainError::InvalidCredentials => Self::unauthorized("Invalid credentials"),
 
             // Conflict errors
@@ -249,7 +250,9 @@ impl From<DomainError> for ApiError {
                 Self::bad_request("Team must have at least one captain")
             }
             DomainError::InvitationExpired => Self::bad_request("Invitation has expired"),
-            DomainError::InvitationInvalid => Self::bad_request("Invitation is invalid or already used"),
+            DomainError::InvitationInvalid => {
+                Self::bad_request("Invitation is invalid or already used")
+            }
             DomainError::TeamFull => Self::bad_request("Team has reached maximum member count"),
             DomainError::NotInQueue => Self::bad_request("Player is not in queue"),
             DomainError::MatchAlreadyStarted => Self::bad_request("Match has already started"),
@@ -259,7 +262,9 @@ impl From<DomainError> for ApiError {
             DomainError::InvalidLobbyTransition { from, to } => {
                 Self::bad_request(format!("Invalid lobby transition: {from} -> {to}"))
             }
-            DomainError::RegistrationClosed => Self::bad_request("Tournament registration is closed"),
+            DomainError::RegistrationClosed => {
+                Self::bad_request("Tournament registration is closed")
+            }
             DomainError::RequirementsNotMet(msg) => {
                 Self::bad_request(format!("Requirements not met: {msg}"))
             }
@@ -296,9 +301,9 @@ impl From<DomainError> for ApiError {
             DomainError::InsufficientParticipants => {
                 Self::bad_request("Insufficient participants for tournament")
             }
-            DomainError::InvalidTournamentTransition { from, to } => {
-                Self::bad_request(format!("Invalid tournament state transition: {from} -> {to}"))
-            }
+            DomainError::InvalidTournamentTransition { from, to } => Self::bad_request(format!(
+                "Invalid tournament state transition: {from} -> {to}"
+            )),
             DomainError::BracketGenerationFailed(msg) => {
                 Self::internal(format!("Bracket generation failed: {msg}"))
             }
@@ -323,9 +328,7 @@ impl From<DomainError> for ApiError {
             DomainError::SagaStepFailed { step, reason } => {
                 Self::internal(format!("Operation failed at {step}: {reason}"))
             }
-            DomainError::SagaPaused(msg) => {
-                Self::conflict(format!("Operation paused: {msg}"))
-            }
+            DomainError::SagaPaused(msg) => Self::conflict(format!("Operation paused: {msg}")),
             DomainError::ResultRejectedByReview(msg) => {
                 Self::conflict(format!("Result rejected by review: {msg}"))
             }
@@ -357,9 +360,10 @@ impl From<validator::ValidationErrors> for ApiError {
             .flat_map(|(field, errors)| {
                 errors.iter().map(move |e| FieldErrorDto {
                     field: (*field).to_string(),
-                    message: e
-                        .message
-                        .as_ref().map_or_else(|| format!("Invalid value for {field}"), std::string::ToString::to_string),
+                    message: e.message.as_ref().map_or_else(
+                        || format!("Invalid value for {field}"),
+                        std::string::ToString::to_string,
+                    ),
                     code: e.code.to_string(),
                 })
             })

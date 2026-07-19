@@ -3,9 +3,9 @@
 pub mod minio;
 pub mod ws;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
 use http_body_util::BodyExt;
 use portal_api::adapters::{EvidenceStorageBackend, S3EvidenceStorageAdapter};
 use portal_api::app::create_app;
@@ -25,6 +25,18 @@ pub struct TestApp {
 }
 
 impl TestApp {
+    /// Wrap the app so every request carries a `ConnectInfo<SocketAddr>`
+    /// extension. Production gets this from
+    /// `into_make_service_with_connect_info` in portal-app; the `oneshot`
+    /// path used by these tests has no TCP peer, so without it the
+    /// `tower_governor` rate limiter on `/auth/*` 500s with
+    /// "Unable To Extract Key!" on every request.
+    fn with_connect_info(app: Router) -> Router {
+        app.layer(axum::Extension(axum::extract::ConnectInfo(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+        )))
+    }
+
     /// Initialize tracing (once per process).
     fn init_tracing() {
         static INIT: std::sync::Once = std::sync::Once::new();
@@ -45,9 +57,13 @@ impl TestApp {
 
         let db = TestDb::new().await;
         let state = AppState::new(db.pool.clone(), "test-jwt-secret").await;
-        let app = create_app(state);
+        let app = Self::with_connect_info(create_app(state));
 
-        Self { app, db, server_addr: None }
+        Self {
+            app,
+            db,
+            server_addr: None,
+        }
     }
 
     /// Create a new test application with S3 evidence storage backed by MinIO.
@@ -58,13 +74,8 @@ impl TestApp {
         Self::init_tracing();
 
         // Build S3 SDK config with static credentials for MinIO
-        let creds = aws_sdk_s3::config::Credentials::new(
-            "minioadmin",
-            "minioadmin",
-            None,
-            None,
-            "test",
-        );
+        let creds =
+            aws_sdk_s3::config::Credentials::new("minioadmin", "minioadmin", None, None, "test");
         let sdk_config = aws_config::from_env()
             .region(aws_sdk_s3::config::Region::new("us-east-1"))
             .endpoint_url(minio_endpoint)
@@ -84,9 +95,13 @@ impl TestApp {
         let state = AppState::new(db.pool.clone(), "test-jwt-secret")
             .await
             .with_evidence_storage(storage, bucket.to_string());
-        let app = create_app(state);
+        let app = Self::with_connect_info(create_app(state));
 
-        Self { app, db, server_addr: None }
+        Self {
+            app,
+            db,
+            server_addr: None,
+        }
     }
 
     /// Start the server on a random port and return the bound address.
@@ -123,8 +138,14 @@ impl TestApp {
 
     /// Make a GET request.
     pub async fn get(&self, uri: &str) -> TestResponse {
-        self.request(Request::builder().method("GET").uri(uri).body(Body::empty()).unwrap())
-            .await
+        self.request(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
     }
 
     /// Make an authenticated GET request.
@@ -156,7 +177,11 @@ impl TestApp {
     }
 
     /// Make a POST request with JSON body (without auth).
-    pub async fn post_json_no_auth<T: serde::Serialize>(&self, uri: &str, body: &T) -> TestResponse {
+    pub async fn post_json_no_auth<T: serde::Serialize>(
+        &self,
+        uri: &str,
+        body: &T,
+    ) -> TestResponse {
         let json = serde_json::to_string(body).unwrap();
         self.request(
             Request::builder()
@@ -251,7 +276,11 @@ impl TestApp {
     }
 
     /// Make a PATCH request with JSON body (without auth).
-    pub async fn patch_json_no_auth<T: serde::Serialize>(&self, uri: &str, body: &T) -> TestResponse {
+    pub async fn patch_json_no_auth<T: serde::Serialize>(
+        &self,
+        uri: &str,
+        body: &T,
+    ) -> TestResponse {
         let json = serde_json::to_string(body).unwrap();
         self.request(
             Request::builder()
@@ -401,7 +430,10 @@ impl TestApp {
         let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();
 
-        TestResponse { status, body: body.to_vec() }
+        TestResponse {
+            status,
+            body: body.to_vec(),
+        }
     }
 }
 
@@ -425,7 +457,8 @@ impl TestResponse {
     /// Assert the response status.
     pub fn assert_status(&self, expected: StatusCode) {
         assert_eq!(
-            self.status, expected,
+            self.status,
+            expected,
             "Expected status {}, got {}. Body: {}",
             expected,
             self.status,

@@ -4,7 +4,7 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{CreateBanRequest, LiftBanRequest, ListBansQuery};
 use crate::dto::responses::{BanListResponse, BanResponse};
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::AuthenticatedUser;
+use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::state::BanState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -145,6 +145,7 @@ pub async fn get_ban(
 pub async fn create_ban(
     State(state): State<BanState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Json(body): Json<CreateBanRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<BanResponse>>)> {
@@ -154,16 +155,11 @@ pub async fn create_ban(
     body.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    // Check if user is admin
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    // Mutation: requires the explicit manage permission, not the read-level
+    // is_admin (users.view_all) check that moderators also pass.
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::BANS_MANAGE)
+        .await?;
 
     let ban_type: BanType = body
         .ban_type
@@ -210,6 +206,7 @@ pub async fn create_ban(
 pub async fn lift_ban(
     State(state): State<BanState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<LiftBanRequest>,
@@ -220,16 +217,11 @@ pub async fn lift_ban(
     body.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    // Check if user is admin
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    // Mutation: requires the explicit manage permission, not the read-level
+    // is_admin (users.view_all) check that moderators also pass.
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::BANS_MANAGE)
+        .await?;
 
     let ban_id: BanId = id
         .parse()

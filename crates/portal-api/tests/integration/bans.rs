@@ -35,6 +35,12 @@ async fn grant_admin_permission(app: &TestApp) {
 
 /// Helper to create a test user and return their ID
 async fn create_test_user(app: &TestApp, username: &str) -> String {
+    let (user_id, _token) = register_user(app, username).await;
+    user_id
+}
+
+/// Register a user via the API and return (`user_id`, `access_token`).
+async fn register_user(app: &TestApp, username: &str) -> (String, String) {
     let response = app
         .post_json_no_auth(
             "/v1/auth/register",
@@ -49,7 +55,28 @@ async fn create_test_user(app: &TestApp, username: &str) -> String {
 
     response.assert_status(StatusCode::CREATED);
     let body: serde_json::Value = response.json();
-    body["data"]["user"]["id"].as_str().unwrap().to_string()
+    (
+        body["data"]["user"]["id"].as_str().unwrap().to_string(),
+        body["data"]["access_token"].as_str().unwrap().to_string(),
+    )
+}
+
+/// Grant a role (by name) to a user via SQL.
+async fn grant_role(app: &TestApp, user_id: &str, role_name: &str) {
+    let user_uuid = Uuid::parse_str(user_id).unwrap();
+    let role_row = sqlx::query("SELECT id FROM roles WHERE name = $1")
+        .bind(role_name)
+        .fetch_one(app.pool())
+        .await
+        .expect("role should exist");
+    let role_id: Uuid = role_row.get("id");
+
+    sqlx::query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(user_uuid)
+        .bind(role_id)
+        .execute(app.pool())
+        .await
+        .expect("Failed to assign role");
 }
 
 // ============================================================================
@@ -79,14 +106,18 @@ async fn test_get_ban_requires_admin() {
 async fn test_create_ban_requires_admin() {
     let app = TestApp::new().await;
 
+    // A real (non-dev) user with no roles cannot create bans.
+    let (_user_id, token) = register_user(&app, "ban_create_noperm").await;
+
     let response = app
-        .post_json(
+        .post_json_with_token(
             "/v1/admin/bans",
             &json!({
                 "user_id": "00000000-0000-0000-0000-000000000002",
                 "ban_type": "platform",
                 "reason": "Test ban"
             }),
+            &token,
         )
         .await;
     response.assert_status(StatusCode::FORBIDDEN);
@@ -96,15 +127,96 @@ async fn test_create_ban_requires_admin() {
 async fn test_lift_ban_requires_admin() {
     let app = TestApp::new().await;
 
+    // A real (non-dev) user with no roles cannot lift bans.
+    let (_user_id, token) = register_user(&app, "ban_lift_noperm").await;
+
     let response = app
-        .post_json(
+        .post_json_with_token(
             "/v1/admin/bans/00000000-0000-0000-0000-000000000001/lift",
             &json!({
                 "reason": "Test lift"
             }),
+            &token,
         )
         .await;
     response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_view_all_only_user_cannot_mutate_bans() {
+    let app = TestApp::new().await;
+
+    // Moderator holds users.view_all (the read-level is_admin check) but NOT
+    // admin.bans.manage — reads must work, mutations must be forbidden.
+    let (mod_id, mod_token) = register_user(&app, "ban_moderator").await;
+    grant_role(&app, &mod_id, "moderator").await;
+
+    let target_id = create_test_user(&app, "ban_mod_target").await;
+
+    // Read surface: list bans is allowed.
+    let response = app.get_with_token("/v1/admin/bans", &mod_token).await;
+    response.assert_status(StatusCode::OK);
+
+    // Mutations: create is forbidden.
+    let response = app
+        .post_json_with_token(
+            "/v1/admin/bans",
+            &json!({
+                "user_id": target_id,
+                "ban_type": "platform",
+                "reason": "Moderator escalation attempt"
+            }),
+            &mod_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Lift is forbidden too.
+    let response = app
+        .post_json_with_token(
+            "/v1/admin/bans/00000000-0000-0000-0000-000000000001/lift",
+            &json!({ "reason": "Moderator lift attempt" }),
+            &mod_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_platform_admin_can_create_and_lift_bans() {
+    let app = TestApp::new().await;
+
+    // platform_admin holds admin.bans.manage (seeded in 0062).
+    let (admin_id, admin_token) = register_user(&app, "ban_platform_admin").await;
+    grant_role(&app, &admin_id, "platform_admin").await;
+
+    let target_id = create_test_user(&app, "ban_pa_target").await;
+
+    let response = app
+        .post_json_with_token(
+            "/v1/admin/bans",
+            &json!({
+                "user_id": target_id,
+                "ban_type": "platform",
+                "reason": "Platform admin ban"
+            }),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let ban_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/admin/bans/{ban_id}/lift"),
+            &json!({ "reason": "Appeal accepted" }),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
 }
 
 #[tokio::test]

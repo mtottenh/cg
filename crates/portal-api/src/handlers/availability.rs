@@ -5,7 +5,9 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use portal_core::{AvailabilityExceptionId, AvailabilityWindowId, PlayerId, TournamentMatchId};
+use portal_core::{
+    AvailabilityExceptionId, AvailabilityWindowId, PlayerId, TournamentId, TournamentMatchId,
+};
 use portal_domain::entities::{
     CreateAvailabilityOverride, CreateAvailabilityWindow, OverrideType, UpdateAvailabilityWindow,
 };
@@ -20,7 +22,7 @@ use crate::dto::responses::{
     SuggestedTimeResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::AvailabilityState;
 
 /// Extract request ID from headers.
@@ -414,6 +416,7 @@ pub async fn get_player_date_availability_public(
         (status = 201, description = "Suggestions generated", body = DataResponse<Vec<SuggestedTimeResponse>>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not a participant of this match", body = ApiError),
         (status = 404, description = "Match not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -421,16 +424,36 @@ pub async fn get_player_date_availability_public(
 )]
 pub async fn generate_suggestions(
     State(state): State<AvailabilityState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path((_tournament_id, match_id)): Path<(String, String)>,
+    Path((tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<GenerateSuggestionsRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<Vec<SuggestedTimeResponse>>>)> {
     let request_id = get_request_id(&headers);
 
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
     let match_id: TournamentMatchId = match_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    // Only match participants (or tournament admins) may generate suggestion
+    // rows: this endpoint writes to the database, so it must not be open to
+    // arbitrary authenticated users against arbitrary matches.
+    if !perm_checker
+        .has_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await
+    {
+        state
+            .availability_service
+            .verify_match_participant(tournament_id, match_id, auth.user_id, auth.player_id)
+            .await?;
+    }
 
     let suggestions = state
         .availability_service

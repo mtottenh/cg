@@ -8,7 +8,7 @@ use crate::dto::responses::{
     PermissionResponse, RoleResponse, RoleWithPermissionsResponse, UserRoleAssignmentResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::AuthenticatedUser;
+use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::state::RolesState;
 use axum::Json;
 use axum::extract::{Path, State};
@@ -26,7 +26,13 @@ fn get_request_id(headers: &HeaderMap) -> &str {
         .unwrap_or("unknown")
 }
 
-/// Check if the user is an admin.
+/// Role name that is exempt from the assignment priority ceiling.
+const SUPER_ADMIN_ROLE: &str = "super_admin";
+
+/// Check if the user is an admin (holds `users.view_all`).
+///
+/// READ endpoints only: `users.view_all` is also granted to moderators.
+/// Mutating endpoints gate on `admin.users.manage` via [`PermissionChecker`].
 async fn require_admin(state: &RolesState, user_id: UserId) -> ApiResult<()> {
     let is_admin = state
         .permission_service
@@ -90,11 +96,14 @@ pub async fn list_roles(
 pub async fn create_role(
     State(state): State<RolesState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Json(body): Json<CreateRoleRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<RoleResponse>>)> {
     let request_id = get_request_id(&headers);
-    require_admin(&state, auth.user_id).await?;
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::USERS_MANAGE)
+        .await?;
 
     body.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -187,12 +196,15 @@ pub async fn get_role(
 pub async fn update_role(
     State(state): State<RolesState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(role_id): Path<String>,
     Json(body): Json<UpdateRoleRequest>,
 ) -> ApiResult<Json<DataResponse<RoleResponse>>> {
     let request_id = get_request_id(&headers);
-    require_admin(&state, auth.user_id).await?;
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::USERS_MANAGE)
+        .await?;
 
     body.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -255,11 +267,14 @@ pub async fn update_role(
 pub async fn delete_role(
     State(state): State<RolesState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(role_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     let _request_id = get_request_id(&headers);
-    require_admin(&state, auth.user_id).await?;
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::USERS_MANAGE)
+        .await?;
 
     let role_uuid: Uuid = role_id
         .parse()
@@ -308,12 +323,15 @@ pub async fn delete_role(
 pub async fn add_permission_to_role(
     State(state): State<RolesState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(role_id): Path<String>,
     Json(body): Json<AddPermissionToRoleRequest>,
 ) -> ApiResult<Json<DataResponse<RoleWithPermissionsResponse>>> {
     let request_id = get_request_id(&headers);
-    require_admin(&state, auth.user_id).await?;
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::USERS_MANAGE)
+        .await?;
 
     let role_uuid: Uuid = role_id
         .parse()
@@ -373,11 +391,14 @@ pub async fn add_permission_to_role(
 pub async fn remove_permission_from_role(
     State(state): State<RolesState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((role_id, permission_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<RoleWithPermissionsResponse>>> {
     let request_id = get_request_id(&headers);
-    require_admin(&state, auth.user_id).await?;
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::USERS_MANAGE)
+        .await?;
 
     let role_uuid: Uuid = role_id
         .parse()
@@ -519,12 +540,15 @@ pub async fn get_user_roles(
 pub async fn assign_role_to_user(
     State(state): State<RolesState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(user_id): Path<String>,
     Json(body): Json<AssignRoleRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<UserRoleAssignmentResponse>>)> {
     let request_id = get_request_id(&headers);
-    require_admin(&state, auth.user_id).await?;
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::USERS_MANAGE)
+        .await?;
 
     body.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -547,6 +571,36 @@ pub async fn assign_role_to_user(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to fetch role: {e}")))?
         .ok_or_else(|| ApiError::not_found("Role not found"))?;
+
+    // Priority ceiling: a caller may only grant roles strictly below their own
+    // highest-priority role. Seeded priorities (0014/0016): super_admin=1000,
+    // platform_admin=900, moderator=500, user=100 — so a platform_admin can
+    // grant moderator/user but not platform_admin or super_admin. Because the
+    // `>=` comparison would also block super_admin from granting super_admin
+    // (1000 >= 1000), callers holding the super_admin role are exempted
+    // explicitly. The dev bypass account (test-utils builds only) is treated
+    // like super_admin, matching its blanket-permission behaviour.
+    if !PermissionChecker::is_bypass(&auth) {
+        let caller_roles = state
+            .role_repo
+            .get_user_roles(auth.user_id)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to fetch caller roles: {e}")))?;
+
+        let is_super_admin = caller_roles.iter().any(|r| r.name == SUPER_ADMIN_ROLE);
+        if !is_super_admin {
+            let caller_max_priority = caller_roles
+                .iter()
+                .map(|r| r.priority)
+                .max()
+                .unwrap_or(i32::MIN);
+            if role.priority >= caller_max_priority {
+                return Err(ApiError::forbidden(
+                    "Cannot assign a role with priority equal to or above your own highest role",
+                ));
+            }
+        }
+    }
 
     let new_assignment = NewUserRole {
         user_id: user_uuid,
@@ -592,12 +646,15 @@ pub async fn assign_role_to_user(
 pub async fn revoke_role_from_user(
     State(state): State<RolesState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((user_id, role_id)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<RevokeRoleQuery>,
 ) -> ApiResult<StatusCode> {
     let _request_id = get_request_id(&headers);
-    require_admin(&state, auth.user_id).await?;
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::USERS_MANAGE)
+        .await?;
 
     let user_uuid: Uuid = user_id
         .parse()

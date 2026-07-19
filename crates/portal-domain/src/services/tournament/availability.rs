@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveTime, Utc};
 use portal_core::{
-    AvailabilityExceptionId, AvailabilityWindowId, DomainError, PlayerId, TournamentMatchId,
-    TournamentRegistrationId,
+    AvailabilityExceptionId, AvailabilityWindowId, DomainError, PlayerId, TournamentId,
+    TournamentMatchId, TournamentRegistrationId, UserId,
 };
 
 use crate::entities::{
@@ -364,6 +364,54 @@ where
     // =========================================================================
     // TIME SUGGESTIONS
     // =========================================================================
+
+    /// Verify that a match belongs to the given tournament and that the
+    /// caller is one of its participants.
+    ///
+    /// A caller counts as a participant when either side's registration was
+    /// registered by them, or is a solo registration for their player.
+    ///
+    /// # Errors
+    ///
+    /// - `TournamentMatchNotFound` if the match does not exist or does not
+    ///   belong to `tournament_id`
+    /// - `NotAuthorized` if the caller is not a participant
+    pub async fn verify_match_participant(
+        &self,
+        tournament_id: TournamentId,
+        match_id: TournamentMatchId,
+        user_id: UserId,
+        player_id: PlayerId,
+    ) -> Result<(), DomainError> {
+        let tournament_match = self
+            .match_repo
+            .find_by_id(match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
+
+        // The match must belong to the tournament named in the request path.
+        if tournament_match.tournament_id != tournament_id {
+            return Err(DomainError::TournamentMatchNotFound(match_id));
+        }
+
+        for reg_id in [
+            tournament_match.participant1_registration_id,
+            tournament_match.participant2_registration_id,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
+                && (reg.registered_by == user_id || reg.player_id == Some(player_id))
+            {
+                return Ok(());
+            }
+        }
+
+        Err(DomainError::NotAuthorized(format!(
+            "User {user_id} is not a participant in match {match_id}"
+        )))
+    }
 
     /// Generate time suggestions for a match based on participant availability.
     pub async fn generate_suggestions(

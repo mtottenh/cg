@@ -326,8 +326,8 @@ async fn test_create_delegation_unauthorized_regular_member() {
         )
         .await;
 
-    // API returns 401 Unauthorized for authorization failures (NotAuthorized error)
-    response.assert_status(StatusCode::UNAUTHORIZED);
+    // API returns 403 Forbidden for authorization failures (NotAuthorized error)
+    response.assert_status(StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -558,6 +558,6 @@ async fn test_revoke_delegation_unauthorized_captain_revokes_owner() {
         )
         .await;
 
-    // API returns 401 Unauthorized for authorization failures (NotAuthorized error)
-    response.assert_status(StatusCode::UNAUTHORIZED);
+    // API returns 403 Forbidden for authorization failures (NotAuthorized error)
+    response.assert_status(StatusCode::FORBIDDEN);
 }

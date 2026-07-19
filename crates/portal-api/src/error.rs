@@ -212,9 +212,10 @@ impl From<DomainError> for ApiError {
                 Self::conflict(format!("Review already acknowledged by captain {captain}"))
             }
 
-            // Authorization errors
-            DomainError::NotAuthorized(msg) => Self::unauthorized(msg),
-            DomainError::Forbidden(msg) => Self::forbidden(msg),
+            // Authorization errors — 403: the caller is authenticated but not
+            // allowed to perform the action (401 is reserved for missing or
+            // invalid credentials).
+            DomainError::NotAuthorized(msg) | DomainError::Forbidden(msg) => Self::forbidden(msg),
 
             // Authentication errors
             DomainError::InvalidToken => Self::unauthorized("Invalid or missing token"),

@@ -67,6 +67,16 @@ where
 }
 
 impl PermissionChecker {
+    /// Whether this user bypasses permission checks entirely (the well-known
+    /// dev account in `test-utils` builds; always `false` in production).
+    ///
+    /// Handlers that layer extra authorization logic on top of
+    /// `require_permission` (e.g. the role-assignment priority ceiling) use
+    /// this so the dev account keeps its blanket-permission behaviour.
+    pub(crate) fn is_bypass(user: &AuthenticatedUser) -> bool {
+        is_dev_user(user)
+    }
+
     /// Check if a user has a specific permission.
     pub async fn has_permission(&self, user: &AuthenticatedUser, permission: &str) -> bool {
         if is_dev_user(user) {

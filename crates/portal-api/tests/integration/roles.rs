@@ -30,6 +30,12 @@ async fn grant_admin_permission(app: &TestApp) {
 
 /// Register a test user via the API and return their user ID.
 async fn create_test_user(app: &TestApp, username: &str) -> String {
+    let (user_id, _token) = register_user(app, username).await;
+    user_id
+}
+
+/// Register a user via the API and return (`user_id`, `access_token`).
+async fn register_user(app: &TestApp, username: &str) -> (String, String) {
     let response = app
         .post_json_no_auth(
             "/v1/auth/register",
@@ -43,7 +49,34 @@ async fn create_test_user(app: &TestApp, username: &str) -> String {
         .await;
     response.assert_status(StatusCode::CREATED);
     let body: serde_json::Value = response.json();
-    body["data"]["user"]["id"].as_str().unwrap().to_string()
+    (
+        body["data"]["user"]["id"].as_str().unwrap().to_string(),
+        body["data"]["access_token"].as_str().unwrap().to_string(),
+    )
+}
+
+/// Grant a role (by name) to a user via SQL. Returns the role ID.
+async fn grant_role(app: &TestApp, user_id: &str, role_name: &str) -> Uuid {
+    let user_uuid = Uuid::parse_str(user_id).unwrap();
+    let role_id = role_id_by_name(app, role_name).await;
+
+    sqlx::query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(user_uuid)
+        .bind(role_id)
+        .execute(app.pool())
+        .await
+        .expect("Failed to assign role");
+    role_id
+}
+
+/// Look up a seeded role's ID by name.
+async fn role_id_by_name(app: &TestApp, role_name: &str) -> Uuid {
+    let role_row = sqlx::query("SELECT id FROM roles WHERE name = $1")
+        .bind(role_name)
+        .fetch_one(app.pool())
+        .await
+        .expect("role should exist");
+    role_row.get("id")
 }
 
 // ============================================================================
@@ -433,6 +466,117 @@ async fn test_get_user_roles() {
             .any(|name| name == "moderator"),
         "should include the assigned moderator role"
     );
+}
+
+// ============================================================================
+// MUTATION AUTHORIZATION (admin.users.manage) + PRIORITY CEILING
+// ============================================================================
+
+/// Regression test for the moderator self-escalation vulnerability: a user
+/// holding only the READ permission `users.view_all` (via the moderator role)
+/// could previously create roles and assign themselves `super_admin`.
+#[tokio::test]
+async fn test_view_all_only_user_can_read_but_not_mutate_roles() {
+    let app = TestApp::new().await;
+
+    // Moderator holds users.view_all but NOT admin.users.manage.
+    let (mod_id, mod_token) = register_user(&app, "roles_moderator").await;
+    grant_role(&app, &mod_id, "moderator").await;
+
+    // Read surfaces still work (is_admin == users.view_all).
+    let response = app.get_with_token("/v1/admin/roles", &mod_token).await;
+    response.assert_status(StatusCode::OK);
+
+    // Creating roles is forbidden.
+    let response = app
+        .post_json_with_token(
+            "/v1/admin/roles",
+            &json!({
+                "name": "escalation_role",
+                "display_name": "Escalation Role",
+                "category": "custom"
+            }),
+            &mod_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Self-assigning super_admin is forbidden.
+    let super_admin_id = role_id_by_name(&app, "super_admin").await;
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/admin/users/{mod_id}/roles"),
+            &json!({ "role_id": super_admin_id.to_string() }),
+            &mod_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+/// Priority ceiling: platform_admin (900) may grant lower-priority roles but
+/// never roles at or above its own tier (platform_admin, super_admin).
+#[tokio::test]
+async fn test_platform_admin_priority_ceiling() {
+    let app = TestApp::new().await;
+
+    let (admin_id, admin_token) = register_user(&app, "roles_platform_admin").await;
+    grant_role(&app, &admin_id, "platform_admin").await;
+
+    let target_id = create_test_user(&app, "ceiling_target").await;
+
+    // Granting a lower-priority role (moderator, 500 < 900) succeeds.
+    let moderator_id = role_id_by_name(&app, "moderator").await;
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/admin/users/{target_id}/roles"),
+            &json!({ "role_id": moderator_id.to_string() }),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // Granting super_admin (1000 >= 900) is forbidden.
+    let super_admin_id = role_id_by_name(&app, "super_admin").await;
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/admin/users/{target_id}/roles"),
+            &json!({ "role_id": super_admin_id.to_string() }),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Granting platform_admin (900 >= 900, same tier) is forbidden too.
+    let platform_admin_id = role_id_by_name(&app, "platform_admin").await;
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/admin/users/{target_id}/roles"),
+            &json!({ "role_id": platform_admin_id.to_string() }),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+/// super_admin is exempt from the ceiling and can grant super_admin.
+#[tokio::test]
+async fn test_super_admin_can_assign_super_admin() {
+    let app = TestApp::new().await;
+
+    let (admin_id, admin_token) = register_user(&app, "roles_super_admin").await;
+    grant_role(&app, &admin_id, "super_admin").await;
+
+    let target_id = create_test_user(&app, "super_target").await;
+
+    let super_admin_id = role_id_by_name(&app, "super_admin").await;
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/admin/users/{target_id}/roles"),
+            &json!({ "role_id": super_admin_id.to_string() }),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
 }
 
 #[tokio::test]

@@ -109,8 +109,8 @@ async fn test_reject_schedule_proposal() {
         )
         .await;
 
-    // Should return 401 because you cannot respond to your own proposal
-    response.assert_status(StatusCode::UNAUTHORIZED);
+    // Should return 403 because you cannot respond to your own proposal
+    response.assert_status(StatusCode::FORBIDDEN);
 
     let body: serde_json::Value = response.json();
     assert!(
@@ -486,6 +486,38 @@ async fn test_generate_time_suggestions() {
     let body: serde_json::Value = response.json();
     // The response is an array of suggestions (may be empty if no overlap)
     assert!(body["data"].is_array());
+}
+
+/// Generating suggestions writes rows, so only match participants (or
+/// tournament admins) may call it. A participant succeeds; an unrelated
+/// authenticated user gets 403.
+#[tokio::test]
+async fn test_generate_suggestions_requires_participant() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "suggestions-authz-test").await;
+
+    let body = json!({
+        "start_date": "2025-01-13",
+        "end_date": "2025-01-20",
+        "min_duration_minutes": 60
+    });
+    let url = format!("/v1/tournaments/{tournament_id}/matches/{match_id}/suggestions/generate");
+
+    // A random authenticated user who is not in the match is forbidden.
+    let (outsider_user, outsider_player) = create_test_player(&app, "suggestions_outsider").await;
+    let outsider_token = create_test_token(
+        outsider_user,
+        outsider_player,
+        "suggestions_outsider",
+        TEST_JWT_SECRET,
+    );
+    let response = app.post_json_with_token(&url, &body, &outsider_token).await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // A match participant may generate suggestions.
+    let response = app.post_json_with_token(&url, &body, &player2_token).await;
+    response.assert_status(StatusCode::CREATED);
 }
 
 #[tokio::test]

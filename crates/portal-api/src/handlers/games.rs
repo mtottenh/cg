@@ -97,7 +97,7 @@ pub async fn get_game(
     // Fetch from database by slug
     let game = state
         .game_repo
-        .find_by_slug(&game_id)
+        .find_by_id_or_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
@@ -208,7 +208,7 @@ pub async fn get_maps(
     // Fetch from database
     let game = state
         .game_repo
-        .find_by_slug(&game_id)
+        .find_by_id_or_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
@@ -256,7 +256,7 @@ pub async fn get_rank_tiers(
     // Fetch from database
     let game = state
         .game_repo
-        .find_by_slug(&game_id)
+        .find_by_id_or_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
@@ -335,8 +335,11 @@ pub async fn update_game(
         ..Default::default()
     };
 
+    // Resolve by UUID or slug; the write repos key on slug.
+    let slug = resolve_game_slug(&state, &game_id).await?;
+
     // Update in database
-    let game = state.game_repo.update(&game_id, update).await?;
+    let game = state.game_repo.update(&slug, update).await?;
 
     // Get plugin for additional metadata
     let plugin = state.plugin_manager.get(&game.plugin_id);
@@ -463,7 +466,7 @@ pub async fn set_map_pool(
     // Fetch game to verify it exists and get plugin
     let game = state
         .game_repo
-        .find_by_slug(&game_id)
+        .find_by_id_or_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
@@ -544,8 +547,11 @@ pub async fn enable_game(
         ));
     }
 
+    // Resolve by UUID or slug; the write repos key on slug.
+    let slug = resolve_game_slug(&state, &game_id).await?;
+
     // Enable the game
-    let game = state.game_repo.enable(&game_id).await?;
+    let game = state.game_repo.enable(&slug).await?;
 
     let response = GameSummaryResponse {
         id: game.id.to_string(),
@@ -599,8 +605,11 @@ pub async fn disable_game(
         ));
     }
 
+    // Resolve by UUID or slug; the write repos key on slug.
+    let slug = resolve_game_slug(&state, &game_id).await?;
+
     // Disable the game
-    let game = state.game_repo.disable(&game_id).await?;
+    let game = state.game_repo.disable(&slug).await?;
 
     let response = GameSummaryResponse {
         id: game.id.to_string(),
@@ -647,6 +656,40 @@ pub(crate) fn load_available_maps(
         p.available_maps().into_iter().map(Into::into).collect()
     } else {
         vec![]
+    }
+}
+
+/// Resolve a `{game_id}` path parameter (UUID or slug) to the game's slug,
+/// for the repository write paths that are keyed on slug.
+async fn resolve_game_slug(state: &GamesState, game_id: &str) -> ApiResult<String> {
+    let game = state
+        .game_repo
+        .find_by_id_or_slug(game_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
+    Ok(game.slug)
+}
+
+/// All map IDs that are legal for a game.
+///
+/// Resolution order: the game's `available_maps` catalog (or the plugin's
+/// defaults when the DB catalog is empty), then the game's
+/// `default_map_pool`. Shared by tournament create validation and
+/// [`crate::adapters::DbMapPoolProvider`] so "is this a real map?" means the
+/// same thing everywhere.
+pub(crate) fn game_catalog_map_ids(
+    game: &GameRow,
+    plugin: &Option<std::sync::Arc<dyn portal_plugins::GamePlugin>>,
+) -> Vec<String> {
+    let catalog: Vec<String> = load_available_maps(game, plugin)
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+
+    if catalog.is_empty() {
+        extract_map_pool(game)
+    } else {
+        catalog
     }
 }
 
@@ -701,7 +744,7 @@ pub async fn add_map(
 
     let game = state
         .game_repo
-        .find_by_slug(&game_id)
+        .find_by_id_or_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
@@ -768,7 +811,7 @@ pub async fn update_map(
 
     let game = state
         .game_repo
-        .find_by_slug(&game_id)
+        .find_by_id_or_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
@@ -836,7 +879,7 @@ pub async fn remove_map(
 
     let game = state
         .game_repo
-        .find_by_slug(&game_id)
+        .find_by_id_or_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
@@ -896,7 +939,7 @@ pub async fn set_rank_tiers(
     // Verify game exists
     let _ = state
         .game_repo
-        .find_by_slug(&game_id)
+        .find_by_id_or_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 
@@ -983,7 +1026,7 @@ pub async fn update_team_size(
     // Fetch current game to merge with existing values
     let game = state
         .game_repo
-        .find_by_slug(&game_id)
+        .find_by_id_or_slug(&game_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
 

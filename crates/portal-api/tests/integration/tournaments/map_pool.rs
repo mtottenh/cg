@@ -15,6 +15,7 @@ async fn create_tournament_for_map_pool(app: &TestApp, slug: &str) -> String {
                 "name": format!("Map Pool Test {}", slug),
                 "slug": slug,
                 "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
                 "participant_type": "individual",
                 "min_participants": 2,
                 "max_participants": 16,
@@ -39,17 +40,17 @@ async fn test_map_pool_set_get_delete_roundtrip() {
     let app = TestApp::new().await;
     let tournament_id = create_tournament_for_map_pool(&app, "map-pool-roundtrip").await;
 
-    // Without an override the effective pool falls back to the game default
+    // Tournament creation always writes an explicit pool, so the effective
+    // pool is the tournament's own from the start.
     let response = app
         .get(&format!("/v1/tournaments/{tournament_id}/map-pool"))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
-    assert_eq!(body["data"]["source"], "game");
-    let default_maps = body["data"]["maps"].as_array().unwrap().clone();
-    assert!(
-        !default_maps.is_empty(),
-        "CS2 game should ship a default map pool"
+    assert_eq!(body["data"]["source"], "tournament");
+    assert_eq!(
+        body["data"]["maps"],
+        json!(portal_test::builders::DEFAULT_CS2_MAP_POOL)
     );
 
     // PUT a tournament-specific pool
@@ -85,14 +86,17 @@ async fn test_map_pool_set_get_delete_roundtrip() {
         .await;
     response.assert_status(StatusCode::NO_CONTENT);
 
-    // GET falls back to the game default again
+    // GET falls back to the game default
     let response = app
         .get(&format!("/v1/tournaments/{tournament_id}/map-pool"))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["source"], "game");
-    assert_eq!(body["data"]["maps"].as_array().unwrap(), &default_maps);
+    assert!(
+        !body["data"]["maps"].as_array().unwrap().is_empty(),
+        "CS2 game should ship a default map pool"
+    );
 }
 
 #[tokio::test]
@@ -109,10 +113,18 @@ async fn test_set_map_pool_unknown_map_rejected() {
     response.assert_status(StatusCode::BAD_REQUEST);
 }
 
+/// Every tournament is created with an explicit pool, so the first DELETE
+/// always succeeds (reverting the tournament to the game default) and only a
+/// second DELETE hits the "no override" 404 branch.
 #[tokio::test]
-async fn test_delete_map_pool_without_override_not_found() {
+async fn test_delete_map_pool_twice_second_is_not_found() {
     let app = TestApp::new().await;
     let tournament_id = create_tournament_for_map_pool(&app, "map-pool-no-override").await;
+
+    let response = app
+        .delete_auth(&format!("/v1/tournaments/{tournament_id}/map-pool"))
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
 
     let response = app
         .delete_auth(&format!("/v1/tournaments/{tournament_id}/map-pool"))

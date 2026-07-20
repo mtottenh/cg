@@ -47,6 +47,104 @@ async fn test_get_game_not_found() {
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
+// ============================================================================
+// UUID-OR-SLUG RESOLUTION
+// ============================================================================
+//
+// `GET /v1/games` returns each game's `id` as a UUID, so a client doing
+// list -> detail addresses the single-game routes by UUID. Every
+// `/v1/games/{game_id}` endpoint must therefore accept both forms.
+
+/// Read the UUID that `GET /v1/games` advertises for CS2.
+async fn cs2_uuid(app: &TestApp) -> String {
+    let response = app.get("/v1/games").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["slug"] == "cs2")
+        .expect("cs2 should be seeded")["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn test_get_game_by_uuid_matches_slug() {
+    let app = TestApp::new().await;
+    let uuid = cs2_uuid(&app).await;
+
+    let by_uuid = app.get(&format!("/v1/games/{uuid}")).await;
+    by_uuid.assert_status(StatusCode::OK);
+    let by_uuid: serde_json::Value = by_uuid.json();
+
+    let by_slug = app.get("/v1/games/cs2").await;
+    by_slug.assert_status(StatusCode::OK);
+    let by_slug: serde_json::Value = by_slug.json();
+
+    assert_eq!(by_uuid["data"]["slug"], "cs2");
+    assert_eq!(by_uuid["data"]["id"], uuid);
+    assert_eq!(by_uuid["data"], by_slug["data"]);
+}
+
+#[tokio::test]
+async fn test_get_maps_by_uuid_matches_slug() {
+    let app = TestApp::new().await;
+    let uuid = cs2_uuid(&app).await;
+
+    let by_uuid = app.get(&format!("/v1/games/{uuid}/maps")).await;
+    by_uuid.assert_status(StatusCode::OK);
+    let by_uuid: serde_json::Value = by_uuid.json();
+
+    let by_slug = app.get("/v1/games/cs2/maps").await;
+    by_slug.assert_status(StatusCode::OK);
+    let by_slug: serde_json::Value = by_slug.json();
+
+    assert!(!by_uuid["data"].as_array().unwrap().is_empty());
+    assert_eq!(by_uuid["data"], by_slug["data"]);
+}
+
+#[tokio::test]
+async fn test_get_rank_tiers_by_uuid_matches_slug() {
+    let app = TestApp::new().await;
+    let uuid = cs2_uuid(&app).await;
+
+    let by_uuid = app.get(&format!("/v1/games/{uuid}/rank-tiers")).await;
+    by_uuid.assert_status(StatusCode::OK);
+    let by_uuid: serde_json::Value = by_uuid.json();
+
+    let by_slug = app.get("/v1/games/cs2/rank-tiers").await;
+    by_slug.assert_status(StatusCode::OK);
+    let by_slug: serde_json::Value = by_slug.json();
+
+    assert!(!by_uuid["data"].as_array().unwrap().is_empty());
+    assert_eq!(by_uuid["data"], by_slug["data"]);
+}
+
+/// A well-formed UUID that is not a game still 404s — the slug fallback
+/// must not turn unknown identifiers into matches.
+#[tokio::test]
+async fn test_get_game_unknown_uuid_not_found() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .get("/v1/games/00000000-0000-0000-0000-0000000000ff")
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
+
+    let response = app
+        .get("/v1/games/00000000-0000-0000-0000-0000000000ff/maps")
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
+
+    let response = app
+        .get("/v1/games/00000000-0000-0000-0000-0000000000ff/rank-tiers")
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn test_get_maps() {
     let app = TestApp::new().await;

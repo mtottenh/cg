@@ -130,6 +130,7 @@ async fn test_pass_auto_creates_veto_session_when_tournament_configures_format()
                 "name": "Lifecycle Veto Test",
                 "slug": "lifecycle-veto-test",
                 "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
                 "participant_type": "individual",
                 "min_participants": 2,
                 "max_participants": 4,

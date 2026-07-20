@@ -468,6 +468,10 @@ pub fn tournament_2_map_pool_id() -> Uuid {
     seed_uuid("tournament2_map_pool")
 }
 
+pub fn tournament_map_pool_id() -> Uuid {
+    seed_uuid("tournament1_map_pool")
+}
+
 /// Average seed rating for a team (used for tournament seeding).
 pub fn team_seed_rating(team_key: &str) -> i32 {
     // Map team keys to approximate average ratings

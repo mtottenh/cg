@@ -242,8 +242,9 @@ async fn seed_full(pool: &PgPool) -> Result<()> {
     info("Seeding tournament...");
     seed_tournament(&mut tx, game_id, season_id, organizer.user_id()).await?;
 
-    // 13. Tournament 1 stage
+    // 13. Tournament 1 stage + map pool
     seed_tournament_stage(&mut tx).await?;
+    seed_tournament_map_pool(&mut tx).await?;
 
     // 14. Tournament 2 (self-scheduled, in_progress)
     info("Seeding self-scheduled tournament...");
@@ -723,12 +724,49 @@ async fn seed_tournament_2_bracket(tx: &mut sqlx::Transaction<'_, sqlx::Postgres
     Ok(())
 }
 
-/// CS2 competitive map pool.
-const CS2_MAP_POOL: &[&str] = &[
+/// Map pool for tournament 1 — the game's seeded default pool.
+///
+/// Every tournament must own an explicit pool (tournament creation requires
+/// one and result map validation fails closed), so the seed writes one here
+/// rather than relying on a game-default fallback.
+const TOURNAMENT_1_MAP_POOL: &[&str] = &[
+    "de_dust2",
     "de_mirage",
     "de_inferno",
     "de_nuke",
-    "de_overpass",
+    "de_ancient",
+    "de_anubis",
+    "de_vertigo",
+];
+
+async fn seed_tournament_map_pool(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
+    sqlx::query(
+        r"INSERT INTO tournament_map_pools (id, tournament_id, maps, veto_format_id)
+          VALUES ($1, $2, $3, 'standard')
+          ON CONFLICT DO NOTHING",
+    )
+    .bind(scenario::tournament_map_pool_id())
+    .bind(scenario::tournament_id())
+    .bind(TOURNAMENT_1_MAP_POOL)
+    .execute(&mut **tx)
+    .await
+    .context("Failed to seed tournament 1 map pool")?;
+    Ok(())
+}
+
+/// CS2 competitive map pool.
+///
+/// Must stay a subset of the game's map catalog seeded by migration 0018:
+/// `map_pool` is validated against that catalog on tournament creation, so a
+/// seeded pool containing a map the game doesn't know about is data that
+/// could not be produced through the API (and renders as a raw id in the UI
+/// for want of a display name). `de_overpass` was exactly that; swapped for
+/// `de_dust2`, which is in the catalog.
+const CS2_MAP_POOL: &[&str] = &[
+    "de_dust2",
+    "de_mirage",
+    "de_inferno",
+    "de_nuke",
     "de_ancient",
     "de_anubis",
     "de_vertigo",

@@ -98,6 +98,7 @@ pub type AppTournamentService = TournamentService<
     PgTournamentRegistrationRepository,
     PgTournamentMatchRepository,
     PgTournamentStandingsRepository,
+    PgTournamentMapPoolRepository,
 >;
 pub type AppRegistrationService =
     RegistrationService<PgTournamentRepository, PgTournamentRegistrationRepository>;
@@ -499,6 +500,11 @@ impl AppState {
         let tournament_standings_repo =
             Arc::new(PgTournamentStandingsRepository::new(db_pool.clone()));
 
+        // Map pool repository — tournament creation writes the tournament's
+        // required map pool through it.
+        let tournament_map_pool_repo =
+            Arc::new(PgTournamentMapPoolRepository::new(db_pool.clone()));
+
         // Create tournament service
         let tournament_service = TournamentService::new(
             Arc::clone(&tournament_repo),
@@ -507,6 +513,7 @@ impl AppState {
             Arc::clone(&tournament_registration_repo),
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_standings_repo),
+            Arc::clone(&tournament_map_pool_repo),
         );
 
         // Create Phase 2 tournament services
@@ -555,8 +562,6 @@ impl AppState {
         // Create veto and result repositories and services
         let veto_session_repo = Arc::new(PgVetoSessionRepository::new(db_pool.clone()));
         let veto_action_repo = Arc::new(PgVetoActionRepository::new(db_pool.clone()));
-        let tournament_map_pool_repo =
-            Arc::new(PgTournamentMapPoolRepository::new(db_pool.clone()));
 
         let format_provider = Arc::new(PluginVetoFormatProvider::new(Arc::clone(&plugin_manager)));
         let side_provider = Arc::new(PluginSideSelectionProvider::new(Arc::clone(

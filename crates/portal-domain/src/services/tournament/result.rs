@@ -613,18 +613,22 @@ where
     /// 1. If the match had a **completed veto**, the picked maps are
     ///    authoritative — a map that was never picked is rejected even if it
     ///    is otherwise a real map in the pool.
-    /// 2. Otherwise fall back to the tournament/stage map pool (with the
-    ///    game's pool/catalog behind it) via [`MapPoolProvider`].
+    /// 2. Otherwise the tournament/stage map pool (with the game's
+    ///    pool/catalog behind it) via [`MapPoolProvider`].
     ///
-    /// If neither authority can be resolved (no veto and no provider, or a
-    /// provider that returns nothing) validation is skipped rather than
-    /// failing closed — a missing pool configuration must not block result
-    /// submission.
+    /// This **fails closed**: every tournament is created with an explicit
+    /// map pool, so a pool that cannot be resolved is a real error, not a
+    /// reason to wave the submission through.
     async fn validate_map_ids(
         &self,
         match_: &TournamentMatch,
         game_results: &[GameResultInput],
     ) -> Result<(), DomainError> {
+        // Nothing reported, nothing to validate.
+        if game_results.is_empty() {
+            return Ok(());
+        }
+
         if let Some(session) = self.veto_session_repo.find_by_match(match_.id).await?
             && session.status == VetoStatus::Completed
             && !session.selected_maps.is_empty()
@@ -632,9 +636,9 @@ where
             return check_map_ids(&session.selected_maps, game_results, MapSource::Veto);
         }
 
-        let Some(provider) = self.map_pool_provider.as_ref() else {
-            return Ok(());
-        };
+        let provider = self.map_pool_provider.as_ref().ok_or_else(|| {
+            DomainError::Internal("No map pool provider configured for result validation".into())
+        })?;
 
         let valid_maps = provider
             .valid_map_ids(match_.tournament_id, Some(match_.stage_id))
@@ -643,9 +647,14 @@ where
         if valid_maps.is_empty() {
             warn!(
                 match_id = %match_.id,
-                "no map pool resolved for match; skipping map id validation"
+                tournament_id = %match_.tournament_id,
+                "no map pool resolved for match; rejecting result submission"
             );
-            return Ok(());
+            return Err(DomainError::InvalidMatchResult(
+                "No map pool is configured for this tournament, so submitted maps cannot be \
+                 validated"
+                    .to_string(),
+            ));
         }
 
         check_map_ids(&valid_maps, game_results, MapSource::Pool)
@@ -815,5 +824,228 @@ mod tests {
     #[test]
     fn test_check_map_ids_accepts_empty_game_results() {
         assert!(check_map_ids(&pool(), &[], MapSource::Pool).is_ok());
+    }
+
+    // ------------------------------------------------------------------
+    // validate_map_ids: veto precedence + fail-closed behaviour
+    // ------------------------------------------------------------------
+
+    use crate::entities::tournament::TournamentMatch;
+    use crate::entities::veto::VetoSession;
+    use crate::repositories::demo::MockDemoMatchLinkRepository;
+    use crate::repositories::tournament::{
+        MockResultClaimRepository, MockTournamentMatchRepository,
+        MockTournamentRegistrationRepository, MockVetoSessionRepository,
+    };
+    use portal_core::types::{MatchFormat, TournamentMatchStatus};
+    use portal_core::{
+        SideSelectionMode, TournamentBracketId, TournamentId, TournamentStageId, VetoSessionId,
+    };
+
+    type TestService = ResultService<
+        MockResultClaimRepository,
+        MockTournamentMatchRepository,
+        MockTournamentRegistrationRepository,
+        MockDemoMatchLinkRepository,
+        MockVetoSessionRepository,
+    >;
+
+    fn make_service(veto_repo: MockVetoSessionRepository) -> TestService {
+        ResultService::new(
+            Arc::new(MockResultClaimRepository::new()),
+            Arc::new(MockTournamentMatchRepository::new()),
+            Arc::new(MockTournamentRegistrationRepository::new()),
+            Arc::new(MockDemoMatchLinkRepository::new()),
+            Arc::new(veto_repo),
+        )
+    }
+
+    fn make_match() -> TournamentMatch {
+        TournamentMatch {
+            id: TournamentMatchId::new(),
+            bracket_id: TournamentBracketId::new(),
+            stage_id: TournamentStageId::new(),
+            tournament_id: TournamentId::new(),
+            round: 1,
+            match_number: 1,
+            bracket_position: "R1M1".to_string(),
+            participant1_registration_id: Some(TournamentRegistrationId::new()),
+            participant2_registration_id: Some(TournamentRegistrationId::new()),
+            participant1_name: None,
+            participant1_logo_url: None,
+            participant1_seed: None,
+            participant2_name: None,
+            participant2_logo_url: None,
+            participant2_seed: None,
+            participant1_source: None,
+            participant2_source: None,
+            match_format: MatchFormat::Bo3,
+            maps_required: 3,
+            scheduled_at: None,
+            schedule_deadline: None,
+            started_at: None,
+            completed_at: None,
+            participant1_score: 0,
+            participant2_score: 0,
+            winner_registration_id: None,
+            loser_registration_id: None,
+            winner_progresses_to: None,
+            loser_progresses_to: None,
+            status: TournamentMatchStatus::InProgress,
+            disputed: false,
+            dispute_reason: None,
+            dispute_resolved_by: None,
+            dispute_resolution: None,
+            dispute_resolved_at: None,
+            stream_url: None,
+            vod_url: None,
+            check_in_opens_at: None,
+            check_in_deadline: None,
+            participant1_checked_in_at: None,
+            participant2_checked_in_at: None,
+            participant1_checked_in_by: None,
+            participant2_checked_in_by: None,
+            veto_required: false,
+            check_in_required: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn make_completed_veto(match_id: TournamentMatchId, selected: &[&str]) -> VetoSession {
+        VetoSession {
+            id: VetoSessionId::new(),
+            match_id,
+            veto_format_id: "bo3_standard".to_string(),
+            map_pool: pool(),
+            coin_flip_winner_registration_id: None,
+            first_action_registration_id: None,
+            current_action_number: 0,
+            current_team_turn: None,
+            remaining_maps: vec![],
+            selected_maps: selected.iter().map(|m| (*m).to_string()).collect(),
+            status: VetoStatus::Completed,
+            action_deadline: None,
+            timeout_seconds: 30,
+            side_selection_mode: SideSelectionMode::CoinFlip,
+            started_at: None,
+            completed_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    struct StubPool(Vec<String>);
+
+    #[async_trait]
+    impl MapPoolProvider for StubPool {
+        async fn valid_map_ids(
+            &self,
+            _tournament_id: TournamentId,
+            _stage_id: Option<TournamentStageId>,
+        ) -> Result<Vec<String>, DomainError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// Fail closed: an unresolvable (empty) pool now rejects instead of
+    /// waving the submission through.
+    #[tokio::test]
+    async fn test_validate_map_ids_rejects_when_pool_unresolvable() {
+        let mut veto_repo = MockVetoSessionRepository::new();
+        veto_repo.expect_find_by_match().returning(|_| Ok(None));
+
+        let service = make_service(veto_repo).with_map_pool_provider(Arc::new(StubPool(vec![])));
+        let match_ = make_match();
+        let games = vec![game_on(1, "de_dust2")];
+
+        let err = service
+            .validate_map_ids(&match_, &games)
+            .await
+            .expect_err("an unresolvable map pool must fail closed");
+
+        match err {
+            DomainError::InvalidMatchResult(msg) => {
+                assert!(msg.contains("map pool"), "unexpected message: {msg}");
+            }
+            other => panic!("expected InvalidMatchResult, got {other:?}"),
+        }
+    }
+
+    /// Fail closed: no provider configured at all is an error too.
+    #[tokio::test]
+    async fn test_validate_map_ids_rejects_without_provider() {
+        let mut veto_repo = MockVetoSessionRepository::new();
+        veto_repo.expect_find_by_match().returning(|_| Ok(None));
+
+        let service = make_service(veto_repo);
+        let match_ = make_match();
+        let games = vec![game_on(1, "de_dust2")];
+
+        assert!(service.validate_map_ids(&match_, &games).await.is_err());
+    }
+
+    /// Empty game_results is still skipped — nothing to validate.
+    #[tokio::test]
+    async fn test_validate_map_ids_allows_empty_game_results() {
+        let mut veto_repo = MockVetoSessionRepository::new();
+        veto_repo.expect_find_by_match().returning(|_| Ok(None));
+
+        let service = make_service(veto_repo).with_map_pool_provider(Arc::new(StubPool(vec![])));
+        let match_ = make_match();
+
+        assert!(service.validate_map_ids(&match_, &[]).await.is_ok());
+    }
+
+    /// A completed veto wins over the tournament pool.
+    #[tokio::test]
+    async fn test_validate_map_ids_prefers_completed_veto_over_pool() {
+        let match_ = make_match();
+        let match_id = match_.id;
+
+        let mut veto_repo = MockVetoSessionRepository::new();
+        veto_repo.expect_find_by_match().returning(move |_| {
+            Ok(Some(make_completed_veto(
+                match_id,
+                &["de_dust2", "de_inferno"],
+            )))
+        });
+
+        // The provider would happily allow de_nuke; the veto must not.
+        let service = make_service(veto_repo).with_map_pool_provider(Arc::new(StubPool(pool())));
+
+        let picked = vec![game_on(1, "de_dust2"), game_on(2, "de_inferno")];
+        assert!(service.validate_map_ids(&match_, &picked).await.is_ok());
+
+        let not_picked = vec![game_on(1, "de_dust2"), game_on(2, "de_nuke")];
+        assert!(
+            service
+                .validate_map_ids(&match_, &not_picked)
+                .await
+                .is_err()
+        );
+    }
+
+    /// Non-veto match validates against the tournament pool.
+    #[tokio::test]
+    async fn test_validate_map_ids_falls_back_to_pool_without_veto() {
+        let mut veto_repo = MockVetoSessionRepository::new();
+        veto_repo.expect_find_by_match().returning(|_| Ok(None));
+
+        let service = make_service(veto_repo).with_map_pool_provider(Arc::new(StubPool(pool())));
+        let match_ = make_match();
+
+        assert!(
+            service
+                .validate_map_ids(&match_, &[game_on(1, "de_dust2")])
+                .await
+                .is_ok()
+        );
+        assert!(
+            service
+                .validate_map_ids(&match_, &[game_on(1, "map_1")])
+                .await
+                .is_err()
+        );
     }
 }

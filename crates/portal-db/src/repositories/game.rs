@@ -38,6 +38,26 @@ impl GameRepository {
         Ok(game)
     }
 
+    /// Find a game by UUID **or** slug.
+    ///
+    /// `GET /v1/games` hands out UUIDs as `id` while the single-game routes
+    /// are addressed by slug, so path parameters must accept either form.
+    /// A value that parses as a UUID is looked up by id first and falls back
+    /// to a slug lookup (a slug can never be a valid UUID, so the fallback
+    /// only matters for a UUID that isn't a game).
+    pub async fn find_by_id_or_slug(
+        &self,
+        id_or_slug: &str,
+    ) -> Result<Option<GameRow>, RepositoryError> {
+        if let Ok(uuid) = id_or_slug.parse::<Uuid>()
+            && let Some(game) = self.find_by_id(uuid).await?
+        {
+            return Ok(Some(game));
+        }
+
+        self.find_by_slug(id_or_slug).await
+    }
+
     /// List all games.
     pub async fn list(&self) -> Result<Vec<GameRow>, RepositoryError> {
         let games =

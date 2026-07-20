@@ -17,15 +17,15 @@ use crate::entities::tournament::{
 use crate::repositories::tournament::{
     CreateTournament, CreateTournamentBracket, CreateTournamentRegistration, CreateTournamentStage,
     CreateTournamentStanding, TournamentBracketRepository, TournamentFilters,
-    TournamentMatchRepository, TournamentRegistrationRepository, TournamentRepository,
-    TournamentStageRepository, TournamentStandingsRepository, UpdateTournament,
-    UpdateTournamentStanding,
+    TournamentMapPoolRepository, TournamentMatchRepository, TournamentRegistrationRepository,
+    TournamentRepository, TournamentStageRepository, TournamentStandingsRepository,
+    UpdateTournament, UpdateTournamentStanding, UpsertTournamentMapPool,
 };
 
 use super::bracket_generator::{BracketGenerator, CrossLinkType};
 
 /// Service for tournament management.
-pub struct TournamentService<TR, TSR, TBR, TRR, TMR, TSTR>
+pub struct TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR>
 where
     TR: TournamentRepository,
     TSR: TournamentStageRepository,
@@ -33,6 +33,7 @@ where
     TRR: TournamentRegistrationRepository,
     TMR: TournamentMatchRepository,
     TSTR: TournamentStandingsRepository,
+    TMPR: TournamentMapPoolRepository,
 {
     tournament_repo: Arc<TR>,
     stage_repo: Arc<TSR>,
@@ -40,9 +41,10 @@ where
     registration_repo: Arc<TRR>,
     match_repo: Arc<TMR>,
     standings_repo: Arc<TSTR>,
+    map_pool_repo: Arc<TMPR>,
 }
 
-impl<TR, TSR, TBR, TRR, TMR, TSTR> TournamentService<TR, TSR, TBR, TRR, TMR, TSTR>
+impl<TR, TSR, TBR, TRR, TMR, TSTR, TMPR> TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR>
 where
     TR: TournamentRepository,
     TSR: TournamentStageRepository,
@@ -50,6 +52,7 @@ where
     TRR: TournamentRegistrationRepository,
     TMR: TournamentMatchRepository,
     TSTR: TournamentStandingsRepository,
+    TMPR: TournamentMapPoolRepository,
 {
     /// Create a new tournament service.
     pub const fn new(
@@ -59,6 +62,7 @@ where
         registration_repo: Arc<TRR>,
         match_repo: Arc<TMR>,
         standings_repo: Arc<TSTR>,
+        map_pool_repo: Arc<TMPR>,
     ) -> Self {
         Self {
             tournament_repo,
@@ -67,6 +71,7 @@ where
             registration_repo,
             match_repo,
             standings_repo,
+            map_pool_repo,
         }
     }
 
@@ -83,6 +88,10 @@ where
                 cmd.slug
             )));
         }
+
+        // Captured before `cmd` is consumed by the insert below.
+        let map_pool = cmd.map_pool.clone();
+        let veto_format_id = cmd.default_map_veto_format.clone();
 
         // Create the tournament
         let tournament = self
@@ -116,6 +125,30 @@ where
                 created_by,
             })
             .await?;
+
+        // Persist the tournament's map pool. The repositories don't share a
+        // transaction, so on failure we compensate by deleting the tournament
+        // we just wrote — a tournament without a pool would break the
+        // fail-closed map validation on result submission.
+        if let Err(e) = self
+            .map_pool_repo
+            .upsert(UpsertTournamentMapPool {
+                tournament_id: tournament.id,
+                stage_id: None,
+                maps: map_pool,
+                veto_format_id,
+            })
+            .await
+        {
+            if let Err(cleanup_err) = self.tournament_repo.delete(tournament.id).await {
+                tracing::error!(
+                    error = %cleanup_err,
+                    tournament_id = %tournament.id,
+                    "failed to roll back tournament after map pool write failed"
+                );
+            }
+            return Err(e);
+        }
 
         Ok(tournament)
     }
@@ -1590,7 +1623,8 @@ where
 }
 
 // Manual Clone implementation since derive(Clone) doesn't work with generic bounds
-impl<TR, TSR, TBR, TRR, TMR, TSTR> Clone for TournamentService<TR, TSR, TBR, TRR, TMR, TSTR>
+impl<TR, TSR, TBR, TRR, TMR, TSTR, TMPR> Clone
+    for TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR>
 where
     TR: TournamentRepository,
     TSR: TournamentStageRepository,
@@ -1598,6 +1632,7 @@ where
     TRR: TournamentRegistrationRepository,
     TMR: TournamentMatchRepository,
     TSTR: TournamentStandingsRepository,
+    TMPR: TournamentMapPoolRepository,
 {
     fn clone(&self) -> Self {
         Self {
@@ -1607,6 +1642,7 @@ where
             registration_repo: Arc::clone(&self.registration_repo),
             match_repo: Arc::clone(&self.match_repo),
             standings_repo: Arc::clone(&self.standings_repo),
+            map_pool_repo: Arc::clone(&self.map_pool_repo),
         }
     }
 }

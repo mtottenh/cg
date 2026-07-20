@@ -679,12 +679,15 @@ async fn test_individual_registration_player_can_perform_veto_action() {
 // ============================================================================
 
 /// Seven standard CS2 active-duty maps — enough for a bo3 map pool.
+///
+/// Must be a subset of the catalog seeded by migration 0018, since
+/// `map_pool` is validated against it on tournament creation.
 const CS2_MAP_POOL: [&str; 7] = [
     "de_dust2",
     "de_mirage",
     "de_inferno",
     "de_nuke",
-    "de_overpass",
+    "de_vertigo",
     "de_ancient",
     "de_anubis",
 ];

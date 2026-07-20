@@ -391,7 +391,7 @@ impl TournamentBuilder {
 
         let tournament = self.build(game_id, created_by);
 
-        sqlx::query_as::<_, TournamentRow>(
+        let row = sqlx::query_as::<_, TournamentRow>(
             r"
             INSERT INTO tournaments (
                 id, game_id, league_id, season_id, name, slug, description,
@@ -443,7 +443,25 @@ impl TournamentBuilder {
         .bind(tournament.updated_at)
         .fetch_one(pool)
         .await
-        .expect("Failed to create test tournament")
+        .expect("Failed to create test tournament");
+
+        // Every tournament owns an explicit map pool (result map validation
+        // fails closed), so mirror what the create endpoint does.
+        sqlx::query(
+            r"
+            INSERT INTO tournament_map_pools (id, tournament_id, maps)
+            VALUES ($1, $2, $3)
+            ON CONFLICT DO NOTHING
+            ",
+        )
+        .bind(Uuid::new_v4())
+        .bind(row.id)
+        .bind(super::DEFAULT_CS2_MAP_POOL)
+        .execute(pool)
+        .await
+        .expect("Failed to create test tournament map pool");
+
+        row
     }
 }
 

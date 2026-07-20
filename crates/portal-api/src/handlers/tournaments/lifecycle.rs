@@ -49,6 +49,23 @@ pub async fn create_tournament(
 
     let mut cmd = req.into_command()?;
 
+    // Every map in the requested pool must be a real map for the game. The
+    // tournament/stage pool is irrelevant here (the tournament doesn't exist
+    // yet), so validate against the game's catalog.
+    let game = state
+        .game_repo
+        .find_by_id(cmd.game_id.as_uuid())
+        .await?
+        .ok_or_else(|| ApiError::bad_request("Unknown game_id"))?;
+    let plugin = state.plugin_manager.get(&game.plugin_id);
+    let catalog = crate::handlers::games::game_catalog_map_ids(&game, &plugin);
+
+    for map_id in &cmd.map_pool {
+        if !catalog.iter().any(|m| m == map_id) {
+            return Err(ApiError::bad_request(format!("Unknown map: {map_id}")));
+        }
+    }
+
     // Default season_id to the league's current season when not specified
     if cmd.league_id.is_some()
         && cmd.season_id.is_none()

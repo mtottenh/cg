@@ -75,7 +75,7 @@ impl MapPoolProvider for DbMapPoolProvider {
             return Ok(default_pool);
         }
 
-        // 3. Last resort: the game's full map catalog, so a game with no
+        // 3. Last resort: the game's full map catalog, so a legacy game with no
         //    configured pool still rejects made-up map IDs.
         let plugin = self.plugin_manager.get(&game.plugin_id);
         Ok(crate::handlers::games::load_available_maps(&game, &plugin)

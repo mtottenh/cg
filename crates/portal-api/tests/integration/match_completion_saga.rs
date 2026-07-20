@@ -103,6 +103,7 @@ async fn create_4player_tournament(app: &TestApp, slug: &str) -> FourPlayerTourn
                 "name": format!("Saga Test {}", slug),
                 "slug": slug,
                 "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
                 "participant_type": "individual",
                 "min_participants": 2,
                 "max_participants": 16,

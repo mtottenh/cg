@@ -225,6 +225,11 @@ pub struct CreateTournamentCommand {
     pub withdrawal_policy: WithdrawalPolicy,
     pub rules_url: Option<String>,
     pub settings: Option<serde_json::Value>,
+    /// Explicit map pool for the tournament.
+    ///
+    /// Required: every tournament owns a pool so that map validation on
+    /// result submission can fail closed instead of skipping.
+    pub map_pool: Vec<String>,
 }
 
 /// Command to update a tournament.

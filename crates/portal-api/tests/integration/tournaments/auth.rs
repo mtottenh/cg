@@ -14,6 +14,7 @@ async fn test_create_tournament_unauthorized() {
                 "name": "Unauthorized Test",
                 "slug": "unauthorized-test",
                 "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
                 "participant_type": "team",
                 "min_participants": 4,
                 "max_participants": 16,
@@ -41,6 +42,7 @@ async fn test_update_tournament_unauthorized() {
                 "name": "Update Unauth Test",
                 "slug": "update-unauth-test",
                 "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
                 "participant_type": "team",
                 "min_participants": 4,
                 "max_participants": 16,
@@ -78,6 +80,7 @@ fn tournament_body(game_id: &str, name: &str, slug: &str) -> serde_json::Value {
         "name": name,
         "slug": slug,
         "format": "single_elimination",
+        "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
         "participant_type": "individual",
         "min_participants": 2,
         "max_participants": 16,
@@ -261,6 +264,94 @@ async fn test_create_tournament_missing_required_fields() {
     response.assert_status(StatusCode::BAD_REQUEST);
 }
 
+/// `map_pool` is required: omitting it entirely is a 400.
+#[tokio::test]
+async fn test_create_tournament_missing_map_pool_rejected() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": "No Map Pool",
+                "slug": "no-map-pool",
+                "format": "single_elimination",
+                "participant_type": "individual",
+                "min_participants": 2,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "live",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// An empty `map_pool` fails the `length(min = 1)` validator.
+#[tokio::test]
+async fn test_create_tournament_empty_map_pool_rejected() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": "Empty Map Pool",
+                "slug": "empty-map-pool",
+                "format": "single_elimination",
+                "map_pool": [],
+                "participant_type": "individual",
+                "min_participants": 2,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "live",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// A map ID outside the game's catalog is rejected and named in the error.
+#[tokio::test]
+async fn test_create_tournament_unknown_map_rejected() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": "Unknown Map",
+                "slug": "unknown-map-pool",
+                "format": "single_elimination",
+                "map_pool": ["de_dust2", "map_1"],
+                "participant_type": "individual",
+                "min_participants": 2,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "live",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body.to_string().contains("map_1"),
+        "error should name the offending map: {body}"
+    );
+}
+
 #[tokio::test]
 async fn test_create_tournament_invalid_participant_range() {
     let app = TestApp::new().await;
@@ -277,6 +368,7 @@ async fn test_create_tournament_invalid_participant_range() {
                 "name": "Invalid Range Tournament",
                 "slug": "invalid-range",
                 "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
                 "participant_type": "team",
                 "min_participants": 32,
                 "max_participants": 8,

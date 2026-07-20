@@ -159,6 +159,14 @@ pub struct CreateTournamentRequest {
     #[serde(default)]
     pub settings: Option<serde_json::Value>,
 
+    /// Map pool for this tournament — **required**, at least one map.
+    ///
+    /// Every map ID must exist in the game's map catalog. Tournaments own an
+    /// explicit pool so map validation on result submission can fail closed.
+    /// Pass the game's default pool if you don't want to customise it.
+    #[validate(length(min = 1, max = 64, message = "map_pool must contain at least one map"))]
+    pub map_pool: Vec<String>,
+
     /// Eligibility restrictions for tournament registration.
     ///
     /// Controls which players/teams are allowed to register based on
@@ -319,6 +327,7 @@ impl CreateTournamentRequest {
             withdrawal_policy,
             rules_url: self.rules_url,
             settings: merge_eligibility_into_settings(self.settings, self.eligibility_restrictions),
+            map_pool: self.map_pool,
         })
     }
 }

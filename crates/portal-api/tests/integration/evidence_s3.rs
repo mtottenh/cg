@@ -41,6 +41,7 @@ async fn create_tournament_with_match(app: &TestApp, slug: &str) -> TestMatchInf
                 "name": format!("S3 Evidence Test {}", slug),
                 "slug": slug,
                 "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
                 "participant_type": "individual",
                 "min_participants": 2,
                 "max_participants": 16,

@@ -50,6 +50,10 @@ pub fn season_routes() -> Router<AppState> {
             "/{season_id}/leaderboards",
             get(awards::get_season_leaderboard),
         )
+        .route(
+            "/{season_id}/stats-leaderboard",
+            get(awards::get_season_player_stats),
+        )
 }
 
 /// League team routes (nested under /league-teams).

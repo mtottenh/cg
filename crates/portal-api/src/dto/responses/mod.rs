@@ -33,8 +33,8 @@ pub use availability::{
 };
 pub use award::{
     AwardResponse, AwardResultResponse, AwardStandingsResponse, AwardTemplateResponse,
-    FinalizedAwardResponse, LeaderboardEntryResponse, PlayerTrophyResponse,
-    StatCatalogEntryResponse,
+    FinalizedAwardResponse, LeaderboardEntryResponse, PlayerStatsEntryResponse,
+    PlayerTrophyResponse, StatCatalogEntryResponse,
 };
 pub use ban::{BanListResponse, BanResponse, PaginationMetaResponse};
 pub use demo::{

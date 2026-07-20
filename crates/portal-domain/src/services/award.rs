@@ -28,6 +28,7 @@ use crate::repositories::award::{
 };
 use crate::repositories::demo_stats::{
     DemoPlayerStatsRepository, LeaderboardEntry, LeaderboardQuery, LeaderboardScope,
+    PlayerStatsEntry, PlayerStatsQuery,
 };
 
 /// How many leaderboard rows finalization examines when computing the
@@ -277,6 +278,16 @@ where
         query: &LeaderboardQuery,
     ) -> Result<Vec<LeaderboardEntry>, DomainError> {
         self.stats_repo.leaderboard(query).await
+    }
+
+    /// A combined per-player stat leaderboard (one row per player, separate
+    /// kill/death/assist/damage columns plus a rounds-weighted ADR).
+    #[instrument(skip(self, query))]
+    pub async fn player_stats_leaderboard(
+        &self,
+        query: &PlayerStatsQuery,
+    ) -> Result<Vec<PlayerStatsEntry>, DomainError> {
+        self.stats_repo.player_stats_leaderboard(query).await
     }
 
     // =========================================================================

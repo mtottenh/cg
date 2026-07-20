@@ -215,4 +215,8 @@ pub fn routes() -> Router<AppState> {
             "/{tournament_id}/leaderboards",
             get(awards::get_tournament_leaderboard),
         )
+        .route(
+            "/{tournament_id}/stats-leaderboard",
+            get(awards::get_tournament_player_stats),
+        )
 }

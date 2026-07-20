@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use portal_domain::entities::award::{Award, AwardResult, AwardTemplate};
-use portal_domain::repositories::{LeaderboardEntry, PlayerTrophy};
+use portal_domain::repositories::{LeaderboardEntry, PlayerStatsEntry, PlayerTrophy};
 use serde::Serialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -136,6 +136,46 @@ impl LeaderboardEntryResponse {
                 demos_counted: e.demos_counted,
             })
             .collect()
+    }
+}
+
+/// One combined player-stats row: separate summed core stats plus a
+/// rounds-weighted ADR (`total_damage / rounds_played`).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PlayerStatsEntryResponse {
+    pub player_id: Uuid,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    /// Summed kills across counted demos.
+    pub kills: f64,
+    /// Summed deaths across counted demos.
+    pub deaths: f64,
+    /// Summed assists across counted demos.
+    pub assists: f64,
+    /// Summed damage dealt across counted demos.
+    pub total_damage: f64,
+    /// Rounds-weighted average damage per round.
+    pub adr: f64,
+    /// Summed rounds played across counted demos.
+    pub rounds_played: f64,
+    /// Distinct demos that contributed to the row.
+    pub demos_counted: i64,
+}
+
+impl From<PlayerStatsEntry> for PlayerStatsEntryResponse {
+    fn from(e: PlayerStatsEntry) -> Self {
+        Self {
+            player_id: e.player_id.as_uuid(),
+            display_name: e.display_name,
+            avatar_url: e.avatar_url,
+            kills: e.kills,
+            deaths: e.deaths,
+            assists: e.assists,
+            total_damage: e.total_damage,
+            adr: e.adr,
+            rounds_played: e.rounds_played,
+            demos_counted: e.demos_counted,
+        }
     }
 }
 

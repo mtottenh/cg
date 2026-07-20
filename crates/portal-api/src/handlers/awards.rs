@@ -9,11 +9,13 @@
 
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
-    CreateAwardRequest, LeaderboardQueryParams, StandingsQueryParams, UpdateAwardRequest,
+    CreateAwardRequest, LeaderboardQueryParams, PlayerStatsQueryParams, StandingsQueryParams,
+    UpdateAwardRequest,
 };
 use crate::dto::responses::{
     AwardResponse, AwardStandingsResponse, AwardTemplateResponse, FinalizedAwardResponse,
-    LeaderboardEntryResponse, PlayerTrophyResponse, StatCatalogEntryResponse,
+    LeaderboardEntryResponse, PlayerStatsEntryResponse, PlayerTrophyResponse,
+    StatCatalogEntryResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
@@ -27,7 +29,9 @@ use portal_domain::entities::award::{
     Award, AwardScopeType, MinQualifier, MinQualifierType, StatAggregation, StatDirection,
 };
 use portal_domain::entities::league_team::LeagueSeason;
-use portal_domain::repositories::{LeaderboardQuery, LeaderboardScope, UpdateAwardPresentation};
+use portal_domain::repositories::{
+    LeaderboardQuery, LeaderboardScope, PlayerStatsQuery, PlayerStatsSort, UpdateAwardPresentation,
+};
 use portal_domain::services::CreateCustomAwardCommand;
 use validator::Validate;
 
@@ -891,6 +895,121 @@ pub async fn get_season_leaderboard(
     state.league_season_service.get_season(season_id).await?;
 
     let entries = run_leaderboard(&state, LeaderboardScope::Season(season_id), query).await?;
+
+    Ok(Json(DataResponse::new(entries, request_id)))
+}
+
+// =============================================================================
+// COMBINED PLAYER-STATS LEADERBOARD
+// =============================================================================
+
+/// Default rows for the combined player-stats leaderboard.
+const PLAYER_STATS_DEFAULT_LIMIT: i64 = 100;
+/// Hard cap on rows for the combined player-stats leaderboard.
+const PLAYER_STATS_MAX_LIMIT: i64 = 200;
+
+/// Map an optional sort string to a `PlayerStatsSort` (`kills` default).
+fn parse_player_stats_sort(raw: Option<&str>) -> Result<PlayerStatsSort, ApiError> {
+    match raw {
+        None | Some("kills") => Ok(PlayerStatsSort::Kills),
+        Some("deaths") => Ok(PlayerStatsSort::Deaths),
+        Some("assists") => Ok(PlayerStatsSort::Assists),
+        Some("total_damage") => Ok(PlayerStatsSort::TotalDamage),
+        Some("adr") => Ok(PlayerStatsSort::Adr),
+        Some(other) => Err(ApiError::bad_request(format!(
+            "Invalid sort '{other}'; expected one of kills, deaths, assists, total_damage, adr"
+        ))),
+    }
+}
+
+/// Build and run a combined player-stats leaderboard query for a scope.
+async fn run_player_stats(
+    state: &AwardsState,
+    scope: LeaderboardScope,
+    query: PlayerStatsQueryParams,
+) -> Result<Vec<PlayerStatsEntryResponse>, ApiError> {
+    let sort = parse_player_stats_sort(query.sort.as_deref())?;
+    let min_demos = i64::from(query.min_demos.unwrap_or(1).max(1));
+    let min_rounds = f64::from(query.min_rounds.unwrap_or(0).max(0));
+    let limit = query
+        .limit
+        .unwrap_or(PLAYER_STATS_DEFAULT_LIMIT)
+        .clamp(1, PLAYER_STATS_MAX_LIMIT);
+
+    let entries = state
+        .award_service
+        .player_stats_leaderboard(&PlayerStatsQuery {
+            scope,
+            sort,
+            min_demos,
+            min_rounds,
+            limit,
+        })
+        .await?;
+
+    Ok(entries.into_iter().map(Into::into).collect())
+}
+
+/// Combined per-player stat leaderboard over a tournament's linked demos.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/stats-leaderboard",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        PlayerStatsQueryParams,
+    ),
+    responses(
+        (status = 200, description = "Combined player-stats rows", body = DataResponse<Vec<PlayerStatsEntryResponse>>),
+        (status = 400, description = "Invalid query parameters", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    tag = "awards"
+)]
+pub async fn get_tournament_player_stats(
+    State(state): State<AwardsState>,
+    headers: HeaderMap,
+    Path(tournament_id): Path<TournamentId>,
+    Query(query): Query<PlayerStatsQueryParams>,
+) -> ApiResult<Json<DataResponse<Vec<PlayerStatsEntryResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    state
+        .tournament_service
+        .get_tournament(tournament_id)
+        .await?;
+
+    let entries =
+        run_player_stats(&state, LeaderboardScope::Tournament(tournament_id), query).await?;
+
+    Ok(Json(DataResponse::new(entries, request_id)))
+}
+
+/// Combined per-player stat leaderboard over a league season's linked demos.
+#[utoipa::path(
+    get,
+    path = "/v1/league-seasons/{season_id}/stats-leaderboard",
+    params(
+        ("season_id" = String, Path, description = "League season ID"),
+        PlayerStatsQueryParams,
+    ),
+    responses(
+        (status = 200, description = "Combined player-stats rows", body = DataResponse<Vec<PlayerStatsEntryResponse>>),
+        (status = 400, description = "Invalid query parameters", body = ApiError),
+        (status = 404, description = "Season not found", body = ApiError),
+    ),
+    tag = "awards"
+)]
+pub async fn get_season_player_stats(
+    State(state): State<AwardsState>,
+    headers: HeaderMap,
+    Path(season_id): Path<LeagueSeasonId>,
+    Query(query): Query<PlayerStatsQueryParams>,
+) -> ApiResult<Json<DataResponse<Vec<PlayerStatsEntryResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    state.league_season_service.get_season(season_id).await?;
+
+    let entries = run_player_stats(&state, LeaderboardScope::Season(season_id), query).await?;
 
     Ok(Json(DataResponse::new(entries, request_id)))
 }

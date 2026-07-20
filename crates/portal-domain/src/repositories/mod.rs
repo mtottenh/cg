@@ -47,7 +47,7 @@ pub use demo::{
 };
 pub use demo_stats::{
     CURRENT_EXTRACTOR_VERSION, DemoPlayerStatsRepository, DemoStatFact, LeaderboardEntry,
-    LeaderboardQuery, LeaderboardScope,
+    LeaderboardQuery, LeaderboardScope, PlayerStatsEntry, PlayerStatsQuery, PlayerStatsSort,
 };
 pub use discovered_match::{CreateDiscoveredMatch, DiscoveredMatchRepository};
 pub use dispute::{

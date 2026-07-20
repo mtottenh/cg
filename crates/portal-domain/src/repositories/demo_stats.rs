@@ -72,6 +72,81 @@ pub struct LeaderboardEntry {
     pub demos_counted: i64,
 }
 
+/// Sort column for a combined player-stats leaderboard. Selecting the
+/// `ORDER BY` column from this fixed set keeps user input out of the SQL
+/// text — every other query value is a bound parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlayerStatsSort {
+    /// Rank by summed kills.
+    #[default]
+    Kills,
+    /// Rank by summed deaths.
+    Deaths,
+    /// Rank by summed assists.
+    Assists,
+    /// Rank by summed damage dealt.
+    TotalDamage,
+    /// Rank by rounds-weighted ADR.
+    Adr,
+}
+
+impl PlayerStatsSort {
+    /// The whitelisted SQL column name this sort maps to. The returned
+    /// string is a fixed literal, never user input.
+    #[must_use]
+    pub const fn column(self) -> &'static str {
+        match self {
+            Self::Kills => "kills",
+            Self::Deaths => "deaths",
+            Self::Assists => "assists",
+            Self::TotalDamage => "total_damage",
+            Self::Adr => "adr",
+        }
+    }
+}
+
+/// A combined player-stats leaderboard request: one row per player with
+/// separate kill/death/assist/damage columns and a rounds-weighted ADR.
+#[derive(Debug, Clone)]
+pub struct PlayerStatsQuery {
+    /// Aggregation boundary.
+    pub scope: LeaderboardScope,
+    /// Column the rows are ordered by (descending).
+    pub sort: PlayerStatsSort,
+    /// Only rank players with at least this many counted demos.
+    pub min_demos: i64,
+    /// Only rank players with at least this many rounds played in scope.
+    pub min_rounds: f64,
+    /// Maximum rows returned.
+    pub limit: i64,
+}
+
+/// One combined player-stats row: summed core stats plus a rounds-weighted
+/// ADR (`SUM(damage) / SUM(rounds)`, not an average of per-demo ADRs). Only
+/// facts with a resolved `player_id` rank.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerStatsEntry {
+    pub player_id: PlayerId,
+    /// Player display name (joined from `players`).
+    pub display_name: String,
+    /// Player avatar URL (joined from `players`).
+    pub avatar_url: Option<String>,
+    /// Summed kills across counted demos.
+    pub kills: f64,
+    /// Summed deaths across counted demos.
+    pub deaths: f64,
+    /// Summed assists across counted demos.
+    pub assists: f64,
+    /// Summed damage dealt across counted demos.
+    pub total_damage: f64,
+    /// Rounds-weighted average damage per round.
+    pub adr: f64,
+    /// Summed rounds played across counted demos.
+    pub rounds_played: f64,
+    /// Distinct demos that contributed to the row.
+    pub demos_counted: i64,
+}
+
 /// Repository for extracted demo stat facts and their aggregations.
 #[async_trait]
 pub trait DemoPlayerStatsRepository: Send + Sync + 'static {
@@ -93,4 +168,15 @@ pub trait DemoPlayerStatsRepository: Send + Sync + 'static {
         &self,
         query: &LeaderboardQuery,
     ) -> Result<Vec<LeaderboardEntry>, DomainError>;
+
+    /// Combined per-player stat leaderboard: one row per resolved player with
+    /// separate summed kills/deaths/assists/damage columns and a
+    /// rounds-weighted ADR, ordered by the query's sort column.
+    ///
+    /// As with [`Self::leaderboard`], implementations must aggregate over
+    /// *distinct* demos in scope so no fact is double-counted.
+    async fn player_stats_leaderboard(
+        &self,
+        query: &PlayerStatsQuery,
+    ) -> Result<Vec<PlayerStatsEntry>, DomainError>;
 }

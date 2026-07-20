@@ -174,6 +174,18 @@ const P2_STEAM: &str = "76561198000010002";
 /// Create a started tournament with a scheduled match, wire both players'
 /// steam ids, and return the scope handles.
 async fn setup_awards_fixture(app: &TestApp, slug: &str) -> AwardsFixture {
+    setup_awards_fixture_with_steam(app, slug, P1_STEAM, P2_STEAM).await
+}
+
+/// Like [`setup_awards_fixture`], but the two participants' steam ids are
+/// caller-chosen (steam ids are globally unique, so a second tournament in
+/// the same season needs its own pair).
+async fn setup_awards_fixture_with_steam(
+    app: &TestApp,
+    slug: &str,
+    steam1: &str,
+    steam2: &str,
+) -> AwardsFixture {
     let (tournament_id, match_id, reg1, reg2, _token) =
         crate::tournaments::create_tournament_with_matches_and_opponent(app, slug).await;
 
@@ -185,8 +197,8 @@ async fn setup_awards_fixture(app: &TestApp, slug: &str) -> AwardsFixture {
     .await
     .assert_status(StatusCode::OK);
 
-    set_registration_steam_id(app, &reg1, P1_STEAM).await;
-    set_registration_steam_id(app, &reg2, P2_STEAM).await;
+    set_registration_steam_id(app, &reg1, steam1).await;
+    set_registration_steam_id(app, &reg2, steam2).await;
 
     AwardsFixture {
         p1_player_id: registration_player_id(app, &reg1).await,
@@ -195,6 +207,28 @@ async fn setup_awards_fixture(app: &TestApp, slug: &str) -> AwardsFixture {
         match_id,
         match_time: t.to_rfc3339(),
     }
+}
+
+/// Stamp a tournament with a season id so it falls inside the season scope.
+async fn set_tournament_season(app: &TestApp, tournament_id: &str, season_id: Uuid) {
+    sqlx::query("UPDATE tournaments SET season_id = $1 WHERE id = $2")
+        .bind(season_id)
+        .bind(Uuid::parse_str(tournament_id).unwrap())
+        .execute(app.pool())
+        .await
+        .expect("failed to set tournament season_id");
+}
+
+/// Fetch the combined player-stats leaderboard for a league season.
+async fn get_season_stats_leaderboard(app: &TestApp, season_id: Uuid, query: &str) -> Vec<Value> {
+    let response = app
+        .get(&format!(
+            "/v1/league-seasons/{season_id}/stats-leaderboard?{query}"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    body["data"].as_array().unwrap().clone()
 }
 
 /// Catalog + submit a demo whose stats auto-link into the fixture's
@@ -222,6 +256,128 @@ async fn get_leaderboard(app: &TestApp, tournament_id: &str, query: &str) -> Vec
     response.assert_status(StatusCode::OK);
     let body: Value = response.json();
     body["data"].as_array().unwrap().clone()
+}
+
+/// Full per-player core stats for the combined player-stats leaderboard,
+/// where deaths/assists/damage/rounds are all controllable (unlike the
+/// single-metric helper, which pins them). `rounds` drives the demo's round
+/// count, so ADR (`damage / rounds`) can vary between players.
+struct PlayerCoreStats {
+    steam_id: &'static str,
+    kills: i64,
+    deaths: i64,
+    assists: i64,
+    damage: i64,
+}
+
+const fn core_stats(
+    steam_id: &'static str,
+    kills: i64,
+    deaths: i64,
+    assists: i64,
+    damage: i64,
+) -> PlayerCoreStats {
+    PlayerCoreStats {
+        steam_id,
+        kills,
+        deaths,
+        assists,
+        damage,
+    }
+}
+
+/// Build a `Cs2DemoStats`-shaped body with fully controllable per-player core
+/// stats and `rounds` rounds (so `rounds_played == rounds`).
+fn core_stats_body(
+    players: &[PlayerCoreStats],
+    rounds: i64,
+    match_date: &str,
+    demo_file: &str,
+) -> Value {
+    let mut player_summaries = serde_json::Map::new();
+    let mut player_inputs = Vec::new();
+    for (i, p) in players.iter().enumerate() {
+        player_summaries.insert(
+            p.steam_id.to_string(),
+            json!({
+                "player_id": p.steam_id.parse::<u64>().unwrap(),
+                "player_name": format!("Player{}", i + 1),
+                "team": { "team_id": 2, "team_name": "TeamA", "team_side": "T" },
+                "kills": p.kills,
+                "deaths": p.deaths,
+                "assists": p.assists,
+                "headshot_kills": 0,
+                "damage_dealt": p.damage,
+                "adr": 0.0,
+                "hs_percentage": 0.0,
+                "blind_kills": 0,
+                "weapon_kills": {}
+            }),
+        );
+        player_inputs.push(json!({
+            "steam_id": p.steam_id,
+            "player_name": format!("Player{}", i + 1),
+            "team_name": "TeamA",
+            "stats": { "kills": p.kills, "deaths": p.deaths }
+        }));
+    }
+
+    let round_values: Vec<Value> = (1..=rounds).map(minimal_round).collect();
+
+    json!({
+        "map_name": "de_dust2",
+        "match_date": match_date,
+        "team1_name": "TeamA",
+        "team2_name": "TeamB",
+        "team1_score": 13,
+        "team2_score": 7,
+        "total_rounds": rounds,
+        "raw_stats": {
+            "map": "de_dust2",
+            "match_date": match_date,
+            "demo_file": demo_file,
+            "match_id": demo_file,
+            "teams": {
+                "TeamA": { "team_id": 2, "team_name": "TeamA", "team_side": "T" },
+                "TeamB": { "team_id": 3, "team_name": "TeamB", "team_side": "CT" }
+            },
+            "final_score": { "TeamA": 13, "TeamB": 7 },
+            "rounds": round_values,
+            "player_summaries": player_summaries
+        },
+        "players": player_inputs
+    })
+}
+
+/// Fetch the combined player-stats leaderboard for a tournament.
+async fn get_tournament_stats_leaderboard(
+    app: &TestApp,
+    tournament_id: &str,
+    query: &str,
+) -> Vec<Value> {
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/stats-leaderboard?{query}"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    body["data"].as_array().unwrap().clone()
+}
+
+/// Locate a player's row in a player-stats leaderboard payload.
+fn find_row(rows: &[Value], player_id: Uuid) -> &Value {
+    rows.iter()
+        .find(|r| r["player_id"] == player_id.to_string())
+        .expect("player row present in stats leaderboard")
+}
+
+/// f64 field accessor with a tolerant comparison for ADR assertions.
+fn approx(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() < 1e-6,
+        "expected {expected}, got {actual}"
+    );
 }
 
 // =============================================================================
@@ -320,6 +476,187 @@ async fn test_leaderboard_ranks_and_accumulates() {
     .await;
     assert_eq!(entries[0]["value"], 9.0);
     assert_eq!(entries[1]["value"], 6.0);
+}
+
+// =============================================================================
+// COMBINED PLAYER-STATS LEADERBOARD
+// =============================================================================
+
+/// A steam id belonging to no player row: its facts never resolve, so it must
+/// never appear in a leaderboard.
+const UNKNOWN_STEAM: &str = "76561198000099999";
+/// The second tournament's *other* participant (its own globally-unique
+/// steam id; the shared player keeps `P1_STEAM`).
+const P4_STEAM: &str = "76561198000010004";
+
+/// The combined leaderboard sums each core stat into its own column and
+/// derives a rounds-weighted ADR; unresolved players are excluded.
+#[tokio::test]
+async fn test_tournament_stats_leaderboard() {
+    let app = TestApp::new().await;
+    let fixture = setup_awards_fixture(&app, "stats-lb-tournament").await;
+
+    // 10 rounds; P1 out-damages P2. A third, unregistered steam id rides
+    // along (keeps auto-link confidence at 2/3) but resolves to no player.
+    submit_linked_demo(
+        &app,
+        &fixture,
+        "demos/stats_lb_1.dem",
+        &core_stats_body(
+            &[
+                core_stats(P1_STEAM, 20, 8, 5, 1500),
+                core_stats(P2_STEAM, 10, 12, 3, 900),
+                core_stats(UNKNOWN_STEAM, 99, 99, 99, 9900),
+            ],
+            10,
+            &fixture.match_time,
+            "stats_lb_1.dem",
+        ),
+    )
+    .await;
+
+    let rows = get_tournament_stats_leaderboard(&app, &fixture.tournament_id, "").await;
+    // The unresolved steam id contributes no row.
+    assert_eq!(rows.len(), 2, "only resolved players rank");
+    assert!(
+        !rows.iter().any(|r| r["kills"] == 99.0),
+        "unresolved player excluded"
+    );
+
+    let p1 = find_row(&rows, fixture.p1_player_id);
+    assert_eq!(p1["kills"], 20.0);
+    assert_eq!(p1["deaths"], 8.0);
+    assert_eq!(p1["assists"], 5.0);
+    assert_eq!(p1["total_damage"], 1500.0);
+    assert_eq!(p1["rounds_played"], 10.0);
+    assert_eq!(p1["demos_counted"], 1);
+    // ADR is rounds-weighted: total_damage / rounds_played.
+    approx(p1["adr"].as_f64().unwrap(), 1500.0 / 10.0);
+
+    let p2 = find_row(&rows, fixture.p2_player_id);
+    assert_eq!(p2["kills"], 10.0);
+    assert_eq!(p2["deaths"], 12.0);
+    assert_eq!(p2["assists"], 3.0);
+    assert_eq!(p2["total_damage"], 900.0);
+    approx(p2["adr"].as_f64().unwrap(), 900.0 / 10.0);
+
+    // Default sort is kills desc: P1 (20) leads P2 (10).
+    assert_eq!(rows[0]["player_id"], fixture.p1_player_id.to_string());
+}
+
+/// The season leaderboard sums one player's stats across every tournament in
+/// the season, and ADR is weighted over the combined damage and rounds.
+#[tokio::test]
+async fn test_season_stats_leaderboard_sums_across_tournaments() {
+    let app = TestApp::new().await;
+    // A league-creation trigger already seeds a `season-1`, so give this one
+    // its own slug.
+    let season = LeagueSeasonBuilder::new()
+        .name("Stats LB Season")
+        .slug("stats-lb-season")
+        .build_persisted(app.pool())
+        .await;
+
+    // Tournament A: P1 + P2. One demo, 10 rounds.
+    let fixture_a = setup_awards_fixture(&app, "stats-lb-season-a").await;
+    set_tournament_season(&app, &fixture_a.tournament_id, season.id).await;
+    submit_linked_demo(
+        &app,
+        &fixture_a,
+        "demos/stats_season_a.dem",
+        &core_stats_body(
+            &[
+                core_stats(P1_STEAM, 20, 8, 5, 1500),
+                core_stats(P2_STEAM, 10, 12, 3, 900),
+            ],
+            10,
+            &fixture_a.match_time,
+            "stats_season_a.dem",
+        ),
+    )
+    .await;
+
+    // Tournament B shares one participant with A: the authenticated dev user
+    // (`Player1`, P1_STEAM) registers in every tournament, so it is the same
+    // players row in both. Its other participant is distinct (P4_STEAM), so
+    // B's demo links only to B (its steam set {P1,P4} overlaps A's {P1,P2} at
+    // just 0.5, below the auto-link threshold).
+    let fixture_b =
+        setup_awards_fixture_with_steam(&app, "stats-lb-season-b", P1_STEAM, P4_STEAM).await;
+    assert_eq!(
+        fixture_a.p1_player_id, fixture_b.p1_player_id,
+        "the dev user is the shared player across both tournaments"
+    );
+    set_tournament_season(&app, &fixture_b.tournament_id, season.id).await;
+    submit_linked_demo(
+        &app,
+        &fixture_b,
+        "demos/stats_season_b.dem",
+        &core_stats_body(
+            &[
+                core_stats(P1_STEAM, 7, 4, 2, 600),
+                core_stats(P4_STEAM, 9, 7, 2, 650),
+            ],
+            6,
+            &fixture_b.match_time,
+            "stats_season_b.dem",
+        ),
+    )
+    .await;
+
+    let rows = get_season_stats_leaderboard(&app, season.id, "").await;
+    let p1 = find_row(&rows, fixture_a.p1_player_id);
+    // Summed across BOTH tournaments' demos.
+    assert_eq!(p1["kills"], 27.0, "20 + 7");
+    assert_eq!(p1["deaths"], 12.0, "8 + 4");
+    assert_eq!(p1["assists"], 7.0, "5 + 2");
+    assert_eq!(p1["total_damage"], 2100.0, "1500 + 600");
+    assert_eq!(p1["rounds_played"], 16.0, "10 + 6");
+    assert_eq!(p1["demos_counted"], 2);
+    // Rounds-weighted: (1500 + 600) / (10 + 6), not the mean of 150 and 100.
+    approx(p1["adr"].as_f64().unwrap(), 2100.0 / 16.0);
+}
+
+/// `sort=adr` orders by the derived ADR; an unknown sort is a 400.
+#[tokio::test]
+async fn test_stats_leaderboard_sort_and_validation() {
+    let app = TestApp::new().await;
+    let fixture = setup_awards_fixture(&app, "stats-lb-sort").await;
+
+    // P1 has more kills; P2 has far higher damage (thus ADR) over 10 rounds.
+    submit_linked_demo(
+        &app,
+        &fixture,
+        "demos/stats_sort.dem",
+        &core_stats_body(
+            &[
+                core_stats(P1_STEAM, 30, 5, 5, 500),
+                core_stats(P2_STEAM, 5, 20, 1, 1500),
+            ],
+            10,
+            &fixture.match_time,
+            "stats_sort.dem",
+        ),
+    )
+    .await;
+
+    // Default (kills): P1 leads.
+    let by_kills = get_tournament_stats_leaderboard(&app, &fixture.tournament_id, "").await;
+    assert_eq!(by_kills[0]["player_id"], fixture.p1_player_id.to_string());
+
+    // sort=adr flips the order: P2 (150) over P1 (50).
+    let by_adr = get_tournament_stats_leaderboard(&app, &fixture.tournament_id, "sort=adr").await;
+    assert_eq!(by_adr[0]["player_id"], fixture.p2_player_id.to_string());
+    approx(by_adr[0]["adr"].as_f64().unwrap(), 150.0);
+
+    // An unknown sort value is rejected.
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{}/stats-leaderboard?sort=bogus",
+            fixture.tournament_id
+        ))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
 }
 
 // =============================================================================

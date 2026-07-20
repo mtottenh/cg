@@ -27,7 +27,8 @@ pub use availability::{
     GetAvailabilityQuery, UpdateAvailabilityWindowRequest,
 };
 pub use award::{
-    CreateAwardRequest, LeaderboardQueryParams, StandingsQueryParams, UpdateAwardRequest,
+    CreateAwardRequest, LeaderboardQueryParams, PlayerStatsQueryParams, StandingsQueryParams,
+    UpdateAwardRequest,
 };
 pub use ban::{CreateBanRequest, LiftBanRequest, ListBansQuery};
 pub use demo::{

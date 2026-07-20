@@ -76,6 +76,21 @@ pub struct LeaderboardQueryParams {
     pub limit: Option<i64>,
 }
 
+/// Query parameters for the combined player-stats leaderboard endpoints.
+#[derive(Debug, Clone, Deserialize, IntoParams, ToSchema)]
+pub struct PlayerStatsQueryParams {
+    /// Sort column: `kills` (default), `deaths`, `assists`, `total_damage`,
+    /// or `adr`. Rows are ordered by this column descending.
+    pub sort: Option<String>,
+    /// Only rank players with at least this many rounds played in scope
+    /// (default 0).
+    pub min_rounds: Option<i32>,
+    /// Only rank players with at least this many counted demos (default 1).
+    pub min_demos: Option<i32>,
+    /// Maximum rows (default 100, max 200).
+    pub limit: Option<i64>,
+}
+
 /// Query parameters for award standings.
 #[derive(Debug, Clone, Deserialize, IntoParams, ToSchema)]
 pub struct StandingsQueryParams {

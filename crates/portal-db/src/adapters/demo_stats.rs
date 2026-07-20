@@ -9,6 +9,7 @@ use portal_core::{DemoId, DomainError};
 use portal_domain::entities::award::{MinQualifierType, StatAggregation, StatDirection};
 use portal_domain::repositories::demo_stats::{
     DemoPlayerStatsRepository, DemoStatFact, LeaderboardEntry, LeaderboardQuery, LeaderboardScope,
+    PlayerStatsEntry, PlayerStatsQuery,
 };
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -20,6 +21,21 @@ struct LeaderboardRow {
     display_name: String,
     avatar_url: Option<String>,
     value: f64,
+    demos_counted: i64,
+}
+
+/// One combined player-stats row (query-shaped, not a table row).
+#[derive(Debug, FromRow)]
+struct PlayerStatsRow {
+    player_id: Uuid,
+    display_name: String,
+    avatar_url: Option<String>,
+    kills: f64,
+    deaths: f64,
+    assists: f64,
+    total_damage: f64,
+    rounds_played: f64,
+    adr: f64,
     demos_counted: i64,
 }
 
@@ -205,6 +221,90 @@ impl DemoPlayerStatsRepository for PgDemoPlayerStatsRepository {
                 display_name: row.display_name,
                 avatar_url: row.avatar_url,
                 value: row.value,
+                demos_counted: row.demos_counted,
+            })
+            .collect())
+    }
+
+    async fn player_stats_leaderboard(
+        &self,
+        query: &PlayerStatsQuery,
+    ) -> Result<Vec<PlayerStatsEntry>, DomainError> {
+        // Same discipline as `leaderboard`: the only text chosen from the
+        // request is the scope predicate and the sort column, both from a
+        // fixed set of enum-selected literals; every value (scope id,
+        // thresholds, limit) is a bound parameter.
+        let scope_predicate = match query.scope {
+            LeaderboardScope::Tournament(_) => "WHERE tm.tournament_id = $1",
+            LeaderboardScope::Season(_) => {
+                "JOIN tournaments t ON t.id = tm.tournament_id WHERE t.season_id = $1"
+            }
+        };
+        let scope_id = match query.scope {
+            LeaderboardScope::Tournament(id) => id.as_uuid(),
+            LeaderboardScope::Season(id) => id.as_uuid(),
+        };
+        let sort_column = query.sort.column();
+
+        // ADR is rounds-weighted: SUM(damage) / SUM(rounds) over the scoped
+        // demos, never an average of per-demo ADRs.
+        let sql = format!(
+            r"
+            WITH scoped_demos AS (
+                SELECT DISTINCT dml.demo_id AS id
+                FROM demo_match_links dml
+                JOIN tournament_matches tm ON tm.id = dml.match_id
+                {scope_predicate}
+            )
+            SELECT s.player_id,
+                   p.display_name,
+                   p.avatar_url,
+                   COALESCE(SUM(s.value) FILTER (WHERE s.stat_key = 'kills'), 0)::float8        AS kills,
+                   COALESCE(SUM(s.value) FILTER (WHERE s.stat_key = 'deaths'), 0)::float8       AS deaths,
+                   COALESCE(SUM(s.value) FILTER (WHERE s.stat_key = 'assists'), 0)::float8      AS assists,
+                   COALESCE(SUM(s.value) FILTER (WHERE s.stat_key = 'damage_dealt'), 0)::float8 AS total_damage,
+                   COALESCE(SUM(s.value) FILTER (WHERE s.stat_key = 'rounds_played'), 0)::float8 AS rounds_played,
+                   CASE WHEN COALESCE(SUM(s.value) FILTER (WHERE s.stat_key = 'rounds_played'), 0) > 0
+                        THEN (SUM(s.value) FILTER (WHERE s.stat_key = 'damage_dealt'))
+                             / (SUM(s.value) FILTER (WHERE s.stat_key = 'rounds_played'))
+                        ELSE 0 END::float8 AS adr,
+                   COUNT(DISTINCT s.demo_id) AS demos_counted
+            FROM demo_player_stats s
+            JOIN players p ON p.id = s.player_id
+            WHERE s.player_id IS NOT NULL
+              AND s.demo_id IN (SELECT id FROM scoped_demos)
+              AND s.stat_key IN ('kills', 'deaths', 'assists', 'damage_dealt', 'rounds_played')
+            GROUP BY s.player_id, p.display_name, p.avatar_url
+            HAVING COUNT(DISTINCT s.demo_id) >= $2
+               AND COALESCE(SUM(s.value) FILTER (WHERE s.stat_key = 'rounds_played'), 0) >= $3
+            ORDER BY {sort_column} DESC, p.display_name ASC
+            LIMIT $4
+            "
+        );
+
+        let rows = sqlx::query_as::<_, PlayerStatsRow>(&sql)
+            .bind(scope_id)
+            .bind(query.min_demos)
+            .bind(query.min_rounds)
+            .bind(query.limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| {
+                DomainError::internal(format!("Player-stats leaderboard query failed: {e}"))
+            })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| PlayerStatsEntry {
+                player_id: row.player_id.into(),
+                display_name: row.display_name,
+                avatar_url: row.avatar_url,
+                kills: row.kills,
+                deaths: row.deaths,
+                assists: row.assists,
+                total_damage: row.total_damage,
+                adr: row.adr,
+                rounds_played: row.rounds_played,
                 demos_counted: row.demos_counted,
             })
             .collect())

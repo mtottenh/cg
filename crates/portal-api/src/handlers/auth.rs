@@ -13,6 +13,7 @@ use crate::state::AuthState;
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{Duration, Utc};
 use portal_core::DomainError;
 use portal_db::NewUserRole;
@@ -29,6 +30,25 @@ fn get_request_id(headers: &HeaderMap) -> &str {
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
+}
+
+/// Name of the httpOnly cookie carrying the refresh token.
+const REFRESH_TOKEN_COOKIE: &str = "refresh_token";
+
+/// Build the httpOnly refresh-token cookie set alongside login/refresh
+/// responses.
+///
+/// Scoped to `/v1/auth` so the token is only sent to auth endpoints,
+/// `SameSite=Lax` + `HttpOnly` so scripts can never read it. The refresh
+/// token is (for now) still returned in the response body as well, for
+/// clients that have not migrated to the cookie flow.
+fn refresh_token_cookie(raw_refresh: &str, expiry_minutes: i64) -> Cookie<'static> {
+    let mut cookie = Cookie::new(REFRESH_TOKEN_COOKIE, raw_refresh.to_owned());
+    cookie.set_http_only(true);
+    cookie.set_same_site(SameSite::Lax);
+    cookie.set_path("/v1/auth");
+    cookie.set_max_age(time::Duration::minutes(expiry_minutes));
+    cookie
 }
 
 /// Register a new user.
@@ -128,8 +148,9 @@ pub async fn register(
 pub async fn login(
     State(state): State<AuthState>,
     headers: HeaderMap,
+    jar: CookieJar,
     ValidatedJson(req): ValidatedJson<LoginRequest>,
-) -> ApiResult<Json<DataResponse<LoginResponse>>> {
+) -> ApiResult<(CookieJar, Json<DataResponse<LoginResponse>>)> {
     let request_id = get_request_id(&headers);
 
     let cmd = LoginCommand {
@@ -168,6 +189,13 @@ pub async fn login(
         )
         .await?;
 
+    // Also set the refresh token as an httpOnly cookie (the body keeps
+    // returning it for backward compatibility).
+    let jar = jar.add(refresh_token_cookie(
+        &raw_refresh,
+        state.token_config.refresh_token_expiry_minutes,
+    ));
+
     let response = LoginResponse {
         access_token,
         refresh_token: raw_refresh,
@@ -176,13 +204,15 @@ pub async fn login(
         username: auth_result.username,
     };
 
-    Ok(Json(DataResponse::new(response, request_id)))
+    Ok((jar, Json(DataResponse::new(response, request_id))))
 }
 
 /// Refresh an access token using a refresh token.
 ///
 /// Validates the refresh token, revokes it (rotation), and issues a new access + refresh token pair.
 /// Does NOT require an Authorization header — the refresh token itself is the credential.
+/// The token is read from the request body when present, otherwise from the
+/// `refresh_token` httpOnly cookie set by login/refresh.
 #[utoipa::path(
     post,
     path = "/v1/auth/refresh",
@@ -197,13 +227,23 @@ pub async fn login(
 pub async fn refresh(
     State(state): State<AuthState>,
     headers: HeaderMap,
+    jar: CookieJar,
     ValidatedJson(req): ValidatedJson<RefreshTokenRequest>,
-) -> ApiResult<Json<DataResponse<LoginResponse>>> {
+) -> ApiResult<(CookieJar, Json<DataResponse<LoginResponse>>)> {
     let request_id = get_request_id(&headers);
+
+    // Prefer the token from the body (backward compat with pre-cookie
+    // clients); fall back to the httpOnly cookie.
+    let refresh_token = req
+        .refresh_token
+        .or_else(|| jar.get(REFRESH_TOKEN_COOKIE).map(|c| c.value().to_owned()))
+        .ok_or_else(|| {
+            ApiError::bad_request("Missing refresh token (provide it in the body or cookie)")
+        })?;
 
     // Hash incoming token and look it up regardless of revoked state so we
     // can distinguish "never existed" from "already revoked" (replay).
-    let token_hash = hash_refresh_token(&req.refresh_token);
+    let token_hash = hash_refresh_token(&refresh_token);
     let stored = state
         .refresh_token_repo
         .find_by_hash(&token_hash)
@@ -299,6 +339,12 @@ pub async fn refresh(
         .create(user.id.as_uuid(), &refresh_hash, refresh_expires)
         .await?;
 
+    // Rotate the httpOnly cookie alongside the body token.
+    let jar = jar.add(refresh_token_cookie(
+        &raw_refresh,
+        state.token_config.refresh_token_expiry_minutes,
+    ));
+
     let response = LoginResponse {
         access_token,
         refresh_token: raw_refresh,
@@ -307,5 +353,5 @@ pub async fn refresh(
         username: user.username,
     };
 
-    Ok(Json(DataResponse::new(response, request_id)))
+    Ok((jar, Json(DataResponse::new(response, request_id))))
 }

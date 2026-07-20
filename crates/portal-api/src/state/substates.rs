@@ -353,6 +353,9 @@ pub struct LeagueTeamState {
     pub league_season_service: AppLeagueSeasonService,
     /// League season participant service (for individual format).
     pub league_season_participant_service: AppLeagueSeasonParticipantService,
+    /// Player service (invitation lists resolve invited players' display
+    /// names/avatars).
+    pub player_service: AppPlayerService,
 }
 
 impl FromRef<AppState> for LeagueTeamState {
@@ -362,6 +365,7 @@ impl FromRef<AppState> for LeagueTeamState {
             league_team_invitation_service: s.league_team_invitation_service.clone(),
             league_season_service: s.league_season_service.clone(),
             league_season_participant_service: s.league_season_participant_service.clone(),
+            player_service: s.player_service.clone(),
         }
     }
 }
@@ -532,6 +536,8 @@ pub struct ResultState {
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
     /// Match completion saga (kicked off on claim confirmation).
     pub match_completion_saga: super::AppMatchCompletionSaga,
+    /// Player service (claim history resolves submitter display names).
+    pub player_service: AppPlayerService,
 }
 
 impl FromRef<AppState> for ResultState {
@@ -540,6 +546,7 @@ impl FromRef<AppState> for ResultState {
             result_service: s.result_service.clone(),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             match_completion_saga: s.match_completion_saga.clone(),
+            player_service: s.player_service.clone(),
         }
     }
 }

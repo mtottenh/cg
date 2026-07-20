@@ -129,6 +129,7 @@ pub type AppResultService = ResultService<
     PgTournamentMatchRepository,
     PgTournamentRegistrationRepository,
     PgDemoMatchLinkRepository,
+    PgVetoSessionRepository,
 >;
 pub type AppProgressionService = ProgressionService<
     PgTournamentMatchRepository,
@@ -582,7 +583,14 @@ impl AppState {
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_registration_repo),
             Arc::clone(&demo_match_link_repo),
-        );
+            Arc::clone(&veto_session_repo),
+        )
+        .with_map_pool_provider(Arc::new(crate::adapters::DbMapPoolProvider::new(
+            Arc::clone(&tournament_map_pool_repo),
+            Arc::clone(&tournament_repo),
+            game_repo.clone(),
+            Arc::clone(&plugin_manager),
+        )));
 
         // Create progression service for bracket advancement
         let progression_service = ProgressionService::new(

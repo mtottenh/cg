@@ -39,6 +39,9 @@ pub struct ScheduleProposal {
     /// Admin notes
     pub notes: Option<String>,
 
+    /// Reason provided by the responder when rejecting
+    pub rejection_reason: Option<String>,
+
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -84,6 +87,7 @@ pub struct AcceptProposalCommand {
 pub struct RejectProposalCommand {
     pub proposal_id: ScheduleProposalId,
     pub rejected_by_user_id: UserId,
+    pub reason: Option<String>,
 }
 
 /// Command to counter-propose with new times.
@@ -95,4 +99,5 @@ pub struct CounterProposeCommand {
     pub proposed_by_user_id: UserId,
     pub proposed_times: Vec<DateTime<Utc>>,
     pub expires_at: DateTime<Utc>,
+    pub notes: Option<String>,
 }

@@ -61,6 +61,21 @@ where
             })
     }
 
+    /// Batch-get players by IDs. Missing IDs are silently skipped.
+    #[instrument(skip(self, ids))]
+    pub async fn get_players_by_ids(&self, ids: &[PlayerId]) -> Result<Vec<Player>, DomainError> {
+        self.player_repo.find_by_ids(ids).await
+    }
+
+    /// Batch-get players by their user IDs. Missing IDs are silently skipped.
+    #[instrument(skip(self, user_ids))]
+    pub async fn get_players_by_user_ids(
+        &self,
+        user_ids: &[UserId],
+    ) -> Result<Vec<Player>, DomainError> {
+        self.player_repo.find_by_user_ids(user_ids).await
+    }
+
     /// Find a player by their SteamID64. Returns None if not found.
     #[instrument(skip(self))]
     pub async fn find_by_steam_id_64(

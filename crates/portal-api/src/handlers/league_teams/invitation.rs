@@ -14,7 +14,9 @@ use crate::state::LeagueTeamState;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use portal_core::{LeagueTeamInvitationId, LeagueTeamSeasonId};
+use portal_core::{LeagueTeamInvitationId, LeagueTeamSeasonId, PlayerId};
+use portal_domain::entities::Player;
+use std::collections::HashMap;
 
 /// Invite a player to join a team's seasonal roster.
 #[utoipa::path(
@@ -182,10 +184,28 @@ pub async fn get_team_invitations(
         .get_team_invitations(team_season_id)
         .await?;
 
+    // Batch-resolve the invited players so the list can show display
+    // names/avatars instead of raw player IDs.
+    let player_ids: Vec<PlayerId> = invitations.iter().map(|inv| inv.player_id).collect();
+    let players: HashMap<PlayerId, Player> = state
+        .player_service
+        .get_players_by_ids(&player_ids)
+        .await?
+        .into_iter()
+        .map(|p| (p.id, p))
+        .collect();
+
     Ok(Json(DataResponse::new(
         invitations
             .into_iter()
-            .map(LeagueTeamInvitationResponse::from)
+            .map(|inv| {
+                let player = players.get(&inv.player_id);
+                let response = LeagueTeamInvitationResponse::from(inv);
+                match player {
+                    Some(p) => response.with_player(p),
+                    None => response,
+                }
+            })
             .collect(),
         request_id,
     )))

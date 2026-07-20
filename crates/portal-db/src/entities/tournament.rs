@@ -540,6 +540,9 @@ pub struct ScheduleProposalRow {
     // Admin notes
     pub notes: Option<String>,
 
+    // Reason provided by the responder when rejecting
+    pub rejection_reason: Option<String>,
+
     // Timestamps
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

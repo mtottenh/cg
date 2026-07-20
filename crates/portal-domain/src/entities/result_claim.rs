@@ -326,6 +326,12 @@ pub enum ResultValidationError {
     #[error("Game cannot end in a tie")]
     TiedGame,
 
+    #[error("Map '{0}' is not part of this match's map pool")]
+    UnknownMap(String),
+
+    #[error("Map '{0}' was not selected during this match's map veto")]
+    MapNotInVeto(String),
+
     #[error("Plugin validation failed: {0}")]
     PluginValidation(String),
 }

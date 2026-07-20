@@ -88,6 +88,12 @@ pub trait PlayerRepository: Send + Sync {
     /// Find a player by user ID.
     async fn find_by_user_id(&self, user_id: UserId) -> Result<Option<Player>, DomainError>;
 
+    /// Batch-find players by IDs. Missing IDs are silently skipped.
+    async fn find_by_ids(&self, ids: &[PlayerId]) -> Result<Vec<Player>, DomainError>;
+
+    /// Batch-find players by their user IDs. Missing IDs are silently skipped.
+    async fn find_by_user_ids(&self, user_ids: &[UserId]) -> Result<Vec<Player>, DomainError>;
+
     /// Find a player by display name.
     async fn find_by_display_name(&self, name: &str) -> Result<Option<Player>, DomainError>;
 

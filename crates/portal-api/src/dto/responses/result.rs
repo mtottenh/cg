@@ -20,6 +20,10 @@ pub struct ResultClaimResponse {
     pub submitted_by_registration_id: String,
     /// User ID of who submitted the claim.
     pub submitted_by_user_id: String,
+    /// Display name of the player who submitted the claim (enriched by
+    /// history/list handlers; absent when the player could not be resolved).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitted_by_display_name: Option<String>,
     /// Registration ID of claimed winner.
     pub claimed_winner_registration_id: String,
     /// Score for participant 1.
@@ -39,6 +43,10 @@ pub struct ResultClaimResponse {
     /// User ID of who confirmed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirmed_by_user_id: Option<String>,
+    /// Display name of the player who confirmed the claim (enriched by
+    /// history/list handlers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmed_by_display_name: Option<String>,
     /// When auto-confirmation will occur.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_confirm_at: Option<DateTime<Utc>>,
@@ -64,6 +72,7 @@ impl From<ResultClaim> for ResultClaimResponse {
             match_id: c.match_id.to_string(),
             submitted_by_registration_id: c.submitted_by_registration_id.to_string(),
             submitted_by_user_id: c.submitted_by_user_id.to_string(),
+            submitted_by_display_name: None,
             claimed_winner_registration_id: c.claimed_winner_registration_id.to_string(),
             claimed_participant1_score: c.claimed_participant1_score,
             claimed_participant2_score: c.claimed_participant2_score,
@@ -72,6 +81,7 @@ impl From<ResultClaim> for ResultClaimResponse {
             confirmed_at: c.confirmed_at,
             confirmed_by_registration_id: c.confirmed_by_registration_id.map(|id| id.to_string()),
             confirmed_by_user_id: c.confirmed_by_user_id.map(|id| id.to_string()),
+            confirmed_by_display_name: None,
             auto_confirm_at: c.auto_confirm_at,
             was_auto_confirmed: c.was_auto_confirmed,
             evidence_ids: c

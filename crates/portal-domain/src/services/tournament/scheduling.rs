@@ -67,6 +67,7 @@ where
         match_id: TournamentMatchId,
         proposed_times: Vec<DateTime<Utc>>,
         proposed_by: UserId,
+        notes: Option<String>,
     ) -> Result<ScheduleProposal, DomainError> {
         // Validate match exists and can be scheduled
         let tournament_match = self
@@ -121,7 +122,7 @@ where
             proposed_by_user_id: proposed_by,
             proposed_times,
             expires_at: now + self.proposal_ttl,
-            notes: None,
+            notes,
         };
 
         self.proposal_repo.create(command).await
@@ -237,6 +238,7 @@ where
         proposal.status = ProposalStatus::Rejected;
         proposal.responded_at = Some(Utc::now());
         proposal.responded_by_user_id = Some(command.rejected_by_user_id);
+        proposal.rejection_reason = command.reason;
 
         self.proposal_repo.update(&proposal).await
     }
@@ -303,7 +305,7 @@ where
                 proposed_by_user_id: command.proposed_by_user_id,
                 proposed_times: command.proposed_times,
                 expires_at: command.expires_at,
-                notes: None,
+                notes: command.notes,
             })
             .await?;
 

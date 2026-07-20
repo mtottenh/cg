@@ -129,8 +129,9 @@ impl ScheduleProposalRepository for PgScheduleProposalRepository {
                 counter_proposal_id = $4,
                 status = $5,
                 notes = $6,
+                rejection_reason = $7,
                 updated_at = NOW()
-            WHERE id = $7
+            WHERE id = $8
             RETURNING *
             ",
         )
@@ -140,6 +141,7 @@ impl ScheduleProposalRepository for PgScheduleProposalRepository {
         .bind(proposal.counter_proposal_id.map(uuid::Uuid::from))
         .bind(proposal.status.as_str())
         .bind(&proposal.notes)
+        .bind(&proposal.rejection_reason)
         .bind::<uuid::Uuid>(proposal.id.into())
         .fetch_one(&self.pool)
         .await
@@ -202,6 +204,7 @@ fn row_to_proposal(row: ScheduleProposalRow) -> ScheduleProposal {
         status: parse_proposal_status(&row.status),
         expires_at: row.expires_at,
         notes: row.notes,
+        rejection_reason: row.rejection_reason,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }

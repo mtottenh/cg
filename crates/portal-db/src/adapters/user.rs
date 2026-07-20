@@ -279,6 +279,37 @@ impl PlayerRepository for PgPlayerRepository {
         Ok(player.map(Player::from))
     }
 
+    async fn find_by_ids(&self, ids: &[PlayerId]) -> Result<Vec<Player>, DomainError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let uuids: Vec<uuid::Uuid> = ids.iter().map(PlayerId::as_uuid).collect();
+        let players = sqlx::query_as::<_, PlayerRow>("SELECT * FROM players WHERE id = ANY($1)")
+            .bind(&uuids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(players.into_iter().map(Player::from).collect())
+    }
+
+    async fn find_by_user_ids(&self, user_ids: &[UserId]) -> Result<Vec<Player>, DomainError> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let uuids: Vec<uuid::Uuid> = user_ids.iter().map(UserId::as_uuid).collect();
+        let players =
+            sqlx::query_as::<_, PlayerRow>("SELECT * FROM players WHERE user_id = ANY($1)")
+                .bind(&uuids)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(players.into_iter().map(Player::from).collect())
+    }
+
     async fn find_by_steam_id_64(&self, steam_id_64: i64) -> Result<Option<Player>, DomainError> {
         let player = sqlx::query_as::<_, PlayerRow>("SELECT * FROM players WHERE steam_id_64 = $1")
             .bind(steam_id_64)

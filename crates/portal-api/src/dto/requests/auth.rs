@@ -62,8 +62,12 @@ pub struct RegisterRequest {
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct RefreshTokenRequest {
     /// The refresh token issued during login or previous refresh.
-    #[validate(length(min = 1, message = "Refresh token is required"))]
-    pub refresh_token: String,
+    ///
+    /// Optional: when omitted, the server falls back to the
+    /// `refresh_token` httpOnly cookie set by login/refresh.
+    #[serde(default)]
+    #[validate(length(min = 1, message = "Refresh token must not be empty"))]
+    pub refresh_token: Option<String>,
 }
 
 /// Request body for user login.

@@ -422,6 +422,13 @@ pub struct LeagueTeamInvitationResponse {
     pub team_season_id: String,
     pub player_id: String,
 
+    // Invited player info (enriched by list handlers; absent when the
+    // player could not be resolved).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_avatar_url: Option<String>,
+
     // Invitation details
     pub invitation_type: String,
     pub role: String,
@@ -452,6 +459,8 @@ impl From<LeagueTeamInvitation> for LeagueTeamInvitationResponse {
             id: inv.id.to_string(),
             team_season_id: inv.team_season_id.to_string(),
             player_id: inv.player_id.to_string(),
+            player_display_name: None,
+            player_avatar_url: None,
             invitation_type: inv.invitation_type.to_string(),
             role: inv.role.to_string(),
             message: inv.message,
@@ -462,6 +471,16 @@ impl From<LeagueTeamInvitation> for LeagueTeamInvitationResponse {
             expires_at: inv.expires_at,
             created_at: inv.created_at,
         }
+    }
+}
+
+impl LeagueTeamInvitationResponse {
+    /// Attach the invited player's display info.
+    #[must_use]
+    pub fn with_player(mut self, player: &portal_domain::entities::Player) -> Self {
+        self.player_display_name = Some(player.display_name.clone());
+        self.player_avatar_url.clone_from(&player.avatar_url);
+        self
     }
 }
 

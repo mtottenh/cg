@@ -81,6 +81,11 @@ pub struct TournamentResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rules_url: Option<String>,
 
+    // Additional settings (JSONB). Eligibility restrictions live under the
+    // `"eligibility"` key (also projected into `eligibility_restrictions`);
+    // veto side-selection mode under `"side_selection_mode"`.
+    pub settings: serde_json::Value,
+
     // Policies
     pub withdrawal_policy: String,
 
@@ -188,6 +193,7 @@ impl From<Tournament> for TournamentResponse {
             default_map_veto_format: t.default_map_veto_format,
             prize_pool: t.prize_pool,
             rules_url: t.rules_url,
+            settings: t.settings,
             withdrawal_policy: t.withdrawal_policy.to_string(),
             status: t.status.to_string(),
             created_by: t.created_by.to_string(),
@@ -795,6 +801,9 @@ pub struct ScheduleProposalResponse {
     /// Notes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// Reason provided by the responder when the proposal was rejected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
@@ -830,6 +839,7 @@ impl From<ScheduleProposal> for ScheduleProposalResponse {
             status: p.status.as_str().to_string(),
             expires_at: p.expires_at,
             notes: p.notes,
+            rejection_reason: p.rejection_reason,
             created_at: p.created_at,
             updated_at: p.updated_at,
         }

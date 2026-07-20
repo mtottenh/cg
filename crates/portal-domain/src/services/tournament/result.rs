@@ -6,10 +6,11 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use portal_core::{
-    DemoMatchLinkId, DomainError, EvidenceId, ResultClaimId, TournamentMatchId,
-    TournamentRegistrationId, UserId,
+    DemoMatchLinkId, DomainError, EvidenceId, ResultClaimId, TournamentId, TournamentMatchId,
+    TournamentRegistrationId, TournamentStageId, UserId,
 };
 use tracing::{info, instrument, warn};
 
@@ -17,34 +18,94 @@ use crate::entities::result_claim::{
     ClaimStatus, GameResult, GameResultInput, ResultClaim, ResultValidationError,
 };
 use crate::entities::tournament::TournamentMatch;
+use crate::entities::veto::VetoStatus;
 use crate::repositories::demo::DemoMatchLinkRepository;
 use crate::repositories::tournament::{
     CreateResultClaim, ResultClaimRepository, TournamentMatchRepository,
-    TournamentRegistrationRepository,
+    TournamentRegistrationRepository, VetoSessionRepository,
 };
+
+// =============================================================================
+// PROVIDER TRAITS
+// =============================================================================
+
+/// Resolves the set of map IDs that are legal for a tournament (and stage).
+///
+/// Implemented by the API layer, which owns the resolution chain
+/// (tournament/stage map pool → the game's default pool → the game's map
+/// catalog). Mirrors the `VetoFormatProvider` seam used by the veto service:
+/// the domain must not reach into `portal-db`'s game repository directly.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait MapPoolProvider: Send + Sync {
+    /// Valid map IDs for the given tournament/stage.
+    ///
+    /// An empty vec means "cannot be determined" — callers treat that as
+    /// "skip validation" rather than "reject everything".
+    async fn valid_map_ids(
+        &self,
+        tournament_id: TournamentId,
+        stage_id: Option<TournamentStageId>,
+    ) -> Result<Vec<String>, DomainError>;
+}
+
+/// Which authority a submitted map ID was checked against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MapSource {
+    /// The maps picked during this match's completed veto.
+    Veto,
+    /// The tournament/stage map pool (or the game's pool as fallback).
+    Pool,
+}
+
+/// Check every submitted `map_id` against the authoritative map set.
+///
+/// Kept as a free function so the rule is unit-testable without standing up
+/// a service and a full `TournamentMatch`.
+fn check_map_ids(
+    valid_maps: &[String],
+    game_results: &[GameResultInput],
+    source: MapSource,
+) -> Result<(), DomainError> {
+    for game in game_results {
+        if !valid_maps.iter().any(|m| m == &game.map_id) {
+            let err = match source {
+                MapSource::Veto => ResultValidationError::MapNotInVeto(game.map_id.clone()),
+                MapSource::Pool => ResultValidationError::UnknownMap(game.map_id.clone()),
+            };
+            return Err(DomainError::InvalidMatchResult(err.to_string()));
+        }
+    }
+
+    Ok(())
+}
 
 /// Service for managing match result submissions.
 #[derive(Clone)]
-pub struct ResultService<RCR, TMR, TRR, DMLR>
+pub struct ResultService<RCR, TMR, TRR, DMLR, VSR>
 where
     RCR: ResultClaimRepository,
     TMR: TournamentMatchRepository,
     TRR: TournamentRegistrationRepository,
     DMLR: DemoMatchLinkRepository,
+    VSR: VetoSessionRepository,
 {
     claim_repo: Arc<RCR>,
     match_repo: Arc<TMR>,
     registration_repo: Arc<TRR>,
     demo_link_repo: Arc<DMLR>,
+    veto_session_repo: Arc<VSR>,
+    map_pool_provider: Option<Arc<dyn MapPoolProvider>>,
     auto_confirm_timeout_seconds: i64,
 }
 
-impl<RCR, TMR, TRR, DMLR> ResultService<RCR, TMR, TRR, DMLR>
+impl<RCR, TMR, TRR, DMLR, VSR> ResultService<RCR, TMR, TRR, DMLR, VSR>
 where
     RCR: ResultClaimRepository,
     TMR: TournamentMatchRepository,
     TRR: TournamentRegistrationRepository,
     DMLR: DemoMatchLinkRepository,
+    VSR: VetoSessionRepository,
 {
     /// Create a new result service with default 15-minute auto-confirm timeout.
     pub fn new(
@@ -52,12 +113,15 @@ where
         match_repo: Arc<TMR>,
         registration_repo: Arc<TRR>,
         demo_link_repo: Arc<DMLR>,
+        veto_session_repo: Arc<VSR>,
     ) -> Self {
         Self {
             claim_repo,
             match_repo,
             registration_repo,
             demo_link_repo,
+            veto_session_repo,
+            map_pool_provider: None,
             auto_confirm_timeout_seconds: 15 * 60, // 15 minutes
         }
     }
@@ -65,6 +129,15 @@ where
     /// Create a new result service with custom auto-confirm timeout.
     pub fn with_timeout(mut self, timeout_seconds: i64) -> Self {
         self.auto_confirm_timeout_seconds = timeout_seconds;
+        self
+    }
+
+    /// Attach the map pool provider used to validate submitted map IDs for
+    /// matches that had no veto. Without it, non-veto matches skip map
+    /// validation.
+    #[must_use]
+    pub fn with_map_pool_provider(mut self, provider: Arc<dyn MapPoolProvider>) -> Self {
+        self.map_pool_provider = Some(provider);
         self
     }
 
@@ -105,7 +178,8 @@ where
             participant1_score,
             participant2_score,
             &game_results,
-        )?;
+        )
+        .await?;
 
         // Validate demo_link_ids belong to this match
         if !demo_link_ids.is_empty() {
@@ -433,7 +507,7 @@ where
         ))
     }
 
-    fn validate_claim(
+    async fn validate_claim(
         &self,
         match_: &TournamentMatch,
         claimed_winner: TournamentRegistrationId,
@@ -525,9 +599,56 @@ where
                     ResultValidationError::GameScoresMismatch.to_string(),
                 ));
             }
+
+            // Every reported map must be a real map for this match.
+            self.validate_map_ids(match_, game_results).await?;
         }
 
         Ok(())
+    }
+
+    /// Validate submitted map IDs against this match's authoritative map set.
+    ///
+    /// Precedence:
+    /// 1. If the match had a **completed veto**, the picked maps are
+    ///    authoritative — a map that was never picked is rejected even if it
+    ///    is otherwise a real map in the pool.
+    /// 2. Otherwise fall back to the tournament/stage map pool (with the
+    ///    game's pool/catalog behind it) via [`MapPoolProvider`].
+    ///
+    /// If neither authority can be resolved (no veto and no provider, or a
+    /// provider that returns nothing) validation is skipped rather than
+    /// failing closed — a missing pool configuration must not block result
+    /// submission.
+    async fn validate_map_ids(
+        &self,
+        match_: &TournamentMatch,
+        game_results: &[GameResultInput],
+    ) -> Result<(), DomainError> {
+        if let Some(session) = self.veto_session_repo.find_by_match(match_.id).await?
+            && session.status == VetoStatus::Completed
+            && !session.selected_maps.is_empty()
+        {
+            return check_map_ids(&session.selected_maps, game_results, MapSource::Veto);
+        }
+
+        let Some(provider) = self.map_pool_provider.as_ref() else {
+            return Ok(());
+        };
+
+        let valid_maps = provider
+            .valid_map_ids(match_.tournament_id, Some(match_.stage_id))
+            .await?;
+
+        if valid_maps.is_empty() {
+            warn!(
+                match_id = %match_.id,
+                "no map pool resolved for match; skipping map id validation"
+            );
+            return Ok(());
+        }
+
+        check_map_ids(&valid_maps, game_results, MapSource::Pool)
     }
 
     fn convert_game_result(
@@ -604,5 +725,95 @@ where
         );
 
         Ok(claim)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a game result for `map_id`; scores are arbitrary but non-tied.
+    fn game_on(game_number: i32, map_id: &str) -> GameResultInput {
+        GameResultInput {
+            game_number,
+            map_id: map_id.to_string(),
+            participant1_score: 16,
+            participant2_score: 10,
+            duration_seconds: None,
+            evidence_ids: vec![],
+            demo_link_id: None,
+        }
+    }
+
+    fn pool() -> Vec<String> {
+        vec![
+            "de_dust2".to_string(),
+            "de_mirage".to_string(),
+            "de_inferno".to_string(),
+            "de_nuke".to_string(),
+        ]
+    }
+
+    #[test]
+    fn test_check_map_ids_accepts_maps_in_pool() {
+        let games = vec![game_on(1, "de_dust2"), game_on(2, "de_inferno")];
+
+        assert!(check_map_ids(&pool(), &games, MapSource::Pool).is_ok());
+    }
+
+    #[test]
+    fn test_check_map_ids_rejects_placeholder_map_id() {
+        let games = vec![game_on(1, "de_dust2"), game_on(2, "map_1")];
+
+        let err = check_map_ids(&pool(), &games, MapSource::Pool)
+            .expect_err("placeholder map id must be rejected");
+
+        match err {
+            DomainError::InvalidMatchResult(msg) => {
+                assert!(msg.contains("map_1"), "message should name the map: {msg}");
+            }
+            other => panic!("expected InvalidMatchResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_check_map_ids_rejects_real_map_not_picked_in_veto() {
+        // de_nuke is a real pool map, but the veto picked dust2 + inferno.
+        let selected = vec!["de_dust2".to_string(), "de_inferno".to_string()];
+        let games = vec![game_on(1, "de_dust2"), game_on(2, "de_nuke")];
+
+        // Against the full pool it would pass...
+        assert!(check_map_ids(&pool(), &games, MapSource::Pool).is_ok());
+
+        // ...but the veto picks are authoritative.
+        let err = check_map_ids(&selected, &games, MapSource::Veto)
+            .expect_err("map not picked in veto must be rejected");
+
+        match err {
+            DomainError::InvalidMatchResult(msg) => {
+                assert!(
+                    msg.contains("de_nuke"),
+                    "message should name the map: {msg}"
+                );
+                assert!(
+                    msg.contains("veto"),
+                    "veto rejection should say so, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidMatchResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_check_map_ids_accepts_exact_veto_selection() {
+        let selected = vec!["de_dust2".to_string(), "de_inferno".to_string()];
+        let games = vec![game_on(1, "de_inferno"), game_on(2, "de_dust2")];
+
+        assert!(check_map_ids(&selected, &games, MapSource::Veto).is_ok());
+    }
+
+    #[test]
+    fn test_check_map_ids_accepts_empty_game_results() {
+        assert!(check_map_ids(&pool(), &[], MapSource::Pool).is_ok());
     }
 }

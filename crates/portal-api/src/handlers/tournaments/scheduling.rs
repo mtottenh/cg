@@ -65,7 +65,7 @@ pub async fn propose_schedule(
 
     let proposal = state
         .scheduling_service
-        .propose_schedule(match_id, req.proposed_times, auth.user_id)
+        .propose_schedule(match_id, req.proposed_times, auth.user_id, req.notes)
         .await?;
 
     Ok((
@@ -158,6 +158,7 @@ pub async fn reject_schedule_proposal(
     let command = RejectProposalCommand {
         proposal_id,
         rejected_by_user_id: auth.user_id,
+        reason: req.reason,
     };
 
     let proposal = state.scheduling_service.reject_proposal(command).await?;
@@ -241,6 +242,7 @@ pub async fn counter_propose(
         proposed_by_user_id: auth.user_id,
         proposed_times: req.proposed_times,
         expires_at: chrono::Utc::now() + chrono::Duration::hours(48),
+        notes: req.notes,
     };
 
     let proposal = state.scheduling_service.counter_propose(command).await?;

@@ -13,11 +13,12 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{
-    DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId,
+    DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId, UserId,
 };
 use portal_domain::entities::result_claim::GameResultInput;
 use portal_domain::repositories::tournament::TournamentMatchRepository;
 use portal_domain::services::tournament::MatchCompletionInput;
+use std::collections::HashMap;
 use tracing::warn;
 
 /// Extract request ID from headers.
@@ -201,7 +202,33 @@ pub async fn list_result_claims(
 
     let claims = state.result_service.get_claim_history(match_id).await?;
 
-    let responses: Vec<ResultClaimResponse> = claims.into_iter().map(Into::into).collect();
+    // Batch-resolve submitter/confirmer user IDs to player display names so
+    // the history can show who submitted each result, not just raw IDs.
+    let user_ids: Vec<UserId> = claims
+        .iter()
+        .flat_map(|c| std::iter::once(c.submitted_by_user_id).chain(c.confirmed_by_user_id))
+        .collect();
+    let display_names: HashMap<UserId, String> = state
+        .player_service
+        .get_players_by_user_ids(&user_ids)
+        .await?
+        .into_iter()
+        .map(|p| (p.user_id, p.display_name))
+        .collect();
+
+    let responses: Vec<ResultClaimResponse> = claims
+        .into_iter()
+        .map(|c| {
+            let submitted_by_display_name = display_names.get(&c.submitted_by_user_id).cloned();
+            let confirmed_by_display_name = c
+                .confirmed_by_user_id
+                .and_then(|id| display_names.get(&id).cloned());
+            let mut response = ResultClaimResponse::from(c);
+            response.submitted_by_display_name = submitted_by_display_name;
+            response.confirmed_by_display_name = confirmed_by_display_name;
+            response
+        })
+        .collect();
 
     Ok(Json(DataResponse::new(responses, request_id)))
 }

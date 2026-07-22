@@ -46,7 +46,7 @@ jobs:
       - name: Build release binaries
         run: |
           export SQLX_OFFLINE=true
-          cargo build --release -p portal-app -p portal-scanner
+          cargo build --release -p portal-app -p portal-scanner -p portal-cli
 
       - name: Package portal-api
         run: cargo deb --no-build -p portal-app

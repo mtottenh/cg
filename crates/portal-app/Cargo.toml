@@ -70,10 +70,18 @@ section = "net"
 priority = "optional"
 assets = [
     ["target/release/portal", "usr/bin/portal-api", "755"],
-    ["crates/portal-app/dist/portal-api.env.example", "etc/portal/api.env.example", "0644"],
-    ["crates/portal-app/dist/portal-api.service", "lib/systemd/system/portal-api.service", "0644"],
-    ["crates/portal-app/dist/README.Debian", "usr/share/doc/portal-api/README.Debian", "0644"],
+    # The ops CLI ships alongside the server (like psql with postgres) so an
+    # operator can bootstrap the first admin, mint service API keys, manage
+    # roles/bans, and import players directly on the box. Build it in the same
+    # `cargo build --release` (add -p portal-cli) before `cargo deb`.
+    ["target/release/portal-cli", "usr/bin/portal-cli", "755"],
+    # cargo-deb resolves asset source paths relative to THIS crate's dir
+    # (crates/portal-app/), so dist/ paths are crate-relative; target/release/
+    # is special-cased to the workspace target dir.
+    ["dist/portal-api.env.example", "etc/portal/api.env.example", "0644"],
+    ["dist/portal-api.service", "lib/systemd/system/portal-api.service", "0644"],
+    ["dist/README.Debian", "usr/share/doc/portal-api/README.Debian", "0644"],
 ]
-maintainer-scripts = "crates/portal-app/dist/maintainer-scripts"
+maintainer-scripts = "dist/maintainer-scripts"
 conf-files = ["/etc/portal/api.env"]
 systemd-units = { unit-name = "portal-api", enable = true, start = true, restart-after-upgrade = true }

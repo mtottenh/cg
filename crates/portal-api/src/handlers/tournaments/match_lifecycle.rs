@@ -7,7 +7,7 @@
 //! (`match_check_in`, `admin_match_transition`) auto-bootstrap the veto
 //! session when the match enters PickBan via [`super::auto_create_veto_session`].
 
-use super::{auto_create_veto_session, get_request_id};
+use super::{auto_create_veto_session, get_request_id, require_registration_actor};
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AdminMatchTransitionRequest, ForfeitMatchRequest, MatchCheckInRequest, ScheduleMatchRequest,
@@ -96,6 +96,11 @@ pub async fn get_match_status_history(
 }
 
 /// Check in for a match.
+///
+/// The caller must be able to act for `registration_id` — captain, team
+/// owner, active veto delegate, the registered player (individual
+/// tournaments), or tournament staff. See
+/// [`require_registration_actor`].
 #[utoipa::path(
     post,
     path = "/v1/tournaments/{tournament_id}/matches/{match_id}/check-in",
@@ -108,6 +113,7 @@ pub async fn get_match_status_history(
         (status = 200, description = "Check-in successful", body = DataResponse<TournamentMatchResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not authorized to check in this participant", body = ApiError),
         (status = 404, description = "Match not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -116,6 +122,7 @@ pub async fn get_match_status_history(
 pub async fn match_check_in(
     State(state): State<TournamentState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<MatchCheckInRequest>,
@@ -130,6 +137,8 @@ pub async fn match_check_in(
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
+
+    require_registration_actor(&state, &auth, &perm_checker, registration_id).await?;
 
     let match_ = state
         .match_lifecycle_service
@@ -197,6 +206,10 @@ pub async fn schedule_match(
 }
 
 /// Forfeit a match.
+///
+/// Same authority model as check-in (P-24): forfeiting is *conceding on
+/// behalf of a participant*, so an arbitrary authenticated caller must
+/// not be able to hand someone else's match away.
 #[utoipa::path(
     post,
     path = "/v1/tournaments/{tournament_id}/matches/{match_id}/forfeit",
@@ -209,6 +222,7 @@ pub async fn schedule_match(
         (status = 200, description = "Forfeit recorded", body = DataResponse<TournamentMatchResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not authorized to forfeit for this participant", body = ApiError),
         (status = 404, description = "Match not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -217,6 +231,7 @@ pub async fn schedule_match(
 pub async fn forfeit_match(
     State(state): State<TournamentState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<ForfeitMatchRequest>,
@@ -231,6 +246,8 @@ pub async fn forfeit_match(
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
+
+    require_registration_actor(&state, &auth, &perm_checker, registration_id).await?;
 
     let match_ = state
         .match_lifecycle_service

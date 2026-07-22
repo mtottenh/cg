@@ -1,10 +1,19 @@
-//! Veto authorization service.
+//! Registration-actor authorization service (historically "veto
+//! authorization" — the name stuck, the scope widened).
 //!
-//! Handles permission checks for veto (pick/ban) operations, including:
+//! Answers one question: *may this user act on behalf of this tournament
+//! registration?* It resolves the registration to its team-season and
+//! accepts:
 //! - Team captain authorization
 //! - Team owner authorization
 //! - Delegate authorization
 //! - Tournament admin authorization
+//! - The registered player, for individual (non-team) registrations
+//!
+//! Veto (pick/ban) was the first caller; match check-in (P-24) and
+//! tournament check-in now share it via
+//! [`VetoAuthorizationService::can_act_for_registration`] rather than
+//! growing a second, divergent notion of "speaks for this team".
 
 use std::sync::Arc;
 use tracing::{debug, instrument};
@@ -92,9 +101,30 @@ where
 
     /// Check if a user can perform veto actions for a registration.
     ///
-    /// Returns the role that authorizes the action, or an error if not authorized.
-    #[instrument(skip(self), fields(%registration_id, %user_id, %player_id))]
+    /// Thin alias over [`Self::can_act_for_registration`] kept for the
+    /// veto call sites, where the veto-specific spelling reads better.
     pub async fn can_perform_veto_action(
+        &self,
+        registration_id: TournamentRegistrationId,
+        user_id: UserId,
+        player_id: PlayerId,
+    ) -> Result<VetoAuthorizationRole, DomainError> {
+        self.can_act_for_registration(registration_id, user_id, player_id)
+            .await
+    }
+
+    /// Check whether a user may act on behalf of a registration.
+    ///
+    /// This is the single definition of "speaks for this participant"
+    /// used by veto pick/ban, match check-in and tournament check-in.
+    /// Team registrations resolve through the team-season
+    /// (captain / owner / active delegate); individual registrations
+    /// resolve through the registered player.
+    ///
+    /// Returns the role that authorizes the action, or
+    /// [`DomainError::NotAuthorized`] (HTTP 403) if none applies.
+    #[instrument(skip(self), fields(%registration_id, %user_id, %player_id))]
+    pub async fn can_act_for_registration(
         &self,
         registration_id: TournamentRegistrationId,
         user_id: UserId,
@@ -121,8 +151,7 @@ where
                 return Ok(VetoAuthorizationRole::Player);
             }
             return Err(DomainError::NotAuthorized(
-                "Only the registered player can perform veto actions for an individual registration"
-                    .to_string(),
+                "Only the registered player can act for an individual registration".to_string(),
             ));
         };
 
@@ -155,7 +184,7 @@ where
         }
 
         Err(DomainError::NotAuthorized(
-            "User is not authorized to perform veto actions for this team".to_string(),
+            "User is not authorized to act for this team".to_string(),
         ))
     }
 

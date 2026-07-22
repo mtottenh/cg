@@ -534,3 +534,75 @@ async fn test_concurrent_registrations_cannot_exceed_max_participants() {
         "database must not hold more registrations than max_participants"
     );
 }
+
+// ============================================================================
+// P-24 — participant check-in authorization
+// ============================================================================
+
+/// The participant-facing `POST /registrations/{id}/check-in` had the
+/// same hole as match check-in: any authenticated caller could check in
+/// any registration. (The `admin-check-in` sibling was already gated by
+/// `tournament.participants.manage`.)
+#[tokio::test]
+async fn test_registration_check_in_requires_authority_over_registration() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament_with_registration(&app, "reg-checkin-authz").await;
+
+    // A registration owned by somebody other than the dev fixture user.
+    let (user2_id, player2_id) = create_test_player(&app, "reg_checkin_owner").await;
+    let registration_id =
+        insert_test_registration(&app, &tournament_id, player2_id, user2_id, "Owner").await;
+    let owner_token = create_test_token(user2_id, player2_id, "reg_checkin_owner", TEST_JWT_SECRET);
+
+    // Open the check-in window so a denial can only be about authority.
+    sqlx::query(
+        "UPDATE tournaments SET check_in_required = true, \
+         check_in_start = NOW() - INTERVAL '1 minute', \
+         check_in_end = NOW() + INTERVAL '1 hour' WHERE id = $1",
+    )
+    .bind(Uuid::parse_str(&tournament_id).unwrap())
+    .execute(app.pool())
+    .await
+    .expect("failed to open check-in window");
+
+    let url = format!("/v1/tournaments/{tournament_id}/registrations/{registration_id}/check-in");
+
+    // Unrelated authenticated user: 403.
+    let (outsider_user, outsider_player) = create_test_player(&app, "reg_checkin_outsider").await;
+    let outsider_token = create_test_token(
+        outsider_user,
+        outsider_player,
+        "reg_checkin_outsider",
+        TEST_JWT_SECRET,
+    );
+    let response = app.post_with_token(&url, &outsider_token).await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Anonymous: 401.
+    let response = app.post_json_no_auth(&url, &json!({})).await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+
+    // Nothing was written.
+    let checked_in: bool =
+        sqlx::query_scalar("SELECT checked_in FROM tournament_registrations WHERE id = $1")
+            .bind(Uuid::parse_str(&registration_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .expect("registration should exist");
+    assert!(
+        !checked_in,
+        "a denied check-in must not mark the registration checked in"
+    );
+
+    // The registered player still can.
+    let response = app.post_with_token(&url, &owner_token).await;
+    response.assert_status(StatusCode::OK);
+
+    let checked_in: bool =
+        sqlx::query_scalar("SELECT checked_in FROM tournament_registrations WHERE id = $1")
+            .bind(Uuid::parse_str(&registration_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .expect("registration should exist");
+    assert!(checked_in, "the registered player's check-in must land");
+}

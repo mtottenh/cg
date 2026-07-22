@@ -12,7 +12,7 @@
 //! (different services for different operations) rather than by module
 //! boundary, so everything registration-shaped lives together here.
 
-use super::{check_eligibility_for_players, get_request_id};
+use super::{check_eligibility_for_players, get_request_id, require_registration_actor};
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{
     DisqualifyRequest, RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
@@ -254,6 +254,12 @@ pub async fn get_registrations(
 }
 
 /// Check in for a tournament.
+///
+/// Carried the same hole as match check-in (P-24): the caller must now
+/// be able to act for the registration — see
+/// [`require_registration_actor`]. Staff wanting to check someone in
+/// out-of-band still have the dedicated `admin-check-in` endpoint,
+/// which additionally bypasses the check-in window.
 #[utoipa::path(
     post,
     path = "/v1/tournaments/{tournament_id}/registrations/{registration_id}/check-in",
@@ -265,6 +271,7 @@ pub async fn get_registrations(
         (status = 200, description = "Checked in", body = DataResponse<TournamentRegistrationResponse>),
         (status = 400, description = "Check-in not open or already checked in", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not authorized to check in this participant", body = ApiError),
         (status = 404, description = "Registration not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -273,6 +280,7 @@ pub async fn get_registrations(
 pub async fn check_in(
     State(state): State<TournamentState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(path): Path<CheckInPath>,
 ) -> ApiResult<Json<DataResponse<TournamentRegistrationResponse>>> {
@@ -282,6 +290,8 @@ pub async fn check_in(
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
+
+    require_registration_actor(&state, &auth, &perm_checker, registration_id).await?;
 
     let registration = state
         .tournament_service

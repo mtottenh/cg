@@ -411,6 +411,11 @@ pub struct TournamentState {
     pub eligibility_service: AppEligibilityService,
     /// Veto service (auto-bootstrapped on PickBan transition).
     pub veto_service: AppVetoService,
+    /// Registration-actor authorization (captain / owner / delegate /
+    /// registered player). Despite the name it is not veto-specific:
+    /// check-in endpoints use it to decide who may act for a
+    /// registration (P-24).
+    pub veto_authorization_service: AppVetoAuthorizationService,
     /// Tournament match repository (direct access by scheduling +
     /// veto auto-create).
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
@@ -442,6 +447,7 @@ impl FromRef<AppState> for TournamentState {
             league_team_service: s.league_team_service.clone(),
             eligibility_service: s.eligibility_service.clone(),
             veto_service: s.veto_service.clone(),
+            veto_authorization_service: s.veto_authorization_service.clone(),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             tournament_map_pool_repo: Arc::clone(&s.tournament_map_pool_repo),
             game_repo: s.game_repo.clone(),

@@ -166,6 +166,15 @@ where
     /// Record participant check-in for a match.
     ///
     /// Both participants must check in before the match can proceed.
+    ///
+    /// # Authorization
+    ///
+    /// This only binds `registration_id` to the match. Whether
+    /// `checked_in_by` may *act for* that registration (captain / owner /
+    /// delegate / the registered player / tournament staff) is decided one
+    /// layer up — see `handlers::tournaments::require_registration_actor`.
+    /// Callers that bypass the handler (background jobs) are trusted by
+    /// construction.
     #[instrument(skip(self))]
     pub async fn check_in(
         &self,
@@ -174,6 +183,20 @@ where
         checked_in_by: UserId,
     ) -> Result<TournamentMatch, DomainError> {
         let match_ = self.get_match(match_id).await?;
+
+        // Determine which participant is checking in.
+        //
+        // This runs *before* the Scheduled -> CheckingIn auto-transition
+        // below: a registration that isn't in this match must not be able
+        // to move the match's status as a side effect of being rejected.
+        let is_participant1 = match_.participant1_registration_id == Some(registration_id);
+        let is_participant2 = match_.participant2_registration_id == Some(registration_id);
+
+        if !is_participant1 && !is_participant2 {
+            return Err(DomainError::NotAuthorized(
+                "Registration is not a participant in this match".to_string(),
+            ));
+        }
 
         // Check if match is in checking_in status (or transition to it)
         if match_.status != TournamentMatchStatus::CheckingIn {
@@ -195,16 +218,6 @@ where
                     match_.status
                 )));
             }
-        }
-
-        // Determine which participant is checking in
-        let is_participant1 = match_.participant1_registration_id == Some(registration_id);
-        let is_participant2 = match_.participant2_registration_id == Some(registration_id);
-
-        if !is_participant1 && !is_participant2 {
-            return Err(DomainError::NotAuthorized(
-                "Registration is not a participant in this match".to_string(),
-            ));
         }
 
         let slot = if is_participant1 {

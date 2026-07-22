@@ -81,8 +81,8 @@ pub use role::{
 };
 pub use tournament::{
     AcceptScheduleProposalRequest, AdminMatchTransitionRequest, AdminScheduleRequest,
-    AutoSeedRequest, CheckInRequest, CounterProposeRequest, CreateTournamentRequest,
-    CreateTournamentStageRequest, DisputeMatchRequest, DisqualifyRequest,
+    AutoSeedRequest, CancelScheduleProposalRequest, CheckInRequest, CounterProposeRequest,
+    CreateTournamentRequest, CreateTournamentStageRequest, DisputeMatchRequest, DisqualifyRequest,
     EligibilityRestrictionsInput, ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest,
     MatchCheckInRequest, ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest,
     RejectRegistrationRequest, RejectScheduleProposalRequest, ResolveDisputeRequest,

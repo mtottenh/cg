@@ -112,7 +112,9 @@ async fn test_register_team_happy_path() {
     response.assert_status(StatusCode::CREATED);
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["participant_name"], "The Happy Team");
-    assert_eq!(body["data"]["status"], "pending");
+    // `create_team_tournament` uses `registration_type: open`, which
+    // auto-approves (P-2).
+    assert_eq!(body["data"]["status"], "approved");
     assert_eq!(body["data"]["tournament_id"], tournament_id);
 
     // The registration shows up in the tournament's registration list.
@@ -219,13 +221,104 @@ async fn test_withdraw_registration() {
 }
 
 // ============================================================================
+// P-2: INITIAL STATUS FOLLOWS registration_type
+// ============================================================================
+
+/// `registration_type: open` means "anyone may enter", so a registration
+/// must land `approved` with nothing for an organiser to click.
+///
+/// Regression guard for P-2: `initial_status_for_tournament` implemented
+/// this rule but was never called, and the INSERT omitted `status`
+/// entirely, so the `'pending'` column default always won.
+#[tokio::test]
+async fn test_open_tournament_auto_approves_player_registration() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "open-auto-approve", "open").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
+            &json!({ "participant_name": "AutoApproved" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["status"], "approved",
+        "open registration must auto-approve"
+    );
+    let registration_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // The status was persisted, not just echoed back by the handler.
+    let reg_uuid: Uuid = registration_id.parse().unwrap();
+    let stored: String =
+        sqlx::query_scalar("SELECT status FROM tournament_registrations WHERE id = $1")
+            .bind(reg_uuid)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored, "approved", "DB row must carry the approved status");
+
+    // And an organiser cannot approve it again — it is not pending.
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"
+        ))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// Every non-`open` registration type still requires a decision, so the
+/// registration must stay `pending` and remain approvable.
+#[tokio::test]
+async fn test_non_open_tournaments_still_require_approval() {
+    for registration_type in ["approval", "invite_only", "qualification"] {
+        let app = TestApp::new().await;
+        let tournament_id = create_tournament_with_registration_type(
+            &app,
+            &format!("needs-approval-{}", registration_type.replace('_', "-")),
+            registration_type,
+        )
+        .await;
+
+        let response = app
+            .post_json(
+                &format!("/v1/tournaments/{tournament_id}/registrations/player"),
+                &json!({ "participant_name": "NeedsApproval" }),
+            )
+            .await;
+        response.assert_status(StatusCode::CREATED);
+        let body: serde_json::Value = response.json();
+        assert_eq!(
+            body["data"]["status"], "pending",
+            "{registration_type} must not auto-approve"
+        );
+
+        // Still approvable by an organiser.
+        let registration_id = body["data"]["id"].as_str().unwrap();
+        let response = app
+            .post_auth(&format!(
+                "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"
+            ))
+            .await;
+        response.assert_status(StatusCode::OK);
+        let body: serde_json::Value = response.json();
+        assert_eq!(body["data"]["status"], "approved");
+    }
+}
+
+// ============================================================================
 // ADMIN MODERATION: REJECT / DISQUALIFY / ADMIN CHECK-IN
 // ============================================================================
 
 #[tokio::test]
 async fn test_reject_registration() {
     let app = TestApp::new().await;
-    let tournament_id = create_tournament_with_registration(&app, "reject-reg-test").await;
+    // `approval` (not `open`) — only a pending registration can be
+    // rejected, and `open` now auto-approves (P-2).
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "reject-reg-test", "approval").await;
 
     // Register a player (pending status)
     let registration_id = register_player(&app, &tournament_id, "RejectMe").await;
@@ -356,6 +449,7 @@ async fn test_get_check_in_status() {
 /// transaction behind `SELECT ... FOR UPDATE` on the tournament row.
 #[tokio::test]
 async fn test_concurrent_registrations_cannot_exceed_max_participants() {
+    use portal_core::types::TournamentRegistrationStatus;
     use portal_db::adapters::PgTournamentRegistrationRepository;
     use portal_domain::repositories::tournament::{
         CreateTournamentRegistration, TournamentRegistrationRepository,
@@ -402,6 +496,7 @@ async fn test_concurrent_registrations_cannot_exceed_max_participants() {
                     participant_logo_url: None,
                     registered_by: UserId::from(user_id),
                     seed_rating: None,
+                    status: TournamentRegistrationStatus::Pending,
                 },
                 None,
             )

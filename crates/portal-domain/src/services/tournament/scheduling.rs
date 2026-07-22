@@ -8,8 +8,8 @@ use portal_core::ids::{TournamentMatchId, UserId};
 use portal_core::types::{ProposalStatus, TournamentMatchStatus};
 
 use crate::entities::{
-    AcceptProposalCommand, CounterProposeCommand, CreateScheduleProposalCommand,
-    RejectProposalCommand, ScheduleProposal, TournamentMatch,
+    AcceptProposalCommand, CancelProposalCommand, CounterProposeCommand,
+    CreateScheduleProposalCommand, RejectProposalCommand, ScheduleProposal, TournamentMatch,
 };
 use crate::repositories::{
     ScheduleProposalRepository, TournamentMatchRepository, TournamentRegistrationRepository,
@@ -239,6 +239,62 @@ where
         proposal.responded_at = Some(Utc::now());
         proposal.responded_by_user_id = Some(command.rejected_by_user_id);
         proposal.rejection_reason = command.reason;
+
+        self.proposal_repo.update(&proposal).await
+    }
+
+    /// Withdraw a proposal you made yourself.
+    ///
+    /// Before this existed the only way out of a mistyped proposal was to
+    /// wait out the 48h TTL or hope the opponent responded — `Cancelled`
+    /// was reachable only through `admin_schedule` (P-9). Cancelling frees
+    /// the match immediately: `find_pending_by_match_id` stops returning
+    /// the row, so the proposer can post a corrected proposal at once.
+    ///
+    /// # Errors
+    /// - `LookupFailed` if the proposal doesn't exist
+    /// - `TournamentMatchNotFound` if the proposal belongs to another match
+    /// - `NotAuthorized` if the caller is not the proposer
+    /// - `InvalidState` if the proposal is no longer pending (already
+    ///   accepted, rejected, counter-proposed, expired or cancelled).
+    ///   A pending proposal past its expiry is still cancellable — the
+    ///   point is to unblock the match, and the sweeper has not run yet.
+    pub async fn cancel_proposal(
+        &self,
+        command: CancelProposalCommand,
+    ) -> Result<ScheduleProposal, DomainError> {
+        let mut proposal = self
+            .proposal_repo
+            .find_by_id(command.proposal_id)
+            .await?
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "ScheduleProposal",
+                query: command.proposal_id.to_string(),
+            })?;
+
+        if proposal.match_id != command.match_id {
+            return Err(DomainError::TournamentMatchNotFound(command.match_id));
+        }
+
+        // Only the proposer may withdraw. The opponent has accept /
+        // reject / counter; letting them cancel too would hand them a
+        // silent way to drop a proposal without a recorded response.
+        if proposal.proposed_by_user_id != command.cancelled_by_user_id {
+            return Err(DomainError::NotAuthorized(
+                "Only the proposer can withdraw this proposal".to_string(),
+            ));
+        }
+
+        if proposal.status != ProposalStatus::Pending {
+            return Err(DomainError::InvalidState(format!(
+                "Proposal {} cannot be withdrawn (status: {:?})",
+                proposal.id, proposal.status
+            )));
+        }
+
+        proposal.status = ProposalStatus::Cancelled;
+        proposal.responded_at = Some(Utc::now());
+        proposal.responded_by_user_id = Some(command.cancelled_by_user_id);
 
         self.proposal_repo.update(&proposal).await
     }

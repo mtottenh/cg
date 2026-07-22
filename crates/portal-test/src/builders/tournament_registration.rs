@@ -181,20 +181,14 @@ impl TournamentRegistrationBuilder {
             participant_logo_url: self.participant_logo_url,
             registered_by,
             seed_rating: self.seed_rating,
+            // Builders bypass the service, so there is no tournament
+            // `registration_type` to consult — default to `Pending` unless
+            // the test asked for something else.
+            status: self.status.unwrap_or(TournamentRegistrationStatus::Pending),
         };
 
-        let registration = repo
-            .create(create)
+        repo.create(create)
             .await
-            .expect("Failed to create test tournament registration");
-
-        // If a status was specified (e.g., Approved), update it after creation
-        if let Some(status) = self.status {
-            repo.update_status(registration.id, status)
-                .await
-                .expect("Failed to update test tournament registration status")
-        } else {
-            registration
-        }
+            .expect("Failed to create test tournament registration")
     }
 }

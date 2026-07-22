@@ -58,12 +58,10 @@ async fn register_player(app: &TestApp, tournament_id: &str, participant_name: &
 
 /// Approve a registration.
 async fn approve_registration(app: &TestApp, tournament_id: &str, registration_id: &str) {
-    let response = app
-        .post_auth(&format!(
-            "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"
-        ))
-        .await;
-    response.assert_status(StatusCode::OK);
+    // Delegates to the shared helper, which is a no-op when the
+    // registration is already approved — `open` tournaments auto-approve
+    // on registration (P-2).
+    crate::tournaments::approve_registration(app, tournament_id, registration_id).await;
 }
 
 /// Info about a 4-player tournament (single elimination: 2 semis + 1 final).

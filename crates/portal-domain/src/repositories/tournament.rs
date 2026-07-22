@@ -527,6 +527,14 @@ pub struct CreateTournamentRegistration {
     pub participant_logo_url: Option<String>,
     pub registered_by: UserId,
     pub seed_rating: Option<i32>,
+    /// Status the row is inserted with.
+    ///
+    /// Derived from the tournament's `registration_type` by
+    /// [`initial_registration_status`](crate::services::tournament::initial_registration_status):
+    /// `Open` tournaments auto-approve, everything else lands `Pending`.
+    /// Persisted by the insert rather than left to the column default so
+    /// the caller's decision is the one that sticks.
+    pub status: TournamentRegistrationStatus,
 }
 
 /// Data for updating a tournament registration.

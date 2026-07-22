@@ -99,8 +99,8 @@ pub use result_claim::{
 pub use result_review::{ResultReview, ResultReviewStatus};
 pub use saga::{SagaContext, SagaExecution, SagaStatus, StepRecord, StepStatus};
 pub use schedule_proposal::{
-    AcceptProposalCommand, CounterProposeCommand, CreateScheduleProposalCommand,
-    RejectProposalCommand, ScheduleProposal,
+    AcceptProposalCommand, CancelProposalCommand, CounterProposeCommand,
+    CreateScheduleProposalCommand, RejectProposalCommand, ScheduleProposal,
 };
 pub use steam_tracking::{CreateSteamTrackingCommand, SteamTracking, UpdatePollResultCommand};
 pub use tournament::{

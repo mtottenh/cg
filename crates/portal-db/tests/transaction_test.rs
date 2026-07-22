@@ -136,6 +136,7 @@ async fn setup_tournament_with_match(
             participant_logo_url: None,
             registered_by: user_id,
             seed_rating: Some(1500),
+            status: TournamentRegistrationStatus::Pending,
         })
         .await
         .expect("Failed to create registration 1");
@@ -160,6 +161,7 @@ async fn setup_tournament_with_match(
             participant_logo_url: None,
             registered_by: user_id,
             seed_rating: Some(1400),
+            status: TournamentRegistrationStatus::Pending,
         })
         .await
         .expect("Failed to create registration 2");

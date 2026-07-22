@@ -157,6 +157,10 @@ pub fn routes() -> Router<AppState> {
             post(tournaments::reject_schedule_proposal),
         )
         .route(
+            "/{tournament_id}/matches/{match_id}/schedule/cancel",
+            post(tournaments::cancel_schedule_proposal),
+        )
+        .route(
             "/{tournament_id}/matches/{match_id}/schedule/counter",
             post(tournaments::counter_propose),
         )

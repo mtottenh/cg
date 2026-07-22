@@ -12,6 +12,30 @@ use tracing::instrument;
 use crate::entities::tournament::TournamentRegistration;
 use crate::repositories::tournament::{TournamentRegistrationRepository, TournamentRepository};
 
+/// The status a brand-new registration is created with, given the
+/// tournament's `registration_type`.
+///
+/// - `Open`: `Approved` — anyone may enter, so there is nothing for an
+///   organiser to decide; making them click "approve" on every row was
+///   busywork the product never intended (see P-2).
+/// - `Approval`, `InviteOnly`, `Qualification`: `Pending` — an organiser
+///   (or a qualifier result) still has to sign the entry off.
+///
+/// Free function rather than a method so both `RegistrationService` and
+/// `TournamentService` (which owns `register_team` / `register_player`)
+/// apply exactly the same rule.
+#[must_use]
+pub const fn initial_registration_status(
+    registration_type: RegistrationType,
+) -> TournamentRegistrationStatus {
+    match registration_type {
+        RegistrationType::Open => TournamentRegistrationStatus::Approved,
+        RegistrationType::Approval
+        | RegistrationType::InviteOnly
+        | RegistrationType::Qualification => TournamentRegistrationStatus::Pending,
+    }
+}
+
 /// Service for tournament registration management.
 pub struct RegistrationService<TR, TRR>
 where
@@ -252,18 +276,14 @@ where
 
     /// Get the initial registration status based on tournament settings.
     ///
-    /// - For `Open` tournaments: `Approved` (auto-approved)
-    /// - For `Approval`, `InviteOnly`, `Qualification`: `Pending`
-    pub fn initial_status_for_tournament(
+    /// Thin wrapper over [`initial_registration_status`], which is the
+    /// single definition of the rule.
+    #[must_use]
+    pub const fn initial_status_for_tournament(
         &self,
         registration_type: RegistrationType,
     ) -> TournamentRegistrationStatus {
-        match registration_type {
-            RegistrationType::Open => TournamentRegistrationStatus::Approved,
-            RegistrationType::Approval
-            | RegistrationType::InviteOnly
-            | RegistrationType::Qualification => TournamentRegistrationStatus::Pending,
-        }
+        initial_registration_status(registration_type)
     }
 }
 

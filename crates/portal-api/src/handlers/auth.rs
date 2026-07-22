@@ -74,7 +74,7 @@ fn cleared_refresh_token_cookie() -> Cookie<'static> {
     responses(
         (status = 201, description = "User registered successfully", body = DataResponse<RegisterResponse>),
         (status = 400, description = "Validation error", body = ApiError),
-        (status = 409, description = "Username or email already exists", body = ApiError),
+        (status = 409, description = "Username, email or display name already taken", body = ApiError),
     ),
     tag = "auth"
 )]

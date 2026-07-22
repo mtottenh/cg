@@ -24,6 +24,7 @@ use crate::repositories::tournament::{
 };
 
 use super::bracket_generator::{BracketGenerator, CrossLinkType};
+use super::registration::initial_registration_status;
 
 /// Service for tournament management.
 pub struct TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR>
@@ -479,6 +480,11 @@ where
                     participant_logo_url,
                     registered_by,
                     seed_rating: None,
+                    // `Open` tournaments auto-approve; the rest wait for an
+                    // organiser. Previously the insert omitted `status`
+                    // entirely and the `'pending'` column default always
+                    // won, so `Open` never auto-approved (P-2).
+                    status: initial_registration_status(tournament.registration_type),
                 },
                 replace_terminal,
             )
@@ -523,6 +529,8 @@ where
                     participant_logo_url: None,
                     registered_by,
                     seed_rating: None,
+                    // See `register_team` — `Open` auto-approves (P-2).
+                    status: initial_registration_status(tournament.registration_type),
                 },
                 replace_terminal,
             )

@@ -807,6 +807,14 @@ pub struct RejectScheduleProposalRequest {
     pub reason: Option<String>,
 }
 
+/// Request to withdraw a schedule proposal you made yourself.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct CancelScheduleProposalRequest {
+    /// ID of the proposal to withdraw. Must be a pending proposal on this
+    /// match that the caller proposed.
+    pub proposal_id: String,
+}
+
 /// Request to counter-propose new times.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct CounterProposeRequest {

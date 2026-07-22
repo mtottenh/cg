@@ -706,3 +706,215 @@ async fn test_counter_propose_schedule() {
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "scheduled");
 }
+
+// ============================================================================
+// P-9: PROPOSER CAN WITHDRAW THEIR OWN PENDING PROPOSAL
+// ============================================================================
+
+/// A mistyped proposal used to block the match for the full 48h TTL —
+/// `ProposalStatus::Cancelled` was reachable only through `admin_schedule`.
+/// The proposer withdraws, the match frees up immediately, and they can
+/// post a corrected proposal.
+#[tokio::test]
+async fn test_proposer_can_cancel_own_pending_proposal() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _) =
+        create_tournament_with_matches(&app, "cancel-proposal-test").await;
+
+    let wrong_time = chrono::Utc::now() + chrono::Duration::hours(24);
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
+            &json!({ "proposed_times": [wrong_time.to_rfc3339()] }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let proposal_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // A second proposal is blocked while one is pending.
+    let other_time = chrono::Utc::now() + chrono::Duration::hours(30);
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
+            &json!({ "proposed_times": [other_time.to_rfc3339()] }),
+        )
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+
+    // The proposer withdraws it.
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/cancel"),
+            &json!({ "proposal_id": proposal_id }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"], proposal_id);
+    assert_eq!(body["data"]["status"], "cancelled");
+
+    // No active proposal any more...
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"].is_null());
+
+    // ...so a corrected proposal goes through.
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
+            &json!({ "proposed_times": [other_time.to_rfc3339()] }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // The withdrawn proposal is still in the history (audit trail).
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/history"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let history = body["data"].as_array().unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(
+        history
+            .iter()
+            .any(|p| p["id"] == proposal_id.as_str() && p["status"] == "cancelled")
+    );
+}
+
+/// The opponent has accept / reject / counter; they must not be able to
+/// withdraw the proposal on the proposer's behalf.
+#[tokio::test]
+async fn test_opponent_cannot_cancel_proposal() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "cancel-proposal-authz").await;
+
+    let time = chrono::Utc::now() + chrono::Duration::hours(24);
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
+            &json!({ "proposed_times": [time.to_rfc3339()] }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let proposal_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    let url = format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/cancel");
+    let payload = json!({ "proposal_id": proposal_id });
+
+    // The opponent is forbidden.
+    let response = app
+        .post_json_with_token(&url, &payload, &player2_token)
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // So is an unrelated authenticated user.
+    let (outsider_user, outsider_player) = create_test_player(&app, "cancel_outsider").await;
+    let outsider_token = create_test_token(
+        outsider_user,
+        outsider_player,
+        "cancel_outsider",
+        TEST_JWT_SECRET,
+    );
+    let response = app
+        .post_json_with_token(&url, &payload, &outsider_token)
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // And an anonymous caller gets 401.
+    let response = app.post_json_no_auth(&url, &payload).await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+
+    // The proposal is untouched.
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"].as_str().unwrap(), proposal_id);
+    assert_eq!(body["data"]["status"], "pending");
+}
+
+/// Only a *pending* proposal can be withdrawn: once the opponent has
+/// responded the outcome stands, and a second cancel is rejected too.
+#[tokio::test]
+async fn test_cannot_cancel_non_pending_proposal() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "cancel-proposal-state").await;
+
+    let time = chrono::Utc::now() + chrono::Duration::hours(24);
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
+            &json!({ "proposed_times": [time.to_rfc3339()] }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let proposal_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Opponent rejects it.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/reject"),
+            &json!({ "proposal_id": proposal_id, "reason": "no good" }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // The proposer can no longer withdraw a rejected proposal.
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/cancel"),
+            &json!({ "proposal_id": proposal_id }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// A proposal ID that belongs to a different match is not addressable
+/// through this match's URL.
+#[tokio::test]
+async fn test_cancel_proposal_rejects_foreign_match_id() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _) =
+        create_tournament_with_matches(&app, "cancel-prop-fgn-a").await;
+    let (other_tournament_id, other_match_id, _, _) =
+        create_tournament_with_matches(&app, "cancel-prop-fgn-b").await;
+
+    let time = chrono::Utc::now() + chrono::Duration::hours(24);
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
+            &json!({ "proposed_times": [time.to_rfc3339()] }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let proposal_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Same (authorised) user, but the proposal is not on that match.
+    let response = app
+        .post_json(
+            &format!(
+                "/v1/tournaments/{other_tournament_id}/matches/{other_match_id}/schedule/cancel"
+            ),
+            &json!({ "proposal_id": proposal_id }),
+        )
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
+}

@@ -162,13 +162,14 @@ async fn test_creator_scoped_grant_allows_managing_own_tournament() {
     let (user_id, player_id) = create_test_player(&app, "rbac_creator").await;
     let token = create_test_token(user_id, player_id, "rbac_creator", TEST_JWT_SECRET);
 
-    // Create as a plain user (no global roles).
+    // Create as a plain user (no global roles). `approval` rather than
+    // `open` so the registration below actually lands pending and there
+    // is something for the approve endpoint to act on — `open`
+    // auto-approves (P-2).
+    let mut body = tournament_body(&game_id, "RBAC Creator Test", "rbac-creator-test");
+    body["registration_type"] = json!("approval");
     let response = app
-        .post_json_with_token(
-            "/v1/tournaments",
-            &tournament_body(&game_id, "RBAC Creator Test", "rbac-creator-test"),
-            &token,
-        )
+        .post_json_with_token("/v1/tournaments", &body, &token)
         .await;
     response.assert_status(StatusCode::CREATED);
     let created: serde_json::Value = response.json();

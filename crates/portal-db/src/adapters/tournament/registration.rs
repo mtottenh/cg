@@ -97,9 +97,9 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
             INSERT INTO tournament_registrations (
                 id, tournament_id, team_season_id, player_id, adhoc_team_id,
                 participant_name, participant_logo_url, registered_by,
-                registered_at, seed_rating, created_at, updated_at
+                registered_at, seed_rating, status, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING *
             ",
         )
@@ -113,6 +113,7 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
         .bind(cmd.registered_by.as_uuid())
         .bind(now)
         .bind(cmd.seed_rating)
+        .bind(cmd.status.to_string())
         .bind(now)
         .bind(now)
         .fetch_one(&self.pool)
@@ -180,9 +181,9 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
             INSERT INTO tournament_registrations (
                 id, tournament_id, team_season_id, player_id, adhoc_team_id,
                 participant_name, participant_logo_url, registered_by,
-                registered_at, seed_rating, created_at, updated_at
+                registered_at, seed_rating, status, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING *
             ",
         )
@@ -196,6 +197,7 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
         .bind(cmd.registered_by.as_uuid())
         .bind(now)
         .bind(cmd.seed_rating)
+        .bind(cmd.status.to_string())
         .bind(now)
         .bind(now)
         .fetch_one(&mut *tx)

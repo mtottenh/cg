@@ -103,6 +103,100 @@ async fn test_register_duplicate_email() {
     response.assert_status(StatusCode::CONFLICT);
 }
 
+/// P-5: registration must reject a display name that is already taken.
+///
+/// Before this, signup did no check while `PATCH /v1/players/me` did, so
+/// you could register a duplicate name and then never save your profile
+/// again. The check is case-insensitive, matching
+/// `find_by_display_name` (which compares `display_name_normalized`) and
+/// the UNIQUE index added in migration 0077 — otherwise "Bob" and "bob"
+/// would coexist while the lookup treated them as the same player.
+#[tokio::test]
+async fn test_register_duplicate_display_name() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/register",
+            &json!({
+                "username": "dupdisplayfirst",
+                "email": "dupdisplay1@example.com",
+                "password": "SecurePass123!",
+                "display_name": "Taken Name"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // Exact duplicate → 409 with the same wording as the update path.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/register",
+            &json!({
+                "username": "dupdisplaysecond",
+                "email": "dupdisplay2@example.com",
+                "password": "SecurePass123!",
+                "display_name": "Taken Name"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Display name 'Taken Name' is already taken"),
+        "unexpected detail: {}",
+        body["detail"]
+    );
+
+    // Case-only variant → also 409.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/register",
+            &json!({
+                "username": "dupdisplaythird",
+                "email": "dupdisplay3@example.com",
+                "password": "SecurePass123!",
+                "display_name": "TAKEN NAME"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+}
+
+/// The trap P-5 describes end to end: register, then save the profile.
+/// A user who got in with a free name must be able to edit their bio
+/// without touching their display name.
+#[tokio::test]
+async fn test_registered_user_can_save_profile() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/register",
+            &json!({
+                "username": "profilesaver",
+                "email": "profilesaver@example.com",
+                "password": "SecurePass123!",
+                "display_name": "Profile Saver"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let token = body["data"]["access_token"].as_str().unwrap().to_string();
+
+    let response = app
+        .patch_json_with_token("/v1/players/me", &json!({ "bio": "gg wp" }), &token)
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["bio"], "gg wp");
+    assert_eq!(body["data"]["display_name"], "Profile Saver");
+}
+
 #[tokio::test]
 async fn test_register_validation_errors() {
     let app = TestApp::new().await;

@@ -245,6 +245,65 @@ Plus two integrity rules that are only expressible once lineups exist:
 **A substitute appearance must not create a roster row.** It is tempting for audit, but
 it would recreate exactly the conflation this design removes. The lineup *is* the record.
 
+## 5b. Where the policy lives: season vs tournament
+
+Substitute policy should be configurable **per tournament**, not only per season. Two
+facts make this more than a convenience:
+
+1. **A tournament need not belong to a season at all.** `tournaments.league_id` and
+   `tournaments.season_id` are both **nullable** — *"Optional league/season linkage"*
+   (`migrations/0030_create_tournaments.sql:12-14`), `ON DELETE SET NULL`. A standalone
+   tournament has nothing to inherit from, so tournament-level policy cannot be merely an
+   override layer; it must be able to stand alone.
+2. **The mechanism already exists.** `tournaments.settings` JSONB
+   (`0030_create_tournaments.sql:47`) is exactly where `EligibilityRestrictions` is
+   already read from (`entities/eligibility.rs:59-66`), and registration-time eligibility
+   already resolves through it (`handlers/tournaments/registration.rs:127`).
+
+### ⚠️ But the policy does not have one scope — it has two
+
+Moving *everything* to the tournament silently breaks the load-bearing rule. The two
+halves of §5a have genuinely different natural scopes:
+
+| Rule | Natural scope | Why |
+|---|---|---|
+| Rating/tier eligibility (`max_rating_per_player`, `max_peak_rating_per_player`, `allowed_rank_tiers`, `min_matches_played`) | **tournament** | A property of *this event*. Finals stricter than groups; a side event looser. Already stored there. |
+| `max_substitutes_per_match` | **tournament** | Same — a per-event rule about one lineup. |
+| **Appearance caps per player** | **season** | The counting window *is* the season. |
+
+**The appearance cap cannot be per-tournament.** It is the rule that stops "any registered
+player may sub" from becoming a roster-lock bypass (§5), and it works by counting a
+player's appearances *across the season*. Make it per-tournament and a league running five
+tournaments at "3 appearances each" has authorised 15 — a ringer can sub indefinitely by
+spreading across events, and the constraint that made the whole design safe evaporates.
+
+So: **eligibility is per-tournament, counting is per-season.** A tournament may add its
+own *additional* appearance cap, but it can only tighten — it cannot raise or reset the
+season's count. For a standalone tournament (no `season_id`) only the tournament cap
+applies, which is correct: there is no season roster to protect.
+
+### Resolution rule
+
+For a tournament inside a season, both sets apply and **the most restrictive wins**.
+
+This is not a new rule — it is what the system already does, expressed once instead of
+twice. Today league restrictions are checked on league join (`handlers/leagues.rs:34`)
+and tournament restrictions on tournament registration
+(`handlers/tournaments/registration.rs:127`): two independent gates, so a player must
+already satisfy both. Intersection at lineup time preserves exactly that behaviour at a
+new moment, rather than inventing a precedence order.
+
+The alternative — field-level override with the tournament winning — permits a tournament
+to *loosen* its league's rules. That is occasionally wanted (a casual side event) but it
+lets an organiser with tournament-manage permission but no league authority weaken a
+league-wide integrity control, which is a privilege escalation in policy clothing. If
+loosening is needed later, add it as an explicit, separately-permissioned season flag
+rather than as the default merge semantics.
+
+Because `EligibilityService::check_players` returns *all* violations rather than failing
+fast (`services/eligibility_service.rs:48`), evaluating both sets and concatenating the
+results is trivial, and the captain sees every reason a proposed sub was rejected at once.
+
 ### Short-handed and emergency play
 
 This is what the current model cannot express, and it splits into three cases that
@@ -309,16 +368,42 @@ reconstructable later — a player added or removed next week would silently rew
 history of last week's match. The lineup is an immutable historical record, so anything
 the eligibility decision depended on must be frozen into it.
 
-New columns on `league_seasons` for §5a:
+Policy columns, split by scope per §5b:
 
 ```sql
+-- SEASON: the counting rules. These are season-scoped by nature (§5b).
 ALTER TABLE league_seasons
-    ADD COLUMN lineup_required                    BOOLEAN NOT NULL DEFAULT false,
-    ADD COLUMN max_substitutes_per_match          INTEGER,
-    ADD COLUMN max_sub_appearances_per_player     INTEGER,
-    ADD COLUMN max_sub_appearances_per_team       INTEGER,
-    ADD COLUMN substitute_eligibility             JSONB;  -- EligibilityRestrictions
+    ADD COLUMN lineup_required                 BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN max_sub_appearances_per_player  INTEGER,   -- the load-bearing cap (§5)
+    ADD COLUMN max_sub_appearances_per_team    INTEGER,
+    ADD COLUMN max_substitutes_per_match       INTEGER,   -- season default
+    ADD COLUMN substitute_eligibility          JSONB;     -- season-wide floor
 ```
+
+**Tournament-level policy needs no migration.** It goes in the existing
+`tournaments.settings` JSONB under a `"substitutes"` key, alongside the `"eligibility"`
+key already read by `EligibilityRestrictions::from_settings`:
+
+```jsonc
+{
+  "eligibility":  { /* registration-time, unchanged */ },
+  "substitutes":  {
+    "lineup_required":            true,
+    "max_substitutes_per_match":  1,          // tighter than the season default
+    "max_sub_appearances":        2,          // may only TIGHTEN the season cap (§5b)
+    "eligibility": { "max_peak_rating_per_player": 1800 }
+  }
+}
+```
+
+Reusing `settings` rather than adding columns keeps the tournament half schemaless while
+the season half — where the integrity-critical counting lives — stays typed and
+constrainable. That asymmetry is deliberate: the rules that must not be got wrong are the
+ones that get real columns.
+
+Counting appearances requires no new table — it is a query over
+`match_lineup_players JOIN match_lineups JOIN tournament_matches`, filtered on
+`is_substitute` and the season. Index accordingly.
 
 FK style follows `forfeit_records` (match + registration,
 `migrations/0038_forfeits.sql:4-26`). `participation_status` values are taken verbatim
@@ -434,11 +519,12 @@ land in its own migration, after lineups are proven on one season.
    coincidentally plausible under both readings, which makes silent reinterpretation
    tempting and wrong; leave the old column in place, unread, until the substitute role is
    retired (§9 step 5).
-6. **How strict should substitute eligibility be relative to registration eligibility?**
-   §5a allows a separate, stricter `substitute_eligibility` set. Needs a policy default:
-   inherit the season's restrictions, or require explicit configuration? Recommend
-   **inherit, then allow override** — so a league that has already thought about ratings
-   gets sane sub rules for free.
+6. **Default when a tournament sets no substitute policy at all?** §5b resolves *how*
+   season and tournament combine (intersection), but not what a tournament with an empty
+   `"substitutes"` key should do. Recommend **inherit the season's set unchanged** — a
+   league that has already thought about ratings gets sane sub rules for free, and a
+   standalone tournament with no season and no policy gets no substitute restrictions,
+   which is the right default for a one-off event.
 7. **May a player sub for a team in a league where they are rostered on a rival?** §5a
    requires at minimum that they cannot face their own team (P-26). Whether they may sub
    for a rival at all is a season flag with no obviously correct default.

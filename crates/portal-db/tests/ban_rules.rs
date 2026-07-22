@@ -138,10 +138,15 @@ async fn test_multiple_bans_all_checked() {
 
     let user_id = create_test_user(&db.pool, "multi").await;
 
-    // Create an expired ban (starts_at must be before ends_at)
+    // Create an expired ban (starts_at must be before ends_at). Use a
+    // different ban_type from the active platform ban below so both can
+    // coexist: migration 0076's partial unique index allows only one
+    // non-lifted ban per (user_id, ban_type) — and an expired-but-not-lifted
+    // ban still occupies that slot (a partial index predicate can't reference
+    // NOW()), so two same-type unscoped bans would collide.
     let expired_ban = NewBan {
         user_id,
-        ban_type: "platform".to_string(),
+        ban_type: "matchmaking".to_string(),
         reason: "Old expired ban".to_string(),
         scope_type: None,
         scope_id: None,

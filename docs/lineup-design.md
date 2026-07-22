@@ -123,10 +123,42 @@ Split the two questions:
 - **Lineup** (new) — *who is playing this match*, declared per match per registration.
   Lives and dies with the match.
 
-**Core invariant: `lineup ⊆ roster`.** Flexibility comes from making roster additions
-cheap and auditable, never from letting a lineup name someone outside the pool. If a
-lineup could include arbitrary players, the roster lock would mean nothing again and we
-would have moved the problem rather than solved it.
+### Two abuses, two controls
+
+An earlier draft of this document proposed the invariant `lineup ⊆ roster`, on the
+reasoning that if a lineup could name anyone, the roster lock would mean nothing. **That
+was wrong, and it contradicted the actual requirement** — the ability to pull in a sub
+from *any registered player*, not merely from the pool. It also quietly re-broke the
+motivating case: a sub who must already be rostered is not an ad-hoc sub.
+
+The error was trying to make one mechanism defend against two different abuses:
+
+| Abuse | Defended by |
+|---|---|
+| **A.** Stack the team mid-season — swap weak players for strong ones | **roster lock**, on the primary roster |
+| **B.** Bring in a ringer for one important match | **substitute policy**, at lineup submission |
+
+The current schema has only mechanism A, so it is forced to defend against B with it too
+— which is precisely why the lock needed two predicates approximating "frozen but
+flexible", and why it fails at both jobs. Separating them lets each be strict about the
+thing it actually governs.
+
+**Revised invariant:** lineup entries are *typed*. Entries marked `rostered` must be in
+the pool — the lock's domain, unchanged. Entries marked `substitute` **may be any
+registered player in the system**, subject to the policy in §5a. The roster lock is
+therefore *not* the ringer defence and never should have been.
+
+### What keeps the lock meaningful
+
+Without a further constraint, "anyone can sub" is the roster lock with extra steps: a
+team could field five different ringers every week and never touch its roster.
+
+The constraint that closes this is **a per-season appearance cap per (team, player)**.
+After N appearances as a substitute for the same team, that player must be *rostered* —
+where the lock governs them normally. This is a common real-league rule ("after three
+appearances a sub must be signed"), and it is the load-bearing rule of this whole design:
+it converts unlimited ringers into a metered emergency valve, and forces genuinely
+recurring players onto the roster. Everything else in §5a is a refinement.
 
 ### Where substitutes go
 
@@ -160,6 +192,59 @@ policy on how many non-regulars a lineup may contain.
 
 This is a breaking enum change; see §9.
 
+## 5a. Substitute policy
+
+A substitute may be any registered player. The controls are *restrictions on that
+choice*, evaluated when the lineup is submitted — not restrictions on who exists in a
+pool.
+
+**The rating half of this is already built.** `EligibilityRestrictions`
+(`crates/portal-domain/src/entities/eligibility.rs:10-41`) is exactly the vocabulary
+required:
+
+| Field | Use for substitutes |
+|---|---|
+| `max_rating_per_player` | "subs can't be above X elo" — the stated requirement |
+| `max_peak_rating_per_player` | already commented *"anti-smurf check"* — the right tool for a ringer on a fresh account |
+| `min_rating_per_player`, `allowed_rank_tiers` | tier-restricted divisions |
+| `min_matches_played` | blocks brand-new accounts |
+| `max_team_total_rating`, `max_team_average_rating` | caps the *whole lineup*, so a legal sub cannot push the team over |
+
+`EligibilityService::check_players(restrictions, game_id, &[PlayerId])`
+(`services/eligibility_service.rs:48`) already takes an arbitrary player slice, is
+per-game aware, and **returns a `Vec<EligibilityViolation>` rather than failing fast** —
+so it can report every problem with a proposed lineup at once. It needs **no signature
+change** to be reused here. Today it has exactly two call sites, both at registration
+time (`handlers/tournaments/registration.rs:127,186`; `handlers/leagues.rs:34`). Lineup
+submission becomes the third, and the first that runs at match time.
+
+Restrictions are parsed from a `settings` JSONB `"eligibility"` key
+(`entities/eligibility.rs:59-66`), so a season can carry a **separate, stricter set for
+substitutes** than for registration — which is usually what you want: a sub who would be
+legal as a signed player may still be too strong as a one-off ringer.
+
+The counting rules are new and belong on `league_seasons`:
+
+| Rule | Purpose |
+|---|---|
+| `max_substitutes_per_match` | replaces the old `max_substitutes` reading (§9 q5) |
+| `max_substitute_appearances_per_player_per_season` | **the load-bearing cap** — forces recurring subs onto the roster |
+| `max_substitute_appearances_per_team_per_season` | stops a team living permanently on borrowed players |
+
+Plus two integrity rules that are only expressible once lineups exist:
+
+- **A sub may not appear on both lineups of the same match** (enforce with
+  `UNIQUE (match_id, player_id)`, §6).
+- **A sub may not play against a team they are rostered on** — this is **P-26**, stated
+  in `migrations/0025_league_teams_and_seasons.sql:16` and never enforced because the rule
+  is about a match and nothing bound a player to one. Whether they may sub for a rival
+  *at all* should be a season flag; the minimum is that they cannot face their own team.
+- **A banned player is never eligible** (`bans`, `migrations/0012_create_bans.sql`) —
+  currently unchecked at match time.
+
+**A substitute appearance must not create a roster row.** It is tempting for audit, but
+it would recreate exactly the conflation this design removes. The lineup *is* the record.
+
 ### Short-handed and emergency play
 
 This is what the current model cannot express, and it splits into three cases that
@@ -168,12 +253,18 @@ deserve different answers:
 1. **Fewer players than `team_size_min`.** A lineup should be *submittable* while short —
    record it and let the match proceed or forfeit per league policy — rather than
    blocking submission. Today there is no lineup to be short *in*.
-2. **A non-regular from within the pool.** Just a lineup entry with `is_substitute`.
-   No roster change, no lock involvement. **This is the common case that motivated the
-   redesign, and it becomes free.**
-3. **Someone genuinely outside the pool.** Requires a roster addition, which the lock
-   governs — plus **P-18**'s missing admin override, with actor and reason recorded.
-   `league_seasons.roster_locked_by` already exists as the audit column for this.
+2. **A non-regular from within the pool.** A lineup entry with `is_substitute`. No
+   roster change, no lock involvement.
+3. **Someone outside the pool entirely — any registered player.** Also just a lineup
+   entry with `is_substitute`, subject to §5a. **No roster change and no admin
+   intervention.** This is the case that motivated the redesign and the one the current
+   schema cannot represent at all; under the typed-entry model it is ordinary, not an
+   escape hatch.
+
+Because case 3 no longer needs a roster addition, **P-18** (the missing admin override)
+stops being the answer to "we can't field a team". It remains worth doing for its own
+sake — a locked roster with no override is still wrong when a *signing*, not a fill-in,
+is genuinely needed — but it drops from blocking to routine.
 
 ## 6. Schema sketch
 
@@ -198,12 +289,35 @@ CREATE TABLE match_lineup_players (
     lineup_id             UUID NOT NULL REFERENCES match_lineups(id) ON DELETE CASCADE,
     player_id             UUID NOT NULL REFERENCES players(id),
     is_substitute         BOOLEAN NOT NULL DEFAULT false,
+    was_rostered          BOOLEAN NOT NULL,   -- snapshot at declaration time
     slot                  INTEGER,
     participation_status  VARCHAR(32) NOT NULL DEFAULT 'confirmed',
         -- confirmed | no_show | left_early | substituted | removed
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (lineup_id, player_id)
 );
+
+-- one player cannot appear on both sides of a match (§5a)
+CREATE UNIQUE INDEX idx_lineup_player_per_match
+    ON match_lineup_players (lineup_id, player_id);
+-- (enforce the cross-lineup case in the service, or via a match_id column
+--  denormalized onto match_lineup_players with UNIQUE (match_id, player_id))
+```
+
+`was_rostered` is a **snapshot, not derived**. Roster membership at time T is not
+reconstructable later — a player added or removed next week would silently rewrite the
+history of last week's match. The lineup is an immutable historical record, so anything
+the eligibility decision depended on must be frozen into it.
+
+New columns on `league_seasons` for §5a:
+
+```sql
+ALTER TABLE league_seasons
+    ADD COLUMN lineup_required                    BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN max_substitutes_per_match          INTEGER,
+    ADD COLUMN max_sub_appearances_per_player     INTEGER,
+    ADD COLUMN max_sub_appearances_per_team       INTEGER,
+    ADD COLUMN substitute_eligibility             JSONB;  -- EligibilityRestrictions
 ```
 
 FK style follows `forfeit_records` (match + registration,
@@ -291,12 +405,21 @@ land in its own migration, after lineups are proven on one season.
 
 ## 10. Open questions
 
-1. **If a team declares no lineup by the deadline, is that a forfeit or a fallback to the
-   roster?** Forfeit is consistent with today's no-show handling
-   (`background/mod.rs:653-682`) and makes the deadline mean something; fallback is
-   gentler and avoids punishing teams for a new process. Recommend **fallback in the
-   first season, forfeit once teams are used to it** — a per-season policy rather than a
-   code constant.
+1. ~~Forfeit or fallback if no lineup by the deadline?~~ **DECIDED: forfeit.** If the
+   system is optional it doesn't count, and a deadline with a fallback is not a deadline.
+
+   **This costs nothing to implement.** If submitting a lineup *is* the act of checking
+   in, then no lineup ⇒ not checked in ⇒ the existing no-show path already fires:
+   `process_check_in_timeout` (`crates/portal-api/src/background/mod.rs:636-692`) already
+   calls `process_double_forfeit` when neither side checks in (`:653-665`) and
+   `process_no_show` otherwise (`:666-682`). No new forfeit logic, no new deadline, no new
+   background job — the behaviour falls out of making check-in mean something.
+
+   This is a good independent check on the design: the write path was chosen because it
+   fit the domain, and the desired failure semantics turned out to already be implemented
+   there. Worth confirming during implementation that a *short-handed but submitted*
+   lineup (§5 case 1) is treated as checked in, not as a no-show — those must not collapse
+   together.
 2. **Can a lineup be edited after submission but before match start?** Real leagues
    generally allow it up to the deadline. Suggests `status: draft → submitted → locked`,
    with `locked_at` stamped on the transition to `PickBan`/`InProgress`.
@@ -306,10 +429,19 @@ land in its own migration, after lineups are proven on one season.
    `substituted` and `left_early`, implying yes, but nothing would write them without a
    post-match amendment path. Recommend deferring — record the intent in the enum,
    build the flow later.
-5. **What happens to `max_substitutes` for existing seasons** when its meaning changes
-   from "bench size" to "non-regulars per lineup"? The default of 2 is coincidentally
-   reasonable under both readings, which makes silent reinterpretation tempting and
-   probably wrong. Prefer a new column.
+5. ~~What happens to `max_substitutes` when its meaning changes?~~ **RESOLVED** — §6 adds
+   `max_substitutes_per_match` as a new column. The old `max_substitutes` default of 2 is
+   coincidentally plausible under both readings, which makes silent reinterpretation
+   tempting and wrong; leave the old column in place, unread, until the substitute role is
+   retired (§9 step 5).
+6. **How strict should substitute eligibility be relative to registration eligibility?**
+   §5a allows a separate, stricter `substitute_eligibility` set. Needs a policy default:
+   inherit the season's restrictions, or require explicit configuration? Recommend
+   **inherit, then allow override** — so a league that has already thought about ratings
+   gets sane sub rules for free.
+7. **May a player sub for a team in a league where they are rostered on a rival?** §5a
+   requires at minimum that they cannot face their own team (P-26). Whether they may sub
+   for a rival at all is a season flag with no obviously correct default.
 
 ## 11. Recommendation
 
@@ -318,9 +450,14 @@ that surfaced it — but because **the statistics this platform publishes are cu
 unverifiable**, three separate features are already blocked on this table, and one of
 them (§3a) is fully written and permanently unreachable.
 
-Sequence: **P-24 (authorization hole) → tables + check-in write path → attribution
-gating → roster-mismatch revival → roster-lock simplification.**
+Sequence: **P-24 (authorization hole) → tables + check-in write path → substitute policy
+(§5a, reusing `EligibilityService`) → attribution gating → roster-mismatch revival →
+roster-lock simplification.**
 
 Hold **P-15** until this lands; its clean fix is a consequence of the redesign rather
-than a patch. **P-18** (admin override) is still worth doing independently — it is the
-answer to case 3 in §5 either way.
+than a patch. **P-18** (admin override) is no longer on the critical path — §5 case 3 is
+answered by a lineup entry, not by an override — but remains worth doing on its own merit.
+
+The single most important rule to get right is the **per-player substitute appearance
+cap** (§5). Everything else in §5a tunes who may sub; that cap is what stops "any
+registered player may sub" from quietly becoming a bypass of the roster lock.

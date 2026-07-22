@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # aws-sdk-s3/sso/sts and `home` require >=1.88 (Dockerfile builds on rust:1.88)
 rust-version = "1.88"

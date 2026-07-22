@@ -3696,7 +3696,7 @@ checksum = "f84267b20a16ea918e43c6a88433c2d54fa145c92a811b5b047ccbe153674483"
 
 [[package]]
 name = "portal-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3746,7 +3746,7 @@ dependencies = [
 
 [[package]]
 name = "portal-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3766,7 +3766,7 @@ dependencies = [
 
 [[package]]
 name = "portal-cache"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "portal-core",
@@ -3780,7 +3780,7 @@ dependencies = [
 
 [[package]]
 name = "portal-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3820,7 +3820,7 @@ dependencies = [
 
 [[package]]
 name = "portal-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "serde",
@@ -3832,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "portal-db"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3852,7 +3852,7 @@ dependencies = [
 
 [[package]]
 name = "portal-domain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "argon2",
  "async-trait",
@@ -3873,7 +3873,7 @@ dependencies = [
 
 [[package]]
 name = "portal-plugins"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3891,7 +3891,7 @@ dependencies = [
 
 [[package]]
 name = "portal-scanner"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -3910,7 +3910,7 @@ dependencies = [
 
 [[package]]
 name = "portal-storage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -3929,7 +3929,7 @@ dependencies = [
 
 [[package]]
 name = "portal-test"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",

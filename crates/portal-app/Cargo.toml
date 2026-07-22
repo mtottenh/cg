@@ -79,9 +79,13 @@ assets = [
     # (crates/portal-app/), so dist/ paths are crate-relative; target/release/
     # is special-cased to the workspace target dir.
     ["dist/portal-api.env.example", "etc/portal/api.env.example", "0644"],
-    ["dist/portal-api.service", "lib/systemd/system/portal-api.service", "0644"],
     ["dist/README.Debian", "usr/share/doc/portal-api/README.Debian", "0644"],
 ]
 maintainer-scripts = "dist/maintainer-scripts"
-conf-files = ["/etc/portal/api.env"]
-systemd-units = { unit-name = "portal-api", enable = true, start = true, restart-after-upgrade = true }
+# `unit-scripts` MUST point at the dir holding portal-api.service — cargo-deb
+# otherwise searches maintainer-scripts/, finds no unit, and silently ships it
+# with no systemctl enable/start hooks. cargo-deb installs the unit from here,
+# so it is NOT also listed as an asset. /etc/portal/api.env is created by
+# postinst (not shipped), so it is not a conf-file; the shipped api.env.example
+# is auto-marked a conffile (under /etc).
+systemd-units = { unit-scripts = "dist", unit-name = "portal-api", enable = true, start = true, restart-after-upgrade = true }

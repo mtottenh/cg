@@ -70,8 +70,12 @@ priority = "optional"
 assets = [
     ["target/release/portal-scanner", "usr/bin/portal-scanner", "755"],
     ["dist/portal-scanner.env.example", "etc/portal/scanner.env.example", "0644"],
-    ["dist/portal-scanner.service", "lib/systemd/system/portal-scanner.service", "0644"],
 ]
 maintainer-scripts = "dist/maintainer-scripts"
-conf-files = ["/etc/portal/scanner.env"]
-systemd-units = { unit-name = "portal-scanner", enable = true, start = true, restart-after-upgrade = true }
+# `unit-scripts` MUST point at the dir holding portal-scanner.service — cargo-deb
+# otherwise searches maintainer-scripts/, finds no unit, and silently ships it
+# with no systemctl enable/start hooks. cargo-deb installs the unit from here,
+# so it is NOT also listed as an asset. /etc/portal/scanner.env is created by
+# postinst (not shipped), so it is not a conf-file; the shipped
+# scanner.env.example is auto-marked a conffile (under /etc).
+systemd-units = { unit-scripts = "dist", unit-name = "portal-scanner", enable = true, start = true, restart-after-upgrade = true }

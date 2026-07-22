@@ -577,6 +577,26 @@ impl SuggestedTimeRepository for PgSuggestedTimeRepository {
         Ok(result.rows_affected())
     }
 
+    async fn delete_auto_generated_pending(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<u64, DomainError> {
+        let result = sqlx::query(
+            r"
+            DELETE FROM suggested_times
+            WHERE match_id = $1
+              AND is_auto_generated = true
+              AND status = 'suggested'
+            ",
+        )
+        .bind(match_id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Database error: {e}")))?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn reject_all_pending(&self, match_id: TournamentMatchId) -> Result<u64, DomainError> {
         let result = sqlx::query(
             r"

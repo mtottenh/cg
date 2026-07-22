@@ -599,6 +599,23 @@ where
             return Err(DomainError::InsufficientParticipants);
         }
 
+        // Atomically claim the start. Only one caller can win the transition
+        // scheduled/registration -> in_progress; a concurrent second start (or
+        // a retried one) gets None and must NOT build a second bracket set.
+        let Some(claimed) = self.tournament_repo.try_claim_start(id).await? else {
+            // Already claimed/started by another request — idempotent no-op.
+            return self.get_tournament(id).await;
+        };
+
+        // Crash-recovery guard: a previous attempt may have built brackets
+        // before it crashed (status was reset to a pre-start value, so the CAS
+        // above succeeded). If a bracket set already exists, do NOT rebuild —
+        // the start is idempotent on retry.
+        let existing_brackets = self.bracket_repo.list_by_tournament(id).await?;
+        if !existing_brackets.is_empty() {
+            return Ok(claimed);
+        }
+
         let seeded_participants = BracketGenerator::prepare_participants(participants);
 
         // Groups + Playoffs creates its own stages, so handle separately

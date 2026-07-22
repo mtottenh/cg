@@ -28,11 +28,18 @@ pub struct CreatePlayerMatchHistory {
 
 #[async_trait]
 pub trait PlayerMatchHistoryRepository: Send + Sync + 'static {
-    /// Insert a match history entry. Returns the existing row on conflict.
+    /// Insert a match history entry, deduped on `(player_id,
+    /// discovered_match_id)`.
+    ///
+    /// Returns the row plus a flag that is `true` only when a NEW row was
+    /// inserted (`false` when the entry already existed). Callers use this as a
+    /// match-scoped idempotency ledger: accumulative side effects (e.g. the
+    /// aggregate MM-stats bump) must run only when the flag is `true`, so a
+    /// re-delivered enrichment does not double-count.
     async fn create(
         &self,
         input: CreatePlayerMatchHistory,
-    ) -> Result<PlayerMatchHistory, DomainError>;
+    ) -> Result<(PlayerMatchHistory, bool), DomainError>;
 
     async fn list_by_player_and_game(
         &self,

@@ -52,8 +52,11 @@ impl PlayerMatchHistoryRepository for PgPlayerMatchHistoryRepository {
     async fn create(
         &self,
         input: CreatePlayerMatchHistory,
-    ) -> Result<PlayerMatchHistory, DomainError> {
-        let row = sqlx::query_as::<_, PlayerMatchHistoryRow>(
+    ) -> Result<(PlayerMatchHistory, bool), DomainError> {
+        // ON CONFLICT DO NOTHING + RETURNING yields a row only when a NEW row
+        // was inserted; a conflict (the entry already exists) returns nothing.
+        // This is the match-scoped idempotency signal callers gate on.
+        let inserted = sqlx::query_as::<_, PlayerMatchHistoryRow>(
             r"
             INSERT INTO player_match_history (
                 player_id, game_id, discovered_match_id,
@@ -62,8 +65,7 @@ impl PlayerMatchHistoryRepository for PgPlayerMatchHistoryRepository {
                 entry_3k, entry_4k, entry_5k
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-            ON CONFLICT (player_id, discovered_match_id) DO UPDATE
-                SET id = player_match_history.id
+            ON CONFLICT (player_id, discovered_match_id) DO NOTHING
             RETURNING *
             ",
         )
@@ -84,11 +86,28 @@ impl PlayerMatchHistoryRepository for PgPlayerMatchHistoryRepository {
         .bind(input.entry_3k)
         .bind(input.entry_4k)
         .bind(input.entry_5k)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        if let Some(row) = inserted {
+            return Ok((PlayerMatchHistory::from(row), true));
+        }
+
+        // Conflict: return the pre-existing row and signal "not new".
+        let existing = sqlx::query_as::<_, PlayerMatchHistoryRow>(
+            r"
+            SELECT * FROM player_match_history
+            WHERE player_id = $1 AND discovered_match_id = $2
+            ",
+        )
+        .bind(input.player_id.as_uuid())
+        .bind(input.discovered_match_id.as_uuid())
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(PlayerMatchHistory::from(row))
+        Ok((PlayerMatchHistory::from(existing), false))
     }
 
     async fn list_by_player_and_game(

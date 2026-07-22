@@ -71,6 +71,16 @@ pub trait TournamentRepository: Send + Sync {
         banner_url: Option<String>,
     ) -> Result<Tournament, DomainError>;
 
+    /// Atomically claim the start of a tournament.
+    ///
+    /// Compare-and-set: transitions `scheduled`/`registration` → `in_progress`
+    /// and stamps `started_at` in a single UPDATE. Returns `Some` only for the
+    /// caller that wins the transition; a concurrent or retried caller (whose
+    /// row no longer matches the status predicate) gets `None` and must NOT
+    /// build a second bracket set. This closes the gate→build→mark race that
+    /// `mark_started` (no status predicate) leaves open.
+    async fn try_claim_start(&self, id: TournamentId) -> Result<Option<Tournament>, DomainError>;
+
     /// Set tournament started timestamp.
     async fn mark_started(&self, id: TournamentId) -> Result<Tournament, DomainError>;
 

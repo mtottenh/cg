@@ -242,6 +242,28 @@ impl TournamentRepository for PgTournamentRepository {
         Ok(Tournament::from(row))
     }
 
+    async fn try_claim_start(&self, id: TournamentId) -> Result<Option<Tournament>, DomainError> {
+        let now = Utc::now();
+
+        // Compare-and-set: only the caller that finds the row still in a
+        // pre-start status wins the transition. A second entrant (concurrent
+        // start, or a retry after a crash that never rebuilt) matches 0 rows.
+        let row = sqlx::query_as::<_, TournamentRow>(
+            r"
+            UPDATE tournaments SET started_at = $2, status = 'in_progress', updated_at = $2
+            WHERE id = $1 AND status IN ('scheduled', 'registration')
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(row.map(Tournament::from))
+    }
+
     async fn mark_started(&self, id: TournamentId) -> Result<Tournament, DomainError> {
         let now = Utc::now();
 

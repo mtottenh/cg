@@ -3,7 +3,7 @@
 use crate::entities::PlayerRatingHistory;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use portal_core::{DomainError, GameId, PlayerId};
+use portal_core::{DiscoveredMatchId, DomainError, GameId, PlayerId};
 
 /// Aggregate rating statistics for a player in a game.
 ///
@@ -32,6 +32,11 @@ pub struct CreatePlayerRatingHistory {
     pub recorded_at: DateTime<Utc>,
     /// Rank type: 6=Competitive, 7=Wingman, 11=Premier.
     pub rank_type_id: i32,
+    /// Originating discovered match, when the rating was derived from an
+    /// enriched match. `None` for other sources (admin submission, periodic
+    /// polling). Used as a match-scoped idempotency key so a re-delivered
+    /// enrichment does not duplicate the entry.
+    pub discovered_match_id: Option<DiscoveredMatchId>,
 }
 
 /// Repository trait for player rating history operations.

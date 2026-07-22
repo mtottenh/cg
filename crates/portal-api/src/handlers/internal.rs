@@ -411,31 +411,63 @@ pub async fn submit_enriched(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID"))?;
 
-    let discovered = state
+    // Marker-before-effect fix: apply the per-player effects (ratings +
+    // aggregate stats) FIRST, and only write the `enriched` marker LAST, once
+    // they have all succeeded. The claimed row already exists (status
+    // 'enriching'), so we drive the effects off the SUBMITTED gc_data without
+    // finalizing the discovered match. If any effect fails we mark the match
+    // 'failed' — never 'enriched' — so `find_pending` retries it instead of
+    // silently stranding the missing stats.
+    let claimed = state
+        .discovered_match_service
+        .get(match_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    let context = portal_domain::entities::discovered_match::DiscoveredMatch {
+        gc_data: Some(req.gc_data.clone()),
+        demo_url: req.demo_url.clone(),
+        ..claimed
+    };
+
+    // Apply the effects, short-circuiting on the first failure. Ratings first,
+    // then per-player match stats.
+    let effect_error: Option<String> = async {
+        if let Some(ratings) = req.player_ratings.as_ref() {
+            process_demo_ratings(&state, &context, ratings)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(match_id = %context.id, error = %e, "Failed to process demo ratings");
+                    e.to_string()
+                })?;
+        }
+        process_match_stats(&state, &context, req.map_name.as_deref())
+            .await
+            .map_err(|e| {
+                tracing::warn!(match_id = %context.id, error = %e, "Failed to process match stats");
+                e.to_string()
+            })?;
+        Ok::<(), String>(())
+    }
+    .await
+    .err();
+
+    if let Some(error) = effect_error {
+        // Do NOT finalize: leave the match retryable for the enricher.
+        state
+            .discovered_match_service
+            .mark_failed(match_id, &error)
+            .await
+            .map_err(ApiError::from)?;
+        return Ok(StatusCode::OK);
+    }
+
+    // All effects applied — write the marker last.
+    state
         .discovered_match_service
         .mark_enriched(match_id, req.gc_data, req.demo_url)
         .await
         .map_err(ApiError::from)?;
-
-    // Process demo rank ratings (non-fatal — log and continue on error)
-    if let Some(ratings) = req.player_ratings
-        && let Err(e) = process_demo_ratings(&state, &discovered, &ratings).await
-    {
-        tracing::warn!(
-            match_id = %discovered.id,
-            error = %e,
-            "Failed to process demo ratings (non-fatal)"
-        );
-    }
-
-    // Process per-player match stats from GC data (non-fatal)
-    if let Err(e) = process_match_stats(&state, &discovered, req.map_name.as_deref()).await {
-        tracing::warn!(
-            match_id = %discovered.id,
-            error = %e,
-            "Failed to process match stats (non-fatal)"
-        );
-    }
 
     Ok(StatusCode::OK)
 }
@@ -511,6 +543,9 @@ async fn process_demo_ratings(
                 source: "demo_rank_update".to_string(),
                 recorded_at,
                 rank_type_id: 11,
+                // Match-scoped idempotency key: a re-delivered enrichment
+                // dedupes on (player_id, discovered_match_id, source).
+                discovered_match_id: Some(discovered.id),
             })
             .await?;
 
@@ -663,8 +698,12 @@ async fn process_match_stats(
             .and_then(serde_json::Value::as_i64)
             .unwrap_or(0) as i32;
 
-        // Insert match history (idempotent via UNIQUE)
-        state
+        // Insert match history (deduped on (player_id, discovered_match_id)).
+        // The returned `is_new` flag is our match-scoped idempotency ledger:
+        // the aggregate accumulate below is +1/+delta with no match key, so it
+        // must run ONLY when this match's history row was newly inserted —
+        // otherwise a re-delivered enrichment double-counts the aggregate.
+        let (_history, is_new) = state
             .match_history_repo
             .create(CreatePlayerMatchHistory {
                 player_id,
@@ -687,30 +726,33 @@ async fn process_match_stats(
             })
             .await?;
 
-        // Accumulate aggregate stats (upsert)
-        state
-            .mm_stats_repo
-            .accumulate_match_stats(
-                player_id,
-                game_id,
-                &AccumulateMatchStats {
-                    is_win: match_result_str == "win",
-                    is_loss: match_result_str == "loss",
-                    is_draw: match_result_str == "draw",
-                    kills,
-                    deaths,
-                    assists,
-                    headshots,
-                    mvps,
-                    score,
-                    entry_3k,
-                    entry_4k,
-                    entry_5k,
-                    duration_secs: duration,
-                    match_time,
-                },
-            )
-            .await?;
+        // Accumulate aggregate stats (upsert) — gated on the ledger so it is
+        // applied exactly once per (player, match).
+        if is_new {
+            state
+                .mm_stats_repo
+                .accumulate_match_stats(
+                    player_id,
+                    game_id,
+                    &AccumulateMatchStats {
+                        is_win: match_result_str == "win",
+                        is_loss: match_result_str == "loss",
+                        is_draw: match_result_str == "draw",
+                        kills,
+                        deaths,
+                        assists,
+                        headshots,
+                        mvps,
+                        score,
+                        entry_3k,
+                        entry_4k,
+                        entry_5k,
+                        duration_secs: duration,
+                        match_time,
+                    },
+                )
+                .await?;
+        }
 
         tracing::info!(
             player_id = %player_id,

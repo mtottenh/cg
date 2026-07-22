@@ -55,6 +55,15 @@ where
         Ok(result)
     }
 
+    /// Fetch a discovered match by id.
+    #[instrument(skip(self))]
+    pub async fn get(&self, id: DiscoveredMatchId) -> Result<DiscoveredMatch, DomainError> {
+        self.repo
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| DomainError::Internal(format!("Discovered match not found: {id}")))
+    }
+
     /// Get pending matches for enrichment.
     #[instrument(skip(self))]
     pub async fn get_pending(

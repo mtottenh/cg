@@ -63,10 +63,17 @@ impl PlayerRatingHistoryRepository for PgPlayerRatingHistoryRepository {
         &self,
         input: CreatePlayerRatingHistory,
     ) -> Result<PlayerRatingHistory, DomainError> {
-        let row = sqlx::query_as::<_, PlayerRatingHistoryRow>(
+        let discovered_match_id = input.discovered_match_id.map(|id| id.as_uuid());
+
+        // Match-scoped idempotency: a re-delivered enrichment carries the same
+        // (player_id, discovered_match_id, source), so DO NOTHING drops the
+        // duplicate. Rows with a NULL discovered_match_id (admin/periodic
+        // sources) never collide and always insert.
+        let inserted = sqlx::query_as::<_, PlayerRatingHistoryRow>(
             r"
-            INSERT INTO player_rating_history (player_id, game_id, rating, source, recorded_at, rank_type_id)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO player_rating_history (player_id, game_id, rating, source, recorded_at, rank_type_id, discovered_match_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (player_id, discovered_match_id, source) DO NOTHING
             RETURNING *
             ",
         )
@@ -76,11 +83,33 @@ impl PlayerRatingHistoryRepository for PgPlayerRatingHistoryRepository {
         .bind(&input.source)
         .bind(input.recorded_at)
         .bind(input.rank_type_id)
+        .bind(discovered_match_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        if let Some(row) = inserted {
+            return Ok(PlayerRatingHistory::from(row));
+        }
+
+        // Conflict: the entry for this (player, match, source) already exists.
+        // Return the existing row so the caller sees a stable result.
+        let existing = sqlx::query_as::<_, PlayerRatingHistoryRow>(
+            r"
+            SELECT * FROM player_rating_history
+            WHERE player_id = $1 AND discovered_match_id = $2 AND source = $3
+            ORDER BY recorded_at DESC
+            LIMIT 1
+            ",
+        )
+        .bind(input.player_id.as_uuid())
+        .bind(discovered_match_id)
+        .bind(&input.source)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(PlayerRatingHistory::from(row))
+        Ok(PlayerRatingHistory::from(existing))
     }
 
     async fn list_by_player_and_game(

@@ -378,8 +378,26 @@ impl DemoRepository for PgDemoRepository {
     }
 
     async fn find_pending_processing(&self, limit: i64) -> Result<Vec<Demo>, DomainError> {
+        // Reclaim, not just 'pending':
+        //   * 'failed'  — a transient stats-service error must be retryable,
+        //     otherwise the demo is parked permanently.
+        //   * 'ready' with zero demo_players — the marker-before-effect crash
+        //     window (status flipped to 'ready' before the player rows were
+        //     written). Normal 'ready' demos have player rows and are excluded,
+        //     so they are not reprocessed.
         let rows = sqlx::query_as::<_, DemoRow>(
-            r"SELECT * FROM demos WHERE status = 'pending' ORDER BY discovered_at ASC LIMIT $1",
+            r"
+            SELECT * FROM demos d
+            WHERE d.status IN ('pending', 'failed')
+               OR (
+                    d.status = 'ready'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM demo_players dp WHERE dp.demo_id = d.id
+                    )
+               )
+            ORDER BY d.discovered_at ASC
+            LIMIT $1
+            ",
         )
         .bind(limit)
         .fetch_all(&self.pool)

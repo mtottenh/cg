@@ -439,6 +439,14 @@ where
                 DomainError::InvalidState("Match participant 2 not assigned".to_string())
             })?;
 
+        // Replace semantics: clear stale auto-generated pending suggestions
+        // before regenerating so repeated generation does not accumulate
+        // duplicates. Manually-added slots and accepted/rejected decisions are
+        // left untouched.
+        self.suggestion_repo
+            .delete_auto_generated_pending(match_id)
+            .await?;
+
         let mut suggestions = Vec::new();
 
         // Iterate through each date in the range

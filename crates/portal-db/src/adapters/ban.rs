@@ -87,7 +87,23 @@ impl BanRepository for PgBanRepository {
         .bind(ends_at)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| {
+            // A concurrent identical ban that raced past the service read-guard
+            // trips the partial unique index (bans_unique_active_unscoped /
+            // bans_unique_active_scoped). Surface it as a Conflict so the loser
+            // is a clean no-op rather than a spurious 500.
+            if let sqlx::Error::Database(db_err) = &e
+                && db_err
+                    .constraint()
+                    .is_some_and(|c| c.starts_with("bans_unique_active"))
+            {
+                return DomainError::Conflict(format!(
+                    "User already has an active {} ban",
+                    cmd.ban_type
+                ));
+            }
+            DomainError::Internal(e.to_string())
+        })?;
 
         Ok(Ban::from(ban))
     }

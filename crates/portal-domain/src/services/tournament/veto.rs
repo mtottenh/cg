@@ -200,6 +200,20 @@ where
             )));
         }
 
+        // Idempotency guard: once a coin-flip winner is recorded it must never
+        // be re-randomized. A second (racing or retried) flip that still
+        // observes `can_coin_flip()` returns the already-recorded outcome
+        // unchanged rather than overwriting it with a fresh random winner.
+        // This also makes the lifecycle auto-flip (`ensure_veto_session`) a
+        // no-op once a winner exists, since it routes through this method.
+        if session.coin_flip_winner_registration_id.is_some() {
+            info!(
+                session_id = %session_id,
+                "Coin flip already recorded; returning existing result (idempotent)"
+            );
+            return Ok(session);
+        }
+
         // Verify winner is a participant
         let match_ = self
             .match_repo

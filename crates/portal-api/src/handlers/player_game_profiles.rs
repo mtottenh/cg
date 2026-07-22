@@ -315,7 +315,8 @@ pub async fn submit_player_rating(
             rating: body.rating,
             source: body.source,
             recorded_at: body.recorded_at,
-            rank_type_id: 11, // Default to Premier for admin submissions
+            rank_type_id: 11,          // Default to Premier for admin submissions
+            discovered_match_id: None, // Admin submission, not from a discovered match
         })
         .await?;
 

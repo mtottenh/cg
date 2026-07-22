@@ -29,6 +29,15 @@ pub trait BanRepository: Send + Sync {
     /// Create a new ban.
     async fn create(&self, cmd: CreateBanCommand) -> Result<Ban, DomainError>;
 
+    /// Create a ban and, when it is an active platform ban, enforce it in the
+    /// SAME transaction: flip `users.status` to `banned` (with the ban reason)
+    /// and revoke every one of the user's refresh tokens. Either all writes
+    /// commit or none do, so a mid-operation failure can never leave a
+    /// recorded-but-unenforced ban (an orphan `bans` row whose user still has
+    /// an active account and live sessions). Non-platform / inactive bans only
+    /// write the `bans` row, exactly like [`create`](Self::create).
+    async fn create_and_enforce(&self, cmd: CreateBanCommand) -> Result<Ban, DomainError>;
+
     /// Lift a ban (set `lifted_at`, `lifted_by`, `lift_reason`).
     async fn lift(
         &self,

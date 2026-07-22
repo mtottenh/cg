@@ -570,7 +570,6 @@ async fn process_match_stats(
     map_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use portal_domain::repositories::PlayerMatchHistoryRepository;
-    use portal_domain::repositories::PlayerMmStatsRepository;
     use portal_domain::repositories::player_match_history::CreatePlayerMatchHistory;
     use portal_domain::repositories::player_mm_stats::AccumulateMatchStats;
 
@@ -698,61 +697,54 @@ async fn process_match_stats(
             .and_then(serde_json::Value::as_i64)
             .unwrap_or(0) as i32;
 
-        // Insert match history (deduped on (player_id, discovered_match_id)).
-        // The returned `is_new` flag is our match-scoped idempotency ledger:
-        // the aggregate accumulate below is +1/+delta with no match key, so it
-        // must run ONLY when this match's history row was newly inserted —
-        // otherwise a re-delivered enrichment double-counts the aggregate.
-        let (_history, is_new) = state
+        // Claim the match-history row (deduped on (player_id,
+        // discovered_match_id)) AND apply the aggregate accumulate in ONE
+        // transaction. The history insert is the match-scoped idempotency claim;
+        // the accumulate is +1/+delta with no match key, so it must ride the
+        // SAME transaction as the claim: on re-delivery the row conflicts and
+        // the accumulate is skipped (no double-count); on a partial failure the
+        // claim rolls back with the accumulate so a retry re-applies both
+        // exactly once (no permanent under-count).
+        let is_new = state
             .match_history_repo
-            .create(CreatePlayerMatchHistory {
-                player_id,
-                game_id,
-                discovered_match_id: discovered.id,
-                map: map.clone(),
-                match_time,
-                team_scores: team_scores.iter().map(|&s| s as i32).collect(),
-                match_duration_secs: duration,
-                match_result: match_result_str.to_string(),
-                kills,
-                deaths,
-                assists,
-                score,
-                headshots,
-                mvps,
-                entry_3k,
-                entry_4k,
-                entry_5k,
-            })
-            .await?;
-
-        // Accumulate aggregate stats (upsert) — gated on the ledger so it is
-        // applied exactly once per (player, match).
-        if is_new {
-            state
-                .mm_stats_repo
-                .accumulate_match_stats(
+            .claim_and_accumulate(
+                CreatePlayerMatchHistory {
                     player_id,
                     game_id,
-                    &AccumulateMatchStats {
-                        is_win: match_result_str == "win",
-                        is_loss: match_result_str == "loss",
-                        is_draw: match_result_str == "draw",
-                        kills,
-                        deaths,
-                        assists,
-                        headshots,
-                        mvps,
-                        score,
-                        entry_3k,
-                        entry_4k,
-                        entry_5k,
-                        duration_secs: duration,
-                        match_time,
-                    },
-                )
-                .await?;
-        }
+                    discovered_match_id: discovered.id,
+                    map: map.clone(),
+                    match_time,
+                    team_scores: team_scores.iter().map(|&s| s as i32).collect(),
+                    match_duration_secs: duration,
+                    match_result: match_result_str.to_string(),
+                    kills,
+                    deaths,
+                    assists,
+                    score,
+                    headshots,
+                    mvps,
+                    entry_3k,
+                    entry_4k,
+                    entry_5k,
+                },
+                &AccumulateMatchStats {
+                    is_win: match_result_str == "win",
+                    is_loss: match_result_str == "loss",
+                    is_draw: match_result_str == "draw",
+                    kills,
+                    deaths,
+                    assists,
+                    headshots,
+                    mvps,
+                    score,
+                    entry_3k,
+                    entry_4k,
+                    entry_5k,
+                    duration_secs: duration,
+                    match_time,
+                },
+            )
+            .await?;
 
         tracing::info!(
             player_id = %player_id,
@@ -761,6 +753,7 @@ async fn process_match_stats(
             kills,
             deaths,
             assists,
+            newly_applied = is_new,
             "Recorded public MM match stats"
         );
     }

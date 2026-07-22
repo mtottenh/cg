@@ -485,6 +485,196 @@ async fn test_partial_enrichment_finalizes_match_and_strands_missing_stats() {
 }
 
 // ===========================================================================
+// TEST 5 — Retry after a PARTIAL accumulate applies stats EXACTLY once.
+//          (history-gate / accumulate split-transaction residual.)
+//
+// process_match_stats writes the per-player `player_match_history` row (the
+// ON CONFLICT DO NOTHING idempotency claim) and the accumulative
+// `player_mm_stats` bump as SEPARATE autocommit statements. So when the
+// history row commits but the accumulate then FAILS (integer overflow), a
+// wave-4 `failed` mark drives a retry — but the retry sees the already-
+// committed history row (is_new = FALSE) and SKIPS the accumulate forever.
+// The player's aggregate is permanently under-counted: an under-count no
+// further retry can repair.
+//
+// Two players in ONE gc payload, ordered [B, A]:
+//   B  — succeeds on the first pass (history + accumulate).
+//   A  — history row commits, then accumulate overflows i32 kills → the match
+//        is marked `failed` (wave-4). A's aggregate is untouched.
+// Then we clear A's overflow condition and RE-SUBMIT. The fix (history claim
+// + accumulate in ONE tx) makes A's first-pass history insert roll back with
+// the failed accumulate, so the retry re-claims (is_new = true) and applies
+// A's stats exactly once — while B, whose history row survived, is skipped
+// and NOT double-counted.
+// ===========================================================================
+
+const SECOND_STEAM_ID_64: i64 = 76561198087654321;
+
+/// Two players on team 1 (which wins, `[16, 13]`), emitted in the given order.
+fn gc_data_two_players(
+    first_account: u32,
+    first_kills: i64,
+    second_account: u32,
+    second_kills: i64,
+) -> serde_json::Value {
+    let mk = |account_id: u32, kills: i64| {
+        json!({
+            "account_id": account_id,
+            "team": 1,
+            "kills": kills,
+            "deaths": 10,
+            "assists": 5,
+            "score": 60,
+            "headshots": 8,
+            "mvps": 3,
+            "entry_3k": 1,
+            "entry_4k": 0,
+            "entry_5k": 0
+        })
+    };
+    json!([{
+        "match_id": 999_888_777_i64,
+        "map": "de_dust2",
+        "team_scores": [16, 13],
+        "match_time": "2026-01-01T00:00:00Z",
+        "match_duration_secs": 2000,
+        "players": [mk(first_account, first_kills), mk(second_account, second_kills)]
+    }])
+}
+
+#[tokio::test]
+async fn test_retry_after_partial_accumulate_applies_stats_exactly_once() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await;
+
+    // A: the player whose accumulate overflows on the first pass.
+    let (player_a, tracking_a, account_a) = setup_tracked_player(&app, OWNER_STEAM_ID_64).await;
+    // B: the player who succeeds on the first pass (processed FIRST).
+    let (player_b, _tracking_b, account_b) = setup_tracked_player(&app, SECOND_STEAM_ID_64).await;
+
+    let key = create_test_api_key(
+        app.pool(),
+        "cs2-enricher",
+        &["discovered_matches.read", "discovered_matches.write"],
+    )
+    .await;
+
+    let match_id = submit_and_claim(
+        &app,
+        &tracking_a,
+        &key,
+        "CSGO-rty01-rty01-rty01-rty01-rty01",
+    )
+    .await;
+
+    // Pre-seed A's aggregate so the accumulate UPDATE overflows INTEGER kills
+    // (2e9 seed + 2e9 match > i32::MAX).
+    sqlx::query(
+        "INSERT INTO player_mm_stats (player_id, game_id, matches_played, kills) \
+         VALUES ($1, $2, 1, 2000000000)",
+    )
+    .bind(player_a)
+    .bind(game_id)
+    .execute(app.pool())
+    .await
+    .expect("staging the near-overflow aggregate must succeed");
+
+    // Order the payload [B, A]: B commits fully, then A's accumulate overflows.
+    let payload = json!({
+        "gc_data": gc_data_two_players(account_b, 30, account_a, 2_000_000_000_i64),
+        "demo_url": "http://replay.valve.net/730/rty.dem.bz2"
+    });
+
+    // First submit — A's accumulate fails; wave-4 marks the match `failed`.
+    api_key_post_json(
+        &app,
+        &format!("/v1/internal/discovered-matches/{match_id}/enriched"),
+        &payload,
+        &key,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let (status,): (String,) =
+        sqlx::query_as("SELECT status::TEXT FROM discovered_matches WHERE id = $1")
+            .bind(Uuid::parse_str(&match_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        status, "failed",
+        "wave-4: a match whose stats write failed must be left 'failed' so \
+         find_pending retries it (observed {status})"
+    );
+
+    // Clear A's overflow condition so the retry CAN succeed: drop the seed row
+    // entirely, leaving a clean slate (no match counted yet).
+    sqlx::query("DELETE FROM player_mm_stats WHERE player_id = $1 AND game_id = $2")
+        .bind(player_a)
+        .bind(game_id)
+        .execute(app.pool())
+        .await
+        .expect("clearing the overflow seed must succeed");
+
+    // RE-SUBMIT the identical enrichment (the enricher's retry of a `failed`).
+    api_key_post_json(
+        &app,
+        &format!("/v1/internal/discovered-matches/{match_id}/enriched"),
+        &payload,
+        &key,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // A must now reflect the match EXACTLY once. Today the first pass committed
+    // A's history row (autocommit) while the accumulate failed, so the retry
+    // sees is_new=FALSE and skips the accumulate forever — A's aggregate is
+    // missing (row was deleted, never re-created).
+    let a_stats: Option<(i32, i32)> = sqlx::query_as(
+        "SELECT matches_played, kills FROM player_mm_stats WHERE player_id = $1 AND game_id = $2",
+    )
+    .bind(player_a)
+    .bind(game_id)
+    .fetch_optional(app.pool())
+    .await
+    .unwrap();
+    let (a_matches, a_kills) = a_stats.unwrap_or((0, 0));
+    assert_eq!(
+        a_matches, 1,
+        "after clearing the overflow and retrying, player A's aggregate must \
+         reflect the match exactly once; the committed-but-orphaned history row \
+         from the failed first pass suppresses the retry's accumulate \
+         (observed matches_played={a_matches})"
+    );
+    assert_eq!(
+        a_kills, 2_000_000_000,
+        "player A's kills must reflect the single match's value on retry \
+         (observed {a_kills})"
+    );
+
+    // B succeeded on the FIRST pass and must NOT be double-counted by the retry
+    // (its history row is present, so the retry's accumulate is correctly
+    // skipped).
+    let (b_matches, b_kills): (i32, i32) = sqlx::query_as(
+        "SELECT matches_played, kills FROM player_mm_stats WHERE player_id = $1 AND game_id = $2",
+    )
+    .bind(player_b)
+    .bind(game_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        b_matches, 1,
+        "player B (succeeded first pass) must be counted exactly once, not \
+         double-counted by the retry (observed matches_played={b_matches})"
+    );
+    assert_eq!(
+        b_kills, 30,
+        "player B's kills must reflect the single match (observed {b_kills})"
+    );
+}
+
+// ===========================================================================
 // TEST 4 — A demo marked 'ready' before its stats rows exist is invisible
 //          forever (marker-before-effect on the demo-processing side).
 //

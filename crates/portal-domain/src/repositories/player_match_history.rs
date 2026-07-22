@@ -1,6 +1,7 @@
 //! Player match history repository trait.
 
 use crate::entities::player_match_history::PlayerMatchHistory;
+use crate::repositories::player_mm_stats::AccumulateMatchStats;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::{DiscoveredMatchId, DomainError, GameId, PlayerId};
@@ -40,6 +41,30 @@ pub trait PlayerMatchHistoryRepository: Send + Sync + 'static {
         &self,
         input: CreatePlayerMatchHistory,
     ) -> Result<(PlayerMatchHistory, bool), DomainError>;
+
+    /// Atomically claim the match-history row AND apply the aggregate MM-stats
+    /// accumulate in ONE transaction.
+    ///
+    /// The history insert (`ON CONFLICT (player_id, discovered_match_id) DO
+    /// NOTHING RETURNING`) is the idempotency claim; the `stats` accumulate is
+    /// its effect. Running both in the same transaction makes the pair
+    /// all-or-nothing:
+    ///
+    /// * Re-delivery — the history row already exists, no row is claimed, the
+    ///   accumulate is skipped, and the caller sees `false` (idempotent).
+    /// * Partial failure — if the accumulate errors (e.g. an INTEGER overflow),
+    ///   the history claim ROLLS BACK with it, so a later retry re-claims the
+    ///   row (`true`) and applies both effects exactly once. This closes the
+    ///   split-autocommit gap where a committed-but-orphaned history row would
+    ///   suppress the accumulate on every subsequent retry.
+    ///
+    /// Returns `true` when the row was newly claimed (accumulate ran), `false`
+    /// on a re-delivery (accumulate skipped).
+    async fn claim_and_accumulate(
+        &self,
+        input: CreatePlayerMatchHistory,
+        stats: &AccumulateMatchStats,
+    ) -> Result<bool, DomainError>;
 
     async fn list_by_player_and_game(
         &self,

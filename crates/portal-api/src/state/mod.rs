@@ -90,7 +90,7 @@ pub type AppEligibilityService = portal_domain::services::EligibilityService<
     PgPlayerGameProfileRepository,
     PgPlayerRatingHistoryRepository,
 >;
-pub type AppBanService = BanService<PgBanRepository, PgUserRepository, PgRefreshTokenRepository>;
+pub type AppBanService = BanService<PgBanRepository, PgUserRepository>;
 pub type AppTournamentService = TournamentService<
     PgTournamentRepository,
     PgTournamentStageRepository,
@@ -482,11 +482,7 @@ impl AppState {
 
         // Create ban service
         let ban_repo = Arc::new(PgBanRepository::new(db_pool.clone()));
-        let ban_service = BanService::new(
-            Arc::clone(&ban_repo),
-            Arc::clone(&user_repo),
-            Arc::clone(&refresh_token_repo),
-        );
+        let ban_service = BanService::new(Arc::clone(&ban_repo), Arc::clone(&user_repo));
 
         // Create tournament repositories
         let tournament_repo = Arc::new(PgTournamentRepository::new(db_pool.clone()));

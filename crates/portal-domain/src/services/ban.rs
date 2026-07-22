@@ -2,7 +2,6 @@
 
 use crate::entities::user::UserStatus;
 use crate::entities::{Ban, BanFilters, BanType, CreateBanCommand, LiftBanCommand};
-use crate::repositories::refresh_token::RefreshTokenRepository;
 use crate::repositories::{BanRepository, PaginatedBans, UserRepository};
 use portal_core::{BanId, DomainError, UserId};
 use std::sync::Arc;
@@ -10,35 +9,33 @@ use tracing::{info, instrument};
 
 /// Service for ban-related business logic.
 ///
-/// Platform-scoped bans are *enforced* here, not just recorded: creating
-/// one flips `users.status` to `banned` and revokes every refresh token
-/// for the user (so residual access is capped at the access-token
-/// lifetime), mirroring the CLI ban path. Lifting the last active
+/// Platform-scoped bans are *enforced*, not just recorded: creating one
+/// flips `users.status` to `banned` and revokes every refresh token for
+/// the user (so residual access is capped at the access-token lifetime),
+/// mirroring the CLI ban path. The insert and its enforcement commit in a
+/// single repository transaction (`create_and_enforce`) so a failure can
+/// never leave a recorded-but-unenforced ban. Lifting the last active
 /// platform ban restores `active`. Scoped bans (league/tournament/chat/
 /// matchmaking) only write the bans table, as before.
-pub struct BanService<BR, UR, RT>
+pub struct BanService<BR, UR>
 where
     BR: BanRepository,
     UR: UserRepository,
-    RT: RefreshTokenRepository,
 {
     ban_repo: Arc<BR>,
     user_repo: Arc<UR>,
-    refresh_token_repo: Arc<RT>,
 }
 
-impl<BR, UR, RT> BanService<BR, UR, RT>
+impl<BR, UR> BanService<BR, UR>
 where
     BR: BanRepository,
     UR: UserRepository,
-    RT: RefreshTokenRepository,
 {
     /// Create a new ban service.
-    pub const fn new(ban_repo: Arc<BR>, user_repo: Arc<UR>, refresh_token_repo: Arc<RT>) -> Self {
+    pub const fn new(ban_repo: Arc<BR>, user_repo: Arc<UR>) -> Self {
         Self {
             ban_repo,
             user_repo,
-            refresh_token_repo,
         }
     }
 
@@ -56,14 +53,18 @@ where
     /// Platform bans additionally set the user's account status to
     /// `banned` and revoke all their refresh tokens, so the ban takes
     /// effect immediately (login and token refresh both gate on
-    /// `users.status`).
+    /// `users.status`). The insert and this enforcement are committed in a
+    /// single repository transaction (`create_and_enforce`), so they take
+    /// effect together or not at all.
     ///
     /// # Arguments
     /// * `cmd` - The ban creation command
     #[instrument(skip(self, cmd), fields(user_id = %cmd.user_id, ban_type = %cmd.ban_type))]
     pub async fn create_ban(&self, cmd: CreateBanCommand) -> Result<Ban, DomainError> {
         // Business rule: Can't create a ban if user already has an active ban of the same type
-        // (unless it's a different scope)
+        // (unless it's a different scope). This is a fast-path guard; the
+        // partial unique index (enforced inside create_and_enforce) is the
+        // authoritative race-proof check.
         let active_bans = self.ban_repo.get_active_for_user(cmd.user_id).await?;
 
         for existing in &active_bans {
@@ -84,19 +85,13 @@ where
             }
         }
 
-        let ban = self.ban_repo.create(cmd).await?;
+        // Insert + platform enforcement commit atomically in one transaction.
+        // A failure during enforcement rolls the ban row back rather than
+        // leaving an over-restrictive-yet-unenforced record.
+        let ban = self.ban_repo.create_and_enforce(cmd).await?;
         info!(ban_id = %ban.id, user_id = %ban.user_id, ban_type = %ban.ban_type, "Ban created");
 
-        // Enforce platform bans immediately. Ordering matters: the ban row
-        // is committed first, so a failure here leaves an over-restrictive
-        // record (visible, liftable) rather than an unenforced ban.
         if ban.ban_type == BanType::Platform && ban.is_active() {
-            self.user_repo
-                .update_status(ban.user_id, UserStatus::Banned, Some(&ban.reason))
-                .await?;
-            self.refresh_token_repo
-                .revoke_all_for_user(ban.user_id.as_uuid())
-                .await?;
             info!(
                 ban_id = %ban.id,
                 user_id = %ban.user_id,
@@ -197,17 +192,15 @@ where
     }
 }
 
-impl<BR, UR, RT> Clone for BanService<BR, UR, RT>
+impl<BR, UR> Clone for BanService<BR, UR>
 where
     BR: BanRepository,
     UR: UserRepository,
-    RT: RefreshTokenRepository,
 {
     fn clone(&self) -> Self {
         Self {
             ban_repo: Arc::clone(&self.ban_repo),
             user_repo: Arc::clone(&self.user_repo),
-            refresh_token_repo: Arc::clone(&self.refresh_token_repo),
         }
     }
 }

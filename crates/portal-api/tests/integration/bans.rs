@@ -912,6 +912,161 @@ async fn test_platform_ban_via_api_blocks_login_and_refresh() {
     response.assert_status(StatusCode::OK);
 }
 
+/// Atomicity: if platform-ban *enforcement* fails after the `bans` row is
+/// inserted, the WHOLE operation must roll back. Otherwise an orphan active
+/// ban row survives — the admin API shows the user as banned while their
+/// account status stays `active` and their sessions stay live: exactly the
+/// "ban recorded but not enforced" class of bug the platform prevents.
+///
+/// We inject a deterministic fault at the precise seam the residual warns
+/// about — a BEFORE UPDATE trigger on `users` that raises when a row's
+/// status is flipped to `banned`. That reproduces "step 1 (INSERT bans)
+/// succeeds, step 2 (UPDATE users.status) fails", i.e. a crash/DB error
+/// between the writes. With three separate autocommit writes the ban row is
+/// left committed (non-atomic); with a single transaction the insert must
+/// roll back. The `ban_count == 0` assertion is what fails on buggy code.
+#[tokio::test]
+async fn test_platform_ban_enforcement_failure_rolls_back_ban_row() {
+    let app = TestApp::new().await;
+    grant_admin_permission(&app).await;
+
+    let (user_id, _refresh_token) = register_user_with_refresh(&app, "ban_atomicity_user").await;
+    let user_uuid = Uuid::parse_str(&user_id).unwrap();
+
+    // Inject the fault at step 2: any UPDATE that flips a user's status to
+    // 'banned' aborts. In this isolated test DB, the only such update is the
+    // one create_ban issues while enforcing the platform ban below.
+    sqlx::query(
+        r"
+        CREATE OR REPLACE FUNCTION test_fail_ban_status_update()
+        RETURNS trigger AS $$
+        BEGIN
+            IF NEW.status = 'banned' THEN
+                RAISE EXCEPTION 'injected fault: users.status update failed';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        ",
+    )
+    .execute(app.pool())
+    .await
+    .expect("create fault function");
+
+    sqlx::query(
+        r"
+        CREATE TRIGGER test_fail_ban_status_update_trg
+        BEFORE UPDATE ON users
+        FOR EACH ROW
+        EXECUTE FUNCTION test_fail_ban_status_update();
+        ",
+    )
+    .execute(app.pool())
+    .await
+    .expect("create fault trigger");
+
+    // Attempt the platform ban. Enforcement (the users.status update) fails,
+    // so the whole create_ban must abort with a 500.
+    let response = app
+        .post_json(
+            "/v1/admin/bans",
+            &json!({
+                "user_id": user_id,
+                "ban_type": "platform",
+                "reason": "Atomicity fault injection"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+
+    // ATOMICITY INVARIANT: a failed enforcement must leave NO ban row behind.
+    // Non-atomic code commits the INSERT before step 2 fails, leaving an
+    // orphan active ban — this is the assertion that fails on the buggy code.
+    let (ban_count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM bans WHERE user_id = $1 AND ban_type = 'platform'")
+            .bind(user_uuid)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        ban_count, 0,
+        "a platform ban whose enforcement failed must not leave an orphan ban row"
+    );
+
+    // The user must remain fully un-banned: status active, sessions live.
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM users WHERE id = $1")
+        .bind(user_uuid)
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        status, "active",
+        "a failed ban must not half-flip account status"
+    );
+
+    let (live_tokens,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(user_uuid)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert!(
+        live_tokens >= 1,
+        "a failed ban must not revoke the user's sessions"
+    );
+
+    // Clear the fault; a real ban now enforces cleanly and atomically.
+    sqlx::query("DROP TRIGGER test_fail_ban_status_update_trg ON users")
+        .execute(app.pool())
+        .await
+        .expect("drop fault trigger");
+
+    let response = app
+        .post_json(
+            "/v1/admin/bans",
+            &json!({
+                "user_id": user_id,
+                "ban_type": "platform",
+                "reason": "Clean ban after fault cleared"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // All three effects now present and consistent.
+    let (ban_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM bans WHERE user_id = $1 AND ban_type = 'platform' AND lifted_at IS NULL",
+    )
+    .bind(user_uuid)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        ban_count, 1,
+        "clean platform ban leaves exactly one active row"
+    );
+
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM users WHERE id = $1")
+        .bind(user_uuid)
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(status, "banned", "clean platform ban flips account status");
+
+    let (live_tokens,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(user_uuid)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        live_tokens, 0,
+        "clean platform ban revokes all of the user's sessions"
+    );
+}
+
 /// Scoped (non-platform) bans must not touch account status or sessions.
 #[tokio::test]
 async fn test_scoped_ban_does_not_flip_account_status() {

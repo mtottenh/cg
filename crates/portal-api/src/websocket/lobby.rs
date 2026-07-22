@@ -120,9 +120,9 @@ impl VetoLobby {
         &self,
         registration_id: portal_core::TournamentRegistrationId,
     ) -> bool {
-        self.connections.iter().any(|entry| {
-            entry.value().registration_id == Some(registration_id)
-        })
+        self.connections
+            .iter()
+            .any(|entry| entry.value().registration_id == Some(registration_id))
     }
 
     /// Get a connection by ID.
@@ -137,6 +137,6 @@ impl std::fmt::Debug for VetoLobby {
             .field("match_id", &self.match_id)
             .field("connections", &self.connections.len())
             .field("spectator_count", &self.spectator_count())
-            .finish()
+            .finish_non_exhaustive()
     }
 }

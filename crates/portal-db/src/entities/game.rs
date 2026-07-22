@@ -87,4 +87,7 @@ pub struct UpdateGame {
     pub status: Option<String>,
     pub is_featured: Option<bool>,
     pub sort_order: Option<i32>,
+    pub team_size_min: Option<i32>,
+    pub team_size_max: Option<i32>,
+    pub team_size_default: Option<i32>,
 }

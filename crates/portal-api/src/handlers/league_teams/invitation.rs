@@ -1,6 +1,6 @@
 //! League team invitation handlers.
 
-use super::get_request_id;
+use super::{get_request_id, require_captain_or_admin};
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     ApplyToLeagueTeamRequest, InviteToLeagueTeamRequest, RespondToInvitationRequest,
@@ -9,12 +9,14 @@ use crate::dto::responses::{
     LeagueTeamInvitationResponse, LeagueTeamInvitationWithTeamResponse, LeagueTeamMemberResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
+use crate::state::LeagueTeamState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{LeagueTeamInvitationId, LeagueTeamSeasonId};
+use portal_core::{LeagueTeamInvitationId, LeagueTeamSeasonId, PlayerId};
+use portal_domain::entities::Player;
+use std::collections::HashMap;
 
 /// Invite a player to join a team's seasonal roster.
 #[utoipa::path(
@@ -36,42 +38,35 @@ use portal_core::{LeagueTeamInvitationId, LeagueTeamSeasonId};
     tag = "league-team-invitations"
 )]
 pub async fn invite_to_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
     ValidatedJson(req): ValidatedJson<InviteToLeagueTeamRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueTeamInvitationResponse>>)> {
     let request_id = get_request_id(&headers);
 
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    // Check if the player is a captain
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, player.id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can send invitations"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "send invitations").await?;
 
     let cmd = req.into_command(team_season_id)?;
     let invitation = state
         .league_team_invitation_service
-        .create_invitation(team_season_id, cmd.player_id, cmd.role, cmd.message, auth.user_id)
+        .create_invitation(
+            team_season_id,
+            cmd.player_id,
+            cmd.role,
+            cmd.message,
+            auth.user_id,
+        )
         .await?;
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(LeagueTeamInvitationResponse::from(invitation), request_id)),
+        Json(DataResponse::new(
+            LeagueTeamInvitationResponse::from(invitation),
+            request_id,
+        )),
     ))
 }
 
@@ -94,33 +89,26 @@ pub async fn invite_to_team(
     tag = "league-team-invitations"
 )]
 pub async fn apply_to_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
     ValidatedJson(req): ValidatedJson<ApplyToLeagueTeamRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueTeamInvitationResponse>>)> {
     let request_id = get_request_id(&headers);
 
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    let cmd = req.into_command(team_season_id, player.id)?;
+    let cmd = req.into_command(team_season_id, auth.player_id)?;
     let invitation = state
         .league_team_invitation_service
-        .create_join_request(team_season_id, player.id, cmd.role, cmd.message)
+        .create_join_request(team_season_id, auth.player_id, cmd.role, cmd.message)
         .await?;
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(LeagueTeamInvitationResponse::from(invitation), request_id)),
+        Json(DataResponse::new(
+            LeagueTeamInvitationResponse::from(invitation),
+            request_id,
+        )),
     ))
 }
 
@@ -137,21 +125,15 @@ pub async fn apply_to_team(
     tag = "league-team-invitations"
 )]
 pub async fn get_my_invitations(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueTeamInvitationWithTeamResponse>>>> {
     let request_id = get_request_id(&headers);
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     let invitations = state
         .league_team_invitation_service
-        .get_player_invitations(player.id)
+        .get_player_invitations(auth.player_id)
         .await?;
 
     Ok(Json(DataResponse::new(
@@ -180,41 +162,50 @@ pub async fn get_my_invitations(
     tag = "league-team-invitations"
 )]
 pub async fn get_team_invitations(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueTeamInvitationResponse>>>> {
     let request_id = get_request_id(&headers);
 
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    // Check if the player is a captain
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, player.id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can view team invitations"));
-    }
+    require_captain_or_admin(
+        &state,
+        &perm,
+        &auth,
+        team_season_id,
+        "view team invitations",
+    )
+    .await?;
 
     let invitations = state
         .league_team_invitation_service
         .get_team_invitations(team_season_id)
         .await?;
 
+    // Batch-resolve the invited players so the list can show display
+    // names/avatars instead of raw player IDs.
+    let player_ids: Vec<PlayerId> = invitations.iter().map(|inv| inv.player_id).collect();
+    let players: HashMap<PlayerId, Player> = state
+        .player_service
+        .get_players_by_ids(&player_ids)
+        .await?
+        .into_iter()
+        .map(|p| (p.id, p))
+        .collect();
+
     Ok(Json(DataResponse::new(
         invitations
             .into_iter()
-            .map(LeagueTeamInvitationResponse::from)
+            .map(|inv| {
+                let player = players.get(&inv.player_id);
+                let response = LeagueTeamInvitationResponse::from(inv);
+                match player {
+                    Some(p) => response.with_player(p),
+                    None => response,
+                }
+            })
             .collect(),
         request_id,
     )))
@@ -239,26 +230,16 @@ pub async fn get_team_invitations(
     tag = "league-team-invitations"
 )]
 pub async fn accept_invitation(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(invitation_id): Path<String>,
+    Path(invitation_id): Path<LeagueTeamInvitationId>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamMemberResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let invitation_id: LeagueTeamInvitationId = invitation_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     let member = state
         .league_team_invitation_service
-        .accept_invitation(invitation_id, player.id)
+        .accept_invitation(invitation_id, auth.player_id)
         .await?;
 
     Ok(Json(DataResponse::new(
@@ -287,24 +268,14 @@ pub async fn accept_invitation(
     tag = "league-team-invitations"
 )]
 pub async fn decline_invitation(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
-    Path(invitation_id): Path<String>,
+    Path(invitation_id): Path<LeagueTeamInvitationId>,
     ValidatedJson(req): ValidatedJson<RespondToInvitationRequest>,
 ) -> ApiResult<StatusCode> {
-    let invitation_id: LeagueTeamInvitationId = invitation_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     state
         .league_team_invitation_service
-        .decline_invitation(invitation_id, player.id, req.message)
+        .decline_invitation(invitation_id, auth.player_id, req.message)
         .await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -327,23 +298,13 @@ pub async fn decline_invitation(
     tag = "league-team-invitations"
 )]
 pub async fn cancel_invitation(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
-    Path(invitation_id): Path<String>,
+    Path(invitation_id): Path<LeagueTeamInvitationId>,
 ) -> ApiResult<StatusCode> {
-    let invitation_id: LeagueTeamInvitationId = invitation_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     state
         .league_team_invitation_service
-        .cancel_invitation(invitation_id, player.id)
+        .cancel_invitation(invitation_id, auth.player_id)
         .await?;
 
     Ok(StatusCode::NO_CONTENT)

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use sqlx::PgPool;
 
-use crate::output::{info, success, warn, OutputFormat};
+use crate::output::{OutputFormat, info, success, warn};
 
 /// Database utilities.
 #[derive(Args)]
@@ -86,11 +86,10 @@ async fn show_status(pool: &PgPool) -> Result<()> {
     .context("Failed to check migrations")?;
 
     if has_migrations.0.unwrap_or(false) {
-        let migration_count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM _sqlx_migrations")
-                .fetch_one(pool)
-                .await
-                .context("Failed to count migrations")?;
+        let migration_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(pool)
+            .await
+            .context("Failed to count migrations")?;
 
         println!("Migrations Applied: {}", migration_count.0);
     } else {
@@ -123,10 +122,7 @@ async fn show_stats(pool: &PgPool) -> Result<()> {
 
     for (table, display) in tables {
         let query = format!("SELECT COUNT(*) FROM {table}");
-        match sqlx::query_scalar::<_, i64>(&query)
-            .fetch_one(pool)
-            .await
-        {
+        match sqlx::query_scalar::<_, i64>(&query).fetch_one(pool).await {
             Ok(count) => println!("{display:20} {count:>10}"),
             Err(_) => println!("{:20} {:>10}", display, "(not found)"),
         }
@@ -155,7 +151,8 @@ async fn seed_database(pool: &PgPool, user_count: i32) -> Result<()> {
 
     // Generate password hash for all test users
     let password = "TestPassword123!";
-    let salt = argon2::password_hash::SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
+    let salt =
+        argon2::password_hash::SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
     let argon2 = argon2::Argon2::default();
     let password_hash = argon2::PasswordHasher::hash_password(&argon2, password.as_bytes(), &salt)
         .map_err(|e| anyhow::anyhow!("Failed to hash password: {e}"))?

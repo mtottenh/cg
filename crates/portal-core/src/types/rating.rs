@@ -131,6 +131,8 @@ mod tests {
     use super::*;
 
     #[test]
+    // Values are copied verbatim from constants, so exact comparison is intended.
+    #[allow(clippy::float_cmp)]
     fn test_new_player_rating() {
         let rating = Glicko2Rating::new_player();
         assert_eq!(rating.rating, DEFAULT_RATING);
@@ -139,6 +141,8 @@ mod tests {
     }
 
     #[test]
+    // Clamping returns the constant bounds exactly, so exact comparison is intended.
+    #[allow(clippy::float_cmp)]
     fn test_rating_deviation_clamping() {
         let rating = Glicko2Rating::new(1500.0, 500.0, 0.06);
         assert_eq!(rating.rating_deviation, MAX_RATING_DEVIATION);
@@ -148,6 +152,8 @@ mod tests {
     }
 
     #[test]
+    // 1500 +/- 2*100 is exact in f64, so exact comparison is intended.
+    #[allow(clippy::float_cmp)]
     fn test_confidence_interval() {
         let rating = Glicko2Rating::new(1500.0, 100.0, 0.06);
         let (low, high) = rating.confidence_interval();

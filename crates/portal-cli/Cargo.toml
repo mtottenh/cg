@@ -65,5 +65,20 @@ dirs = "5"
 # Password hashing (for user creation)
 argon2 = { workspace = true }
 
+# Crypto (API key hashing & generation)
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = "0.8"
+
+# Scanner dependencies (feature-gated)
+reqwest = { version = "0.12", features = ["json"], optional = true }
+aws-sdk-s3 = { version = "1", optional = true }
+aws-config = { version = "1", optional = true }
+portal-plugins = { path = "../portal-plugins", optional = true }
+
+[features]
+default = []
+scanner = ["reqwest", "aws-sdk-s3", "aws-config", "portal-plugins"]
+
 [lints]
 workspace = true

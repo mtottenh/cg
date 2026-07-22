@@ -1,0 +1,77 @@
+[package]
+name = "portal-scanner"
+description = "Standalone daemon that polls S3 for new demo files and catalogs them via the portal API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "portal-scanner"
+path = "src/main.rs"
+
+[lib]
+name = "portal_scanner"
+path = "src/lib.rs"
+
+[dependencies]
+portal-plugins = { path = "../portal-plugins" }
+
+# Async
+tokio = { workspace = true, features = ["full"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# IDs
+uuid = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Configuration
+dotenvy = { workspace = true }
+
+# HTTP client for portal API
+reqwest = { workspace = true }
+
+# S3
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+
+[lints]
+workspace = true
+
+# ---------------------------------------------------------------------------
+# cargo-deb packaging. See crates/portal-app/Cargo.toml for the full
+# pattern; the scanner is a trimmed copy.
+# ---------------------------------------------------------------------------
+[package.metadata.deb]
+name = "portal-scanner"
+maintainer = "Gaming Portal Ops <ops@gaming-portal.invalid>"
+copyright = "2026, Gaming Portal"
+extended-description = """\
+Demo catalog scanner. Polls a Linode Object Storage bucket for new .dem
+files and batch-registers them with the portal API."""
+depends = "$auto, ca-certificates"
+section = "net"
+priority = "optional"
+# cargo-deb resolves asset source paths relative to THIS crate's dir
+# (crates/portal-scanner/), so dist/ paths are crate-relative;
+# target/release/ is special-cased to the workspace target dir.
+assets = [
+    ["target/release/portal-scanner", "usr/bin/portal-scanner", "755"],
+    ["dist/portal-scanner.env.example", "etc/portal/scanner.env.example", "0644"],
+    ["dist/portal-scanner.service", "lib/systemd/system/portal-scanner.service", "0644"],
+]
+maintainer-scripts = "dist/maintainer-scripts"
+conf-files = ["/etc/portal/scanner.env"]
+systemd-units = { unit-name = "portal-scanner", enable = true, start = true, restart-after-upgrade = true }

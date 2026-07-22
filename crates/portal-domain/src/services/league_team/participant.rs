@@ -42,7 +42,7 @@ where
             .season_repo
             .find_by_id(season_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league season", season_id.to_string()))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(season_id))?;
 
         if !season.is_registration_open() {
             return Err(DomainError::RegistrationClosed);
@@ -88,7 +88,10 @@ where
             .participant_repo
             .find_by_id(participant_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("participant", participant_id.to_string()))?;
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "participant",
+                query: participant_id.to_string(),
+            })?;
 
         // Verify the player is the participant
         if participant.player_id != player_id {

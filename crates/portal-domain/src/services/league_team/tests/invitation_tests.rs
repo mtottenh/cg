@@ -163,7 +163,10 @@ async fn test_create_invitation_player_already_member() {
         .await;
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), DomainError::AlreadyTeamMember));
+    assert!(matches!(
+        result.unwrap_err(),
+        DomainError::AlreadyTeamMember
+    ));
 }
 
 #[tokio::test]
@@ -211,18 +214,14 @@ async fn test_accept_invitation_success() {
         .expect_count_primary_members()
         .returning(|_| Ok(3)); // Below the max of 7
 
-    // Update invitation status
-    let mut accepted_invitation = make_invitation(team_season_id, player_id);
-    accepted_invitation.status = LeagueTeamInvitationStatus::Accepted;
-    invitation_repo
-        .expect_update_status()
-        .returning(move |_, _, _| Ok(accepted_invitation.clone()));
-
-    // Add member
+    // Atomic accept + add member (see audit I5). The service now
+    // collapses the prior `update_status(Accepted) + add_member` pair
+    // into a single repo method that runs both writes in one
+    // transaction, so the mock expects one call here instead of two.
     let member = make_member(team_season_id, player_id);
-    member_repo
-        .expect_add_member()
-        .returning(move |_| Ok(member.clone()));
+    invitation_repo
+        .expect_accept_and_add_member()
+        .returning(move |_, _| Ok(member.clone()));
 
     let service = create_service(
         invitation_repo,
@@ -245,7 +244,7 @@ async fn test_accept_invitation_wrong_player() {
     let member_repo = MockLeagueTeamMemberRepository::new();
     let season_repo = MockLeagueSeasonRepository::new();
 
-    let league_id = LeagueId::new();
+    let _league_id = LeagueId::new();
     let team_id = LeagueTeamId::new();
     let season_id = LeagueSeasonId::new();
     let team_season = make_team_season(team_id, season_id);

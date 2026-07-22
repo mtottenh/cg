@@ -289,7 +289,7 @@ where
         self.review_repo
             .find_by_id(review_id)
             .await?
-            .ok_or_else(|| DomainError::ResultReviewNotFound(review_id.to_string()))
+            .ok_or(DomainError::ResultReviewNotFound(review_id))
     }
 }
 

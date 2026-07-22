@@ -17,7 +17,9 @@
 //!
 //! All endpoints are documented with `#[utoipa::path]` attributes.
 
+pub mod adapters;
 pub mod app;
+pub mod background;
 pub mod dto;
 pub mod error;
 pub mod extractors;
@@ -26,8 +28,16 @@ pub mod middleware;
 pub mod openapi;
 pub mod routes;
 pub mod state;
+pub mod steam_openid;
 pub mod websocket;
 
-pub use app::create_app;
-pub use state::AppState;
+pub use app::{AppConfigError, create_app, try_create_app};
+pub use background::spawn_lifecycle_task;
+pub use state::{
+    AdminState, AppState, AuthState, AvailabilityState, BanState, DemoState, DisputeState,
+    EvidenceState, ForfeitState, GamesState, InternalState, LeagueTeamState, LeaguesState,
+    PlayerState, ProgressionState, ResultReviewState, ResultState, RolesState, SteamTrackingState,
+    TokenConfig, TournamentState, UploadsState, UsersState, VetoDelegatesState, VetoState,
+    VetoWsState,
+};
 pub use websocket::spawn_timeout_warning_task;

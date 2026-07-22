@@ -1,10 +1,10 @@
 //! League repository adapters.
 
+use crate::DbPool;
 use crate::entities::{
     LeagueInvitationRow, LeagueMemberRow, LeagueMemberWithUserRow, LeagueRow,
     UserLeagueMembershipRow,
 };
-use crate::DbPool;
 use async_trait::async_trait;
 use portal_core::{DomainError, GameId, LeagueId, LeagueInvitationId, LeagueMemberId, UserId};
 use portal_domain::entities::league::{
@@ -29,8 +29,10 @@ impl From<LeagueRow> for League {
             slug: row.slug,
             description: row.description,
             logo_url: row.logo_url,
-            access_type: LeagueAccessType::from_str(&row.access_type).unwrap_or(LeagueAccessType::Open),
+            access_type: LeagueAccessType::from_str(&row.access_type)
+                .unwrap_or(LeagueAccessType::Open),
             status: LeagueStatus::from_str(&row.status).unwrap_or(LeagueStatus::Active),
+            current_season_id: row.current_season_id.map(portal_core::LeagueSeasonId::from),
             settings: row.settings,
             created_by: UserId::from(row.created_by),
             created_at: row.created_at,
@@ -143,10 +145,13 @@ impl LeagueRepository for PgLeagueRepository {
     }
 
     async fn create(&self, cmd: CreateLeague) -> Result<League, DomainError> {
+        let settings = cmd
+            .settings
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
         let league = sqlx::query_as::<_, LeagueRow>(
             r"
-            INSERT INTO leagues (game_id, name, slug, description, logo_url, access_type, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO leagues (game_id, name, slug, description, logo_url, access_type, settings, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING *
             ",
         )
@@ -156,6 +161,7 @@ impl LeagueRepository for PgLeagueRepository {
         .bind(&cmd.description)
         .bind(&cmd.logo_url)
         .bind(&cmd.access_type)
+        .bind(&settings)
         .bind(cmd.created_by.as_uuid())
         .fetch_one(&self.pool)
         .await
@@ -191,7 +197,7 @@ impl LeagueRepository for PgLeagueRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::LeagueNotFound(id.to_string()))?;
+        .ok_or(DomainError::LeagueNotFound(id))?;
 
         Ok(League::from(league))
     }
@@ -221,23 +227,23 @@ impl LeagueRepository for PgLeagueRepository {
     }
 
     async fn count_by_game(&self, game_id: &GameId) -> Result<i64, DomainError> {
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM leagues WHERE game_id = $1 AND status = 'active'",
-        )
-        .bind(game_id.as_uuid())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM leagues WHERE game_id = $1 AND status = 'active'")
+                .bind(game_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(count.0)
     }
 
     async fn slug_exists(&self, slug: &str) -> Result<bool, DomainError> {
-        let exists: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM leagues WHERE slug = $1)")
-            .bind(slug)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let exists: (bool,) =
+            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM leagues WHERE slug = $1)")
+                .bind(slug)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(exists.0)
     }
@@ -293,29 +299,28 @@ impl LeagueRepository for PgLeagueRepository {
     async fn count_search(&self, query: &str, game_id: Option<GameId>) -> Result<i64, DomainError> {
         let pattern = format!("%{}%", query.to_lowercase());
 
-        let count: (i64,) = match game_id {
-            Some(gid) => {
-                sqlx::query_as(
-                    r"
+        let count: (i64,) =
+            match game_id {
+                Some(gid) => {
+                    sqlx::query_as(
+                        r"
                     SELECT COUNT(*) FROM leagues
                     WHERE game_id = $1 AND status = 'active' AND LOWER(name) LIKE $2
                     ",
-                )
-                .bind(gid.as_uuid())
-                .bind(&pattern)
-                .fetch_one(&self.pool)
-                .await
-            }
-            None => {
-                sqlx::query_as(
+                    )
+                    .bind(gid.as_uuid())
+                    .bind(&pattern)
+                    .fetch_one(&self.pool)
+                    .await
+                }
+                None => sqlx::query_as(
                     "SELECT COUNT(*) FROM leagues WHERE status = 'active' AND LOWER(name) LIKE $1",
                 )
                 .bind(&pattern)
                 .fetch_one(&self.pool)
-                .await
+                .await,
             }
-        }
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(count.0)
     }
@@ -382,7 +387,10 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(members.into_iter().map(LeagueMemberWithUser::from).collect())
+        Ok(members
+            .into_iter()
+            .map(LeagueMemberWithUser::from)
+            .collect())
     }
 
     async fn count_members(&self, league_id: LeagueId) -> Result<i64, DomainError> {
@@ -523,7 +531,10 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(memberships.into_iter().map(UserLeagueMembership::from).collect())
+        Ok(memberships
+            .into_iter()
+            .map(UserLeagueMembership::from)
+            .collect())
     }
 
     async fn count_admins(&self, league_id: LeagueId) -> Result<i64, DomainError> {
@@ -623,6 +634,67 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         Ok(LeagueInvitation::from(row))
     }
 
+    async fn accept_and_add_member(
+        &self,
+        invitation_id: LeagueInvitationId,
+        responded_by: UserId,
+        member: AddLeagueMember,
+    ) -> Result<LeagueMember, DomainError> {
+        // Atomic counterpart of `update_status(Accepted) + add_member`.
+        // Both writes commit together or neither does, so a failure of the
+        // membership insert can no longer leave the invitation marked
+        // `accepted` with the user outside the league. See audit I5 / the
+        // league-team equivalent in adapters/league_team/invitation.rs.
+        //
+        // The membership insert is deliberately NOT an upsert: an existing
+        // membership row means this invitation is not the reason the user is
+        // in the league, and the whole operation must roll back rather than
+        // silently consume the invitation.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let updated = sqlx::query(
+            r"
+            UPDATE league_invitations
+            SET status = $2, responded_by = $3, responded_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(invitation_id.as_uuid())
+        .bind(LeagueInvitationStatus::Accepted.as_str())
+        .bind(responded_by.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        if updated.rows_affected() == 0 {
+            return Err(DomainError::Internal("Invitation not found".to_string()));
+        }
+
+        let row = sqlx::query_as::<_, LeagueMemberRow>(
+            r"
+            INSERT INTO league_members (league_id, user_id, membership_type)
+            VALUES ($1, $2, $3)
+            RETURNING *
+            ",
+        )
+        .bind(member.league_id.as_uuid())
+        .bind(member.user_id.as_uuid())
+        .bind(member.membership_type.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(LeagueMember::from(row))
+    }
+
     async fn find_pending(
         &self,
         league_id: LeagueId,
@@ -659,7 +731,10 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(invitations.into_iter().map(LeagueInvitation::from).collect())
+        Ok(invitations
+            .into_iter()
+            .map(LeagueInvitation::from)
+            .collect())
     }
 
     async fn list_pending_for_user(
@@ -678,10 +753,17 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(invitations.into_iter().map(LeagueInvitation::from).collect())
+        Ok(invitations
+            .into_iter()
+            .map(LeagueInvitation::from)
+            .collect())
     }
 
-    async fn cancel_pending(&self, league_id: LeagueId, user_id: UserId) -> Result<(), DomainError> {
+    async fn cancel_pending(
+        &self,
+        league_id: LeagueId,
+        user_id: UserId,
+    ) -> Result<(), DomainError> {
         sqlx::query(
             r"
             UPDATE league_invitations

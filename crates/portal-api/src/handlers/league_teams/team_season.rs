@@ -1,6 +1,6 @@
 //! League team season handlers (seasonal roster management).
 
-use super::get_request_id;
+use super::{get_request_id, require_captain_or_admin};
 use crate::dto::common::DataResponse;
 use crate::dto::requests::AddLeagueTeamMemberRequest;
 use crate::dto::responses::{
@@ -8,11 +8,11 @@ use crate::dto::responses::{
     PlayerLeagueTeamMembershipResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
+use crate::state::LeagueTeamState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{LeagueTeamSeasonId, PlayerId};
 
 /// Get a team's seasonal participation.
@@ -29,15 +29,11 @@ use portal_core::{LeagueTeamSeasonId, PlayerId};
     tag = "league-team-seasons"
 )]
 pub async fn get_team_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamSeasonResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
     let team_season = state
         .league_team_service
@@ -64,15 +60,11 @@ pub async fn get_team_season(
     tag = "league-team-seasons"
 )]
 pub async fn get_team_season_members(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueTeamMemberWithPlayerResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
 
     let members = state
         .league_team_service
@@ -108,32 +100,16 @@ pub async fn get_team_season_members(
     tag = "league-team-seasons"
 )]
 pub async fn add_team_member(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
     ValidatedJson(req): ValidatedJson<AddLeagueTeamMemberRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueTeamMemberResponse>>)> {
     let request_id = get_request_id(&headers);
 
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    // Check if the player is a captain for this team season
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, player.id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can add members"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "add members").await?;
 
     let cmd = req.into_command(team_season_id)?;
     let member = state
@@ -143,7 +119,10 @@ pub async fn add_team_member(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(LeagueTeamMemberResponse::from(member), request_id)),
+        Json(DataResponse::new(
+            LeagueTeamMemberResponse::from(member),
+            request_id,
+        )),
     ))
 }
 
@@ -165,8 +144,9 @@ pub async fn add_team_member(
     tag = "league-team-seasons"
 )]
 pub async fn remove_team_member(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     Path((team_season_id, player_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     let team_season_id: LeagueTeamSeasonId = team_season_id
@@ -177,20 +157,7 @@ pub async fn remove_team_member(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    // Check if the player is a captain for this team season
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, player.id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can remove members"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "remove members").await?;
 
     state
         .league_team_service
@@ -217,23 +184,13 @@ pub async fn remove_team_member(
     tag = "league-team-seasons"
 )]
 pub async fn leave_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
-    Path(team_season_id): Path<String>,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
 ) -> ApiResult<StatusCode> {
-    let team_season_id: LeagueTeamSeasonId = team_season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team season ID format"))?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     state
         .league_team_service
-        .leave_team(team_season_id, player.id)
+        .leave_team(team_season_id, auth.player_id)
         .await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -257,8 +214,9 @@ pub async fn leave_team(
     tag = "league-team-seasons"
 )]
 pub async fn promote_to_captain(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path((team_season_id, player_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamMemberResponse>>> {
@@ -272,20 +230,7 @@ pub async fn promote_to_captain(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    // Check if the player is a captain
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, player.id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can promote members"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "promote members").await?;
 
     let member = state
         .league_team_service
@@ -317,8 +262,9 @@ pub async fn promote_to_captain(
     tag = "league-team-seasons"
 )]
 pub async fn demote_from_captain(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path((team_season_id, player_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamMemberResponse>>> {
@@ -332,20 +278,7 @@ pub async fn demote_from_captain(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    // Check if the player is a captain
-    if !state
-        .league_team_service
-        .is_captain(team_season_id, player.id)
-        .await?
-    {
-        return Err(ApiError::forbidden("Only captains can demote members"));
-    }
+    require_captain_or_admin(&state, &perm, &auth, team_season_id, "demote members").await?;
 
     let member = state
         .league_team_service
@@ -374,21 +307,15 @@ pub async fn demote_from_captain(
     tag = "players"
 )]
 pub async fn get_my_league_teams(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<PlayerLeagueTeamMembershipResponse>>>> {
     let request_id = get_request_id(&headers);
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
     let memberships = state
         .league_team_service
-        .get_player_memberships(player.id)
+        .get_player_memberships(auth.player_id)
         .await?;
 
     Ok(Json(DataResponse::new(
@@ -414,15 +341,11 @@ pub async fn get_my_league_teams(
     tag = "players"
 )]
 pub async fn get_player_league_teams(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
-    Path(player_id): Path<String>,
+    Path(player_id): Path<PlayerId>,
 ) -> ApiResult<Json<DataResponse<Vec<PlayerLeagueTeamMembershipResponse>>>> {
     let request_id = get_request_id(&headers);
-
-    let player_id: PlayerId = player_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
     let memberships = state
         .league_team_service

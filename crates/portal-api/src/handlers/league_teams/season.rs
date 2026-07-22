@@ -6,11 +6,11 @@ use crate::dto::requests::{CreateLeagueSeasonRequest, UpdateLeagueSeasonRequest}
 use crate::dto::responses::LeagueSeasonResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::LeagueTeamState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{permissions, LeagueId, LeagueSeasonId};
+use portal_core::{LeagueId, LeagueSeasonId, permissions};
 
 /// Query parameters for listing seasons.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -36,7 +36,7 @@ pub struct ListSeasonsParams {
     tag = "league-seasons"
 )]
 pub async fn create_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -51,7 +51,11 @@ pub async fn create_season(
 
     // Check league admin permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::SETTINGS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::SETTINGS_MANAGE,
+        )
         .await?;
 
     let cmd = req.try_into()?;
@@ -62,7 +66,10 @@ pub async fn create_season(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(LeagueSeasonResponse::from(season), request_id)),
+        Json(DataResponse::new(
+            LeagueSeasonResponse::from(season),
+            request_id,
+        )),
     ))
 }
 
@@ -80,15 +87,11 @@ pub async fn create_season(
     tag = "league-seasons"
 )]
 pub async fn get_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
-    Path(season_id): Path<String>,
+    Path(season_id): Path<LeagueSeasonId>,
 ) -> ApiResult<Json<DataResponse<LeagueSeasonResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let season_id: LeagueSeasonId = season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid season ID format"))?;
 
     let season = state.league_season_service.get_season(season_id).await?;
 
@@ -110,7 +113,7 @@ pub async fn get_season(
     tag = "league-seasons"
 )]
 pub async fn list_seasons(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
     Query(params): Query<ListSeasonsParams>,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueSeasonResponse>>>> {
@@ -124,7 +127,10 @@ pub async fn list_seasons(
     let seasons = state.league_season_service.list_seasons(league_id).await?;
 
     Ok(Json(DataResponse::new(
-        seasons.into_iter().map(LeagueSeasonResponse::from).collect(),
+        seasons
+            .into_iter()
+            .map(LeagueSeasonResponse::from)
+            .collect(),
         request_id,
     )))
 }
@@ -148,18 +154,14 @@ pub async fn list_seasons(
     tag = "league-seasons"
 )]
 pub async fn update_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(season_id): Path<String>,
+    Path(season_id): Path<LeagueSeasonId>,
     ValidatedJson(req): ValidatedJson<UpdateLeagueSeasonRequest>,
 ) -> ApiResult<Json<DataResponse<LeagueSeasonResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let season_id: LeagueSeasonId = season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid season ID format"))?;
 
     // Get the season to find the league
     let existing = state.league_season_service.get_season(season_id).await?;

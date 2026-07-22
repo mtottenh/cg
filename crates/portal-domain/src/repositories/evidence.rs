@@ -24,7 +24,10 @@ pub trait EvidenceRepository: Send + Sync {
     async fn find_by_id(&self, id: EvidenceId) -> Result<Option<Evidence>, DomainError>;
 
     /// Find all evidence for a match.
-    async fn find_by_match(&self, match_id: TournamentMatchId) -> Result<Vec<Evidence>, DomainError>;
+    async fn find_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<Evidence>, DomainError>;
 
     /// Find evidence for a specific game in a match.
     async fn find_by_match_and_game(
@@ -37,7 +40,8 @@ pub trait EvidenceRepository: Send + Sync {
     async fn create(&self, evidence: CreateEvidence) -> Result<Evidence, DomainError>;
 
     /// Update evidence record.
-    async fn update(&self, id: EvidenceId, update: UpdateEvidence) -> Result<Evidence, DomainError>;
+    async fn update(&self, id: EvidenceId, update: UpdateEvidence)
+    -> Result<Evidence, DomainError>;
 
     /// Update evidence status.
     async fn update_status(
@@ -60,10 +64,23 @@ pub trait EvidenceRepository: Send + Sync {
     async fn find_expired(&self, before: DateTime<Utc>) -> Result<Vec<Evidence>, DomainError>;
 
     /// Log evidence access.
-    async fn log_access(&self, log: CreateEvidenceAccessLog) -> Result<EvidenceAccessLog, DomainError>;
+    async fn log_access(
+        &self,
+        log: CreateEvidenceAccessLog,
+    ) -> Result<EvidenceAccessLog, DomainError>;
 
     /// Get access log for evidence.
-    async fn get_access_log(&self, evidence_id: EvidenceId) -> Result<Vec<EvidenceAccessLog>, DomainError>;
+    async fn get_access_log(
+        &self,
+        evidence_id: EvidenceId,
+    ) -> Result<Vec<EvidenceAccessLog>, DomainError>;
+
+    /// Find stale pending evidence (created before the given timestamp).
+    /// Used by background cleanup to remove abandoned uploads.
+    async fn find_stale_pending(
+        &self,
+        created_before: DateTime<Utc>,
+    ) -> Result<Vec<Evidence>, DomainError>;
 }
 
 /// Data for creating evidence.
@@ -84,6 +101,8 @@ pub struct CreateEvidence {
     pub discovered_by_plugin: Option<String>,
     pub discovered_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
+    /// Initial status (defaults to Active if not set).
+    pub status: Option<EvidenceStatus>,
 }
 
 /// Data for updating evidence.
@@ -136,19 +155,43 @@ pub trait SagaExecutionRepository: Send + Sync {
     ) -> Result<SagaExecution, DomainError>;
 
     /// Find stuck sagas (running for too long).
-    async fn find_stuck(&self, running_since_before: DateTime<Utc>) -> Result<Vec<SagaExecution>, DomainError>;
+    async fn find_stuck(
+        &self,
+        running_since_before: DateTime<Utc>,
+    ) -> Result<Vec<SagaExecution>, DomainError>;
 
     /// Find pending sagas.
     async fn find_pending(&self) -> Result<Vec<SagaExecution>, DomainError>;
+
+    /// Find sagas of `saga_type` that need re-driving: `failed`, or
+    /// `running` since before `stuck_since` (the process that owned them
+    /// died mid-flight). Only rows with retries left are returned.
+    ///
+    /// Backs the lifecycle re-drive pass. Before it existed, a completion
+    /// saga that failed after the result claim had already been confirmed
+    /// was simply logged — the handler returned 200 with
+    /// `bracket_advanced: false` and nothing ever advanced the winner.
+    async fn find_retryable(
+        &self,
+        saga_type: &str,
+        stuck_since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<SagaExecution>, DomainError>;
 
     /// Find sagas by status.
     async fn find_by_status(&self, status: SagaStatus) -> Result<Vec<SagaExecution>, DomainError>;
 
     /// Find sagas for a match.
-    async fn find_by_match(&self, match_id: TournamentMatchId) -> Result<Vec<SagaExecution>, DomainError>;
+    async fn find_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<SagaExecution>, DomainError>;
 
     /// Find sagas for a tournament.
-    async fn find_by_tournament(&self, tournament_id: portal_core::TournamentId) -> Result<Vec<SagaExecution>, DomainError>;
+    async fn find_by_tournament(
+        &self,
+        tournament_id: portal_core::TournamentId,
+    ) -> Result<Vec<SagaExecution>, DomainError>;
 }
 
 /// Data for creating a saga execution.
@@ -190,7 +233,10 @@ pub trait ProgressionLogRepository: Send + Sync {
     async fn find_by_saga(&self, saga_id: SagaId) -> Result<Vec<ProgressionLog>, DomainError>;
 
     /// Delete logs for a match (used when reverting).
-    async fn delete_by_source_match(&self, source_match_id: TournamentMatchId) -> Result<(), DomainError>;
+    async fn delete_by_source_match(
+        &self,
+        source_match_id: TournamentMatchId,
+    ) -> Result<(), DomainError>;
 }
 
 /// A progression log entry.

@@ -35,7 +35,7 @@ pub use bracket::PgTournamentBracketRepository;
 pub use map_pool::PgTournamentMapPoolRepository;
 pub use match_::PgTournamentMatchRepository;
 pub use match_completion_tx::{
-    complete_match_in_transaction, MatchCompletionTxInput, MatchCompletionTxOutput,
+    MatchCompletionTxInput, MatchCompletionTxOutput, complete_match_in_transaction,
 };
 pub use match_game::PgTournamentMatchGameRepository;
 pub use match_status_log::PgMatchStatusLogRepository;

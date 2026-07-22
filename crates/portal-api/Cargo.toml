@@ -15,14 +15,19 @@ test-utils = []
 portal-core = { path = "../portal-core" }
 portal-domain = { path = "../portal-domain" }
 portal-db = { path = "../portal-db" }
+sqlx = { workspace = true }
+reqwest = { workspace = true }
 portal-plugins = { path = "../portal-plugins" }
-portal-storage = { path = "../portal-storage" }
+portal-storage = { path = "../portal-storage", features = ["s3"] }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 
 # Web framework
 axum = { workspace = true }
-axum-extra = { workspace = true, features = ["multipart"] }
+axum-extra = { workspace = true, features = ["multipart", "cookie"] }
 tower = { workspace = true }
 tower-http = { workspace = true }
+tower_governor = { workspace = true }
 
 # Bytes for multipart handling
 bytes = { workspace = true }
@@ -42,6 +47,8 @@ serde_json = { workspace = true }
 # Types
 uuid = { workspace = true }
 chrono = { workspace = true }
+# Cookie max-age (the `cookie` crate used by axum-extra takes time::Duration)
+time = "0.3"
 
 # Validation
 validator = { workspace = true }
@@ -56,9 +63,16 @@ jsonwebtoken = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# API key hashing
+sha2 = { workspace = true }
+hex = { workspace = true }
+
 # Regex validation
 once_cell = "1"
 regex = "1"
+
+# Random
+rand = "0.9"
 
 # Tracing
 tracing = { workspace = true }
@@ -73,62 +87,19 @@ mime = "0.3"
 sqlx = { workspace = true }
 tokio-tungstenite = "0.26"
 futures-util = { workspace = true }
+image = { workspace = true }
+tracing-subscriber = { workspace = true }
+portal-scanner = { path = "../portal-scanner" }
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+reqwest = { workspace = true }
+testcontainers = { workspace = true }
+anyhow = { workspace = true }
 
-# Enable test-utils feature for integration tests
+# Single integration test binary (consolidates all test files)
 [[test]]
-name = "users_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "auth_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "games_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "leagues_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "league_teams_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "bans_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "tournaments_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "veto_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "results_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "evidence_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "forfeit_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "dispute_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "veto_delegates_test"
-required-features = ["test-utils"]
-
-[[test]]
-name = "veto_ws_test"
+name = "integration"
+path = "tests/integration/main.rs"
 required-features = ["test-utils"]
 
 [lints]

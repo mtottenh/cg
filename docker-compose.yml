@@ -34,11 +34,83 @@ services:
       E2E_ADMIN_PASSWORD: ${E2E_ADMIN_PASSWORD:-AdminPassword123!}
       E2E_ADMIN_USERNAME: ${E2E_ADMIN_USERNAME:-e2e_admin}
       E2E_ADMIN_DISPLAY_NAME: ${E2E_ADMIN_DISPLAY_NAME:-E2E Admin}
+      # Auth endpoint rate limits. Production defaults (20 burst / 5 per
+      # second, in routes/auth.rs) are too tight for parallel Playwright
+      # workers that all authenticate as the same admin against a single
+      # peer IP. Use very generous limits here so the limiter doesn't eat
+      # test runs; production keeps the defaults.
+      PORTAL_AUTH_RATE_BURST: ${PORTAL_AUTH_RATE_BURST:-10000}
+      PORTAL_AUTH_RATE_PER_SECOND: ${PORTAL_AUTH_RATE_PER_SECOND:-1000}
     ports:
       - "3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
 
+  # Demo-ingest daemon (dev parity with the systemd deployment). Disabled by
+  # default because it needs a service API key with demos.* permissions:
+  #   1. create one:  cargo run -p portal-cli -- api-key create portal-scanner \
+  #                     --permissions demos.catalog,demos.read,demos.stats
+  #   2. put it in .env as SCANNER_PORTAL_API_KEY (or portal-scanner.credentials.dev)
+  #   3. start with:  docker compose --profile scanner up -d
+  # Points at the local MinIO bucket by default; set SCANNER_* vars in .env to
+  # target Linode object storage instead.
+  scanner:
+    build: .
+    container_name: portal-scanner
+    profiles: ["scanner"]
+    entrypoint: ["portal-scanner"]
+    environment:
+      PORTAL_API_URL: http://api:3000
+      # The scanner binary itself panics with a clear message when these are
+      # empty — do not use :? here, it breaks `docker compose config` for
+      # everyone even with the profile inactive.
+      PORTAL_API_KEY: ${SCANNER_PORTAL_API_KEY:-}
+      SCANNER_GAME_ID: ${SCANNER_GAME_ID:-}
+      SCANNER_S3_BUCKET: ${SCANNER_S3_BUCKET:-portal-demos}
+      SCANNER_S3_PREFIX: ${SCANNER_S3_PREFIX:-}
+      SCANNER_S3_ENDPOINT: ${SCANNER_S3_ENDPOINT:-http://minio:9000}
+      SCANNER_S3_REGION: ${SCANNER_S3_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${SCANNER_AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${SCANNER_AWS_SECRET_ACCESS_KEY:-minioadmin}
+      CS2_DEMO_SERVICE_URL: ${CS2_DEMO_SERVICE_URL:-https://demos.cs210mans.uk}
+      RUST_LOG: portal_scanner=info
+    depends_on:
+      api:
+        condition: service_started
+      minio:
+        condition: service_healthy
+
+  minio:
+    image: minio/minio:latest
+    container_name: portal-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/portal-demos;
+      exit 0;
+      "
+
 volumes:
   postgres_data:
+  minio_data:

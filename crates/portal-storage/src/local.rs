@@ -57,11 +57,7 @@ impl LocalStorage {
     /// Generate a unique storage key.
     fn generate_key(&self, request: &StoreRequest) -> String {
         let id = uuid::Uuid::now_v7();
-        let extension = request
-            .filename
-            .rsplit('.')
-            .next()
-            .unwrap_or("bin");
+        let extension = request.filename.rsplit('.').next().unwrap_or("bin");
 
         match &request.owner_id {
             Some(owner) => format!("{}/{}/{}.{}", request.prefix, owner, id, extension),
@@ -141,14 +137,14 @@ mod tests {
     use bytes::Bytes;
     use std::path::Path;
 
-    async fn test_storage(dir: &Path) -> LocalStorage {
+    fn test_storage(dir: &Path) -> LocalStorage {
         LocalStorage::new(dir, "http://localhost:3000/uploads")
     }
 
     #[tokio::test]
     async fn test_store_and_retrieve() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let storage = test_storage(temp_dir.path()).await;
+        let storage = test_storage(temp_dir.path());
 
         let request = StoreRequest {
             data: Bytes::from("hello world"),
@@ -160,9 +156,17 @@ mod tests {
 
         let result = storage.store(request).await.unwrap();
 
-        assert!(result.url.starts_with("http://localhost:3000/uploads/files/"));
+        assert!(
+            result
+                .url
+                .starts_with("http://localhost:3000/uploads/files/")
+        );
         assert!(result.key.starts_with("files/"));
-        assert!(result.key.ends_with(".txt"));
+        assert!(
+            Path::new(&result.key)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
+        );
         assert_eq!(result.size, 11);
         assert_eq!(result.content_type, "text/plain");
 
@@ -178,7 +182,7 @@ mod tests {
     #[tokio::test]
     async fn test_store_with_owner_id() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let storage = test_storage(temp_dir.path()).await;
+        let storage = test_storage(temp_dir.path());
 
         let request = StoreRequest {
             data: Bytes::from("test"),
@@ -191,13 +195,17 @@ mod tests {
         let result = storage.store(request).await.unwrap();
 
         assert!(result.key.contains("players/avatars/player-123/"));
-        assert!(result.key.ends_with(".png"));
+        assert!(
+            Path::new(&result.key)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+        );
     }
 
     #[tokio::test]
     async fn test_delete() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let storage = test_storage(temp_dir.path()).await;
+        let storage = test_storage(temp_dir.path());
 
         let request = StoreRequest {
             data: Bytes::from("to be deleted"),
@@ -217,7 +225,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_nonexistent() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let storage = test_storage(temp_dir.path()).await;
+        let storage = test_storage(temp_dir.path());
 
         // Deleting a non-existent file should not error
         let result = storage.delete("nonexistent/file.txt").await;

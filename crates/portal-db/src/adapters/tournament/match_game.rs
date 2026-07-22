@@ -3,9 +3,11 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::tournament::TournamentMatchGameRow;
 use crate::DbPool;
-use portal_core::{DomainError, TournamentMatchGameId, TournamentMatchId, TournamentRegistrationId};
+use crate::entities::tournament::TournamentMatchGameRow;
+use portal_core::{
+    DomainError, TournamentMatchGameId, TournamentMatchId, TournamentRegistrationId,
+};
 use portal_domain::entities::tournament::{GameStatus, TournamentMatchGame};
 use portal_domain::repositories::tournament::{
     CreateTournamentMatchGame, TournamentMatchGameRepository, UpdateTournamentMatchGame,
@@ -215,10 +217,7 @@ impl TournamentMatchGameRepository for PgTournamentMatchGameRepository {
         Ok(TournamentMatchGame::from(row))
     }
 
-    async fn start(
-        &self,
-        id: TournamentMatchGameId,
-    ) -> Result<TournamentMatchGame, DomainError> {
+    async fn start(&self, id: TournamentMatchGameId) -> Result<TournamentMatchGame, DomainError> {
         let now = Utc::now();
 
         let row = sqlx::query_as::<_, TournamentMatchGameRow>(

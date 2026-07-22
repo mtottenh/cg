@@ -2,11 +2,11 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
+use portal_db::PgPool;
 use portal_db::entities::{NewGame, UpdateGame};
 use portal_db::repositories::GameRepository;
-use portal_db::PgPool;
 
-use crate::output::{error, output_list, success, OutputFormat, GameTableRow};
+use crate::output::{GameTableRow, OutputFormat, error, output_list, success};
 
 /// Game management commands.
 #[derive(Args)]
@@ -71,9 +71,11 @@ impl GameCommand {
         match &self.command {
             GameSubcommand::List => list_games(&repo, format).await,
             GameSubcommand::Get { id } => get_game(&repo, id, format).await,
-            GameSubcommand::Create { id, name, team_size } => {
-                create_game(&repo, id, name, *team_size).await
-            }
+            GameSubcommand::Create {
+                id,
+                name,
+                team_size,
+            } => create_game(&repo, id, name, *team_size).await,
             GameSubcommand::Update { id, name, status } => {
                 update_game(&repo, id, name.as_deref(), status.as_deref()).await
             }
@@ -100,7 +102,10 @@ async fn list_games(repo: &GameRepository, format: OutputFormat) -> Result<()> {
 }
 
 async fn get_game(repo: &GameRepository, slug: &str, format: OutputFormat) -> Result<()> {
-    let game = repo.find_by_slug(slug).await.context("Failed to fetch game")?;
+    let game = repo
+        .find_by_slug(slug)
+        .await
+        .context("Failed to fetch game")?;
 
     if let Some(g) = game {
         if matches!(format, OutputFormat::Json) {

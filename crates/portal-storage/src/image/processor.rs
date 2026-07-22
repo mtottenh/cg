@@ -4,9 +4,25 @@ use super::config::ImageConfig;
 use super::error::ImageError;
 use bytes::Bytes;
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, ImageReader};
+use image::{DynamicImage, GenericImageView, ImageReader, Limits};
 use std::io::Cursor;
 use tracing::instrument;
+
+/// Cap on bytes the `image` crate may allocate while decoding a single image.
+///
+/// A small zlib-compressed PNG can decode to a multi-gigapixel buffer (a
+/// "decompression bomb"). Without an explicit limit, the dimension check
+/// downstream fires *after* the allocation, which is too late. 256 MiB
+/// comfortably covers any legitimate avatar/banner upload (2048×2048 RGBA =
+/// 16 MiB) while keeping a single hostile request from blowing through the
+/// host's RAM.
+const MAX_DECODE_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Hard cap on input image dimensions before decode. We re-validate against
+/// the per-image-type config after decode; this is a coarse safety net that
+/// fires before the pixel buffer is materialized.
+const MAX_DECODE_WIDTH: u32 = 16_384;
+const MAX_DECODE_HEIGHT: u32 = 16_384;
 
 /// Result of image processing.
 #[derive(Debug)]
@@ -28,14 +44,12 @@ impl ImageProcessor {
     /// Detect the MIME type of image data using magic bytes.
     #[must_use]
     pub fn detect_mime_type(data: &[u8]) -> Option<&'static str> {
-        infer::get(data).and_then(|kind| {
-            match kind.mime_type() {
-                "image/png" => Some("image/png"),
-                "image/jpeg" => Some("image/jpeg"),
-                "image/webp" => Some("image/webp"),
-                "image/gif" => Some("image/gif"),
-                _ => None,
-            }
+        infer::get(data).and_then(|kind| match kind.mime_type() {
+            "image/png" => Some("image/png"),
+            "image/jpeg" => Some("image/jpeg"),
+            "image/webp" => Some("image/webp"),
+            "image/gif" => Some("image/gif"),
+            _ => None,
         })
     }
 
@@ -68,10 +82,19 @@ impl ImageProcessor {
             return Err(ImageError::unsupported_format(detected_mime));
         }
 
-        // 4. Decode image
-        let img = ImageReader::new(Cursor::new(data))
+        // 4. Decode image, with explicit allocation/dimension limits so a
+        //    decompression bomb is rejected before its pixel buffer is
+        //    materialized.
+        let mut limits = Limits::default();
+        limits.max_alloc = Some(MAX_DECODE_ALLOC_BYTES);
+        limits.max_image_width = Some(MAX_DECODE_WIDTH);
+        limits.max_image_height = Some(MAX_DECODE_HEIGHT);
+
+        let mut reader = ImageReader::new(Cursor::new(data))
             .with_guessed_format()
-            .map_err(|e| ImageError::decoding_failed(e.to_string()))?
+            .map_err(|e| ImageError::decoding_failed(e.to_string()))?;
+        reader.limits(limits);
+        let img = reader
             .decode()
             .map_err(|e| ImageError::decoding_failed(e.to_string()))?;
 
@@ -133,7 +156,11 @@ impl ImageProcessor {
         })
     }
 
-    const fn validate_dimensions(width: u32, height: u32, config: &ImageConfig) -> Result<(), ImageError> {
+    const fn validate_dimensions(
+        width: u32,
+        height: u32,
+        config: &ImageConfig,
+    ) -> Result<(), ImageError> {
         let (min_w, min_h) = config.min_dimensions;
         let (max_w, max_h) = config.max_dimensions;
 
@@ -172,10 +199,8 @@ impl ImageProcessor {
                     .map_err(|e| ImageError::encoding_failed(e.to_string()))?;
             }
             image::ImageFormat::Jpeg => {
-                let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-                    &mut buffer,
-                    config.quality,
-                );
+                let encoder =
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, config.quality);
                 img.write_with_encoder(encoder)
                     .map_err(|e| ImageError::encoding_failed(e.to_string()))?;
             }
@@ -211,7 +236,10 @@ mod tests {
     #[test]
     fn test_detect_png() {
         let png_data = create_test_png(100, 100);
-        assert_eq!(ImageProcessor::detect_mime_type(&png_data), Some("image/png"));
+        assert_eq!(
+            ImageProcessor::detect_mime_type(&png_data),
+            Some("image/png")
+        );
     }
 
     #[test]

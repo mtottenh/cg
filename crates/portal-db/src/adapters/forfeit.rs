@@ -1,7 +1,7 @@
 //! Forfeit record repository adapter.
 
-use crate::entities::ForfeitRecordRow;
 use crate::DbPool;
+use crate::entities::ForfeitRecordRow;
 use async_trait::async_trait;
 use portal_core::{DomainError, ForfeitRecordId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::entities::forfeit::{ForfeitRecord, ForfeitType};
@@ -16,7 +16,9 @@ impl From<ForfeitRecordRow> for ForfeitRecord {
         Self {
             id: ForfeitRecordId::from(row.id),
             match_id: TournamentMatchId::from(row.match_id),
-            forfeiting_registration_id: TournamentRegistrationId::from(row.forfeiting_registration_id),
+            forfeiting_registration_id: TournamentRegistrationId::from(
+                row.forfeiting_registration_id,
+            ),
             forfeit_type: row.forfeit_type.parse().unwrap_or(ForfeitType::NoShow),
             reason: row.reason,
             triggered_by_user_id: row.triggered_by_user_id.map(portal_core::UserId::from),
@@ -46,14 +48,19 @@ impl PgForfeitRecordRepository {
 
 #[async_trait]
 impl ForfeitRecordRepository for PgForfeitRecordRepository {
+    /// Idempotent create: a second attempt for the same
+    /// (match, forfeiting registration) returns the record that already
+    /// exists instead of failing, so a forfeit whose match update never
+    /// landed can be retried and recovered (see migration 0072).
     async fn create(&self, data: CreateForfeitRecord) -> Result<ForfeitRecord, DomainError> {
-        let record = sqlx::query_as::<_, ForfeitRecordRow>(
+        let inserted = sqlx::query_as::<_, ForfeitRecordRow>(
             r"
             INSERT INTO forfeit_records (
                 match_id, forfeiting_registration_id, forfeit_type, reason,
                 triggered_by_user_id, triggered_by_system
             )
             VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (match_id, forfeiting_registration_id) DO NOTHING
             RETURNING *
             ",
         )
@@ -63,21 +70,35 @@ impl ForfeitRecordRepository for PgForfeitRecordRepository {
         .bind(&data.reason)
         .bind(data.triggered_by_user_id.map(|id| id.as_uuid()))
         .bind(data.triggered_by_system)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let record = match inserted {
+            Some(row) => row,
+            None => sqlx::query_as::<_, ForfeitRecordRow>(
+                r"
+                SELECT * FROM forfeit_records
+                WHERE match_id = $1 AND forfeiting_registration_id = $2
+                ",
+            )
+            .bind(data.match_id.as_uuid())
+            .bind(data.forfeiting_registration_id.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?,
+        };
 
         Ok(ForfeitRecord::from(record))
     }
 
     async fn find_by_id(&self, id: ForfeitRecordId) -> Result<Option<ForfeitRecord>, DomainError> {
-        let record = sqlx::query_as::<_, ForfeitRecordRow>(
-            "SELECT * FROM forfeit_records WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let record =
+            sqlx::query_as::<_, ForfeitRecordRow>("SELECT * FROM forfeit_records WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(record.map(ForfeitRecord::from))
     }

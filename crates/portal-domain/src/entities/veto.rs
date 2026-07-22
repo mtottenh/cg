@@ -4,7 +4,14 @@
 //! turn-based process where teams alternate banning and picking maps.
 
 use chrono::{DateTime, Utc};
-use portal_core::{TournamentMatchId, TournamentRegistrationId, UserId, VetoActionId, VetoSessionId};
+use portal_core::{
+    TournamentMatchId, TournamentRegistrationId, UserId, VetoActionId, VetoSessionId,
+};
+// Re-export shared veto types from portal-core so downstream crates
+// can continue to import from `portal_domain::entities::veto`.
+pub use portal_core::{
+    SideSelectionMode, VetoActionType, VetoFormatActionConfig, VetoFormatConfig,
+};
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
@@ -55,6 +62,9 @@ pub struct VetoSession {
 
     /// Timeout per action (seconds)
     pub timeout_seconds: u32,
+
+    /// How starting sides are determined for picked maps
+    pub side_selection_mode: SideSelectionMode,
 
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -192,6 +202,8 @@ impl std::str::FromStr for VetoStatus {
     }
 }
 
+// SideSelectionMode is defined in portal-core and re-exported above.
+
 // =============================================================================
 // VETO ACTION
 // =============================================================================
@@ -262,173 +274,17 @@ impl VetoAction {
     }
 }
 
-/// Type of veto action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum VetoActionType {
-    /// Remove a map from the pool
-    #[default]
-    Ban,
-    /// Select a map to be played
-    Pick,
-    /// Last remaining map (automatic)
-    Decider,
-}
-
-impl std::fmt::Display for VetoActionType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ban => write!(f, "ban"),
-            Self::Pick => write!(f, "pick"),
-            Self::Decider => write!(f, "decider"),
-        }
-    }
-}
-
-impl std::str::FromStr for VetoActionType {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "ban" => Ok(Self::Ban),
-            "pick" => Ok(Self::Pick),
-            "decider" => Ok(Self::Decider),
-            _ => Err(format!("invalid veto action type: {s}")),
-        }
-    }
-}
+// VetoActionType is defined in portal-core and re-exported above.
 
 // =============================================================================
-// VETO FORMAT (from plugin)
+// VETO FORMAT (from portal-core)
 // =============================================================================
 
-/// Map veto format configuration from game plugin.
-///
-/// Defines the sequence of actions (bans, picks, decider) and which team
-/// performs each action.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VetoFormat {
-    pub id: String,
-    pub display_name: String,
-    pub description: String,
+/// Type alias for the canonical veto format config from portal-core.
+pub type VetoFormat = VetoFormatConfig;
 
-    /// Sequence of actions
-    pub sequence: Vec<VetoFormatAction>,
-
-    /// Minimum maps required in pool
-    pub min_map_pool: usize,
-}
-
-impl VetoFormat {
-    /// Create standard Bo1 format (6 bans, 1 decider).
-    #[must_use]
-    pub fn bo1() -> Self {
-        Self {
-            id: "bo1_standard".to_string(),
-            display_name: "Best of 1".to_string(),
-            description: "6 bans alternating, 1 decider".to_string(),
-            sequence: vec![
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 0, action_type: VetoActionType::Decider },
-            ],
-            min_map_pool: 7,
-        }
-    }
-
-    /// Create standard Bo3 format (Ban-Ban-Pick-Pick-Ban-Ban-Decider).
-    #[must_use]
-    pub fn bo3() -> Self {
-        Self {
-            id: "bo3_standard".to_string(),
-            display_name: "Best of 3".to_string(),
-            description: "Ban-Ban-Pick-Pick-Ban-Ban-Decider".to_string(),
-            sequence: vec![
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 0, action_type: VetoActionType::Decider },
-            ],
-            min_map_pool: 7,
-        }
-    }
-
-    /// Create standard Bo5 format (Ban-Ban-Pick-Pick-Pick-Pick-Decider).
-    #[must_use]
-    pub fn bo5() -> Self {
-        Self {
-            id: "bo5_standard".to_string(),
-            display_name: "Best of 5".to_string(),
-            description: "Ban-Ban-Pick-Pick-Pick-Pick-Decider".to_string(),
-            sequence: vec![
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 0, action_type: VetoActionType::Decider },
-            ],
-            min_map_pool: 7,
-        }
-    }
-
-    /// Get the action at a given index (0-indexed).
-    #[must_use]
-    pub fn get_action(&self, index: usize) -> Option<&VetoFormatAction> {
-        self.sequence.get(index)
-    }
-
-    /// Get the total number of actions in this format.
-    #[must_use]
-    pub fn action_count(&self) -> usize {
-        self.sequence.len()
-    }
-
-    /// Check if an action number would complete the veto.
-    #[must_use]
-    pub fn is_complete_at(&self, action_number: usize) -> bool {
-        action_number >= self.sequence.len()
-    }
-
-    /// Count picks in this format (maps that will be played).
-    #[must_use]
-    pub fn pick_count(&self) -> usize {
-        self.sequence.iter().filter(|a| matches!(a.action_type, VetoActionType::Pick)).count()
-    }
-
-    /// Count deciders in this format.
-    #[must_use]
-    pub fn decider_count(&self) -> usize {
-        self.sequence.iter().filter(|a| matches!(a.action_type, VetoActionType::Decider)).count()
-    }
-
-    /// Get total maps that will be selected (picks + deciders).
-    #[must_use]
-    pub fn maps_selected(&self) -> usize {
-        self.pick_count() + self.decider_count()
-    }
-}
-
-/// A single action in the veto format sequence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VetoFormatAction {
-    /// Which team performs this action.
-    /// - 0 = automatic (decider)
-    /// - 1 = team with first action
-    /// - 2 = team with second action
-    pub team: u8,
-
-    /// Action type
-    pub action_type: VetoActionType,
-}
+/// Type alias for the canonical veto format action config from portal-core.
+pub type VetoFormatAction = VetoFormatActionConfig;
 
 // =============================================================================
 // HELPER TYPES

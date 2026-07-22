@@ -7,7 +7,49 @@ use portal_db::PgPool;
 use serde::Serialize;
 use tabled::Tabled;
 
-use crate::output::{error, format_optional, format_timestamp, format_uuid, info, output_list, success, OutputFormat};
+use crate::output::{
+    OutputFormat, error, format_optional, format_timestamp, format_uuid, info, output_list, success,
+};
+
+/// Row shape for `demo list`:
+/// (id, file_name, category, status, is_hidden, created_at, map_name).
+type DemoListRow = (
+    uuid::Uuid,
+    String,
+    String,
+    String,
+    bool,
+    chrono::DateTime<chrono::Utc>,
+    Option<String>,
+);
+
+/// Row shape for `demo get` basic info:
+/// (id, file_name, s3_bucket, s3_key, file_size_bytes, category, status, is_hidden, created_at).
+type DemoBasicRow = (
+    uuid::Uuid,
+    String,
+    String,
+    String,
+    Option<i64>,
+    String,
+    String,
+    bool,
+    chrono::DateTime<chrono::Utc>,
+);
+
+/// Row shape for `demo get` match metadata:
+/// (map_name, team1_name, team2_name, team1_score, team2_score).
+type DemoMatchInfoRow = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i32>,
+    Option<i32>,
+);
+
+/// Row shape for `demo players`:
+/// (steam_id, player_name, team_name, kills, deaths, assists, adr, hs_percentage).
+type DemoPlayerRow = (String, String, Option<String>, i32, i32, i32, f64, f64);
 
 /// Demo management commands.
 #[derive(Args)]
@@ -186,39 +228,43 @@ async fn list_demos(
     limit: i64,
     format: OutputFormat,
 ) -> Result<()> {
+    // Writing to a `String` is infallible, so the `write!` results are ignored.
+    use std::fmt::Write as _;
+
     // Build and execute query
     let mut query = String::from(
-        r#"
+        r"
         SELECT d.id, d.file_name, d.category, d.status, d.is_hidden, d.created_at,
-               d.map_name
+               d.metadata->>'map_name' AS map_name
         FROM demos d
         WHERE 1=1
-        "#,
+        ",
     );
 
     if game.is_some() {
         query.push_str(" AND d.game_id = $1::uuid");
     }
     if let Some(cat) = category {
-        query.push_str(&format!(" AND d.category = '{cat}'"));
+        let _ = write!(query, " AND d.category = '{cat}'");
     }
     if let Some(s) = status {
-        query.push_str(&format!(" AND d.status = '{s}'"));
+        let _ = write!(query, " AND d.status = '{s}'");
     }
     if let Some(m) = map {
-        query.push_str(&format!(" AND d.map_name ILIKE '%{m}%'"));
+        let _ = write!(query, " AND d.metadata->>'map_name' ILIKE '%{m}%'");
     }
     if let Some(sid) = steam_id {
-        query.push_str(&format!(
+        let _ = write!(
+            query,
             " AND EXISTS (SELECT 1 FROM demo_players dp WHERE dp.demo_id = d.id AND dp.steam_id = '{sid}')"
-        ));
+        );
     }
     if !include_hidden {
         query.push_str(" AND d.is_hidden = false");
     }
-    query.push_str(&format!(" ORDER BY d.created_at DESC LIMIT {limit}"));
+    let _ = write!(query, " ORDER BY d.created_at DESC LIMIT {limit}");
 
-    let rows: Vec<(uuid::Uuid, String, String, String, bool, chrono::DateTime<chrono::Utc>, Option<String>)> = if let Some(g) = game {
+    let rows: Vec<DemoListRow> = if let Some(g) = game {
         let game_uuid: uuid::Uuid = g.parse().context("Invalid game ID")?;
         sqlx::query_as(&query)
             .bind(game_uuid)
@@ -234,19 +280,21 @@ async fn list_demos(
 
     let table_rows: Vec<DemoTableRow> = rows
         .into_iter()
-        .map(|(id, file_name, cat, stat, hidden, created, map_name)| DemoTableRow {
-            id: format_uuid(&id),
-            file_name: if file_name.len() > 40 {
-                format!("{}...", &file_name[..37])
-            } else {
-                file_name
+        .map(
+            |(id, file_name, cat, stat, hidden, created, map_name)| DemoTableRow {
+                id: format_uuid(&id),
+                file_name: if file_name.len() > 40 {
+                    format!("{}...", &file_name[..37])
+                } else {
+                    file_name
+                },
+                map: map_name.unwrap_or_else(|| "-".to_string()),
+                category: cat,
+                status: stat,
+                hidden: if hidden { "Yes" } else { "No" }.to_string(),
+                created_at: format_timestamp(&created),
             },
-            map: map_name.unwrap_or_else(|| "-".to_string()),
-            category: cat,
-            status: stat,
-            hidden: if hidden { "Yes" } else { "No" }.to_string(),
-            created_at: format_timestamp(&created),
-        })
+        )
         .collect();
 
     output_list(&table_rows, format)
@@ -256,23 +304,13 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
     // Query basic info (max 16 columns for sqlx tuples)
-    let basic: Option<(
-        uuid::Uuid,
-        String,
-        String,
-        String,
-        Option<i64>,
-        String,
-        String,
-        bool,
-        chrono::DateTime<chrono::Utc>,
-    )> = sqlx::query_as(
-        r#"
+    let basic: Option<DemoBasicRow> = sqlx::query_as(
+        r"
         SELECT id, file_name, s3_bucket, s3_key, file_size_bytes,
                category, status, is_hidden, created_at
         FROM demos
         WHERE id = $1
-        "#,
+        ",
     )
     .bind(demo_id)
     .fetch_optional(pool)
@@ -280,18 +318,21 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
     .context("Failed to fetch demo")?;
 
     // Query match info separately
-    let match_info: Option<(Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>)> =
-        sqlx::query_as(
-            r#"
-            SELECT map_name, team1_name, team2_name, team1_score, team2_score
+    let match_info: Option<DemoMatchInfoRow> = sqlx::query_as(
+        r"
+            SELECT metadata->>'map_name',
+                   metadata->>'team1_name',
+                   metadata->>'team2_name',
+                   (metadata->>'team1_score')::int,
+                   (metadata->>'team2_score')::int
             FROM demos
             WHERE id = $1
-            "#,
-        )
-        .bind(demo_id)
-        .fetch_optional(pool)
-        .await
-        .context("Failed to fetch demo match info")?;
+            ",
+    )
+    .bind(demo_id)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to fetch demo match info")?;
 
     if let Some(d) = basic {
         let mi = match_info.unwrap_or((None, None, None, None, None));
@@ -325,7 +366,7 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
             println!("  Status:     {}", d.6);
             println!("  Hidden:     {}", if d.7 { "Yes" } else { "No" });
             if let Some(map) = &mi.0 {
-                println!("  Map:        {}", map);
+                println!("  Map:        {map}");
             }
             if let (Some(t1), Some(t2)) = (&mi.1, &mi.2) {
                 println!(
@@ -348,13 +389,13 @@ async fn get_demo(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
 async fn get_demo_players(pool: &PgPool, id: &str, format: OutputFormat) -> Result<()> {
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
-    let rows: Vec<(String, String, Option<String>, i32, i32, i32, f64, f64)> = sqlx::query_as(
-        r#"
+    let rows: Vec<DemoPlayerRow> = sqlx::query_as(
+        r"
         SELECT steam_id, player_name, team_name, kills, deaths, assists, adr, hs_percentage
         FROM demo_players
         WHERE demo_id = $1
         ORDER BY kills DESC
-        "#,
+        ",
     )
     .bind(demo_id)
     .fetch_all(pool)
@@ -368,16 +409,18 @@ async fn get_demo_players(pool: &PgPool, id: &str, format: OutputFormat) -> Resu
 
     let table_rows: Vec<DemoPlayerTableRow> = rows
         .into_iter()
-        .map(|(steam_id, name, team, k, d, a, adr, hs)| DemoPlayerTableRow {
-            steam_id,
-            player_name: name,
-            team: team.unwrap_or_else(|| "-".to_string()),
-            kills: k,
-            deaths: d,
-            assists: a,
-            adr: format!("{:.1}", adr),
-            hs_pct: format!("{:.1}%", hs),
-        })
+        .map(
+            |(steam_id, name, team, k, d, a, adr, hs)| DemoPlayerTableRow {
+                steam_id,
+                player_name: name,
+                team: team.unwrap_or_else(|| "-".to_string()),
+                kills: k,
+                deaths: d,
+                assists: a,
+                adr: format!("{adr:.1}"),
+                hs_pct: format!("{hs:.1}%"),
+            },
+        )
         .collect();
 
     output_list(&table_rows, format)
@@ -385,7 +428,7 @@ async fn get_demo_players(pool: &PgPool, id: &str, format: OutputFormat) -> Resu
 
 async fn show_stats(pool: &PgPool, format: OutputFormat) -> Result<()> {
     let rows: Vec<(String, i64)> = sqlx::query_as(
-        r#"
+        r"
         SELECT status, COUNT(*) as count
         FROM demos
         GROUP BY status
@@ -398,7 +441,7 @@ async fn show_stats(pool: &PgPool, format: OutputFormat) -> Result<()> {
                 WHEN 'archived' THEN 5
                 ELSE 6
             END
-        "#,
+        ",
     )
     .fetch_all(pool)
     .await
@@ -414,13 +457,13 @@ async fn show_stats(pool: &PgPool, format: OutputFormat) -> Result<()> {
 
 async fn list_pending(pool: &PgPool, limit: i64, format: OutputFormat) -> Result<()> {
     let rows: Vec<(uuid::Uuid, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        r#"
+        r"
         SELECT id, file_name, s3_key, created_at
         FROM demos
         WHERE status = 'pending'
         ORDER BY created_at ASC
         LIMIT $1
-        "#,
+        ",
     )
     .bind(limit)
     .fetch_all(pool)
@@ -451,16 +494,16 @@ async fn categorize_demo(pool: &PgPool, id: &str, category: &str) -> Result<()> 
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
     // Validate category
-    let _cat: DemoCategory = category
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid category. Use: uncategorized, pug, league, scrim, ignored"))?;
+    let _cat: DemoCategory = category.parse().map_err(|_| {
+        anyhow::anyhow!("Invalid category. Use: uncategorized, pug, league, scrim, ignored")
+    })?;
 
     sqlx::query(
-        r#"
+        r"
         UPDATE demos
         SET category = $1, categorized_at = NOW(), updated_at = NOW()
         WHERE id = $2
-        "#,
+        ",
     )
     .bind(category)
     .bind(demo_id)
@@ -476,11 +519,11 @@ async fn hide_demo(pool: &PgPool, id: &str) -> Result<()> {
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
     sqlx::query(
-        r#"
+        r"
         UPDATE demos
         SET is_hidden = true, hidden_at = NOW(), updated_at = NOW()
         WHERE id = $1
-        "#,
+        ",
     )
     .bind(demo_id)
     .execute(pool)
@@ -495,11 +538,11 @@ async fn unhide_demo(pool: &PgPool, id: &str) -> Result<()> {
     let demo_id: uuid::Uuid = id.parse().context("Invalid demo ID")?;
 
     sqlx::query(
-        r#"
+        r"
         UPDATE demos
         SET is_hidden = false, hidden_at = NULL, hidden_by_user_id = NULL, updated_at = NOW()
         WHERE id = $1
-        "#,
+        ",
     )
     .bind(demo_id)
     .execute(pool)

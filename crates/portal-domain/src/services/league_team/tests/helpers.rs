@@ -8,12 +8,12 @@ use crate::entities::league_team::{
 use chrono::Utc;
 use portal_core::ids::{GameId, LeagueTeamMemberId};
 use portal_core::types::{
-    LeagueTeamInvitationStatus, LeagueTeamInvitationType, LeagueTeamRole,
-    LeagueTeamSeasonStatus, LeagueTeamStatus, RosterLockStatus, SeasonStatus,
+    LeagueTeamInvitationStatus, LeagueTeamInvitationType, LeagueTeamRole, LeagueTeamSeasonStatus,
+    LeagueTeamStatus, RosterLockStatus, SeasonStatus,
 };
 use portal_core::{
-    LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LeagueTeamSeasonId,
-    PlayerId, UserId,
+    LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LeagueTeamSeasonId, PlayerId,
+    UserId,
 };
 
 pub fn make_league() -> League {
@@ -26,6 +26,7 @@ pub fn make_league() -> League {
         logo_url: None,
         access_type: LeagueAccessType::Open,
         status: LeagueStatus::Active,
+        current_season_id: None,
         settings: serde_json::json!({}),
         created_by: UserId::new(),
         created_at: Utc::now(),
@@ -133,10 +134,7 @@ pub fn make_invitation(
     }
 }
 
-pub fn make_participant(
-    season_id: LeagueSeasonId,
-    player_id: PlayerId,
-) -> LeagueSeasonParticipant {
+pub fn make_participant(season_id: LeagueSeasonId, player_id: PlayerId) -> LeagueSeasonParticipant {
     LeagueSeasonParticipant {
         id: uuid::Uuid::new_v4(),
         season_id,

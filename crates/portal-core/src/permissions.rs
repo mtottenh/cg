@@ -145,6 +145,44 @@ pub mod match_ {
     pub const ALL: &[&str] = &[ADMIN, RESULTS_REPORT, PARTICIPANTS_MANAGE];
 }
 
+/// API key scopes for service-to-service authentication.
+///
+/// These scopes are assigned to API keys (not users) and checked via
+/// `AuthenticatedService::require_permission()` on internal endpoints.
+pub mod service {
+    /// Read active steam tracking entries.
+    pub const STEAM_TRACKING_READ: &str = "steam_tracking.read";
+
+    /// Update steam tracking poll results.
+    pub const STEAM_TRACKING_WRITE: &str = "steam_tracking.write";
+
+    /// Read pending discovered matches.
+    pub const DISCOVERED_MATCHES_READ: &str = "discovered_matches.read";
+
+    /// Submit, claim, and update discovered matches.
+    pub const DISCOVERED_MATCHES_WRITE: &str = "discovered_matches.write";
+
+    /// Catalog (batch-create) demo records.
+    pub const DEMOS_CATALOG: &str = "demos.catalog";
+
+    /// Read demo records (e.g. pending demos for processing).
+    pub const DEMOS_READ: &str = "demos.read";
+
+    /// Submit or update demo stats (parse results, mark failures).
+    pub const DEMOS_STATS: &str = "demos.stats";
+
+    /// All service scopes for iteration/validation.
+    pub const ALL: &[&str] = &[
+        STEAM_TRACKING_READ,
+        STEAM_TRACKING_WRITE,
+        DISCOVERED_MATCHES_READ,
+        DISCOVERED_MATCHES_WRITE,
+        DEMOS_CATALOG,
+        DEMOS_READ,
+        DEMOS_STATS,
+    ];
+}
+
 /// Platform-wide admin permissions.
 ///
 /// These permissions are NOT scoped - they apply globally across the platform.
@@ -174,6 +212,10 @@ pub mod admin {
     /// Manage system settings.
     pub const SYSTEM_MANAGE: &str = "admin.system.manage";
 
+    /// Manage the demo catalog - catalog, categorize, link/unlink to
+    /// matches, delete.
+    pub const DEMOS_MANAGE: &str = "admin.demos.manage";
+
     /// All admin permissions for iteration.
     pub const ALL: &[&str] = &[
         USERS_VIEW,
@@ -184,6 +226,7 @@ pub mod admin {
         TOURNAMENTS_MANAGE_ANY,
         AUDIT_VIEW,
         SYSTEM_MANAGE,
+        DEMOS_MANAGE,
     ];
 }
 
@@ -198,6 +241,7 @@ pub fn all_permissions() -> Vec<(&'static str, &'static str, &'static [&'static 
         ("tournament", "Tournament Permissions", tournament::ALL),
         ("match", "Match Permissions", match_::ALL),
         ("admin", "Admin Permissions", admin::ALL),
+        ("service", "Service API Key Scopes", service::ALL),
     ]
 }
 
@@ -210,19 +254,15 @@ mod tests {
         // All permissions should follow the pattern: scope.resource.action
         for (category, _, perms) in all_permissions() {
             for perm in perms {
-                let parts: Vec<&str> = perm.split('.').collect();
                 assert!(
-                    parts.len() >= 2,
-                    "Permission '{}' should have at least 2 parts separated by dots",
-                    perm
+                    perm.split('.').count() >= 2,
+                    "Permission '{perm}' should have at least 2 parts separated by dots"
                 );
-                // First part should match the category (except for admin which uses 'admin.' prefix)
-                if category != "admin" {
+                // First part should match the category (except admin and service which use different conventions)
+                if category != "admin" && category != "service" {
                     assert!(
                         perm.starts_with(category),
-                        "Permission '{}' should start with category '{}'",
-                        perm,
-                        category
+                        "Permission '{perm}' should start with category '{category}'"
                     );
                 }
             }
@@ -256,6 +296,6 @@ mod tests {
         let all = all_permissions();
         let total: usize = all.iter().map(|(_, _, perms)| perms.len()).sum();
         // Ensure we have a reasonable number of permissions defined
-        assert!(total >= 15, "Expected at least 15 permissions, got {}", total);
+        assert!(total >= 15, "Expected at least 15 permissions, got {total}");
     }
 }

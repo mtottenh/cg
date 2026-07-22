@@ -110,6 +110,9 @@ pub struct GameDetailResponse {
     /// Available map pick/ban formats.
     pub map_pick_ban_formats: Vec<MapPickBanFormatResponse>,
 
+    /// Map IDs in the active default pool.
+    pub map_pool: Vec<String>,
+
     /// Game status.
     #[schema(example = "active")]
     pub status: String,
@@ -135,6 +138,14 @@ pub struct MapInfoResponse {
     /// Game modes this map supports.
     #[schema(example = json!(["competitive", "casual"]))]
     pub game_modes: Vec<String>,
+
+    /// External identifier (e.g., Steam Workshop ID).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+
+    /// External URL (e.g., full Steam Workshop URL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_url: Option<String>,
 }
 
 /// Rank tier definition.
@@ -192,6 +203,8 @@ impl From<portal_plugins::MapInfo> for MapInfoResponse {
             display_name: info.display_name,
             image_url: info.image_url,
             game_modes: info.game_modes,
+            external_id: info.external_id,
+            external_url: info.external_url,
         }
     }
 }

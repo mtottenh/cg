@@ -36,6 +36,10 @@ tracing = { workspace = true }
 # Random number generation (for seeding algorithms)
 rand = "0.9"
 
+# Cryptography (refresh token hashing)
+sha2 = { workspace = true }
+hex = { workspace = true }
+
 [dev-dependencies]
 mockall = { workspace = true }
 

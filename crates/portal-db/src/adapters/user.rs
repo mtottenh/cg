@@ -1,13 +1,13 @@
 //! User and Player repository adapters.
 
-use crate::entities::{PlayerRow, UserRow};
 use crate::DbPool;
+use crate::entities::{PlayerRow, UserRow};
 use async_trait::async_trait;
 use portal_core::{DomainError, PlayerId, UserId};
 use portal_domain::entities::user::UserStatus as DomainUserStatus;
 use portal_domain::entities::{Player, SocialLinks, User, UserWithCredentials};
 use portal_domain::repositories::{
-    CreatePlayer, CreateUser, PlayerRepository, UpdatePlayer, UserRepository,
+    CreatePlayer, CreateUser, PlayerRepository, PlayerSearchFilters, UpdatePlayer, UserRepository,
 };
 use sqlx::Row;
 
@@ -22,6 +22,7 @@ impl From<UserRow> for User {
             username: row.username,
             email: row.email,
             email_verified: row.email_verified,
+            auth_provider: row.auth_provider,
             status: row.status.parse().unwrap_or_default(),
             locale: row.locale.unwrap_or_else(|| "en-US".to_string()),
             timezone: row.timezone.unwrap_or_else(|| "UTC".to_string()),
@@ -40,6 +41,7 @@ impl From<UserRow> for UserWithCredentials {
             username: row.username,
             email: row.email,
             password_hash: row.password_hash,
+            auth_provider: row.auth_provider,
             status: row.status.parse().unwrap_or(DomainUserStatus::Active),
         }
     }
@@ -63,6 +65,7 @@ impl From<PlayerRow> for Player {
             timezone: row.timezone,
             social_links,
             steam_id: row.steam_id,
+            looking_for_team: row.looking_for_team,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -122,40 +125,116 @@ impl UserRepository for PgUserRepository {
 
     async fn create(&self, cmd: CreateUser) -> Result<User, DomainError> {
         let user = match cmd.id {
-            Some(id) => {
-                sqlx::query_as::<_, UserRow>(
-                    r"
-                    INSERT INTO users (id, username, email, password_hash)
+            Some(id) => sqlx::query_as::<_, UserRow>(
+                r"
+                    INSERT INTO users (id, username, email, password_hash, auth_provider)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING *
+                    ",
+            )
+            .bind(id.as_uuid())
+            .bind(&cmd.username)
+            .bind(cmd.email.to_lowercase())
+            .bind(&cmd.password_hash)
+            .bind(&cmd.auth_provider)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?,
+            None => sqlx::query_as::<_, UserRow>(
+                r"
+                    INSERT INTO users (username, email, password_hash, auth_provider)
                     VALUES ($1, $2, $3, $4)
                     RETURNING *
                     ",
-                )
-                .bind(id.as_uuid())
-                .bind(&cmd.username)
-                .bind(cmd.email.to_lowercase())
-                .bind(&cmd.password_hash)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?
-            }
-            None => {
-                sqlx::query_as::<_, UserRow>(
-                    r"
-                    INSERT INTO users (username, email, password_hash)
-                    VALUES ($1, $2, $3)
-                    RETURNING *
-                    ",
-                )
-                .bind(&cmd.username)
-                .bind(cmd.email.to_lowercase())
-                .bind(&cmd.password_hash)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?
-            }
+            )
+            .bind(&cmd.username)
+            .bind(cmd.email.to_lowercase())
+            .bind(&cmd.password_hash)
+            .bind(&cmd.auth_provider)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?,
         };
 
         Ok(User::from(user))
+    }
+
+    async fn create_account(
+        &self,
+        cmd: CreateUser,
+        player: CreatePlayer,
+    ) -> Result<(User, Player), DomainError> {
+        // One tx for both inserts: a failure on the players insert must
+        // roll the users insert back, otherwise the username/email are
+        // permanently reserved by a user row that can never log in (the
+        // login path requires a player). See audit "local registration
+        // creates user then player non-transactionally".
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to begin transaction: {e}")))?;
+
+        let user_row = match cmd.id {
+            Some(id) => sqlx::query_as::<_, UserRow>(
+                r"
+                INSERT INTO users (id, username, email, password_hash, auth_provider)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING *
+                ",
+            )
+            .bind(id.as_uuid())
+            .bind(&cmd.username)
+            .bind(cmd.email.to_lowercase())
+            .bind(&cmd.password_hash)
+            .bind(&cmd.auth_provider)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?,
+            None => sqlx::query_as::<_, UserRow>(
+                r"
+                INSERT INTO users (username, email, password_hash, auth_provider)
+                VALUES ($1, $2, $3, $4)
+                RETURNING *
+                ",
+            )
+            .bind(&cmd.username)
+            .bind(cmd.email.to_lowercase())
+            .bind(&cmd.password_hash)
+            .bind(&cmd.auth_provider)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?,
+        };
+
+        // The caller derives the player id from the user id
+        // (`make_shared_account_ids`); when the user id was generated by
+        // the DB, fall back to the returned row so the 1:1 invariant holds.
+        let player_id = if cmd.id.is_some() {
+            player.id.as_uuid()
+        } else {
+            user_row.id
+        };
+
+        let player_row = sqlx::query_as::<_, PlayerRow>(
+            r"
+            INSERT INTO players (id, user_id, display_name)
+            VALUES ($1, $2, $3)
+            RETURNING *
+            ",
+        )
+        .bind(player_id)
+        .bind(user_row.id)
+        .bind(&player.display_name)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to commit: {e}")))?;
+
+        Ok((User::from(user_row), Player::from(player_row)))
     }
 
     async fn username_exists(&self, username: &str) -> Result<bool, DomainError> {
@@ -206,6 +285,36 @@ impl UserRepository for PgUserRepository {
 
         Ok(())
     }
+
+    async fn update_status(
+        &self,
+        id: UserId,
+        status: DomainUserStatus,
+        reason: Option<&str>,
+    ) -> Result<(), DomainError> {
+        let result = sqlx::query(
+            r"
+            UPDATE users
+            SET status = $2,
+                status_reason = $3,
+                status_changed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(status.to_string())
+        .bind(reason)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(DomainError::UserNotFound(id));
+        }
+
+        Ok(())
+    }
 }
 
 // =============================================================================
@@ -248,6 +357,47 @@ impl PlayerRepository for PgPlayerRepository {
         Ok(player.map(Player::from))
     }
 
+    async fn find_by_ids(&self, ids: &[PlayerId]) -> Result<Vec<Player>, DomainError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let uuids: Vec<uuid::Uuid> = ids.iter().map(PlayerId::as_uuid).collect();
+        let players = sqlx::query_as::<_, PlayerRow>("SELECT * FROM players WHERE id = ANY($1)")
+            .bind(&uuids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(players.into_iter().map(Player::from).collect())
+    }
+
+    async fn find_by_user_ids(&self, user_ids: &[UserId]) -> Result<Vec<Player>, DomainError> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let uuids: Vec<uuid::Uuid> = user_ids.iter().map(UserId::as_uuid).collect();
+        let players =
+            sqlx::query_as::<_, PlayerRow>("SELECT * FROM players WHERE user_id = ANY($1)")
+                .bind(&uuids)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(players.into_iter().map(Player::from).collect())
+    }
+
+    async fn find_by_steam_id_64(&self, steam_id_64: i64) -> Result<Option<Player>, DomainError> {
+        let player = sqlx::query_as::<_, PlayerRow>("SELECT * FROM players WHERE steam_id_64 = $1")
+            .bind(steam_id_64)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(player.map(Player::from))
+    }
+
     async fn find_by_display_name(&self, name: &str) -> Result<Option<Player>, DomainError> {
         let player = sqlx::query_as::<_, PlayerRow>(
             "SELECT * FROM players WHERE display_name_normalized = lower($1)",
@@ -280,19 +430,30 @@ impl PlayerRepository for PgPlayerRepository {
 
     async fn search(
         &self,
-        query: &str,
+        filters: &PlayerSearchFilters,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Player>, DomainError> {
         let players = sqlx::query_as::<_, PlayerRow>(
             r"
-            SELECT * FROM players
-            WHERE display_name_normalized LIKE $1 || '%'
-            ORDER BY display_name_normalized
-            LIMIT $2 OFFSET $3
+            SELECT DISTINCT p.* FROM players p
+            LEFT JOIN player_game_profiles pgp ON pgp.player_id = p.id
+            WHERE p.display_name_normalized LIKE $1 || '%'
+              AND ($2::uuid IS NULL OR pgp.game_id = $2)
+              AND ($3::text IS NULL OR (
+                ($3 = 'has_team' AND EXISTS (SELECT 1 FROM league_team_members ltm WHERE ltm.player_id = p.id))
+                OR ($3 = 'no_team' AND NOT EXISTS (SELECT 1 FROM league_team_members ltm WHERE ltm.player_id = p.id))
+                OR ($3 = 'lft' AND p.looking_for_team = true)
+              ))
+              AND ($4::text IS NULL OR p.country_code = $4)
+            ORDER BY p.display_name_normalized
+            LIMIT $5 OFFSET $6
             ",
         )
-        .bind(query.to_lowercase())
+        .bind(filters.query.to_lowercase())
+        .bind(filters.game_id.map(|g| g.as_uuid()))
+        .bind(&filters.team_status)
+        .bind(&filters.country_code)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -302,11 +463,25 @@ impl PlayerRepository for PgPlayerRepository {
         Ok(players.into_iter().map(Player::from).collect())
     }
 
-    async fn count_search(&self, query: &str) -> Result<i64, DomainError> {
+    async fn count_search(&self, filters: &PlayerSearchFilters) -> Result<i64, DomainError> {
         let row = sqlx::query(
-            "SELECT COUNT(*) as count FROM players WHERE display_name_normalized LIKE $1 || '%'",
+            r"
+            SELECT COUNT(DISTINCT p.id) as count FROM players p
+            LEFT JOIN player_game_profiles pgp ON pgp.player_id = p.id
+            WHERE p.display_name_normalized LIKE $1 || '%'
+              AND ($2::uuid IS NULL OR pgp.game_id = $2)
+              AND ($3::text IS NULL OR (
+                ($3 = 'has_team' AND EXISTS (SELECT 1 FROM league_team_members ltm WHERE ltm.player_id = p.id))
+                OR ($3 = 'no_team' AND NOT EXISTS (SELECT 1 FROM league_team_members ltm WHERE ltm.player_id = p.id))
+                OR ($3 = 'lft' AND p.looking_for_team = true)
+              ))
+              AND ($4::text IS NULL OR p.country_code = $4)
+            ",
         )
-        .bind(query.to_lowercase())
+        .bind(filters.query.to_lowercase())
+        .bind(filters.game_id.map(|g| g.as_uuid()))
+        .bind(&filters.team_status)
+        .bind(&filters.country_code)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
@@ -349,6 +524,17 @@ impl PlayerRepository for PgPlayerRepository {
         }
         if cmd.social_links.is_some() {
             set_clauses.push(format!("social_links = ${param_index}"));
+            param_index += 1;
+        }
+        if cmd.steam_id.is_some() {
+            set_clauses.push(format!("steam_id = ${param_index}"));
+            param_index += 1;
+            set_clauses.push(format!("steam_id_64 = ${param_index}"));
+            param_index += 1;
+        }
+        if cmd.looking_for_team.is_some() {
+            // Last clause: param_index is not read again, so no increment.
+            set_clauses.push(format!("looking_for_team = ${param_index}"));
         }
 
         if set_clauses.is_empty() {
@@ -356,7 +542,7 @@ impl PlayerRepository for PgPlayerRepository {
             return self
                 .find_by_id(id)
                 .await?
-                .ok_or_else(|| DomainError::PlayerNotFound(id.to_string()));
+                .ok_or(DomainError::PlayerNotFound(id));
         }
 
         // Always update updated_at
@@ -396,12 +582,20 @@ impl PlayerRepository for PgPlayerRepository {
                 .map_err(|e| DomainError::Internal(e.to_string()))?;
             query_builder = query_builder.bind(json_value);
         }
+        if let Some(steam_id) = &cmd.steam_id {
+            query_builder = query_builder.bind(steam_id);
+            let steam_id_64: i64 = steam_id.parse().unwrap_or(0);
+            query_builder = query_builder.bind(steam_id_64);
+        }
+        if let Some(looking_for_team) = cmd.looking_for_team {
+            query_builder = query_builder.bind(looking_for_team);
+        }
 
         let player = query_builder
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?
-            .ok_or_else(|| DomainError::PlayerNotFound(id.to_string()))?;
+            .ok_or(DomainError::PlayerNotFound(id))?;
 
         Ok(Player::from(player))
     }

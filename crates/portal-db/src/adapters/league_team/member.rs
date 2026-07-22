@@ -3,10 +3,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
+use crate::DbPool;
 use crate::entities::league_team::{
     LeagueTeamMemberRow, LeagueTeamMemberWithPlayerRow, PlayerLeagueTeamMembershipRow,
 };
-use crate::DbPool;
 use portal_core::types::{LeagueTeamMemberStatus, LeagueTeamRole};
 use portal_core::{DomainError, LeagueSeasonId, LeagueTeamMemberId, LeagueTeamSeasonId, PlayerId};
 use portal_domain::entities::league_team::{
@@ -197,7 +197,10 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(rows.into_iter().map(LeagueTeamMemberWithPlayer::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(LeagueTeamMemberWithPlayer::from)
+            .collect())
     }
 
     async fn count_by_role(
@@ -229,7 +232,10 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
         Ok(count.0)
     }
 
-    async fn count_active_members(&self, team_season_id: LeagueTeamSeasonId) -> Result<i64, DomainError> {
+    async fn count_active_members(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<i64, DomainError> {
         let count: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM league_team_members WHERE team_season_id = $1 AND left_at IS NULL AND status = 'active'",
         )
@@ -241,7 +247,10 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
         Ok(count.0)
     }
 
-    async fn count_primary_members(&self, team_season_id: LeagueTeamSeasonId) -> Result<i64, DomainError> {
+    async fn count_primary_members(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<i64, DomainError> {
         let count: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM league_team_members WHERE team_season_id = $1 AND role IN ('captain', 'player') AND left_at IS NULL",
         )
@@ -253,7 +262,10 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
         Ok(count.0)
     }
 
-    async fn count_substitutes(&self, team_season_id: LeagueTeamSeasonId) -> Result<i64, DomainError> {
+    async fn count_substitutes(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<i64, DomainError> {
         let count: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM league_team_members WHERE team_season_id = $1 AND role = 'substitute' AND left_at IS NULL",
         )
@@ -336,7 +348,10 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(rows.into_iter().map(PlayerLeagueTeamMembership::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(PlayerLeagueTeamMembership::from)
+            .collect())
     }
 
     async fn list_memberships_in_season(
@@ -353,6 +368,9 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(rows.into_iter().map(PlayerLeagueTeamMembership::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(PlayerLeagueTeamMembership::from)
+            .collect())
     }
 }

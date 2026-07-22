@@ -8,14 +8,16 @@
 use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 use clap::{Args, Subcommand, ValueEnum};
+use portal_db::PgPool;
 use portal_db::entities::NewBan;
 use portal_db::repositories::BanRepository;
-use portal_db::PgPool;
 use serde::Serialize;
 use tabled::Tabled;
 use uuid::Uuid;
 
-use crate::output::{error, format_optional, format_timestamp, format_uuid, info, output_list, success, OutputFormat};
+use crate::output::{
+    OutputFormat, error, format_optional, format_timestamp, format_uuid, info, output_list, success,
+};
 
 /// Ban management commands.
 #[derive(Args)]
@@ -271,7 +273,8 @@ async fn list_bans(
             reason: truncate_reason(&b.reason, 30),
             status: get_ban_status(&b),
             expires_at: b
-                .ends_at.map_or_else(|| "Never".to_string(), |t| format_timestamp(&t)),
+                .ends_at
+                .map_or_else(|| "Never".to_string(), |t| format_timestamp(&t)),
             created_at: format_timestamp(&b.created_at),
         })
         .collect();
@@ -280,10 +283,7 @@ async fn list_bans(
 }
 
 async fn get_ban(repo: &BanRepository, id: Uuid, format: OutputFormat) -> Result<()> {
-    let ban = repo
-        .find_by_id(id)
-        .await
-        .context("Failed to fetch ban")?;
+    let ban = repo.find_by_id(id).await.context("Failed to fetch ban")?;
 
     if let Some(b) = ban {
         if matches!(format, OutputFormat::Json) {
@@ -315,16 +315,29 @@ async fn get_ban(repo: &BanRepository, id: Uuid, format: OutputFormat) -> Result
             println!("  Reason:      {}", b.reason);
             println!("  Status:      {}", get_ban_status(&b));
             println!("  Scope Type:  {}", format_optional(&b.scope_type));
-            println!("  Scope ID:    {}", b.scope_id.map_or_else(|| "-".to_string(), |id| id.to_string()));
-            println!("  Issued By:   {}", b.issued_by.map_or_else(|| "-".to_string(), |id| id.to_string()));
+            println!(
+                "  Scope ID:    {}",
+                b.scope_id
+                    .map_or_else(|| "-".to_string(), |id| id.to_string())
+            );
+            println!(
+                "  Issued By:   {}",
+                b.issued_by
+                    .map_or_else(|| "-".to_string(), |id| id.to_string())
+            );
             println!("  Starts:      {}", format_timestamp(&b.starts_at));
             println!(
                 "  Ends:        {}",
-                b.ends_at.map_or_else(|| "Never (Permanent)".to_string(), |t| format_timestamp(&t))
+                b.ends_at
+                    .map_or_else(|| "Never (Permanent)".to_string(), |t| format_timestamp(&t))
             );
             if let Some(lifted) = b.lifted_at {
                 println!("  Lifted At:   {}", format_timestamp(&lifted));
-                println!("  Lifted By:   {}", b.lifted_by.map_or_else(|| "-".to_string(), |id| id.to_string()));
+                println!(
+                    "  Lifted By:   {}",
+                    b.lifted_by
+                        .map_or_else(|| "-".to_string(), |id| id.to_string())
+                );
                 println!("  Lift Reason: {}", format_optional(&b.lift_reason));
             }
             println!("  Created:     {}", format_timestamp(&b.created_at));
@@ -348,9 +361,7 @@ fn parse_duration(s: &str) -> Result<Option<Duration>> {
     }
 
     let (num, unit) = s.split_at(len - 1);
-    let n: i64 = num
-        .parse()
-        .context("Invalid number in duration")?;
+    let n: i64 = num.parse().context("Invalid number in duration")?;
 
     let duration = match unit {
         "m" => Duration::minutes(n),
@@ -428,10 +439,7 @@ fn format_duration(d: Duration) -> String {
 
 async fn lift_ban(repo: &BanRepository, id: Uuid, reason: Option<&str>) -> Result<()> {
     // Verify ban exists and is active
-    let ban = repo
-        .find_by_id(id)
-        .await
-        .context("Failed to fetch ban")?;
+    let ban = repo.find_by_id(id).await.context("Failed to fetch ban")?;
 
     let Some(ban) = ban else {
         error(&format!("Ban not found: {id}"));
@@ -443,11 +451,11 @@ async fn lift_ban(repo: &BanRepository, id: Uuid, reason: Option<&str>) -> Resul
         std::process::exit(1);
     }
 
-    if let Some(ends) = ban.ends_at {
-        if ends < Utc::now() {
-            error("Ban has already expired");
-            std::process::exit(1);
-        }
+    if let Some(ends) = ban.ends_at
+        && ends < Utc::now()
+    {
+        error("Ban has already expired");
+        std::process::exit(1);
     }
 
     // Lift the ban
@@ -528,7 +536,8 @@ async fn check_ban(repo: &BanRepository, user_id: Uuid, ban_type: Option<&str>) 
         println!("  Reason:  {}", ban.reason);
         println!(
             "  Expires: {}",
-            ban.ends_at.map_or_else(|| "Never (Permanent)".to_string(), |t| format_timestamp(&t))
+            ban.ends_at
+                .map_or_else(|| "Never (Permanent)".to_string(), |t| format_timestamp(&t))
         );
         println!("  Ban ID:  {}", ban.id);
     } else {

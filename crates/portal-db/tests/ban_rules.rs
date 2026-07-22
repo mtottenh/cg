@@ -4,9 +4,9 @@
 //! Some tests may initially FAIL (Red) if constraints aren't enforced yet - that's expected TDD.
 
 use chrono::{Duration, Utc};
+use portal_db::DbPool;
 use portal_db::entities::NewBan;
 use portal_db::repositories::BanRepository;
-use portal_db::DbPool;
 use portal_test::database::TestDb;
 use uuid::Uuid;
 
@@ -16,14 +16,14 @@ use uuid::Uuid;
 
 async fn create_test_user(pool: &DbPool, suffix: &str) -> Uuid {
     let user = sqlx::query_as::<_, (Uuid,)>(
-        r#"
+        r"
         INSERT INTO users (username, email, password_hash)
         VALUES ($1, $2, 'hash')
         RETURNING id
-        "#,
+        ",
     )
-    .bind(format!("banrulesuser{}", suffix))
-    .bind(format!("banrules{}@example.com", suffix))
+    .bind(format!("banrulesuser{suffix}"))
+    .bind(format!("banrules{suffix}@example.com"))
     .fetch_one(pool)
     .await
     .unwrap();
@@ -88,7 +88,10 @@ async fn test_expired_ban_no_longer_active() {
 
     // Expired ban should not appear in active bans
     let active = repo.get_active(user_id).await.unwrap();
-    assert!(active.is_empty(), "Expired ban should not be in active list");
+    assert!(
+        active.is_empty(),
+        "Expired ban should not be in active list"
+    );
 }
 
 /// Test that a lifted ban no longer affects the user.
@@ -135,10 +138,15 @@ async fn test_multiple_bans_all_checked() {
 
     let user_id = create_test_user(&db.pool, "multi").await;
 
-    // Create an expired ban (starts_at must be before ends_at)
+    // Create an expired ban (starts_at must be before ends_at). Use a
+    // different ban_type from the active platform ban below so both can
+    // coexist: migration 0076's partial unique index allows only one
+    // non-lifted ban per (user_id, ban_type) — and an expired-but-not-lifted
+    // ban still occupies that slot (a partial index predicate can't reference
+    // NOW()), so two same-type unscoped bans would collide.
     let expired_ban = NewBan {
         user_id,
-        ban_type: "platform".to_string(),
+        ban_type: "matchmaking".to_string(),
         reason: "Old expired ban".to_string(),
         scope_type: None,
         scope_id: None,
@@ -232,7 +240,10 @@ async fn test_timed_ban_expiry() {
     // Active bans should include this ban
     let active = repo.get_active(user_id).await.unwrap();
     assert_eq!(active.len(), 1);
-    assert!(active[0].ends_at.is_some(), "Timed ban should have an end date");
+    assert!(
+        active[0].ends_at.is_some(),
+        "Timed ban should have an end date"
+    );
 }
 
 /// Test that permanent bans (no end date) remain active indefinitely.

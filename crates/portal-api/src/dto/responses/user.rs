@@ -22,6 +22,10 @@ pub struct UserResponse {
     /// Whether the email has been verified.
     pub email_verified: bool,
 
+    /// Authentication provider: "local" (password) or "steam" (OpenID).
+    #[schema(example = "local")]
+    pub auth_provider: String,
+
     /// Account status.
     #[schema(example = "active")]
     pub status: String,
@@ -55,6 +59,7 @@ impl From<User> for UserResponse {
             username: user.username,
             email: user.email,
             email_verified: user.email_verified,
+            auth_provider: user.auth_provider,
             status: user.status.to_string(),
             locale: user.locale,
             timezone: user.timezone,

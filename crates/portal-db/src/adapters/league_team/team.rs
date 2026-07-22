@@ -3,11 +3,11 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::league_team::LeagueTeamRow;
 use crate::DbPool;
-use portal_core::types::LeagueTeamStatus;
-use portal_core::{DomainError, LeagueId, LeagueTeamId, PlayerId};
-use portal_domain::entities::league_team::LeagueTeam;
+use crate::entities::league_team::{LeagueTeamRow, LeagueTeamSeasonRow};
+use portal_core::types::{LeagueTeamRole, LeagueTeamStatus};
+use portal_core::{DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, PlayerId};
+use portal_domain::entities::league_team::{LeagueTeam, LeagueTeamSeason};
 use portal_domain::repositories::league_team::{
     CreateLeagueTeam, LeagueTeamRepository, UpdateLeagueTeam,
 };
@@ -32,13 +32,11 @@ impl PgLeagueTeamRepository {
 #[async_trait]
 impl LeagueTeamRepository for PgLeagueTeamRepository {
     async fn find_by_id(&self, id: LeagueTeamId) -> Result<Option<LeagueTeam>, DomainError> {
-        let row = sqlx::query_as::<_, LeagueTeamRow>(
-            "SELECT * FROM league_teams WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row = sqlx::query_as::<_, LeagueTeamRow>("SELECT * FROM league_teams WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(row.map(LeagueTeam::from))
     }
@@ -225,11 +223,12 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         // Get total count
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM league_teams WHERE league_id = $1")
-            .bind(league_id.as_uuid())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM league_teams WHERE league_id = $1")
+                .bind(league_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok((rows.into_iter().map(LeagueTeam::from).collect(), count.0))
     }
@@ -314,11 +313,7 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         Ok(LeagueTeam::from(row))
     }
 
-    async fn name_exists(
-        &self,
-        league_id: LeagueId,
-        name: &str,
-    ) -> Result<bool, DomainError> {
+    async fn name_exists(&self, league_id: LeagueId, name: &str) -> Result<bool, DomainError> {
         let normalized = Self::normalize_name(name);
         let count: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM league_teams WHERE league_id = $1 AND name_normalized = $2",
@@ -354,5 +349,128 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
+    }
+
+    async fn create_team_with_season_and_captain(
+        &self,
+        cmd: CreateLeagueTeam,
+        season_id: LeagueSeasonId,
+        captain_player_id: PlayerId,
+    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError> {
+        // All three writes share a single transaction. Any error below
+        // causes the transaction to roll back on drop, so a failed
+        // team_season insert doesn't orphan the league_teams row, and a
+        // failed member insert doesn't leave an empty team_season.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let now = Utc::now();
+        let team_id = uuid::Uuid::now_v7();
+        let team_row = sqlx::query_as::<_, LeagueTeamRow>(
+            r"
+            INSERT INTO league_teams (
+                id, league_id, name, tag,
+                description, logo_url, primary_color, secondary_color,
+                owner_player_id, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING *
+            ",
+        )
+        .bind(team_id)
+        .bind(cmd.league_id.as_uuid())
+        .bind(&cmd.name)
+        .bind(&cmd.tag)
+        .bind(&cmd.description)
+        .bind(&cmd.logo_url)
+        .bind(&cmd.primary_color)
+        .bind(&cmd.secondary_color)
+        .bind(cmd.owner_player_id.as_uuid())
+        .bind(now)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let team_season_id = uuid::Uuid::now_v7();
+        let team_season_row = sqlx::query_as::<_, LeagueTeamSeasonRow>(
+            r"
+            INSERT INTO league_team_seasons (
+                id, team_id, season_id, status, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING *
+            ",
+        )
+        .bind(team_season_id)
+        .bind(team_id)
+        .bind(season_id.as_uuid())
+        .bind("forming")
+        .bind(now)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let member_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            r"
+            INSERT INTO league_team_members (
+                id, team_season_id, player_id, role, position, jersey_number, added_by, joined_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ",
+        )
+        .bind(member_id)
+        .bind(team_season_id)
+        .bind(captain_player_id.as_uuid())
+        .bind(LeagueTeamRole::Captain.to_string())
+        .bind(None::<String>)
+        .bind(None::<i32>)
+        .bind(None::<uuid::Uuid>)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // Grant the team-scoped `team_captain` RBAC role to the captain's
+        // user. This is what makes `PermissionChecker::require_team_permission`
+        // succeed for the owner. Without this row the owner can only be
+        // authorised by the ad-hoc `team.is_owner(...)` check in the
+        // handler layer — see audit item I4.
+        //
+        // The lookup is done as a single INSERT...SELECT so we can roll
+        // back with the same transaction if the owner has no linked
+        // user_id (edge case: bot/player-only rows) — in that case the
+        // SELECT returns zero rows and nothing is inserted, which is
+        // correct: there is no user account to grant the role to.
+        sqlx::query(
+            r"
+            INSERT INTO user_roles (user_id, role_id, scope_type, scope_id, granted_at)
+            SELECT p.user_id, r.id, 'team', $1, $2
+            FROM players p
+            JOIN roles r ON r.name = 'team_captain'
+            WHERE p.id = $3 AND p.user_id IS NOT NULL
+            ON CONFLICT DO NOTHING
+            ",
+        )
+        .bind(team_id)
+        .bind(now)
+        .bind(captain_player_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok((
+            LeagueTeam::from(team_row),
+            LeagueTeamSeason::from(team_season_row),
+        ))
     }
 }

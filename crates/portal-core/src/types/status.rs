@@ -96,10 +96,7 @@ impl MatchStatus {
     /// Check if the match is in a terminal state.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::Cancelled | Self::Forfeited
-        )
+        matches!(self, Self::Completed | Self::Cancelled | Self::Forfeited)
     }
 
     /// Check if the match can be cancelled.
@@ -200,7 +197,7 @@ impl TournamentStatus {
             Self::Draft => vec![Self::Published, Self::Cancelled],
             Self::Published => vec![Self::Registration, Self::Cancelled],
             Self::Registration => vec![Self::Scheduled, Self::InProgress, Self::Cancelled],
-            Self::Scheduled => vec![Self::InProgress, Self::Cancelled],
+            Self::Scheduled => vec![Self::Registration, Self::InProgress, Self::Cancelled],
             Self::InProgress => vec![Self::Completed, Self::Cancelled],
             Self::Completed => vec![Self::Finalized],
             Self::Finalized => vec![],
@@ -221,7 +218,11 @@ mod tests {
 
     #[test]
     fn test_entity_status_roundtrip() {
-        for status in [EntityStatus::Active, EntityStatus::Inactive, EntityStatus::Deleted] {
+        for status in [
+            EntityStatus::Active,
+            EntityStatus::Inactive,
+            EntityStatus::Deleted,
+        ] {
             let s = status.to_string();
             let parsed: EntityStatus = s.parse().unwrap();
             assert_eq!(status, parsed);

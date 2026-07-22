@@ -3,11 +3,13 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::tournament::TournamentMapPoolRow;
 use crate::DbPool;
+use crate::entities::tournament::TournamentMapPoolRow;
 use portal_core::{DomainError, TournamentId, TournamentMapPoolId, TournamentStageId};
 use portal_domain::entities::tournament::TournamentMapPool;
-use portal_domain::repositories::tournament::{TournamentMapPoolRepository, UpsertTournamentMapPool};
+use portal_domain::repositories::tournament::{
+    TournamentMapPoolRepository, UpsertTournamentMapPool,
+};
 
 /// `PostgreSQL` implementation of `TournamentMapPoolRepository`.
 #[derive(Debug, Clone)]
@@ -81,10 +83,10 @@ impl TournamentMapPoolRepository for PgTournamentMapPoolRepository {
         stage_id: Option<TournamentStageId>,
     ) -> Result<Option<TournamentMapPool>, DomainError> {
         // First try stage-specific pool, then fall back to tournament default
-        if let Some(stage_id) = stage_id {
-            if let Some(pool) = self.find_by_stage(stage_id).await? {
-                return Ok(Some(pool));
-            }
+        if let Some(stage_id) = stage_id
+            && let Some(pool) = self.find_by_stage(stage_id).await?
+        {
+            return Ok(Some(pool));
         }
 
         self.find_by_tournament(tournament_id).await

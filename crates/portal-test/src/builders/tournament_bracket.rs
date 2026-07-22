@@ -1,11 +1,13 @@
 //! Tournament bracket builder for tests.
 
-use portal_db::adapters::PgTournamentBracketRepository;
-use portal_db::DbPool;
-use portal_domain::entities::tournament::TournamentBracket;
-use portal_domain::repositories::tournament::{CreateTournamentBracket, TournamentBracketRepository};
 use portal_core::types::BracketType;
 use portal_core::{TournamentId, TournamentStageId};
+use portal_db::DbPool;
+use portal_db::adapters::PgTournamentBracketRepository;
+use portal_domain::entities::tournament::TournamentBracket;
+use portal_domain::repositories::tournament::{
+    CreateTournamentBracket, TournamentBracketRepository,
+};
 
 /// Builder for creating test tournament brackets.
 #[derive(Debug, Clone)]

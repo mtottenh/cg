@@ -13,3 +13,19 @@ target/
 # OS
 .DS_Store
 Thumbs.db
+
+# Service credentials (dev API keys — never commit)
+*.credentials.dev
+*.credentials
+
+# Demo files and parsed stats used for manual testing
+*.dem
+*.dem.bz2
+*.dem.stats.json
+
+# Local-disk upload artifacts from dev runs
+/uploads/
+crates/portal-api/uploads/
+
+# Test artifacts
+/test-results/

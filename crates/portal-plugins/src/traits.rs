@@ -5,10 +5,39 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{RatingError, StatsError};
-use crate::types::{
-    DisplayStat, LobbyStateMachine, MapPickBanFormat, MatchConfig, MatchData, MatchFormat,
-    MatchmakingCriteria, PlayerInfo, RankedParticipant, RatingChange, TournamentFormatId,
+use crate::stats::{StatDefinition, StatFact};
+use portal_core::MatchFormat;
+use portal_core::types::evidence::{
+    DemoFileMetadata, DiscoveredEvidenceData, EvidenceStorage, EvidenceValidationResult,
+    GameMatchResult, MatchEvidenceContext,
 };
+use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
+
+use crate::types::{
+    DemoData, DemoPlayerData, DisplayStat, LobbyStateMachine, MapPickBanFormat, MatchConfig,
+    MatchData, MatchPlayerData, MatchTeamData, MatchmakingCriteria, PlayerInfo, PlayerStatsContext,
+    RankedParticipant, RatingChange, TournamentFormatId,
+};
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/// Resolve a demo player's team_id (1 or 2) by matching their team_name
+/// against the demo's team1/team2 names.
+///
+/// Public so plugins can reuse this in their `build_match_data_from_demo` overrides.
+pub fn resolve_demo_team_id(
+    player: &DemoPlayerData,
+    team1_name: &str,
+    team2_name: &str,
+) -> Option<u32> {
+    match player.team_name.as_deref() {
+        Some(name) if name == team1_name => Some(1),
+        Some(name) if name == team2_name => Some(2),
+        _ => None,
+    }
+}
 
 // ============================================================================
 // Core Plugin Trait
@@ -110,8 +139,64 @@ pub trait GamePlugin: Send + Sync {
     /// Format player stats for display.
     ///
     /// Converts the raw stats JSON into a list of formatted display stats
-    /// suitable for showing on player profiles.
-    fn format_player_stats(&self, stats: &Value) -> Vec<DisplayStat>;
+    /// suitable for showing on player profiles. The `context` provides
+    /// platform-managed rating/rank data so plugins can include game-specific
+    /// rating display stats.
+    fn format_player_stats(&self, stats: &Value, context: &PlayerStatsContext) -> Vec<DisplayStat>;
+
+    /// Build a `MatchData` from raw demo data.
+    ///
+    /// Plugins override this to control how game-specific demo fields (kills,
+    /// damage, clutches, etc.) are mapped into `MatchPlayerData.game_specific_stats`.
+    /// The default implementation maps the core stats (kills/deaths/assists/damage/headshots)
+    /// which may be sufficient for simple games.
+    fn build_match_data_from_demo(&self, demo: &DemoData) -> Result<MatchData, StatsError> {
+        let winner_team_id = match demo.team1_score.cmp(&demo.team2_score) {
+            std::cmp::Ordering::Greater => Some(1u32),
+            std::cmp::Ordering::Less => Some(2u32),
+            std::cmp::Ordering::Equal => None,
+        };
+
+        let teams = vec![
+            MatchTeamData {
+                team_id: 1,
+                score: demo.team1_score,
+                rounds_won: Some(demo.team1_score as u32),
+                side_scores: None,
+            },
+            MatchTeamData {
+                team_id: 2,
+                score: demo.team2_score,
+                rounds_won: Some(demo.team2_score as u32),
+                side_scores: None,
+            },
+        ];
+
+        let players: Vec<MatchPlayerData> = demo
+            .players
+            .iter()
+            .filter_map(|dp| {
+                let player_id = dp.player_id?;
+                let team_id = resolve_demo_team_id(dp, &demo.team1_name, &demo.team2_name)?;
+                Some(MatchPlayerData {
+                    player_id,
+                    team_id,
+                    game_specific_stats: dp.stats.clone(),
+                })
+            })
+            .collect();
+
+        Ok(MatchData {
+            match_id: demo.match_id,
+            game_id: demo.game_id.clone(),
+            map_id: demo.map_name.clone(),
+            duration_seconds: demo.duration_seconds,
+            players,
+            teams,
+            winner_team_id,
+            game_specific_data: demo.raw_stats.clone(),
+        })
+    }
 
     // ========================================================================
     // Ranking
@@ -131,12 +216,9 @@ pub trait GamePlugin: Send + Sync {
 
     /// Get the rank tier for a given rating.
     fn rating_to_rank_tier(&self, rating: i32) -> Option<RankTier> {
-        self.rank_tiers()
-            .into_iter()
-            .find(|tier| {
-                rating >= tier.min_rating
-                    && tier.max_rating.is_none_or(|max| rating <= max)
-            })
+        self.rank_tiers().into_iter().find(|tier| {
+            rating >= tier.min_rating && tier.max_rating.is_none_or(|max| rating <= max)
+        })
     }
 
     // ========================================================================
@@ -237,6 +319,22 @@ pub trait GamePlugin: Send + Sync {
     fn lobby_state_machine(&self) -> Option<Box<dyn LobbyStateMachine>> {
         None
     }
+
+    /// Get the tournament plugin extension if this game supports it.
+    ///
+    /// Override this method to return `Some(self)` in plugins that implement
+    /// the `TournamentPlugin` trait.
+    fn as_tournament_plugin(&self) -> Option<&dyn TournamentPlugin> {
+        None
+    }
+
+    /// Get the evidence plugin extension if this game supports it.
+    ///
+    /// Override this method to return `Some(self)` in plugins that implement
+    /// the `EvidencePlugin` trait.
+    fn as_evidence_plugin(&self) -> Option<&dyn EvidencePlugin> {
+        None
+    }
 }
 
 // ============================================================================
@@ -250,6 +348,12 @@ pub struct MapInfo {
     pub display_name: String,
     pub image_url: Option<String>,
     pub game_modes: Vec<String>,
+    /// External identifier (e.g., Steam Workshop ID).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+    /// External URL (e.g., full Steam Workshop URL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_url: Option<String>,
 }
 
 /// Rank tier definition.
@@ -277,7 +381,7 @@ pub trait TournamentPlugin: GamePlugin {
     ///
     /// Returns a list of veto format configurations that define
     /// the sequence of bans, picks, and deciders.
-    fn veto_formats(&self) -> Vec<VetoFormat> {
+    fn veto_formats(&self) -> Vec<VetoFormatConfig> {
         Vec::new()
     }
 
@@ -287,28 +391,46 @@ pub trait TournamentPlugin: GamePlugin {
     fn default_veto_format(&self, match_format: MatchFormat) -> Option<String> {
         let formats = self.veto_formats();
         match match_format {
-            MatchFormat::Bo1 => formats.iter().find(|f| f.id.contains("bo1")).map(|f| f.id.clone()),
-            MatchFormat::Bo3 => formats.iter().find(|f| f.id.contains("bo3")).map(|f| f.id.clone()),
-            MatchFormat::Bo5 => formats.iter().find(|f| f.id.contains("bo5")).map(|f| f.id.clone()),
-            MatchFormat::Bo7 => formats.iter().find(|f| f.id.contains("bo7")).map(|f| f.id.clone()),
+            MatchFormat::Bo1 => formats
+                .iter()
+                .find(|f| f.id.contains("bo1"))
+                .map(|f| f.id.clone()),
+            MatchFormat::Bo3 => formats
+                .iter()
+                .find(|f| f.id.contains("bo3"))
+                .map(|f| f.id.clone()),
+            MatchFormat::Bo5 => formats
+                .iter()
+                .find(|f| f.id.contains("bo5"))
+                .map(|f| f.id.clone()),
+            MatchFormat::Bo7 => formats
+                .iter()
+                .find(|f| f.id.contains("bo7"))
+                .map(|f| f.id.clone()),
         }
     }
 
     /// Validate a map pool for a specific veto format.
     ///
     /// Returns an error if the map pool is insufficient for the veto format.
-    fn validate_map_pool_for_veto(&self, maps: &[String], veto_format_id: &str) -> Result<(), String> {
+    fn validate_map_pool_for_veto(
+        &self,
+        maps: &[String],
+        veto_format_id: &str,
+    ) -> Result<(), String> {
         // First validate the maps exist
         self.validate_map_pool(maps)?;
 
         // Then check count requirements
-        if let Some(format) = self.veto_formats().iter().find(|f| f.id == veto_format_id) {
-            if maps.len() < format.min_map_pool {
-                return Err(format!(
-                    "Map pool requires at least {} maps for {} format, got {}",
-                    format.min_map_pool, format.display_name, maps.len()
-                ));
-            }
+        if let Some(format) = self.veto_formats().iter().find(|f| f.id == veto_format_id)
+            && maps.len() < format.min_map_pool
+        {
+            return Err(format!(
+                "Map pool requires at least {} maps for {} format, got {}",
+                format.min_map_pool,
+                format.display_name,
+                maps.len()
+            ));
         }
 
         Ok(())
@@ -340,127 +462,37 @@ pub trait TournamentPlugin: GamePlugin {
     fn requires_side_selection(&self) -> bool {
         !self.get_available_sides("").is_empty()
     }
-}
 
-// ============================================================================
-// Veto Types
-// ============================================================================
-
-/// Map veto format configuration.
-///
-/// Defines the sequence of actions (bans, picks, decider) for a veto session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VetoFormat {
-    /// Unique identifier for this format (e.g., "bo3_veto").
-    pub id: String,
-    /// Display name (e.g., "Best of 3 Veto").
-    pub display_name: String,
-    /// Description of the format.
-    pub description: String,
-    /// Sequence of veto actions.
-    pub sequence: Vec<VetoFormatAction>,
-    /// Minimum maps required in the pool.
-    pub min_map_pool: usize,
-}
-
-impl VetoFormat {
-    /// Create a standard Bo1 veto format (6 bans, 1 decider).
-    pub fn bo1() -> Self {
-        Self {
-            id: "bo1_veto".to_string(),
-            display_name: "Best of 1 Veto".to_string(),
-            description: "Teams alternate banning until one map remains".to_string(),
-            sequence: vec![
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 0, action_type: VetoActionType::Decider },
-            ],
-            min_map_pool: 7,
-        }
+    /// Get side selection modes this game supports.
+    fn available_side_selection_modes(&self) -> Vec<SideSelectionMode> {
+        vec![SideSelectionMode::Knife]
     }
 
-    /// Create a standard Bo3 veto format (Ban-Ban-Pick-Pick-Ban-Ban-Decider).
-    pub fn bo3() -> Self {
-        Self {
-            id: "bo3_veto".to_string(),
-            display_name: "Best of 3 Veto".to_string(),
-            description: "Ban-Ban-Pick-Pick-Ban-Ban-Decider".to_string(),
-            sequence: vec![
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 0, action_type: VetoActionType::Decider },
-            ],
-            min_map_pool: 7,
-        }
+    /// Get the default side selection mode for this game.
+    fn default_side_selection_mode(&self) -> SideSelectionMode {
+        SideSelectionMode::Knife
     }
 
-    /// Create a standard Bo5 veto format (Ban-Ban-Pick-Pick-Pick-Pick-Decider).
-    pub fn bo5() -> Self {
-        Self {
-            id: "bo5_veto".to_string(),
-            display_name: "Best of 5 Veto".to_string(),
-            description: "Ban-Ban-Pick-Pick-Pick-Pick-Decider".to_string(),
-            sequence: vec![
-                VetoFormatAction { team: 1, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Ban },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 1, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 2, action_type: VetoActionType::Pick },
-                VetoFormatAction { team: 0, action_type: VetoActionType::Decider },
-            ],
-            min_map_pool: 7,
-        }
+    // ========================================================================
+    // Award Stats
+    // ========================================================================
+
+    /// Get the stat catalog for this game.
+    ///
+    /// Award templates reference stats by `key`; the catalog drives UI pickers.
+    /// Extraction (`extract_stat_facts`) may emit additional open-set keys
+    /// (e.g. per-weapon kills) beyond what's listed here.
+    fn stat_definitions(&self) -> Vec<StatDefinition> {
+        vec![]
     }
 
-    /// Get the total number of maps selected (picks + deciders).
-    pub fn maps_selected(&self) -> usize {
-        self.sequence
-            .iter()
-            .filter(|a| matches!(a.action_type, VetoActionType::Pick | VetoActionType::Decider))
-            .count()
-    }
-}
-
-/// A single action in the veto format sequence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VetoFormatAction {
-    /// Which team performs this action.
-    /// - 0 = automatic (decider)
-    /// - 1 = team with first action (coin flip winner or their opponent)
-    /// - 2 = team with second action
-    pub team: u8,
-    /// Type of action.
-    pub action_type: VetoActionType,
-}
-
-/// Type of veto action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum VetoActionType {
-    /// Remove a map from the pool.
-    Ban,
-    /// Select a map to be played.
-    Pick,
-    /// Last remaining map (automatic selection).
-    Decider,
-}
-
-impl std::fmt::Display for VetoActionType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ban => write!(f, "ban"),
-            Self::Pick => write!(f, "pick"),
-            Self::Decider => write!(f, "decider"),
-        }
+    /// Extract per-player stat facts from a demo's stats JSON.
+    ///
+    /// Returns an EAV-shaped fact list keyed by Steam ID. Games that don't
+    /// support fact extraction return an empty list.
+    fn extract_stat_facts(&self, stats_json: &Value) -> Vec<StatFact> {
+        let _ = stats_json;
+        vec![]
     }
 }
 
@@ -490,10 +522,7 @@ pub struct SideOption {
 // ============================================================================
 
 use crate::error::PluginError;
-use crate::types::{
-    DemoMetadata, DiscoveredEvidence, EvidenceStorage, EvidenceValidation, GameResult,
-    MatchContext,
-};
+use portal_core::types::evidence::EvidenceType;
 
 /// Extension trait for evidence discovery and validation.
 ///
@@ -507,8 +536,8 @@ pub trait EvidencePlugin: TournamentPlugin {
     /// that might be relevant to the given match context.
     async fn discover_evidence(
         &self,
-        match_context: &MatchContext,
-    ) -> Result<Vec<DiscoveredEvidence>, PluginError> {
+        match_context: &MatchEvidenceContext,
+    ) -> Result<Vec<DiscoveredEvidenceData>, PluginError> {
         // Default: no evidence discovery
         let _ = match_context;
         Ok(Vec::new())
@@ -521,11 +550,11 @@ pub trait EvidencePlugin: TournamentPlugin {
     async fn validate_evidence(
         &self,
         evidence_storage: &EvidenceStorage,
-        claimed_result: &GameResult,
-    ) -> Result<EvidenceValidation, PluginError> {
+        claimed_result: &GameMatchResult,
+    ) -> Result<EvidenceValidationResult, PluginError> {
         // Default: accept without validation
         let _ = (evidence_storage, claimed_result);
-        Ok(EvidenceValidation {
+        Ok(EvidenceValidationResult {
             is_valid: true,
             confidence: 0.0, // No confidence since we didn't actually validate
             extracted_result: None,
@@ -541,7 +570,7 @@ pub trait EvidencePlugin: TournamentPlugin {
     async fn get_demo_metadata(
         &self,
         storage: &EvidenceStorage,
-    ) -> Result<DemoMetadata, PluginError> {
+    ) -> Result<DemoFileMetadata, PluginError> {
         let _ = storage;
         Err(PluginError::NotSupported(
             "Demo metadata extraction not supported for this game".to_string(),
@@ -559,7 +588,7 @@ pub trait EvidencePlugin: TournamentPlugin {
     }
 
     /// Get the list of supported evidence types.
-    fn supported_evidence_types(&self) -> Vec<crate::types::EvidenceType> {
+    fn supported_evidence_types(&self) -> Vec<EvidenceType> {
         Vec::new()
     }
 

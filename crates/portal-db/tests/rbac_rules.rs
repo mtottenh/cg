@@ -5,9 +5,9 @@
 
 use chrono::{Duration, Utc};
 use portal_core::UserId;
+use portal_db::DbPool;
 use portal_db::entities::{NewRole, NewUserRole};
 use portal_db::repositories::{PermissionRepository, RoleRepository};
-use portal_db::DbPool;
 use portal_test::database::TestDb;
 use uuid::Uuid;
 
@@ -17,14 +17,14 @@ use uuid::Uuid;
 
 async fn create_test_user(pool: &DbPool, suffix: &str) -> Uuid {
     let user = sqlx::query_as::<_, (Uuid,)>(
-        r#"
+        r"
         INSERT INTO users (username, email, password_hash)
         VALUES ($1, $2, 'hash')
         RETURNING id
-        "#,
+        ",
     )
-    .bind(format!("rbacrulesuser{}", suffix))
-    .bind(format!("rbacrules{}@example.com", suffix))
+    .bind(format!("rbacrulesuser{suffix}"))
+    .bind(format!("rbacrules{suffix}@example.com"))
     .fetch_one(pool)
     .await
     .unwrap();
@@ -33,14 +33,14 @@ async fn create_test_user(pool: &DbPool, suffix: &str) -> Uuid {
 
 async fn create_test_permission(pool: &DbPool, name: &str) -> Uuid {
     let perm = sqlx::query_as::<_, (Uuid,)>(
-        r#"
+        r"
         INSERT INTO permissions (name, display_name, category)
         VALUES ($1, $2, 'test')
         RETURNING id
-        "#,
+        ",
     )
     .bind(name)
-    .bind(format!("{} Permission", name))
+    .bind(format!("{name} Permission"))
     .fetch_one(pool)
     .await
     .unwrap();
@@ -55,7 +55,7 @@ async fn create_role_with_permission(
 ) -> (Uuid, Uuid) {
     let new_role = NewRole {
         name: role_name.to_string(),
-        display_name: format!("{} Role", role_name),
+        display_name: format!("{role_name} Role"),
         description: None,
         category: "custom".to_string(),
         priority: 5,
@@ -176,10 +176,7 @@ async fn test_expired_role_no_longer_grants_permission() {
         .user_has_permission(UserId::from(user_id), "expiring_perm")
         .await
         .unwrap();
-    assert!(
-        !has_perm,
-        "Expired role should not grant permission"
-    );
+    assert!(!has_perm, "Expired role should not grant permission");
 }
 
 /// Test that a revoked role no longer grants permission.
@@ -223,10 +220,7 @@ async fn test_revoked_role_no_longer_grants_permission() {
         .user_has_permission(UserId::from(user_id), "revoking_perm")
         .await
         .unwrap();
-    assert!(
-        !has_perm,
-        "Revoked role should not grant permission"
-    );
+    assert!(!has_perm, "Revoked role should not grant permission");
 }
 
 /// Test that system roles cannot be deleted.
@@ -237,11 +231,11 @@ async fn test_system_roles_cannot_be_deleted() {
 
     // Create a system role directly in DB
     let system_role_id: (Uuid,) = sqlx::query_as(
-        r#"
+        r"
         INSERT INTO roles (name, display_name, category, priority, is_system)
         VALUES ('system_admin', 'System Admin', 'system', 100, TRUE)
         RETURNING id
-        "#,
+        ",
     )
     .fetch_one(&db.pool)
     .await
@@ -254,7 +248,10 @@ async fn test_system_roles_cannot_be_deleted() {
 
     // Verify role still exists
     let role = role_repo.find_by_id(system_role_id.0).await.unwrap();
-    assert!(role.is_some(), "System role should still exist after delete attempt");
+    assert!(
+        role.is_some(),
+        "System role should still exist after delete attempt"
+    );
 }
 
 /// Test that a non-system role can be deleted.
@@ -292,7 +289,7 @@ async fn test_roles_ordered_by_priority() {
     for (name, priority) in [("low_role", 1), ("high_role", 100), ("mid_role", 50)] {
         let new_role = NewRole {
             name: name.to_string(),
-            display_name: format!("{} Role", name),
+            display_name: format!("{name} Role"),
             description: None,
             category: "custom".to_string(),
             priority,
@@ -304,10 +301,7 @@ async fn test_roles_ordered_by_priority() {
     let roles = role_repo.list().await.unwrap();
 
     // Filter to our test roles
-    let test_roles: Vec<_> = roles
-        .iter()
-        .filter(|r| r.name.ends_with("_role"))
-        .collect();
+    let test_roles: Vec<_> = roles.iter().filter(|r| r.name.ends_with("_role")).collect();
 
     // Should be ordered highest priority first
     for i in 1..test_roles.len() {

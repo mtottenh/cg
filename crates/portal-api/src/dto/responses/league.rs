@@ -2,8 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use portal_domain::entities::league::{
-    League, LeagueInvitation,
-    LeagueMemberWithUser, UserLeagueMembership,
+    League, LeagueInvitation, LeagueMemberWithUser, UserLeagueMembership,
 };
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -21,6 +20,9 @@ pub struct LeagueResponse {
     pub logo_url: Option<String>,
     pub access_type: String,
     pub status: String,
+    /// League configuration including entry requirements.
+    /// Entry requirements are stored under the `"eligibility"` key.
+    pub settings: serde_json::Value,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -37,6 +39,7 @@ impl From<League> for LeagueResponse {
             logo_url: league.logo_url,
             access_type: league.access_type.as_str().to_string(),
             status: league.status.as_str().to_string(),
+            settings: league.settings,
             created_by: league.created_by.to_string(),
             created_at: league.created_at,
             updated_at: league.updated_at,

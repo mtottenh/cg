@@ -2,8 +2,8 @@
 
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{
-    ApplyToLeagueRequest, CreateLeagueRequest, InviteToLeagueRequest, UpdateLeagueMemberRoleRequest,
-    UpdateLeagueRequest,
+    ApplyToLeagueRequest, CreateLeagueRequest, InviteToLeagueRequest,
+    UpdateLeagueMemberRoleRequest, UpdateLeagueRequest,
 };
 use crate::dto::responses::{
     LeagueInvitationResponse, LeagueMemberBasicResponse, LeagueMemberResponse, LeagueResponse,
@@ -11,12 +11,39 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::LeaguesState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{permissions, GameId, LeagueId, ScopeType, UserId};
+use portal_core::{GameId, LeagueId, ScopeType, UserId, permissions};
 use portal_domain::entities::league::LeagueMembershipType;
+
+/// Check league entry requirements using the eligibility service.
+///
+/// Delegates to `EligibilityService::check_players_from_settings` which
+/// parses restrictions from the league's settings JSONB, fetches the
+/// player's game profile and rating stats for the correct game, and
+/// runs the standard eligibility check.
+async fn check_league_entry_requirements(
+    state: &LeaguesState,
+    league: &portal_domain::entities::league::League,
+    player_id: portal_core::PlayerId,
+) -> Result<(), ApiError> {
+    let violations = state
+        .eligibility_service
+        .check_players_from_settings(&league.settings, league.game_id, &[player_id])
+        .await?;
+
+    if violations.is_empty() {
+        return Ok(());
+    }
+
+    let messages: Vec<String> = violations.iter().map(|v| v.message.clone()).collect();
+    Err(ApiError::bad_request(format!(
+        "You do not meet the entry requirements: {}",
+        messages.join("; ")
+    )))
+}
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -63,7 +90,7 @@ const fn default_per_page() -> i64 {
     tag = "leagues"
 )]
 pub async fn create_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<CreateLeagueRequest>,
@@ -119,15 +146,11 @@ pub async fn create_league(
     tag = "leagues"
 )]
 pub async fn get_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     headers: HeaderMap,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
     let league = state.league_service.get_league(league_id).await?;
 
@@ -151,7 +174,7 @@ pub async fn get_league(
     tag = "leagues"
 )]
 pub async fn get_league_by_slug(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     headers: HeaderMap,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
@@ -176,7 +199,7 @@ pub async fn get_league_by_slug(
     tag = "leagues"
 )]
 pub async fn list_leagues(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     headers: HeaderMap,
     Query(params): Query<ListLeaguesParams>,
 ) -> ApiResult<Json<PaginatedResponse<LeagueResponse>>> {
@@ -232,22 +255,22 @@ pub async fn list_leagues(
     tag = "leagues"
 )]
 pub async fn update_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
     ValidatedJson(req): ValidatedJson<UpdateLeagueRequest>,
 ) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
-
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::SETTINGS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::SETTINGS_MANAGE,
+        )
         .await?;
 
     // Convert request to domain command
@@ -282,18 +305,17 @@ pub async fn update_league(
     tag = "leagues"
 )]
 pub async fn list_members(
-    State(state): State<AppState>,
-    Path(league_id): Path<String>,
+    State(state): State<LeaguesState>,
+    Path(league_id): Path<LeagueId>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<Vec<LeagueMemberResponse>>> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
-
     let offset = i64::from((params.page.max(1) - 1) * params.per_page);
     let limit = i64::from(params.per_page.clamp(1, 100));
 
-    let (members, _total) = state.league_service.get_members(league_id, limit, offset).await?;
+    let (members, _total) = state
+        .league_service
+        .get_members(league_id, limit, offset)
+        .await?;
 
     let response: Vec<LeagueMemberResponse> = members
         .into_iter()
@@ -321,13 +343,13 @@ pub async fn list_members(
     tag = "leagues"
 )]
 pub async fn join_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<LeagueMemberBasicResponse>> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
+    // Check entry requirements via game plugin before joining
+    let league = state.league_service.get_league(league_id).await?;
+    check_league_entry_requirements(&state, &league, auth.player_id).await?;
 
     let member = state
         .league_service
@@ -353,14 +375,10 @@ pub async fn join_league(
     tag = "leagues"
 )]
 pub async fn leave_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
 ) -> ApiResult<StatusCode> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
-
     state
         .league_service
         .leave_league(league_id, auth.user_id)
@@ -389,22 +407,19 @@ pub async fn leave_league(
     tag = "leagues"
 )]
 pub async fn update_member_role(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
-    Path((league_id, user_id)): Path<(String, String)>,
-    Json(req): Json<UpdateLeagueMemberRoleRequest>,
+    Path((league_id, user_id)): Path<(LeagueId, UserId)>,
+    ValidatedJson(req): ValidatedJson<UpdateLeagueMemberRoleRequest>,
 ) -> ApiResult<Json<LeagueMemberBasicResponse>> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
-    let user_id: UserId = user_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid user ID format"))?;
-
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     // Parse membership type
@@ -437,21 +452,18 @@ pub async fn update_member_role(
     tag = "leagues"
 )]
 pub async fn remove_member(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
-    Path((league_id, user_id)): Path<(String, String)>,
+    Path((league_id, user_id)): Path<(LeagueId, UserId)>,
 ) -> ApiResult<StatusCode> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
-    let user_id: UserId = user_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid user ID format"))?;
-
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     state
@@ -485,17 +497,17 @@ pub async fn remove_member(
     tag = "leagues"
 )]
 pub async fn apply_to_league(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
     ValidatedJson(req): ValidatedJson<ApplyToLeagueRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueInvitationResponse>>)> {
     let request_id = get_request_id(&headers);
 
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
+    // Check entry requirements via game plugin before applying
+    let league = state.league_service.get_league(league_id).await?;
+    check_league_entry_requirements(&state, &league, auth.player_id).await?;
 
     let application = state
         .league_service
@@ -531,18 +543,14 @@ pub async fn apply_to_league(
     tag = "leagues"
 )]
 pub async fn invite_user(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
     ValidatedJson(req): ValidatedJson<InviteToLeagueRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueInvitationResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
     let target_user_id: UserId = req
         .user_id
         .parse()
@@ -550,7 +558,11 @@ pub async fn invite_user(
 
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     let invitation = state
@@ -584,18 +596,18 @@ pub async fn invite_user(
     tag = "leagues"
 )]
 pub async fn list_invitations(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<Vec<LeagueInvitationResponse>>> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
-
     // Check RBAC permission to view invitations
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     let all_pending = state
@@ -606,7 +618,9 @@ pub async fn list_invitations(
     // Filter to only show invitations (sent by admins)
     let response: Vec<LeagueInvitationResponse> = all_pending
         .into_iter()
-        .filter(|inv| inv.invitation_type == portal_domain::entities::league::LeagueInvitationType::Invite)
+        .filter(|inv| {
+            inv.invitation_type == portal_domain::entities::league::LeagueInvitationType::Invite
+        })
         .map(LeagueInvitationResponse::from)
         .collect();
 
@@ -630,18 +644,18 @@ pub async fn list_invitations(
     tag = "leagues"
 )]
 pub async fn list_applications(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
-    Path(league_id): Path<String>,
+    Path(league_id): Path<LeagueId>,
 ) -> ApiResult<Json<Vec<LeagueInvitationResponse>>> {
-    let league_id: LeagueId = league_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
-
     // Check RBAC permission to view applications
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     let all_pending = state
@@ -652,7 +666,10 @@ pub async fn list_applications(
     // Filter to only show applications (submitted by users)
     let response: Vec<LeagueInvitationResponse> = all_pending
         .into_iter()
-        .filter(|inv| inv.invitation_type == portal_domain::entities::league::LeagueInvitationType::Application)
+        .filter(|inv| {
+            inv.invitation_type
+                == portal_domain::entities::league::LeagueInvitationType::Application
+        })
         .map(LeagueInvitationResponse::from)
         .collect();
 
@@ -677,7 +694,7 @@ pub async fn list_applications(
     tag = "leagues"
 )]
 pub async fn approve_application(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path((league_id, application_id)): Path<(String, String)>,
@@ -691,7 +708,11 @@ pub async fn approve_application(
 
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     let member = state
@@ -720,7 +741,7 @@ pub async fn approve_application(
     tag = "leagues"
 )]
 pub async fn reject_application(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path((league_id, application_id)): Path<(String, String)>,
@@ -734,7 +755,11 @@ pub async fn reject_application(
 
     // Check RBAC permission
     perm_checker
-        .require_league_permission(&auth, league_id.as_uuid(), permissions::league::MEMBERS_MANAGE)
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::MEMBERS_MANAGE,
+        )
         .await?;
 
     state
@@ -761,13 +786,10 @@ pub async fn reject_application(
     tag = "leagues"
 )]
 pub async fn get_my_leagues(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
 ) -> ApiResult<Json<Vec<UserLeagueMembershipResponse>>> {
-    let memberships = state
-        .league_service
-        .get_user_leagues(auth.user_id)
-        .await?;
+    let memberships = state.league_service.get_user_leagues(auth.user_id).await?;
 
     let response: Vec<UserLeagueMembershipResponse> = memberships
         .into_iter()
@@ -789,7 +811,7 @@ pub async fn get_my_leagues(
     tag = "leagues"
 )]
 pub async fn get_my_invitations(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
 ) -> ApiResult<Json<Vec<LeagueInvitationResponse>>> {
     let invitations = state
@@ -821,7 +843,7 @@ pub async fn get_my_invitations(
     tag = "leagues"
 )]
 pub async fn accept_invitation(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     Path(invitation_id): Path<String>,
 ) -> ApiResult<Json<LeagueMemberBasicResponse>> {
@@ -853,7 +875,7 @@ pub async fn accept_invitation(
     tag = "leagues"
 )]
 pub async fn decline_invitation(
-    State(state): State<AppState>,
+    State(state): State<LeaguesState>,
     auth: AuthenticatedUser,
     Path(invitation_id): Path<String>,
 ) -> ApiResult<StatusCode> {

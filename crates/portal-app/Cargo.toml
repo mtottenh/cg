@@ -40,3 +40,48 @@ anyhow = { workspace = true }
 
 [lints]
 workspace = true
+
+# ---------------------------------------------------------------------------
+# cargo-deb packaging
+#
+# Build with:   cargo deb -p portal-app
+# Output:       target/debian/portal-api_<version>_amd64.deb
+#
+# The package installs a single binary at /usr/bin/portal-api, a systemd
+# unit at /lib/systemd/system/portal-api.service, and an example env file
+# at /etc/portal/api.env.example. The maintainer postinst creates the
+# `portal` system user, the /var/lib/portal and /etc/portal directories,
+# copies the env example into place on first install (never on upgrade),
+# and enables + starts the service.
+#
+# Migrations are embedded at compile time via sqlx::migrate!(...) and run
+# on startup, so the deb contains nothing extra for migrations.
+# ---------------------------------------------------------------------------
+[package.metadata.deb]
+name = "portal-api"
+maintainer = "Gaming Portal Ops <ops@gaming-portal.invalid>"
+copyright = "2026, Gaming Portal"
+extended-description = """\
+Multi-game competitive gaming portal API.
+Rust/Axum/SQLx backend exposing ~230 OpenAPI endpoints for players, teams,
+leagues, tournaments, disputes, evidence, and demo catalog."""
+depends = "$auto, ca-certificates, adduser"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/portal", "usr/bin/portal-api", "755"],
+    # The ops CLI ships alongside the server (like psql with postgres) so an
+    # operator can bootstrap the first admin, mint service API keys, manage
+    # roles/bans, and import players directly on the box. Build it in the same
+    # `cargo build --release` (add -p portal-cli) before `cargo deb`.
+    ["target/release/portal-cli", "usr/bin/portal-cli", "755"],
+    # cargo-deb resolves asset source paths relative to THIS crate's dir
+    # (crates/portal-app/), so dist/ paths are crate-relative; target/release/
+    # is special-cased to the workspace target dir.
+    ["dist/portal-api.env.example", "etc/portal/api.env.example", "0644"],
+    ["dist/portal-api.service", "lib/systemd/system/portal-api.service", "0644"],
+    ["dist/README.Debian", "usr/share/doc/portal-api/README.Debian", "0644"],
+]
+maintainer-scripts = "dist/maintainer-scripts"
+conf-files = ["/etc/portal/api.env"]
+systemd-units = { unit-name = "portal-api", enable = true, start = true, restart-after-upgrade = true }

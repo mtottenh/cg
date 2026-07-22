@@ -7,12 +7,15 @@ use crate::dto::responses::{
     ResultReviewSummaryResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
+use crate::state::ResultReviewState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use axum::Json;
 use portal_core::{ResultReviewId, TournamentMatchId, TournamentRegistrationId};
+use portal_domain::repositories::tournament::TournamentMatchRepository;
+use portal_domain::services::tournament::MatchCompletionInput;
+use tracing::warn;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -44,22 +47,20 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "result_reviews"
 )]
 pub async fn get_result_review(
-    State(state): State<AppState>,
+    State(state): State<ResultReviewState>,
     _auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let review = state
         .result_review_service
         .get_for_match(match_id)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("No result review found for match {match_id}")))?;
+        .ok_or_else(|| {
+            ApiError::not_found(format!("No result review found for match {match_id}"))
+        })?;
 
     Ok(Json(DataResponse::new(
         ResultReviewResponse::from(review),
@@ -90,29 +91,58 @@ pub async fn get_result_review(
     tag = "result_reviews"
 )]
 pub async fn acknowledge_result_review(
-    State(state): State<AppState>,
+    State(state): State<ResultReviewState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     Query(params): Query<AcknowledgeParams>,
 ) -> ApiResult<Json<DataResponse<AcknowledgmentResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let registration_id: TournamentRegistrationId = params
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
 
+    // The caller must belong to the registration they acknowledge for —
+    // directly as the registered player, or as an active member of the
+    // registration's team-season. Tournament admins may acknowledge on
+    // behalf of a captain.
+    if !perm_checker
+        .has_admin_override(&auth, portal_core::ScopeType::Tournament)
+        .await
+    {
+        let registration = state
+            .registration_service
+            .get_registration(registration_id)
+            .await?;
+
+        let is_registered_player = registration.player_id == Some(auth.player_id);
+        let is_team_member = if let Some(ts_id) = registration.team_season_id {
+            state
+                .league_team_service
+                .is_member(ts_id, auth.player_id)
+                .await?
+        } else {
+            false
+        };
+
+        if !is_registered_player && !is_team_member {
+            return Err(ApiError::forbidden(
+                "Not authorized to acknowledge for this registration",
+            ));
+        }
+    }
+
     // Get the review first
     let review = state
         .result_review_service
         .get_for_match(match_id)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("No result review found for match {match_id}")))?;
+        .ok_or_else(|| {
+            ApiError::not_found(format!("No result review found for match {match_id}"))
+        })?;
 
     // Acknowledge
     let updated_review = state
@@ -126,6 +156,19 @@ pub async fn acknowledge_result_review(
     } else {
         "Acknowledgment recorded. Waiting for the other captain.".to_string()
     };
+
+    // If both captains acknowledged and the review only has roster issues
+    // (no score/winner mismatch), resume the saga for bracket progression
+    if both_acknowledged
+        && updated_review.is_roster_only()
+        && let Err(e) = resume_saga_after_review(&state, match_id).await
+    {
+        warn!(
+            match_id = %match_id,
+            error = %e,
+            "Failed to resume saga after both captains acknowledged"
+        );
+    }
 
     Ok(Json(DataResponse::new(
         AcknowledgmentResponse {
@@ -164,15 +207,20 @@ pub struct AcknowledgeParams {
     tag = "result_reviews"
 )]
 pub async fn list_pending_reviews(
-    State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    State(state): State<ResultReviewState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<DataResponse<ResultReviewListResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // TODO: Check admin permission
-    // For now, any authenticated user can access (should be restricted)
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let limit = params.limit();
     let offset = params.offset();
@@ -184,7 +232,10 @@ pub async fn list_pending_reviews(
 
     Ok(Json(DataResponse::new(
         ResultReviewListResponse {
-            reviews: reviews.into_iter().map(ResultReviewSummaryResponse::from).collect(),
+            reviews: reviews
+                .into_iter()
+                .map(ResultReviewSummaryResponse::from)
+                .collect(),
             total,
         },
         request_id,
@@ -210,16 +261,20 @@ pub async fn list_pending_reviews(
     tag = "result_reviews"
 )]
 pub async fn get_result_review_by_id(
-    State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    State(state): State<ResultReviewState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(review_id): Path<String>,
+    Path(review_id): Path<ResultReviewId>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let review_id: ResultReviewId = review_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid review ID format"))?;
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let review = state
         .result_review_service
@@ -255,22 +310,36 @@ pub async fn get_result_review_by_id(
     tag = "result_reviews"
 )]
 pub async fn approve_result_review(
-    State(state): State<AppState>,
+    State(state): State<ResultReviewState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(review_id): Path<String>,
+    Path(review_id): Path<ResultReviewId>,
     ValidatedJson(req): ValidatedJson<AdminReviewDecisionRequest>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let review_id: ResultReviewId = review_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid review ID format"))?;
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let review = state
         .result_review_service
         .approve(review_id, auth.user_id, req.notes)
         .await?;
+
+    // Resume the match completion saga for bracket progression
+    if let Err(e) = resume_saga_after_review(&state, review.match_id).await {
+        warn!(
+            review_id = %review_id,
+            match_id = %review.match_id,
+            error = %e,
+            "Failed to resume saga after review approval"
+        );
+    }
 
     Ok(Json(DataResponse::new(
         ResultReviewResponse::from(review),
@@ -300,25 +369,106 @@ pub async fn approve_result_review(
     tag = "result_reviews"
 )]
 pub async fn reject_result_review(
-    State(state): State<AppState>,
+    State(state): State<ResultReviewState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(review_id): Path<String>,
+    Path(review_id): Path<ResultReviewId>,
     ValidatedJson(req): ValidatedJson<AdminReviewDecisionRequest>,
 ) -> ApiResult<Json<DataResponse<ResultReviewResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let review_id: ResultReviewId = review_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid review ID format"))?;
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let review = state
         .result_review_service
         .reject(review_id, auth.user_id, req.notes)
         .await?;
 
+    // Revert the match back to in_progress so a new result can be submitted.
+    // This bypasses the normal state machine since Completed -> InProgress
+    // is not a standard transition.
+    if let Err(e) = state
+        .tournament_match_repo
+        .update_status(
+            review.match_id,
+            portal_core::types::TournamentMatchStatus::InProgress,
+        )
+        .await
+    {
+        warn!(
+            review_id = %review_id,
+            match_id = %review.match_id,
+            error = %e,
+            "Failed to revert match status after review rejection"
+        );
+    }
+
     Ok(Json(DataResponse::new(
         ResultReviewResponse::from(review),
         request_id,
     )))
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/// Resume the match completion saga after a review has been resolved.
+///
+/// Builds the `MatchCompletionInput` from the completed match state and calls
+/// `continue_after_review` to run the remaining progression steps.
+async fn resume_saga_after_review(
+    state: &ResultReviewState,
+    match_id: TournamentMatchId,
+) -> Result<(), portal_core::DomainError> {
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await?
+        .ok_or(portal_core::DomainError::TournamentMatchNotFound(match_id))?;
+
+    let winner_registration_id = match_.winner_registration_id.ok_or_else(|| {
+        portal_core::DomainError::InvalidState("Match has no winner set".to_string())
+    })?;
+
+    let loser_registration_id =
+        if match_.participant1_registration_id == Some(winner_registration_id) {
+            match_.participant2_registration_id
+        } else {
+            match_.participant1_registration_id
+        }
+        .ok_or_else(|| {
+            portal_core::DomainError::InvalidState("Match has no loser participant".to_string())
+        })?;
+
+    let (winner_score, loser_score) =
+        if match_.participant1_registration_id == Some(winner_registration_id) {
+            (match_.participant1_score, match_.participant2_score)
+        } else {
+            (match_.participant2_score, match_.participant1_score)
+        };
+
+    let saga_input = MatchCompletionInput {
+        match_id,
+        winner_registration_id,
+        loser_registration_id,
+        winner_score,
+        loser_score,
+        is_forfeit: false,
+        saga_id: None,
+        result_claim_id: None,
+    };
+
+    state
+        .match_completion_saga
+        .continue_after_review(match_id, saga_input)
+        .await?;
+
+    Ok(())
 }

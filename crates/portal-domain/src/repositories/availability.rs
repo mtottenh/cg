@@ -175,6 +175,17 @@ pub trait SuggestedTimeRepository: Send + Sync + 'static {
     /// Delete all suggestions for a match.
     async fn delete_by_match_id(&self, match_id: TournamentMatchId) -> Result<u64, DomainError>;
 
+    /// Delete auto-generated, still-pending suggestions for a match.
+    ///
+    /// Used to give suggestion regeneration replace semantics: stale
+    /// auto-generated proposals are cleared before a fresh pass, so
+    /// regenerating does not accumulate duplicates. Manually-suggested slots
+    /// and any already accepted/rejected/expired decisions are preserved.
+    async fn delete_auto_generated_pending(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<u64, DomainError>;
+
     /// Reject all non-accepted suggestions for a match (when match is scheduled).
     async fn reject_all_pending(&self, match_id: TournamentMatchId) -> Result<u64, DomainError>;
 }

@@ -2,8 +2,8 @@
 
 use crate::{StorageBackend, StorageError, StoreRequest, StoredFile};
 use async_trait::async_trait;
-use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::Client;
+use aws_sdk_s3::presigning::PresigningConfig;
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 use tracing::instrument;
@@ -88,6 +88,24 @@ impl S3Storage {
             public_url.pop();
         }
 
+        Self {
+            client,
+            bucket: bucket.into(),
+            public_url,
+        }
+    }
+
+    /// Create from a pre-configured S3 client (for MinIO/test with path-style).
+    #[must_use]
+    pub fn from_client(
+        client: Client,
+        bucket: impl Into<String>,
+        public_url: impl Into<String>,
+    ) -> Self {
+        let mut public_url = public_url.into();
+        if public_url.ends_with('/') {
+            public_url.pop();
+        }
         Self {
             client,
             bucket: bucket.into(),
@@ -322,9 +340,11 @@ impl S3EvidenceClient for S3Storage {
 
         Ok(ObjectMetadata {
             content_length: response.content_length().unwrap_or(0),
-            content_type: response.content_type().map(|s| s.to_string()),
+            content_type: response
+                .content_type()
+                .map(std::string::ToString::to_string),
             last_modified,
-            etag: response.e_tag().map(|s| s.to_string()),
+            etag: response.e_tag().map(std::string::ToString::to_string),
         })
     }
 

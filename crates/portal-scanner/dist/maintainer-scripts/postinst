@@ -1,0 +1,37 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # The `portal` user is created by portal-api's postinst. Pick it
+        # up if present, create a minimal one if the scanner is installed
+        # standalone.
+        if ! getent passwd portal >/dev/null; then
+            adduser --system --group \
+                --home /var/lib/portal \
+                --no-create-home \
+                --shell /usr/sbin/nologin \
+                --gecos "Gaming Portal scanner" \
+                portal
+        fi
+
+        install -d -o portal -g portal -m 0750 /var/lib/portal
+        install -d -o root   -g portal -m 0750 /etc/portal
+
+        if [ ! -f /etc/portal/scanner.env ]; then
+            cp /etc/portal/scanner.env.example /etc/portal/scanner.env
+            chown root:portal /etc/portal/scanner.env
+            chmod 0640 /etc/portal/scanner.env
+            echo "portal-scanner: seeded /etc/portal/scanner.env from example"
+        fi
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure) ;;
+
+    *)
+        echo "postinst: unknown arg $1" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#

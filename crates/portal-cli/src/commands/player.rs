@@ -3,14 +3,14 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use portal_core::PlayerId;
+use portal_db::PgPool;
 use portal_db::entities::{NewPlayer, UpdatePlayer};
 use portal_db::repositories::{PlayerGameProfileRepository, PlayerRepository};
-use portal_db::PgPool;
 use uuid::Uuid;
 
 use crate::output::{
-    error, format_optional, format_timestamp, format_uuid, output_list, success, OutputFormat,
-    PlayerTableRow,
+    OutputFormat, PlayerTableRow, error, format_optional, format_timestamp, format_uuid,
+    output_list, success,
 };
 
 /// Player management commands.
@@ -73,17 +73,17 @@ enum PlayerSubcommand {
     Stats {
         /// Player ID
         id: Uuid,
-        /// Game ID
+        /// Game ID (UUID)
         #[arg(long)]
-        game: Option<String>,
+        game: Option<Uuid>,
     },
 
     /// Reset player rating
     ResetRating {
         /// Player ID
         id: Uuid,
-        /// Game ID
-        game: String,
+        /// Game ID (UUID)
+        game: Uuid,
     },
 }
 
@@ -129,10 +129,10 @@ impl PlayerCommand {
                 .await
             }
             PlayerSubcommand::Stats { id, game } => {
-                show_stats(&profile_repo, *id, game.as_deref(), format).await
+                show_stats(&profile_repo, *id, *game, format).await
             }
             PlayerSubcommand::ResetRating { id, game } => {
-                reset_rating(&profile_repo, *id, game).await
+                reset_rating(&profile_repo, *id, *game).await
             }
         }
     }
@@ -253,7 +253,7 @@ async fn update_player(
 async fn show_stats(
     repo: &PlayerGameProfileRepository,
     id: Uuid,
-    game: Option<&str>,
+    game: Option<Uuid>,
     format: OutputFormat,
 ) -> Result<()> {
     let player_id = PlayerId::from_uuid(id);
@@ -315,10 +315,7 @@ async fn show_stats(
                 println!("  Rating:      {} (±{})", p.rating, p.rating_deviation);
                 println!("  Rank:        {}", format_optional(&p.rank_tier));
                 println!("  Matches:     {}", p.matches_played);
-                println!(
-                    "  W/L:         {}/{} ({:.1}%)",
-                    p.wins, p.losses, win_rate
-                );
+                println!("  W/L:         {}/{} ({:.1}%)", p.wins, p.losses, win_rate);
                 println!(
                     "  Win Streak:  {} (best: {})",
                     p.win_streak, p.best_win_streak
@@ -330,7 +327,7 @@ async fn show_stats(
     Ok(())
 }
 
-async fn reset_rating(repo: &PlayerGameProfileRepository, id: Uuid, game: &str) -> Result<()> {
+async fn reset_rating(repo: &PlayerGameProfileRepository, id: Uuid, game: Uuid) -> Result<()> {
     let player_id = PlayerId::from_uuid(id);
 
     repo.reset_rating(player_id, game)

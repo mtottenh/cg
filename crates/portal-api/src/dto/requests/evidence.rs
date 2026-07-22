@@ -116,6 +116,10 @@ pub struct LinkDemoRequest {
     /// Optional description.
     #[validate(length(max = 500))]
     pub description: Option<String>,
+
+    /// Catalog demo ID. When provided, also creates a `demo_match_link` so the
+    /// demo appears in `GET /v1/matches/{match_id}/demos`.
+    pub demo_id: Option<String>,
 }
 
 /// Request to get demo stats.

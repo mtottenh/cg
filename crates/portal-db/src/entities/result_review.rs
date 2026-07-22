@@ -5,6 +5,8 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 /// Database row for the `result_reviews` table.
+// Row mirrors the DB schema: each bool is an independent flag column.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, FromRow)]
 pub struct ResultReviewRow {
     pub id: Uuid,

@@ -17,8 +17,7 @@ use crate::entities::dispute::{
 };
 use crate::entities::tournament::TournamentMatch;
 use crate::repositories::dispute::{
-    CreateDispute, CreateDisputeMessage, DisputeMessageRepository, DisputeRepository,
-    UpdateDispute,
+    CreateDispute, CreateDisputeMessage, DisputeMessageRepository, DisputeRepository, UpdateDispute,
 };
 use crate::repositories::tournament::{ResultClaimRepository, TournamentMatchRepository};
 
@@ -69,7 +68,11 @@ where
         let match_ = self.get_match(match_id).await?;
 
         // Validate the match can be disputed
-        self.validate_can_dispute(&match_, disputed_by_registration_id)?;
+        self.validate_can_dispute(
+            &match_,
+            disputed_by_registration_id,
+            result_claim_id.is_some(),
+        )?;
 
         // Check if there's already a pending dispute
         if self.dispute_repo.exists_pending_for_match(match_id).await? {
@@ -79,14 +82,13 @@ where
         }
 
         // If disputing a specific claim, verify it's not the submitter's own claim
-        if let Some(claim_id) = result_claim_id {
-            if let Some(claim) = self.claim_repo.find_by_id(claim_id).await? {
-                if claim.submitted_by_registration_id == disputed_by_registration_id {
-                    return Err(DomainError::InvalidState(
-                        "Cannot dispute your own result claim".to_string(),
-                    ));
-                }
-            }
+        if let Some(claim_id) = result_claim_id
+            && let Some(claim) = self.claim_repo.find_by_id(claim_id).await?
+            && claim.submitted_by_registration_id == disputed_by_registration_id
+        {
+            return Err(DomainError::InvalidState(
+                "Cannot dispute your own result claim".to_string(),
+            ));
         }
 
         // Determine priority based on reason
@@ -96,43 +98,47 @@ where
             _ => DisputePriority::Normal,
         };
 
-        // Create the dispute
+        // Compute the system-message summary snippet before moving
+        // `description` into the create command (byte-safe truncation
+        // via `.chars().take(100)` — the old slice form could panic on
+        // a multi-byte boundary).
+        let summary_snippet: String = description.chars().take(100).collect();
+
+        // Atomic: create dispute + flip match to Disputed + append the
+        // initial system message. Previously these three writes ran
+        // sequentially without a transaction; partial failure could
+        // leave a dispute without a Disputed match (allowing concurrent
+        // result submissions), a Disputed match with no dispute row
+        // (invisible to the admin queue), or a dispute + status with
+        // no opening message. See audit I5. The adapter rewrites
+        // `initial_message.dispute_id` with the just-inserted id before
+        // the message INSERT runs, so the placeholder nil id below is
+        // only a type-level filler.
         let dispute = self
             .dispute_repo
-            .create(CreateDispute {
-                match_id,
-                result_claim_id,
-                disputed_by_registration_id,
-                disputed_by_user_id,
-                reason,
-                description,
-                evidence_ids,
-                original_winner_registration_id: match_.winner_registration_id,
-                original_participant1_score: Some(match_.participant1_score),
-                original_participant2_score: Some(match_.participant2_score),
-                priority,
-            })
-            .await?;
-
-        // Update match status to disputed
-        self.match_repo
-            .update_status(match_id, TournamentMatchStatus::Disputed)
-            .await?;
-
-        // Add system message to thread
-        self.message_repo
-            .create(CreateDisputeMessage {
-                dispute_id: dispute.id,
-                author_user_id: disputed_by_user_id,
-                author_type: AuthorType::System,
-                message: format!(
-                    "Dispute raised: {} - {}",
+            .raise_atomic(
+                CreateDispute {
+                    match_id,
+                    result_claim_id,
+                    disputed_by_registration_id,
+                    disputed_by_user_id,
                     reason,
-                    &dispute.description[..dispute.description.len().min(100)]
-                ),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
+                    description,
+                    evidence_ids,
+                    original_winner_registration_id: match_.winner_registration_id,
+                    original_participant1_score: Some(match_.participant1_score),
+                    original_participant2_score: Some(match_.participant2_score),
+                    priority,
+                },
+                CreateDisputeMessage {
+                    dispute_id: DisputeId::from(uuid::Uuid::nil()),
+                    author_user_id: disputed_by_user_id,
+                    author_type: AuthorType::System,
+                    message: format!("Dispute raised: {reason} - {summary_snippet}"),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
+            )
             .await?;
 
         info!(
@@ -254,26 +260,25 @@ where
             new_participant2_score: None,
         };
 
+        // Atomic: resolve dispute + restore match to Completed +
+        // append resolution message. See audit I5.
         let resolved = self
             .dispute_repo
-            .resolve(dispute_id, resolved_by, resolution)
-            .await?;
-
-        // Restore match status to completed
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Completed)
-            .await?;
-
-        // Add resolution message
-        self.message_repo
-            .create(CreateDisputeMessage {
+            .resolve_with_status_change(
                 dispute_id,
-                author_user_id: resolved_by,
-                author_type: AuthorType::Admin,
-                message: format!("Dispute upheld: {notes}"),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
+                resolved_by,
+                resolution,
+                dispute.match_id,
+                TournamentMatchStatus::Completed,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: resolved_by,
+                    author_type: AuthorType::Admin,
+                    message: format!("Dispute upheld: {notes}"),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
+            )
             .await?;
 
         info!(
@@ -302,20 +307,9 @@ where
         let dispute = self.get_dispute(dispute_id).await?;
         self.validate_can_resolve(&dispute)?;
 
-        let resolution = DisputeResolution {
-            resolution_type: ResolutionType::Overturned,
-            notes: notes.clone(),
-            new_winner_registration_id: Some(new_winner_registration_id),
-            new_participant1_score: Some(new_participant1_score),
-            new_participant2_score: Some(new_participant2_score),
-        };
-
-        let resolved = self
-            .dispute_repo
-            .resolve(dispute_id, resolved_by, resolution)
-            .await?;
-
-        // Update match result
+        // Resolve the loser *before* the atomic call since it requires
+        // a fresh read of the match row. The actual match mutation
+        // happens inside `resolve_with_overturn`'s transaction.
         let match_ = self.get_match(dispute.match_id).await?;
         let loser_id = if match_.participant1_registration_id == Some(new_winner_registration_id) {
             match_.participant2_registration_id
@@ -324,31 +318,42 @@ where
         }
         .ok_or_else(|| DomainError::InvalidState("Cannot determine loser".to_string()))?;
 
-        self.match_repo
-            .submit_result(
+        let resolution = DisputeResolution {
+            resolution_type: ResolutionType::Overturned,
+            notes: notes.clone(),
+            new_winner_registration_id: Some(new_winner_registration_id),
+            new_participant1_score: Some(new_participant1_score),
+            new_participant2_score: Some(new_participant2_score),
+        };
+
+        // Atomic: flip dispute to Resolved + overwrite match result +
+        // append admin resolution message. The old four-call chain
+        // (resolve → submit_result → update_status → message_create)
+        // could leave an overturned dispute whose match still showed
+        // the disputed result, and the bracket progression saga would
+        // advance the wrong winner. See audit I5.
+        let resolved = self
+            .dispute_repo
+            .resolve_with_overturn(
+                dispute_id,
+                resolved_by,
+                resolution,
                 dispute.match_id,
-                new_participant1_score,
-                new_participant2_score,
                 new_winner_registration_id,
                 loser_id,
+                new_participant1_score,
+                new_participant2_score,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: resolved_by,
+                    author_type: AuthorType::Admin,
+                    message: format!(
+                        "Dispute overturned. New scores: {new_participant1_score}-{new_participant2_score}. {notes}"
+                    ),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
             )
-            .await?;
-
-        // Restore match status to completed
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Completed)
-            .await?;
-
-        // Add resolution message
-        self.message_repo
-            .create(CreateDisputeMessage {
-                dispute_id,
-                author_user_id: resolved_by,
-                author_type: AuthorType::Admin,
-                message: format!("Dispute overturned. New scores: {new_participant1_score}-{new_participant2_score}. {notes}"),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
             .await?;
 
         info!(
@@ -388,26 +393,25 @@ where
             new_participant2_score: None,
         };
 
+        // Atomic: resolve dispute + reset match to Ready + append
+        // resolution message. See audit I5.
         let resolved = self
             .dispute_repo
-            .resolve(dispute_id, resolved_by, resolution)
-            .await?;
-
-        // Reset match to Ready status
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Ready)
-            .await?;
-
-        // Add resolution message
-        self.message_repo
-            .create(CreateDisputeMessage {
+            .resolve_with_status_change(
                 dispute_id,
-                author_user_id: resolved_by,
-                author_type: AuthorType::Admin,
-                message: format!("Rematch ordered: {notes}"),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
+                resolved_by,
+                resolution,
+                dispute.match_id,
+                TournamentMatchStatus::Ready,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: resolved_by,
+                    author_type: AuthorType::Admin,
+                    message: format!("Rematch ordered: {notes}"),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
+            )
             .await?;
 
         info!(
@@ -460,37 +464,33 @@ where
             new_participant2_score: Some(new_participant2_score),
         };
 
+        // Atomic: resolve dispute + overwrite match result + append
+        // message. Reuses the same repo path as `resolve_overturn`
+        // because the writes are structurally identical — only the
+        // `resolution.resolution_type` differs. The trailing
+        // `update_status(Completed)` that used to follow was redundant
+        // (submit_result already sets status=completed); dropped as
+        // part of the same audit I5 cleanup.
         let resolved = self
             .dispute_repo
-            .resolve(dispute_id, resolved_by, resolution)
-            .await?;
-
-        // Update match result
-        self.match_repo
-            .submit_result(
+            .resolve_with_overturn(
+                dispute_id,
+                resolved_by,
+                resolution,
                 dispute.match_id,
-                new_participant1_score,
-                new_participant2_score,
                 new_winner_id,
                 loser_id,
+                new_participant1_score,
+                new_participant2_score,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: resolved_by,
+                    author_type: AuthorType::Admin,
+                    message: format!("Scores adjusted to {new_participant1_score}-{new_participant2_score}. {notes}"),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
             )
-            .await?;
-
-        // Restore match status to completed
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Completed)
-            .await?;
-
-        // Add resolution message
-        self.message_repo
-            .create(CreateDisputeMessage {
-                dispute_id,
-                author_user_id: resolved_by,
-                author_type: AuthorType::Admin,
-                message: format!("Scores adjusted to {new_participant1_score}-{new_participant2_score}. {notes}"),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
             .await?;
 
         info!(
@@ -524,26 +524,25 @@ where
             new_participant2_score: None,
         };
 
+        // Atomic: resolve dispute + cancel match + append resolution
+        // message. See audit I5.
         let resolved = self
             .dispute_repo
-            .resolve(dispute_id, resolved_by, resolution)
-            .await?;
-
-        // Cancel the match
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Cancelled)
-            .await?;
-
-        // Add resolution message
-        self.message_repo
-            .create(CreateDisputeMessage {
+            .resolve_with_status_change(
                 dispute_id,
-                author_user_id: resolved_by,
-                author_type: AuthorType::Admin,
-                message: format!("Both teams disqualified: {notes}"),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
+                resolved_by,
+                resolution,
+                dispute.match_id,
+                TournamentMatchStatus::Cancelled,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: resolved_by,
+                    author_type: AuthorType::Admin,
+                    message: format!("Both teams disqualified: {notes}"),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
+            )
             .await?;
 
         info!(
@@ -558,6 +557,18 @@ where
         })
     }
 
+    /// Get the active dispute for a match (if any).
+    ///
+    /// Returns the most recent non-resolved dispute for the given match,
+    /// or None if no active dispute exists.
+    #[instrument(skip(self))]
+    pub async fn get_match_dispute(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<Dispute>, DomainError> {
+        self.dispute_repo.find_pending_by_match(match_id).await
+    }
+
     /// Get pending disputes (admin queue).
     #[instrument(skip(self))]
     pub async fn get_pending_disputes(
@@ -569,6 +580,23 @@ where
     ) -> Result<(Vec<Dispute>, i64), DomainError> {
         self.dispute_repo
             .find_pending(tournament_id, priority, limit, offset)
+            .await
+    }
+
+    /// List disputes with optional filters; `statuses: None` means all
+    /// statuses, so resolved and cancelled disputes remain reachable.
+    #[instrument(skip(self))]
+    pub async fn list_disputes(
+        &self,
+        statuses: Option<Vec<DisputeStatus>>,
+        tournament_id: Option<TournamentId>,
+        match_id: Option<TournamentMatchId>,
+        priority: Option<DisputePriority>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Dispute>, i64), DomainError> {
+        self.dispute_repo
+            .list_filtered(statuses, tournament_id, match_id, priority, limit, offset)
             .await
     }
 
@@ -604,23 +632,22 @@ where
             )));
         }
 
-        let cancelled = self.dispute_repo.cancel(dispute_id).await?;
-
-        // Restore match status
-        self.match_repo
-            .update_status(dispute.match_id, TournamentMatchStatus::Completed)
-            .await?;
-
-        // Add cancellation message
-        self.message_repo
-            .create(CreateDisputeMessage {
+        // Atomic: cancel dispute + restore match to Completed +
+        // append cancellation message. See audit I5.
+        let cancelled = self
+            .dispute_repo
+            .cancel_with_match_restore(
                 dispute_id,
-                author_user_id: cancelled_by,
-                author_type: AuthorType::System,
-                message: "Dispute cancelled".to_string(),
-                evidence_ids: Vec::new(),
-                is_internal: false,
-            })
+                dispute.match_id,
+                CreateDisputeMessage {
+                    dispute_id,
+                    author_user_id: cancelled_by,
+                    author_type: AuthorType::System,
+                    message: "Dispute cancelled".to_string(),
+                    evidence_ids: Vec::new(),
+                    is_internal: false,
+                },
+            )
             .await?;
 
         info!(
@@ -639,26 +666,39 @@ where
         self.match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))
     }
 
-    async fn get_dispute(&self, dispute_id: DisputeId) -> Result<Dispute, DomainError> {
+    /// Fetch a dispute by ID or return a typed `DisputeNotFound` error.
+    ///
+    /// Pub because authorization logic in handlers needs to load the dispute
+    /// metadata (match id, disputed-by user) before deciding whether to
+    /// expose the thread to the caller.
+    pub async fn get_dispute(&self, dispute_id: DisputeId) -> Result<Dispute, DomainError> {
         self.dispute_repo
             .find_by_id(dispute_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("dispute", dispute_id.to_string()))
+            .ok_or(DomainError::DisputeNotFound(dispute_id))
     }
 
     fn validate_can_dispute(
         &self,
         match_: &TournamentMatch,
         disputed_by_registration_id: TournamentRegistrationId,
+        targets_result_claim: bool,
     ) -> Result<(), DomainError> {
-        // Check if match can be disputed
-        if !matches!(
-            match_.status,
-            TournamentMatchStatus::Completed | TournamentMatchStatus::Disputed
-        ) {
+        // Check if match can be disputed. A dispute aimed at a specific
+        // *result claim* is also legal while the match is still live —
+        // that is exactly the "opponent submitted a bogus score, I reject
+        // it" flow behind POST /matches/{id}/result/{claim}/dispute, which
+        // fires before the claim is confirmed and the match completed.
+        let live_claim_dispute = targets_result_claim && match_.status.can_submit_result();
+        if !live_claim_dispute
+            && !matches!(
+                match_.status,
+                TournamentMatchStatus::Completed | TournamentMatchStatus::Disputed
+            )
+        {
             return Err(DomainError::InvalidState(format!(
                 "Match in {} status cannot be disputed",
                 match_.status
@@ -666,7 +706,8 @@ where
         }
 
         // Check if the disputer is a participant
-        let is_participant = match_.participant1_registration_id == Some(disputed_by_registration_id)
+        let is_participant = match_.participant1_registration_id
+            == Some(disputed_by_registration_id)
             || match_.participant2_registration_id == Some(disputed_by_registration_id);
 
         if !is_participant {

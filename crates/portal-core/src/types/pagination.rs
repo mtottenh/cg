@@ -164,7 +164,10 @@ mod tests {
 
     #[test]
     fn test_page_request_normalize() {
-        let req = PageRequest { page: 0, per_page: 200 };
+        let req = PageRequest {
+            page: 0,
+            per_page: 200,
+        };
         let normalized = req.normalize();
         assert_eq!(normalized.page, 1);
         assert_eq!(normalized.per_page, MAX_PAGE_SIZE);

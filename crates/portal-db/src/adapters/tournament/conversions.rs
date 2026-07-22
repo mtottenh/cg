@@ -5,9 +5,9 @@ use crate::entities::tournament::{
     TournamentRegistrationRow, TournamentRow, TournamentStageRow, TournamentStandingRow,
 };
 use portal_core::{
-    GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentBracketId, TournamentId,
-    TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId, TournamentRegistrationId,
-    TournamentStageId, UserId,
+    GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentBracketId,
+    TournamentId, TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId,
+    TournamentRegistrationId, TournamentStageId, UserId,
 };
 use portal_domain::entities::tournament::{
     GameStatus, Tournament, TournamentBracket, TournamentMapPool, TournamentMatch,
@@ -178,6 +178,14 @@ impl From<TournamentMatchRow> for TournamentMatch {
             dispute_resolved_at: row.dispute_resolved_at,
             stream_url: row.stream_url,
             vod_url: row.vod_url,
+            check_in_opens_at: row.check_in_opens_at,
+            check_in_deadline: row.check_in_deadline,
+            participant1_checked_in_at: row.participant1_checked_in_at,
+            participant2_checked_in_at: row.participant2_checked_in_at,
+            participant1_checked_in_by: row.participant1_checked_in_by.map(UserId::from_uuid),
+            participant2_checked_in_by: row.participant2_checked_in_by.map(UserId::from_uuid),
+            veto_required: row.veto_required,
+            check_in_required: row.check_in_required,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -191,9 +199,7 @@ impl From<TournamentMatchGameRow> for TournamentMatchGame {
             match_id: TournamentMatchId::from_uuid(row.match_id),
             game_number: row.game_number,
             map_id: row.map_id,
-            map_picked_by: row
-                .map_picked_by
-                .map(TournamentRegistrationId::from_uuid),
+            map_picked_by: row.map_picked_by.map(TournamentRegistrationId::from_uuid),
             side_selection_by: row
                 .side_selection_by
                 .map(TournamentRegistrationId::from_uuid),
@@ -246,6 +252,7 @@ impl From<TournamentStandingRow> for TournamentStanding {
             head_to_head: serde_json::from_value(row.head_to_head).unwrap_or_default(),
             tiebreaker_score: row.tiebreaker_score,
             is_tied: row.is_tied,
+            participant_name: row.participant_name,
             points: row.points,
             updated_at: row.updated_at,
         }

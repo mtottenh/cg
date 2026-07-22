@@ -36,6 +36,8 @@ pub enum VetoAuthorizationRole {
     Delegate,
     /// User is a tournament admin.
     TournamentAdmin,
+    /// User is the registered player of an individual registration.
+    Player,
 }
 
 // =============================================================================
@@ -103,16 +105,26 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(registration_id.to_string())
-            })?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
 
-        // Get team_season_id (required for team registrations)
-        let team_season_id = registration.team_season_id.ok_or_else(|| {
-            DomainError::NotAuthorized(
-                "Individual registrations do not support veto delegation".to_string(),
-            )
-        })?;
+        // Individual registrations have no team_season: the registered
+        // player acts for themself (admins can always act). Previously this
+        // was a hard error, which made veto unusable in individual
+        // tournaments.
+        let Some(team_season_id) = registration.team_season_id else {
+            if self.is_tournament_admin(user_id).await? {
+                debug!("User authorized as tournament admin (individual registration)");
+                return Ok(VetoAuthorizationRole::TournamentAdmin);
+            }
+            if registration.player_id == Some(player_id) {
+                debug!("User authorized as the registered player");
+                return Ok(VetoAuthorizationRole::Player);
+            }
+            return Err(DomainError::NotAuthorized(
+                "Only the registered player can perform veto actions for an individual registration"
+                    .to_string(),
+            ));
+        };
 
         // Check authorization in order of precedence
         // 1. Tournament admin (can always act)
@@ -190,7 +202,7 @@ where
             .delegate_repo
             .find_by_id(delegate_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Delegation {} not found", delegate_id)))?;
+            .ok_or_else(|| DomainError::Internal(format!("Delegation {delegate_id} not found")))?;
 
         if !delegate.is_active() {
             return Err(DomainError::InvalidState(
@@ -323,7 +335,7 @@ where
             .find_by_id(team_season_id)
             .await?
             .ok_or_else(|| {
-                DomainError::Internal(format!("Team season {} not found", team_season_id))
+                DomainError::Internal(format!("Team season {team_season_id} not found"))
             })?;
 
         // Get the team to check ownership
@@ -331,9 +343,7 @@ where
             .team_repo
             .find_by_id(team_season.team_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::not_found("team", team_season.team_id.to_string())
-            })?;
+            .ok_or(DomainError::LeagueTeamNotFound(team_season.team_id))?;
 
         Ok(team.owner_player_id == player_id)
     }

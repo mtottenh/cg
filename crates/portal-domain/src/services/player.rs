@@ -1,10 +1,10 @@
 //! Player service with business logic.
 
-use crate::entities::league_team::PlayerLeagueTeamMembership;
 use crate::entities::Player;
+use crate::entities::league_team::PlayerLeagueTeamMembership;
 use crate::repositories::league_team::LeagueTeamMemberRepository;
-use crate::repositories::{PlayerRepository, UpdatePlayer};
-use portal_core::{DomainError, LeagueSeasonId, PlayerId, UserId};
+use crate::repositories::{PlayerRepository, PlayerSearchFilters, UpdatePlayer};
+use portal_core::{DomainError, FieldError, LeagueSeasonId, PlayerId, UserId, ValidationError};
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -46,7 +46,7 @@ where
         self.player_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::PlayerNotFound(id.to_string()))
+            .ok_or(DomainError::PlayerNotFound(id))
     }
 
     /// Get a player by user ID.
@@ -55,19 +55,46 @@ where
         self.player_repo
             .find_by_user_id(user_id)
             .await?
-            .ok_or_else(|| DomainError::PlayerNotFound(format!("user:{user_id}")))
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "player",
+                query: format!("user:{user_id}"),
+            })
     }
 
-    /// Search players by display name.
+    /// Batch-get players by IDs. Missing IDs are silently skipped.
+    #[instrument(skip(self, ids))]
+    pub async fn get_players_by_ids(&self, ids: &[PlayerId]) -> Result<Vec<Player>, DomainError> {
+        self.player_repo.find_by_ids(ids).await
+    }
+
+    /// Batch-get players by their user IDs. Missing IDs are silently skipped.
+    #[instrument(skip(self, user_ids))]
+    pub async fn get_players_by_user_ids(
+        &self,
+        user_ids: &[UserId],
+    ) -> Result<Vec<Player>, DomainError> {
+        self.player_repo.find_by_user_ids(user_ids).await
+    }
+
+    /// Find a player by their SteamID64. Returns None if not found.
+    #[instrument(skip(self))]
+    pub async fn find_by_steam_id_64(
+        &self,
+        steam_id_64: i64,
+    ) -> Result<Option<Player>, DomainError> {
+        self.player_repo.find_by_steam_id_64(steam_id_64).await
+    }
+
+    /// Search players with filters.
     #[instrument(skip(self))]
     pub async fn search_players(
         &self,
-        query: &str,
+        filters: &PlayerSearchFilters,
         limit: i64,
         offset: i64,
     ) -> Result<PlayerSearchResult, DomainError> {
-        let players = self.player_repo.search(query, limit, offset).await?;
-        let total = self.player_repo.count_search(query).await?;
+        let players = self.player_repo.search(filters, limit, offset).await?;
+        let total = self.player_repo.count_search(filters).await?;
 
         Ok(PlayerSearchResult { players, total })
     }
@@ -116,17 +143,41 @@ where
         cmd: UpdatePlayer,
     ) -> Result<Player, DomainError> {
         // Verify player exists
-        let _ = self.get_player(player_id).await?;
+        let player = self.get_player(player_id).await?;
+
+        // Validate steam_id if provided
+        if let Some(ref steam_id_str) = cmd.steam_id {
+            // Immutability: reject if already set
+            if player.steam_id.is_some() {
+                return Err(DomainError::Conflict(
+                    "Steam ID is already set and cannot be changed".into(),
+                ));
+            }
+            // Validate: must parse as i64 in SteamID64 range
+            let parsed: i64 = steam_id_str.parse().map_err(|_| {
+                DomainError::Validation(ValidationError::field(FieldError::format(
+                    "steam_id",
+                    "a valid SteamID64 (e.g. 76561198012345678)",
+                )))
+            })?;
+            if parsed < 76_561_197_960_265_728 {
+                return Err(DomainError::Validation(ValidationError::field(
+                    FieldError::format(
+                        "steam_id",
+                        "a valid SteamID64 (must be >= 76561197960265728)",
+                    ),
+                )));
+            }
+        }
 
         // Validate display name uniqueness if changing
-        if let Some(ref new_name) = cmd.display_name {
-            if let Some(existing) = self.player_repo.find_by_display_name(new_name).await? {
-                if existing.id != player_id {
-                    return Err(DomainError::Conflict(format!(
-                        "Display name '{new_name}' is already taken"
-                    )));
-                }
-            }
+        if let Some(ref new_name) = cmd.display_name
+            && let Some(existing) = self.player_repo.find_by_display_name(new_name).await?
+            && existing.id != player_id
+        {
+            return Err(DomainError::Conflict(format!(
+                "Display name '{new_name}' is already taken"
+            )));
         }
 
         self.player_repo.update(player_id, cmd).await

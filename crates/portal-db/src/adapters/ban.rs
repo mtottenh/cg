@@ -1,7 +1,7 @@
 //! Ban repository adapter.
 
-use crate::entities::BanRow;
 use crate::DbPool;
+use crate::entities::BanRow;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use portal_core::{BanId, DomainError, UserId};
@@ -66,7 +66,9 @@ impl BanRepository for PgBanRepository {
 
     async fn create(&self, cmd: CreateBanCommand) -> Result<Ban, DomainError> {
         let starts_at = cmd.starts_at.unwrap_or_else(Utc::now);
-        let ends_at = cmd.duration_seconds.map(|secs| starts_at + Duration::seconds(secs));
+        let ends_at = cmd
+            .duration_seconds
+            .map(|secs| starts_at + Duration::seconds(secs));
 
         let ban = sqlx::query_as::<_, BanRow>(
             r"
@@ -85,9 +87,124 @@ impl BanRepository for PgBanRepository {
         .bind(ends_at)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| {
+            // A concurrent identical ban that raced past the service read-guard
+            // trips the partial unique index (bans_unique_active_unscoped /
+            // bans_unique_active_scoped). Surface it as a Conflict so the loser
+            // is a clean no-op rather than a spurious 500.
+            if let sqlx::Error::Database(db_err) = &e
+                && db_err
+                    .constraint()
+                    .is_some_and(|c| c.starts_with("bans_unique_active"))
+            {
+                return DomainError::Conflict(format!(
+                    "User already has an active {} ban",
+                    cmd.ban_type
+                ));
+            }
+            DomainError::Internal(e.to_string())
+        })?;
 
         Ok(Ban::from(ban))
+    }
+
+    async fn create_and_enforce(&self, cmd: CreateBanCommand) -> Result<Ban, DomainError> {
+        let starts_at = cmd.starts_at.unwrap_or_else(Utc::now);
+        let ends_at = cmd
+            .duration_seconds
+            .map(|secs| starts_at + Duration::seconds(secs));
+
+        // One transaction spans the ban insert AND its platform enforcement
+        // (users.status + refresh-token revoke). The old path issued these as
+        // three separate autocommit writes, so a crash/DB error after the
+        // insert left an active ban row that was never enforced: visible in
+        // the admin API while the user kept full access. Committing them
+        // together closes that window. See audit residual "ban enforcement
+        // not atomic".
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to begin transaction: {e}")))?;
+
+        let row = sqlx::query_as::<_, BanRow>(
+            r"
+            INSERT INTO bans (user_id, ban_type, reason, scope_type, scope_id, issued_by, starts_at, ends_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *
+            ",
+        )
+        .bind(cmd.user_id.as_uuid())
+        .bind(cmd.ban_type.to_string())
+        .bind(&cmd.reason)
+        .bind(&cmd.scope_type)
+        .bind(cmd.scope_id)
+        .bind(cmd.issued_by.map(|id| id.as_uuid()))
+        .bind(starts_at)
+        .bind(ends_at)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| {
+            // Preserve the wave-4 conflict mapping from within the tx: a
+            // concurrent identical ban that raced past the service read-guard
+            // trips the partial unique index (bans_unique_active_unscoped /
+            // bans_unique_active_scoped) and must surface as a Conflict (409),
+            // not a spurious 500. The failed insert aborts the tx (nothing to
+            // roll back yet).
+            if let sqlx::Error::Database(db_err) = &e
+                && db_err
+                    .constraint()
+                    .is_some_and(|c| c.starts_with("bans_unique_active"))
+            {
+                return DomainError::Conflict(format!(
+                    "User already has an active {} ban",
+                    cmd.ban_type
+                ));
+            }
+            DomainError::Internal(e.to_string())
+        })?;
+
+        let ban = Ban::from(row);
+
+        // Enforce platform bans in the same tx. Mirrors the pre-refactor
+        // service logic (`ban_type == Platform && ban.is_active()`), the
+        // users.status update, and the refresh-token revoke — but now any
+        // failure here rolls the ban insert back too.
+        if ban.ban_type == BanType::Platform && ban.is_active() {
+            let result = sqlx::query(
+                r"
+                UPDATE users
+                SET status = 'banned',
+                    status_reason = $2,
+                    status_changed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = $1
+                ",
+            )
+            .bind(ban.user_id.as_uuid())
+            .bind(&ban.reason)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+            if result.rows_affected() == 0 {
+                return Err(DomainError::UserNotFound(ban.user_id));
+            }
+
+            sqlx::query(
+                r"UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
+            )
+            .bind(ban.user_id.as_uuid())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to commit: {e}")))?;
+
+        Ok(ban)
     }
 
     async fn lift(
@@ -113,7 +230,7 @@ impl BanRepository for PgBanRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or_else(|| DomainError::BanNotFound(id.to_string()))?;
+        .ok_or(DomainError::BanNotFound(id))?;
 
         Ok(Ban::from(ban))
     }
@@ -179,7 +296,10 @@ impl BanRepository for PgBanRepository {
         }
 
         if filters.active_only {
-            conditions.push("lifted_at IS NULL AND starts_at <= NOW() AND (ends_at IS NULL OR ends_at > NOW())".to_string());
+            conditions.push(
+                "lifted_at IS NULL AND starts_at <= NOW() AND (ends_at IS NULL OR ends_at > NOW())"
+                    .to_string(),
+            );
         }
 
         if filters.scope_type.is_some() {

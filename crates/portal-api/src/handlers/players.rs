@@ -4,15 +4,16 @@ use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::UpdatePlayerProfileRequest;
 use crate::dto::responses::{PlayerResponse, PlayerSearchResponse};
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::AuthenticatedUser;
-use crate::state::AppState;
+use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::handlers::player_game_profiles::build_stats_context;
+use crate::state::PlayerState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use axum::Json;
-use portal_core::PlayerId;
-use portal_domain::repositories::UpdatePlayer;
+use portal_core::{GameId, PlayerId};
+use portal_domain::repositories::{PlayerSearchFilters, UpdatePlayer};
 use serde::Deserialize;
-use validator::Validate;
+use std::collections::HashMap;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -28,6 +29,15 @@ pub struct PlayerSearchParams {
     /// Search query for display name.
     #[serde(default)]
     pub q: String,
+
+    /// Filter by game ID (UUID string).
+    pub game_id: Option<String>,
+
+    /// Filter by team status: "has_team", "no_team", or "lft".
+    pub team_status: Option<String>,
+
+    /// Filter by ISO 3166-1 alpha-2 country code.
+    pub country_code: Option<String>,
 
     /// Page number (1-indexed).
     #[serde(default = "default_page")]
@@ -76,26 +86,94 @@ impl PlayerSearchParams {
     tag = "players"
 )]
 pub async fn search_players(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     headers: HeaderMap,
     Query(params): Query<PlayerSearchParams>,
 ) -> ApiResult<Json<PaginatedResponse<PlayerSearchResponse>>> {
     let request_id = get_request_id(&headers);
 
+    let limit = params.limit();
+    let offset = params.offset();
+    let pagination = params.as_pagination();
+
+    let game_id = params
+        .game_id
+        .map(|s| s.parse::<GameId>())
+        .transpose()
+        .map_err(|_| ApiError::bad_request("Invalid game_id format — expected UUID"))?;
+
+    let filters = PlayerSearchFilters {
+        query: params.q,
+        game_id,
+        team_status: params.team_status,
+        country_code: params.country_code,
+    };
+
     let result = state
         .player_service
-        .search_players(&params.q, params.limit(), params.offset())
+        .search_players(&filters, limit, offset)
         .await?;
 
-    let players: Vec<PlayerSearchResponse> = result
-        .players
-        .into_iter()
-        .map(PlayerSearchResponse::from)
-        .collect();
+    // Enrich with display stats when game_id filter is provided
+    let players: Vec<PlayerSearchResponse> = if let Some(game_id) = game_id {
+        // Resolve game to get plugin_id
+        let game = state
+            .game_repo
+            .find_by_id(game_id.as_uuid())
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        if let Some(game) = game {
+            let plugin = state.plugin_manager.get(&game.plugin_id);
+
+            // Batch-fetch profiles for all players in the result set
+            let player_ids: Vec<PlayerId> = result.players.iter().map(|p| p.id).collect();
+            let profiles = state
+                .player_game_profile_service
+                .find_by_players_and_game(&player_ids, game_id)
+                .await
+                .unwrap_or_default();
+
+            // Build a lookup map: player_id -> profile
+            let mut profile_map: HashMap<PlayerId, _> =
+                profiles.into_iter().map(|p| (p.player_id, p)).collect();
+
+            // Build responses with display stats
+            let mut responses = Vec::with_capacity(result.players.len());
+            for player in result.players {
+                if let Some(profile) = profile_map.remove(&player.id) {
+                    let context = build_stats_context(&state, &profile).await;
+                    let display_stats = plugin
+                        .as_ref()
+                        .map(|p| p.format_player_stats(&profile.game_specific_stats, &context))
+                        .unwrap_or_default();
+                    responses.push(PlayerSearchResponse::with_display_stats(
+                        player,
+                        display_stats,
+                    ));
+                } else {
+                    responses.push(PlayerSearchResponse::from(player));
+                }
+            }
+            responses
+        } else {
+            result
+                .players
+                .into_iter()
+                .map(PlayerSearchResponse::from)
+                .collect()
+        }
+    } else {
+        result
+            .players
+            .into_iter()
+            .map(PlayerSearchResponse::from)
+            .collect()
+    };
 
     Ok(Json(PaginatedResponse::new(
         players,
-        &params.as_pagination(),
+        &pagination,
         result.total as u64,
         request_id,
     )))
@@ -115,15 +193,11 @@ pub async fn search_players(
     tag = "players"
 )]
 pub async fn get_player(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     headers: HeaderMap,
-    Path(player_id): Path<String>,
+    Path(player_id): Path<PlayerId>,
 ) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let player_id: PlayerId = player_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
     let player = state.player_service.get_player(player_id).await?;
 
@@ -148,7 +222,7 @@ pub async fn get_player(
     tag = "players"
 )]
 pub async fn get_my_profile(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
@@ -177,15 +251,12 @@ pub async fn get_my_profile(
     tag = "players"
 )]
 pub async fn update_my_profile(
-    State(state): State<AppState>,
+    State(state): State<PlayerState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Json(request): Json<UpdatePlayerProfileRequest>,
+    ValidatedJson(request): ValidatedJson<UpdatePlayerProfileRequest>,
 ) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
     let request_id = get_request_id(&headers);
-
-    // Validate request
-    request.validate().map_err(ApiError::from)?;
 
     let update = UpdatePlayer::from(request);
 

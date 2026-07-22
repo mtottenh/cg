@@ -13,6 +13,7 @@
 pub mod error;
 pub mod games;
 pub mod manager;
+pub mod stats;
 pub mod traits;
 pub mod types;
 
@@ -20,22 +21,39 @@ pub mod types;
 pub use error::{PluginError, RatingError, StatsError};
 pub use games::{
     Cs2DemoClient, Cs2DemoStats, Cs2EvidenceValidator, Cs2Plugin, Cs2PluginWithEvidence,
+    validate_demo_service_url,
 };
 pub use manager::PluginManager;
-pub use traits::{GamePlugin, MapInfo, RankTier};
+pub use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
+pub use stats::{StatDefinition, StatFact, StatValueType};
+pub use traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier, TournamentPlugin};
 pub use types::{
-    DisplayStat, EvidenceType, EvidenceValidation, ExtractedResult, GameResult,
-    LobbyStateMachine, MapPickBanFormat, MapVetoAction, MatchConfig, MatchContext, MatchData,
-    MatchFormat, MatchPlayerData, MatchTeamData, MatchmakingCriteria, PlayerInfo,
-    RankedParticipant, RatingChange, TournamentFormatId, VetoActionType,
+    DemoMetadata, DiscoveredEvidence, DisplayStat, EvidenceStorage, EvidenceType,
+    EvidenceValidation, ExtractedResult, GameResult, LobbyStateMachine, MapPickBanFormat,
+    MapVetoAction, MatchConfig, MatchContext, MatchData, MatchFormat, MatchPlayerData,
+    MatchTeamData, MatchmakingCriteria, ParticipantContext, PlayerInfo, RankedParticipant,
+    RatingChange, TournamentFormatId, VetoActionType,
 };
 
 /// Create and initialize the default plugin manager with built-in plugins.
 pub fn create_default_plugin_manager() -> PluginManager {
+    create_plugin_manager_with_config(None)
+}
+
+/// Create a plugin manager with optional configuration.
+///
+/// When `demo_base_url` is provided, the CS2 plugin is registered with
+/// evidence support backed by the external demo service.
+pub fn create_plugin_manager_with_config(demo_base_url: Option<String>) -> PluginManager {
     let mut manager = PluginManager::new();
 
-    // Register built-in plugins
-    if let Err(e) = manager.register(std::sync::Arc::new(Cs2Plugin::new())) {
+    // Register CS2 plugin with evidence support
+    let cs2_plugin: std::sync::Arc<dyn GamePlugin> = match demo_base_url {
+        Some(url) => std::sync::Arc::new(Cs2PluginWithEvidence::with_demo_url(url)),
+        None => std::sync::Arc::new(Cs2PluginWithEvidence::new()),
+    };
+
+    if let Err(e) = manager.register(cs2_plugin) {
         tracing::error!("Failed to register CS2 plugin: {}", e);
     }
 

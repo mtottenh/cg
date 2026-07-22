@@ -1,7 +1,7 @@
 //! Audit repository adapter.
 
-use crate::entities::EntityChangeRow;
 use crate::DbPool;
+use crate::entities::EntityChangeRow;
 use async_trait::async_trait;
 use portal_core::{DomainError, PlayerId};
 use portal_domain::entities::audit::{ChangeType, EntityChange, EntityChangeId};
@@ -84,13 +84,12 @@ impl EntityChangeRepository for PgEntityChangeRepository {
     }
 
     async fn find_by_id(&self, id: EntityChangeId) -> Result<Option<EntityChange>, DomainError> {
-        let row = sqlx::query_as::<_, EntityChangeRow>(
-            "SELECT * FROM entity_changes WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row =
+            sqlx::query_as::<_, EntityChangeRow>("SELECT * FROM entity_changes WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(row.map(EntityChange::from))
     }

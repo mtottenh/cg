@@ -11,24 +11,26 @@
 pub mod demo_client;
 pub mod demo_stats;
 pub mod evidence_validator;
+pub mod stats;
 
-pub use demo_client::Cs2DemoClient;
+pub use demo_client::{Cs2DemoClient, validate_base_url as validate_demo_service_url};
 pub use demo_stats::Cs2DemoStats;
 pub use evidence_validator::Cs2EvidenceValidator;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::error::{PluginError, RatingError, StatsError};
-use crate::traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier, SideOption, TournamentPlugin, VetoFormat};
+use crate::traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier, SideOption, TournamentPlugin};
 use crate::types::{
     DemoMetadata, DiscoveredEvidence, DisplayStat, EvidenceStorage, EvidenceType,
     EvidenceValidation, ExtractedResult, GameResult, MapPickBanFormat, MapVetoAction, MatchContext,
-    MatchData, MatchFormat, MatchmakingCriteria, RankedParticipant, RatingChange,
-    TournamentFormatId, VetoActionType,
+    MatchData, MatchFormat, MatchmakingCriteria, PlayerStatsContext, RankedParticipant,
+    RatingChange, TournamentFormatId, VetoActionType,
 };
 use chrono::Utc;
+use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
 
 /// Counter-Strike 2 game plugin.
 #[derive(Debug, Clone, Default)]
@@ -44,6 +46,14 @@ impl Cs2Plugin {
 impl GamePlugin for Cs2Plugin {
     fn id(&self) -> &'static str {
         "cs2"
+    }
+
+    fn as_tournament_plugin(&self) -> Option<&dyn TournamentPlugin> {
+        Some(self)
+    }
+
+    fn as_evidence_plugin(&self) -> Option<&dyn EvidencePlugin> {
+        Some(self)
     }
 
     fn display_name(&self) -> &'static str {
@@ -71,44 +81,58 @@ impl GamePlugin for Cs2Plugin {
             MapInfo {
                 id: "de_dust2".to_string(),
                 display_name: "Dust II".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_dust2_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_mirage".to_string(),
                 display_name: "Mirage".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_mirage_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_inferno".to_string(),
                 display_name: "Inferno".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_inferno_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_nuke".to_string(),
                 display_name: "Nuke".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_nuke_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_ancient".to_string(),
                 display_name: "Ancient".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_ancient_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_anubis".to_string(),
                 display_name: "Anubis".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_anubis_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
             MapInfo {
                 id: "de_vertigo".to_string(),
                 display_name: "Vertigo".to_string(),
-                image_url: None,
+                image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_vertigo_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                external_id: None,
+                external_url: None,
             },
         ]
     }
@@ -306,12 +330,14 @@ impl GamePlugin for Cs2Plugin {
             .iter()
             .find(|t| t.team_id == player_data.team_id);
         let match_rounds = i64::from(match_team.and_then(|t| t.rounds_won).unwrap_or(0));
-        let enemy_rounds = i64::from(match_data
-            .teams
-            .iter()
-            .find(|t| t.team_id != player_data.team_id)
-            .and_then(|t| t.rounds_won)
-            .unwrap_or(0));
+        let enemy_rounds = i64::from(
+            match_data
+                .teams
+                .iter()
+                .find(|t| t.team_id != player_data.team_id)
+                .and_then(|t| t.rounds_won)
+                .unwrap_or(0),
+        );
         stats["rounds_played"] = json!(current_rounds + match_rounds + enemy_rounds);
 
         // Update match count
@@ -330,7 +356,7 @@ impl GamePlugin for Cs2Plugin {
         Ok(stats)
     }
 
-    fn format_player_stats(&self, stats: &Value) -> Vec<DisplayStat> {
+    fn format_player_stats(&self, stats: &Value, context: &PlayerStatsContext) -> Vec<DisplayStat> {
         let kills = stats["kills"].as_i64().unwrap_or(0);
         let deaths = stats["deaths"].as_i64().unwrap_or(0);
         let assists = stats["assists"].as_i64().unwrap_or(0);
@@ -362,64 +388,200 @@ impl GamePlugin for Cs2Plugin {
             0.0
         };
 
-        vec![
+        // Determine rank tier color
+        let rank_color = self
+            .rating_to_rank_tier(context.rating)
+            .and_then(|tier| tier.color);
+
+        let mut result = vec![
+            // Rating stats
+            DisplayStat {
+                key: "elo_current".to_string(),
+                label: "CS Rating".to_string(),
+                value: context.rating.to_string(),
+                category: "Rating".to_string(),
+                sort_order: 1,
+                color: rank_color,
+            },
+            DisplayStat {
+                key: "elo_peak".to_string(),
+                label: "Peak Rating".to_string(),
+                value: context.peak_rating.to_string(),
+                category: "Rating".to_string(),
+                sort_order: 2,
+                color: None,
+            },
+        ];
+
+        if let Some(avg) = context.average_rating {
+            result.push(DisplayStat {
+                key: "elo_avg".to_string(),
+                label: "Avg Rating".to_string(),
+                value: format!("{avg:.0}"),
+                category: "Rating".to_string(),
+                sort_order: 3,
+                color: None,
+            });
+        }
+
+        if let Some(ref tier_id) = context.rank_tier
+            && let Some(tier) = self.rank_tiers().into_iter().find(|t| t.id == *tier_id)
+        {
+            result.push(DisplayStat {
+                key: "rank_tier".to_string(),
+                label: "Rank".to_string(),
+                value: tier.display_name,
+                category: "Rating".to_string(),
+                sort_order: 4,
+                color: tier.color,
+            });
+        }
+
+        // General stats
+        result.extend([
             DisplayStat {
                 key: "matches".to_string(),
                 label: "Matches".to_string(),
                 value: matches_played.to_string(),
                 category: "General".to_string(),
-                sort_order: 1,
+                sort_order: 10,
+                color: None,
             },
             DisplayStat {
                 key: "win_rate".to_string(),
                 label: "Win Rate".to_string(),
                 value: format!("{win_rate:.1}%"),
                 category: "General".to_string(),
-                sort_order: 2,
+                sort_order: 11,
+                color: None,
             },
+            // Combat stats
             DisplayStat {
                 key: "kd_ratio".to_string(),
                 label: "K/D Ratio".to_string(),
                 value: format!("{kd_ratio:.2}"),
                 category: "Combat".to_string(),
-                sort_order: 3,
+                sort_order: 20,
+                color: None,
             },
             DisplayStat {
                 key: "kills".to_string(),
                 label: "Kills".to_string(),
                 value: kills.to_string(),
                 category: "Combat".to_string(),
-                sort_order: 4,
+                sort_order: 21,
+                color: None,
             },
             DisplayStat {
                 key: "deaths".to_string(),
                 label: "Deaths".to_string(),
                 value: deaths.to_string(),
                 category: "Combat".to_string(),
-                sort_order: 5,
+                sort_order: 22,
+                color: None,
             },
             DisplayStat {
                 key: "assists".to_string(),
                 label: "Assists".to_string(),
                 value: assists.to_string(),
                 category: "Combat".to_string(),
-                sort_order: 6,
+                sort_order: 23,
+                color: None,
             },
             DisplayStat {
                 key: "hs_percent".to_string(),
                 label: "HS%".to_string(),
                 value: format!("{hs_percent:.1}%"),
                 category: "Combat".to_string(),
-                sort_order: 7,
+                sort_order: 24,
+                color: None,
             },
             DisplayStat {
                 key: "adr".to_string(),
                 label: "ADR".to_string(),
                 value: format!("{adr:.1}"),
                 category: "Combat".to_string(),
-                sort_order: 8,
+                sort_order: 25,
+                color: None,
             },
-        ]
+        ]);
+
+        result
+    }
+
+    fn build_match_data_from_demo(
+        &self,
+        demo: &crate::types::DemoData,
+    ) -> Result<MatchData, StatsError> {
+        use crate::traits::resolve_demo_team_id;
+        use crate::types::{MatchPlayerData, MatchTeamData};
+
+        let winner_team_id = match demo.team1_score.cmp(&demo.team2_score) {
+            std::cmp::Ordering::Greater => Some(1u32),
+            std::cmp::Ordering::Less => Some(2u32),
+            std::cmp::Ordering::Equal => None,
+        };
+
+        let teams = vec![
+            MatchTeamData {
+                team_id: 1,
+                score: demo.team1_score,
+                rounds_won: Some(demo.team1_score as u32),
+                side_scores: None,
+            },
+            MatchTeamData {
+                team_id: 2,
+                score: demo.team2_score,
+                rounds_won: Some(demo.team2_score as u32),
+                side_scores: None,
+            },
+        ];
+
+        let players: Vec<MatchPlayerData> = demo
+            .players
+            .iter()
+            .filter_map(|dp| {
+                let player_id = dp.player_id?;
+                let team_id = resolve_demo_team_id(dp, &demo.team1_name, &demo.team2_name)?;
+
+                // CS2-specific: remap raw demo stat keys to the keys that
+                // calculate_player_stats expects. The raw stats from demo parsing
+                // use "headshot_kills" and "damage", but the CS2 stats schema
+                // expects "headshots" and "total_damage".
+                let raw = &dp.stats;
+                let game_stats = json!({
+                    "kills": raw.get("kills").and_then(Value::as_i64).unwrap_or(0),
+                    "deaths": raw.get("deaths").and_then(Value::as_i64).unwrap_or(0),
+                    "assists": raw.get("assists").and_then(Value::as_i64).unwrap_or(0),
+                    "headshots": raw.get("headshot_kills").or_else(|| raw.get("headshots")).and_then(Value::as_i64).unwrap_or(0),
+                    "total_damage": raw.get("damage").or_else(|| raw.get("total_damage")).and_then(Value::as_i64).unwrap_or(0),
+                    "mvps": raw.get("mvps").and_then(Value::as_i64).unwrap_or(0),
+                    "clutches_won": raw.get("clutches_won").and_then(Value::as_i64).unwrap_or(0),
+                    "clutches_attempted": raw.get("clutches_attempted").and_then(Value::as_i64).unwrap_or(0),
+                    "opening_kills": raw.get("opening_kills").and_then(Value::as_i64).unwrap_or(0),
+                    "opening_deaths": raw.get("opening_deaths").and_then(Value::as_i64).unwrap_or(0),
+                    "flash_assists": raw.get("flash_assists").and_then(Value::as_i64).unwrap_or(0),
+                    "utility_damage": raw.get("utility_damage").and_then(Value::as_i64).unwrap_or(0),
+                });
+
+                Some(MatchPlayerData {
+                    player_id,
+                    team_id,
+                    game_specific_stats: game_stats,
+                })
+            })
+            .collect();
+
+        Ok(MatchData {
+            match_id: demo.match_id,
+            game_id: demo.game_id.clone(),
+            map_id: demo.map_name.clone(),
+            duration_seconds: demo.duration_seconds,
+            players,
+            teams,
+            winner_team_id,
+            game_specific_data: demo.raw_stats.clone(),
+        })
     }
 
     // ========================================================================
@@ -459,8 +621,10 @@ impl GamePlugin for Cs2Plugin {
         }
 
         // Calculate average ratings
-        let avg_rating_1: f64 = team1.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team1.len() as f64;
-        let avg_rating_2: f64 = team2.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team2.len() as f64;
+        let avg_rating_1: f64 =
+            team1.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team1.len() as f64;
+        let avg_rating_2: f64 =
+            team2.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team2.len() as f64;
 
         // Expected scores (Elo formula)
         // Using 2000 as divisor instead of 400 due to the larger CS2 Premier scale (0-35,000+)
@@ -556,13 +720,34 @@ impl GamePlugin for Cs2Plugin {
                 id: "bo1_veto".to_string(),
                 display_name: "Best of 1 Veto".to_string(),
                 sequence: vec![
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 0, action: VetoActionType::Decider },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 0,
+                        action: VetoActionType::Decider,
+                    },
                 ],
                 description: "Teams alternate banning maps until one remains".to_string(),
             },
@@ -571,13 +756,34 @@ impl GamePlugin for Cs2Plugin {
                 id: "bo3_veto".to_string(),
                 display_name: "Best of 3 Veto".to_string(),
                 sequence: vec![
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 1, action: VetoActionType::Pick },
-                    MapVetoAction { team: 2, action: VetoActionType::Pick },
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 0, action: VetoActionType::Decider },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 0,
+                        action: VetoActionType::Decider,
+                    },
                 ],
                 description: "Ban-Ban-Pick-Pick-Ban-Ban-Decider".to_string(),
             },
@@ -586,13 +792,34 @@ impl GamePlugin for Cs2Plugin {
                 id: "bo5_veto".to_string(),
                 display_name: "Best of 5 Veto".to_string(),
                 sequence: vec![
-                    MapVetoAction { team: 1, action: VetoActionType::Ban },
-                    MapVetoAction { team: 2, action: VetoActionType::Ban },
-                    MapVetoAction { team: 1, action: VetoActionType::Pick },
-                    MapVetoAction { team: 2, action: VetoActionType::Pick },
-                    MapVetoAction { team: 1, action: VetoActionType::Pick },
-                    MapVetoAction { team: 2, action: VetoActionType::Pick },
-                    MapVetoAction { team: 0, action: VetoActionType::Decider },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Ban,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 0,
+                        action: VetoActionType::Decider,
+                    },
                 ],
                 description: "Ban-Ban-Pick-Pick-Pick-Pick-Decider".to_string(),
             },
@@ -613,19 +840,19 @@ impl GamePlugin for Cs2Plugin {
 // ============================================================================
 
 impl TournamentPlugin for Cs2Plugin {
-    fn veto_formats(&self) -> Vec<VetoFormat> {
+    fn veto_formats(&self) -> Vec<VetoFormatConfig> {
         vec![
-            VetoFormat::bo1(),
-            VetoFormat::bo3(),
-            VetoFormat::bo5(),
+            VetoFormatConfig::bo1(),
+            VetoFormatConfig::bo3(),
+            VetoFormatConfig::bo5(),
         ]
     }
 
     fn default_veto_format(&self, match_format: MatchFormat) -> Option<String> {
         match match_format {
-            MatchFormat::Bo1 => Some("bo1_veto".to_string()),
-            MatchFormat::Bo3 => Some("bo3_veto".to_string()),
-            MatchFormat::Bo5 => Some("bo5_veto".to_string()),
+            MatchFormat::Bo1 => Some("bo1_standard".to_string()),
+            MatchFormat::Bo3 => Some("bo3_standard".to_string()),
+            MatchFormat::Bo5 => Some("bo5_standard".to_string()),
             MatchFormat::Bo7 => None, // CS2 doesn't typically do Bo7
         }
     }
@@ -644,6 +871,26 @@ impl TournamentPlugin for Cs2Plugin {
                 short_name: "T".to_string(),
             },
         ]
+    }
+
+    fn available_side_selection_modes(&self) -> Vec<SideSelectionMode> {
+        vec![
+            SideSelectionMode::PickerChoice,
+            SideSelectionMode::CoinFlip,
+            SideSelectionMode::Knife,
+        ]
+    }
+
+    fn default_side_selection_mode(&self) -> SideSelectionMode {
+        SideSelectionMode::PickerChoice
+    }
+
+    fn stat_definitions(&self) -> Vec<crate::stats::StatDefinition> {
+        stats::stat_catalog()
+    }
+
+    fn extract_stat_facts(&self, stats_json: &Value) -> Vec<crate::stats::StatFact> {
+        stats::extract_facts(stats_json)
     }
 }
 
@@ -727,19 +974,19 @@ impl EvidencePlugin for Cs2Plugin {
                     is_valid: true,
                     confidence: 0.0,
                     extracted_result: None,
-                    warnings: vec!["Cannot validate external URL evidence automatically".to_string()],
+                    warnings: vec![
+                        "Cannot validate external URL evidence automatically".to_string(),
+                    ],
                     errors: Vec::new(),
                 })
             }
-            EvidenceStorage::Inline { content: _ } => {
-                Ok(EvidenceValidation {
-                    is_valid: false,
-                    confidence: 0.0,
-                    extracted_result: None,
-                    warnings: Vec::new(),
-                    errors: vec!["Demo files cannot be stored inline".to_string()],
-                })
-            }
+            EvidenceStorage::Inline { content: _ } => Ok(EvidenceValidation {
+                is_valid: false,
+                confidence: 0.0,
+                extracted_result: None,
+                warnings: Vec::new(),
+                errors: vec!["Demo files cannot be stored inline".to_string()],
+            }),
         }
     }
 
@@ -925,6 +1172,260 @@ impl Cs2PluginWithEvidence {
     }
 }
 
+// ============================================================================
+// GamePlugin / TournamentPlugin / EvidencePlugin for Cs2PluginWithEvidence
+// ============================================================================
+
+impl GamePlugin for Cs2PluginWithEvidence {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn display_name(&self) -> &str {
+        self.inner.display_name()
+    }
+
+    fn short_name(&self) -> &str {
+        self.inner.short_name()
+    }
+
+    fn description(&self) -> Option<&str> {
+        self.inner.description()
+    }
+
+    fn icon_url(&self) -> Option<&str> {
+        self.inner.icon_url()
+    }
+
+    fn available_maps(&self) -> Vec<MapInfo> {
+        self.inner.available_maps()
+    }
+
+    fn default_map_pool(&self) -> Vec<String> {
+        self.inner.default_map_pool()
+    }
+
+    fn team_size_min(&self) -> u32 {
+        self.inner.team_size_min()
+    }
+
+    fn team_size_max(&self) -> u32 {
+        self.inner.team_size_max()
+    }
+
+    fn team_size_default(&self) -> u32 {
+        self.inner.team_size_default()
+    }
+
+    fn player_stats_schema(&self) -> serde_json::Value {
+        self.inner.player_stats_schema()
+    }
+
+    fn calculate_player_stats(
+        &self,
+        match_data: &MatchData,
+        player_id: Uuid,
+        existing_stats: &serde_json::Value,
+    ) -> Result<serde_json::Value, StatsError> {
+        self.inner
+            .calculate_player_stats(match_data, player_id, existing_stats)
+    }
+
+    fn format_player_stats(
+        &self,
+        stats: &serde_json::Value,
+        context: &PlayerStatsContext,
+    ) -> Vec<DisplayStat> {
+        self.inner.format_player_stats(stats, context)
+    }
+
+    fn build_match_data_from_demo(
+        &self,
+        demo: &crate::types::DemoData,
+    ) -> Result<MatchData, StatsError> {
+        self.inner.build_match_data_from_demo(demo)
+    }
+
+    fn rank_tiers(&self) -> Vec<RankTier> {
+        self.inner.rank_tiers()
+    }
+
+    fn calculate_rating_change(
+        &self,
+        participants: &[RankedParticipant],
+    ) -> Result<Vec<RatingChange>, RatingError> {
+        self.inner.calculate_rating_change(participants)
+    }
+
+    fn matchmaking_criteria(&self) -> MatchmakingCriteria {
+        self.inner.matchmaking_criteria()
+    }
+
+    fn supported_tournament_formats(&self) -> Vec<TournamentFormatId> {
+        self.inner.supported_tournament_formats()
+    }
+
+    fn map_pick_ban_formats(&self) -> Vec<MapPickBanFormat> {
+        self.inner.map_pick_ban_formats()
+    }
+
+    fn default_match_format(&self) -> MatchFormat {
+        self.inner.default_match_format()
+    }
+
+    fn supported_match_formats(&self) -> Vec<MatchFormat> {
+        self.inner.supported_match_formats()
+    }
+
+    fn as_tournament_plugin(&self) -> Option<&dyn TournamentPlugin> {
+        Some(self)
+    }
+
+    fn as_evidence_plugin(&self) -> Option<&dyn EvidencePlugin> {
+        Some(self)
+    }
+}
+
+impl TournamentPlugin for Cs2PluginWithEvidence {
+    fn veto_formats(&self) -> Vec<VetoFormatConfig> {
+        self.inner.veto_formats()
+    }
+
+    fn default_veto_format(&self, match_format: MatchFormat) -> Option<String> {
+        self.inner.default_veto_format(match_format)
+    }
+
+    fn get_available_sides(&self, map_id: &str) -> Vec<SideOption> {
+        self.inner.get_available_sides(map_id)
+    }
+
+    fn available_side_selection_modes(&self) -> Vec<SideSelectionMode> {
+        self.inner.available_side_selection_modes()
+    }
+
+    fn default_side_selection_mode(&self) -> SideSelectionMode {
+        self.inner.default_side_selection_mode()
+    }
+
+    fn stat_definitions(&self) -> Vec<crate::stats::StatDefinition> {
+        self.inner.stat_definitions()
+    }
+
+    fn extract_stat_facts(&self, stats_json: &Value) -> Vec<crate::stats::StatFact> {
+        self.inner.extract_stat_facts(stats_json)
+    }
+}
+
+#[async_trait::async_trait]
+impl EvidencePlugin for Cs2PluginWithEvidence {
+    async fn discover_evidence(
+        &self,
+        _match_context: &MatchContext,
+    ) -> Result<Vec<DiscoveredEvidence>, PluginError> {
+        // S3 scanning not yet implemented — requires bucket config, list permissions,
+        // and prefix conventions. Return empty until that infrastructure is available.
+        Ok(Vec::new())
+    }
+
+    async fn validate_evidence(
+        &self,
+        evidence_storage: &EvidenceStorage,
+        claimed_result: &GameResult,
+    ) -> Result<EvidenceValidation, PluginError> {
+        let demo_name = match evidence_storage {
+            EvidenceStorage::S3 { key, .. } => extract_demo_name(key),
+            EvidenceStorage::Url { url } => extract_demo_name(url),
+            EvidenceStorage::Inline { .. } => {
+                return Ok(EvidenceValidation {
+                    is_valid: false,
+                    confidence: 0.0,
+                    extracted_result: None,
+                    warnings: Vec::new(),
+                    errors: vec!["Demo files cannot be stored inline".to_string()],
+                });
+            }
+        };
+
+        let stats = self.demo_client.get_demo_stats(&demo_name).await?;
+
+        // Validate using the existing validator (Steam IDs unavailable at this layer)
+        let validation = Cs2EvidenceValidator::validate(&stats, claimed_result, &[], &[]);
+
+        Ok(validation)
+    }
+
+    async fn get_demo_metadata(
+        &self,
+        storage: &EvidenceStorage,
+    ) -> Result<DemoMetadata, PluginError> {
+        let demo_name = match storage {
+            EvidenceStorage::S3 { key, .. } => extract_demo_name(key),
+            EvidenceStorage::Url { url } => extract_demo_name(url),
+            EvidenceStorage::Inline { .. } => {
+                return Err(PluginError::NotSupported(
+                    "Demo metadata cannot be extracted from inline storage".to_string(),
+                ));
+            }
+        };
+
+        let stats = self.demo_client.get_demo_stats(&demo_name).await?;
+
+        let team_names = stats.team_names();
+        let team1_score = team_names
+            .first()
+            .and_then(|n| stats.score_for_team(n))
+            .unwrap_or(0);
+        let team2_score = team_names
+            .get(1)
+            .and_then(|n| stats.score_for_team(n))
+            .unwrap_or(0);
+
+        let recorded_at =
+            chrono::NaiveDateTime::parse_from_str(&stats.match_date, "%Y-%m-%d %H:%M:%S")
+                .map_or_else(|_| Utc::now(), |ndt| ndt.and_utc());
+
+        Ok(DemoMetadata {
+            map_name: stats.map.clone(),
+            duration_seconds: 0, // Not available from stats JSON
+            player_count: stats.all_steam_ids().len() as u32,
+            team1_score,
+            team2_score,
+            recorded_at,
+            server_name: None,
+            demo_version: "cs2".to_string(),
+        })
+    }
+
+    fn supports_evidence_discovery(&self) -> bool {
+        false
+    }
+
+    fn supports_evidence_validation(&self) -> bool {
+        true
+    }
+
+    fn supported_evidence_types(&self) -> Vec<EvidenceType> {
+        vec![
+            EvidenceType::Demo,
+            EvidenceType::Screenshot,
+            EvidenceType::Video,
+        ]
+    }
+
+    fn demo_file_extension(&self) -> Option<&str> {
+        Some("dem")
+    }
+
+    fn demo_storage_prefix(&self) -> Option<&str> {
+        Some("demos/cs2")
+    }
+}
+
+/// Extract demo filename from a path (S3 key or URL).
+fn extract_demo_name(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1087,6 +1588,23 @@ mod tests {
     }
 
     #[test]
+    fn test_stat_surface_exposed_via_tournament_plugin() {
+        // The registered plugin type is Cs2PluginWithEvidence; consumers reach
+        // the stat surface through GamePlugin::as_tournament_plugin.
+        let plugin = Cs2PluginWithEvidence::new();
+        let tournament = plugin
+            .as_tournament_plugin()
+            .expect("cs2 supports tournaments");
+
+        let catalog = tournament.stat_definitions();
+        assert!(!catalog.is_empty());
+        assert!(catalog.iter().any(|d| d.key == "headshot_kills"));
+
+        // Unparseable JSON extracts to no facts rather than erroring.
+        assert!(tournament.extract_stat_facts(&json!({})).is_empty());
+    }
+
+    #[test]
     fn test_format_player_stats() {
         let plugin = Cs2Plugin::new();
 
@@ -1101,7 +1619,14 @@ mod tests {
             "matches_won": 6
         });
 
-        let formatted = plugin.format_player_stats(&stats);
+        let context = crate::types::PlayerStatsContext {
+            rating: 0,
+            peak_rating: 0,
+            peak_rating_at: None,
+            rank_tier: None,
+            average_rating: None,
+        };
+        let formatted = plugin.format_player_stats(&stats, &context);
         assert!(!formatted.is_empty());
 
         // Check K/D ratio is calculated

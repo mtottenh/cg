@@ -63,6 +63,20 @@ impl<T> SagaResult<T> {
             success: false,
         }
     }
+
+    /// Create a paused result (waiting for external resolution).
+    pub fn paused(execution: SagaExecution) -> Self {
+        Self {
+            execution,
+            output: None,
+            success: false,
+        }
+    }
+
+    /// Check if the saga is paused.
+    pub fn is_paused(&self) -> bool {
+        self.execution.is_paused()
+    }
 }
 
 /// Saga definition with typed steps.
@@ -207,10 +221,7 @@ where
 
     /// Complete the saga successfully.
     #[instrument(skip(self, execution))]
-    pub async fn complete_saga(
-        &self,
-        execution: &mut SagaExecution,
-    ) -> Result<(), DomainError> {
+    pub async fn complete_saga(&self, execution: &mut SagaExecution) -> Result<(), DomainError> {
         execution.complete();
         self.saga_repo.update(execution).await?;
 
@@ -236,6 +247,25 @@ where
             saga_id = %execution.id,
             error = error,
             "Saga failed"
+        );
+
+        Ok(())
+    }
+
+    /// Pause the saga (waiting for external resolution like review).
+    #[instrument(skip(self, execution))]
+    pub async fn pause_saga(
+        &self,
+        execution: &mut SagaExecution,
+        reason: &str,
+    ) -> Result<(), DomainError> {
+        execution.pause(reason.to_string());
+        self.saga_repo.update(execution).await?;
+
+        info!(
+            saga_id = %execution.id,
+            reason = reason,
+            "Saga paused"
         );
 
         Ok(())
@@ -289,6 +319,55 @@ where
     ) -> Result<Vec<SagaExecution>, DomainError> {
         self.saga_repo.find_stuck(running_since_before).await
     }
+
+    /// Find failed / stuck sagas of one type that still have retries left.
+    #[instrument(skip(self))]
+    pub async fn find_retryable(
+        &self,
+        saga_type: &str,
+        stuck_since: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> Result<Vec<SagaExecution>, DomainError> {
+        self.saga_repo
+            .find_retryable(saga_type, stuck_since, limit)
+            .await
+    }
+
+    /// Record that a re-drive of this saga was attempted.
+    ///
+    /// Bumps `retry_count` so the lifecycle re-drive pass gives up after
+    /// `max_retries` instead of retrying a permanently broken saga on
+    /// every tick.
+    ///
+    /// Pass `exhaust = true` once the work has actually been completed (or
+    /// taken over) by a fresh execution. This not only maxes out
+    /// `retry_count` but also drives the old row to a terminal `failed`
+    /// state so it leaves the live (`pending`/`running`) set: otherwise a
+    /// crash-left row would keep tripping `uq_saga_executions_live_per_match`
+    /// and block every future completion for that match. A row already in a
+    /// terminal state (e.g. the fresh execution's own `completed` row) is
+    /// left as-is.
+    #[instrument(skip(self, execution))]
+    pub async fn record_retry(
+        &self,
+        execution: &mut SagaExecution,
+        exhaust: bool,
+    ) -> Result<(), DomainError> {
+        if exhaust {
+            execution.retry_count = execution.max_retries;
+            if !execution.is_terminal() {
+                execution.status = SagaStatus::Failed;
+                if execution.completed_at.is_none() {
+                    execution.completed_at = Some(chrono::Utc::now());
+                }
+            }
+        } else {
+            execution.retry_count += 1;
+        }
+        execution.updated_at = chrono::Utc::now();
+        self.saga_repo.update(execution).await?;
+        Ok(())
+    }
 }
 
 /// Trait for executable sagas.
@@ -334,7 +413,8 @@ mod tests {
     #[test]
     fn test_saga_result_success() {
         let execution = create_test_execution();
-        let result: SagaResult<String> = SagaResult::success(execution.clone(), "output".to_string());
+        let result: SagaResult<String> =
+            SagaResult::success(execution.clone(), "output".to_string());
 
         assert!(result.success);
         assert!(result.output.is_some());

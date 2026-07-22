@@ -11,13 +11,18 @@ use crate::dto::responses::{
     DisputeWithThreadResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
+use crate::state::DisputeState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{DisputeId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId};
-use portal_domain::entities::dispute::{AuthorType, DisputePriority, DisputeReason};
+use portal_core::{
+    DisputeId, EvidenceId, ResultClaimId, ScopeType, TournamentMatchId, TournamentRegistrationId,
+};
+use portal_domain::entities::dispute::{
+    AuthorType, Dispute, DisputePriority, DisputeReason, DisputeStatus,
+};
+use portal_domain::repositories::tournament::TournamentMatchRepository;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -54,8 +59,9 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "disputes"
 )]
 pub async fn raise_dispute(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<RaiseDisputeRequest>,
@@ -70,6 +76,33 @@ pub async fn raise_dispute(
         .registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
+
+    // The caller must belong to the registration they claim to dispute for —
+    // directly as the registered player, or as an active member of the
+    // registration's team-season. Tournament admins may dispute on behalf of
+    // a registration.
+    if !perm.has_admin_override(&auth, ScopeType::Tournament).await {
+        let registration = state
+            .registration_service
+            .get_registration(registration_id)
+            .await?;
+
+        let is_registered_player = registration.player_id == Some(auth.player_id);
+        let is_team_member = if let Some(ts_id) = registration.team_season_id {
+            state
+                .league_team_service
+                .is_member(ts_id, auth.player_id)
+                .await?
+        } else {
+            false
+        };
+
+        if !is_registered_player && !is_team_member {
+            return Err(ApiError::forbidden(
+                "Not authorized to raise a dispute for this registration",
+            ));
+        }
+    }
 
     let reason: DisputeReason = req
         .reason
@@ -106,8 +139,52 @@ pub async fn raise_dispute(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(DisputeResponse::from(dispute), request_id)),
+        Json(DataResponse::new(
+            DisputeResponse::from(dispute),
+            request_id,
+        )),
     ))
+}
+
+/// Get the active dispute for a match.
+///
+/// Returns the current (non-resolved) dispute for the given match,
+/// or 404 if no active dispute exists.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/matches/{match_id}/dispute",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("match_id" = String, Path, description = "Match ID")
+    ),
+    responses(
+        (status = 200, description = "Active dispute for this match", body = DataResponse<DisputeResponse>),
+        (status = 404, description = "No active dispute found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "disputes"
+)]
+pub async fn get_match_dispute(
+    State(state): State<DisputeState>,
+    headers: HeaderMap,
+    Path((_tournament_id, match_id)): Path<(String, String)>,
+) -> ApiResult<Json<DataResponse<DisputeResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    let dispute = state
+        .dispute_service
+        .get_match_dispute(match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("No active dispute found for this match"))?;
+
+    Ok(Json(DataResponse::new(
+        DisputeResponse::from(dispute),
+        request_id,
+    )))
 }
 
 /// Add a message to a dispute.
@@ -131,17 +208,23 @@ pub async fn raise_dispute(
     tag = "disputes"
 )]
 pub async fn add_dispute_message(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<AddDisputeMessageRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<DisputeMessageResponse>>)> {
     let request_id = get_request_id(&headers);
 
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
+    // Same standing rule as `get_dispute`: only dispute participants (or
+    // admins) may post to the thread as a participant.
+    let dispute = state.dispute_service.get_dispute(dispute_id).await?;
+    if !perm.has_admin_override(&auth, ScopeType::Tournament).await
+        && !is_dispute_participant(&state, &dispute, &auth).await?
+    {
+        return Err(ApiError::forbidden("Not a participant in this dispute"));
+    }
 
     let evidence_ids: Vec<EvidenceId> = req
         .evidence_ids
@@ -166,7 +249,10 @@ pub async fn add_dispute_message(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(DisputeMessageResponse::from(message), request_id)),
+        Json(DataResponse::new(
+            DisputeMessageResponse::from(message),
+            request_id,
+        )),
     ))
 }
 
@@ -179,31 +265,91 @@ pub async fn add_dispute_message(
     ),
     responses(
         (status = 200, description = "Dispute with thread", body = DataResponse<DisputeWithThreadResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not a participant in this dispute", body = ApiError),
         (status = 404, description = "Dispute not found", body = ApiError),
     ),
+    security(("bearer_auth" = [])),
     tag = "disputes"
 )]
 pub async fn get_dispute(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
 ) -> ApiResult<Json<DataResponse<DisputeWithThreadResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
+    // Load the dispute first so we can do authorization before returning the
+    // (potentially sensitive) thread contents. Admin override wins; otherwise
+    // the caller must be a participant in the disputed match.
+    let dispute = state.dispute_service.get_dispute(dispute_id).await?;
 
-    // Regular users don't see internal messages
+    let is_admin = perm.has_admin_override(&auth, ScopeType::Tournament).await;
+    if !is_admin && !is_dispute_participant(&state, &dispute, &auth).await? {
+        return Err(ApiError::forbidden("Not a participant in this dispute"));
+    }
+
+    // Regular users don't see internal messages; admins get them via the
+    // dedicated admin endpoint.
+    let include_internal = is_admin;
     let dispute_with_thread = state
         .dispute_service
-        .get_dispute_with_thread(dispute_id, false)
+        .get_dispute_with_thread(dispute_id, include_internal)
         .await?;
 
     Ok(Json(DataResponse::new(
         DisputeWithThreadResponse::from(dispute_with_thread),
         request_id,
     )))
+}
+
+/// Whether `auth` has standing to view a dispute's thread.
+///
+/// A viewer is a participant iff they either raised the dispute themselves or
+/// are tied to one of the match's two participant registrations — directly as
+/// a solo player, or indirectly as an active member of the team-season
+/// associated with that registration.
+async fn is_dispute_participant(
+    state: &DisputeState,
+    dispute: &Dispute,
+    auth: &AuthenticatedUser,
+) -> ApiResult<bool> {
+    if dispute.disputed_by_user_id == auth.user_id {
+        return Ok(true);
+    }
+
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(dispute.match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Match for dispute not found"))?;
+
+    for reg_id in [
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let registration = state.registration_service.get_registration(reg_id).await?;
+
+        if registration.player_id == Some(auth.player_id) {
+            return Ok(true);
+        }
+
+        if let Some(ts_id) = registration.team_season_id
+            && state
+                .league_team_service
+                .is_member(ts_id, auth.player_id)
+                .await?
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 // =============================================================================
@@ -226,28 +372,66 @@ pub async fn get_dispute(
     tag = "disputes"
 )]
 pub async fn admin_list_disputes(
-    State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    State(state): State<DisputeState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Query(query): Query<ListDisputesQuery>,
 ) -> ApiResult<Json<DataResponse<DisputeListResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // TODO: Add admin permission check
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let priority = query
         .priority
         .as_deref()
-        .map(|p| p.parse::<DisputePriority>())
+        .map(str::parse::<DisputePriority>)
         .transpose()
         .map_err(|_| ApiError::bad_request("Invalid priority value"))?;
+    let status = query
+        .status
+        .as_deref()
+        .map(str::parse::<DisputeStatus>)
+        .transpose()
+        .map_err(|_| ApiError::bad_request("Invalid status value"))?;
+    let tournament_id = query
+        .tournament_id
+        .as_deref()
+        .map(str::parse::<portal_core::TournamentId>)
+        .transpose()
+        .map_err(|_| ApiError::bad_request("Invalid tournament_id"))?;
+    let match_id = query
+        .match_id
+        .as_deref()
+        .map(str::parse::<TournamentMatchId>)
+        .transpose()
+        .map_err(|_| ApiError::bad_request("Invalid match_id"))?;
 
     let limit = i64::from(query.page_size);
     let offset = i64::from((query.page - 1) * query.page_size);
 
+    // Default view (no explicit status) stays the actionable queue —
+    // pending + under_review — matching the admin UI's expectations.
+    // Explicit filters reach every status, including resolved/cancelled.
+    let status_list: Option<Vec<DisputeStatus>> = match status {
+        Some(s) => Some(vec![s]),
+        None => Some(vec![DisputeStatus::Pending, DisputeStatus::UnderReview]),
+    };
     let (disputes, total) = state
         .dispute_service
-        .get_pending_disputes(None, priority, limit, offset)
+        .list_disputes(
+            status_list,
+            tournament_id,
+            match_id,
+            priority,
+            limit,
+            offset,
+        )
         .await?;
 
     let response = DisputeListResponse {
@@ -279,19 +463,21 @@ pub async fn admin_list_disputes(
     tag = "disputes"
 )]
 pub async fn admin_add_message(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<AdminDisputeMessageRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<DisputeMessageResponse>>)> {
     let request_id = get_request_id(&headers);
 
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
-
-    // TODO: Add admin permission check
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let evidence_ids: Vec<EvidenceId> = req
         .evidence_ids
@@ -316,7 +502,10 @@ pub async fn admin_add_message(
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(DisputeMessageResponse::from(message), request_id)),
+        Json(DataResponse::new(
+            DisputeMessageResponse::from(message),
+            request_id,
+        )),
     ))
 }
 
@@ -338,25 +527,30 @@ pub async fn admin_add_message(
     tag = "disputes"
 )]
 pub async fn admin_assign_dispute(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
 ) -> ApiResult<Json<DataResponse<DisputeResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
-
-    // TODO: Add admin permission check
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let dispute = state
         .dispute_service
         .assign_for_review(dispute_id, auth.user_id)
         .await?;
 
-    Ok(Json(DataResponse::new(DisputeResponse::from(dispute), request_id)))
+    Ok(Json(DataResponse::new(
+        DisputeResponse::from(dispute),
+        request_id,
+    )))
 }
 
 /// Admin: Resolve dispute by upholding the original result.
@@ -378,19 +572,21 @@ pub async fn admin_assign_dispute(
     tag = "disputes"
 )]
 pub async fn admin_resolve_uphold(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<ResolveUpholdRequest>,
 ) -> ApiResult<Json<DataResponse<DisputeResolutionResultResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
-
-    // TODO: Add admin permission check
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let result = state
         .dispute_service
@@ -422,24 +618,26 @@ pub async fn admin_resolve_uphold(
     tag = "disputes"
 )]
 pub async fn admin_resolve_overturn(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<ResolveOverturnRequest>,
 ) -> ApiResult<Json<DataResponse<DisputeResolutionResultResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let new_winner_registration_id: TournamentRegistrationId = req
         .new_winner_registration_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
-
-    // TODO: Add admin permission check
 
     let result = state
         .dispute_service
@@ -478,19 +676,21 @@ pub async fn admin_resolve_overturn(
     tag = "disputes"
 )]
 pub async fn admin_resolve_rematch(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<ResolveRematchRequest>,
 ) -> ApiResult<Json<DataResponse<DisputeResolutionResultResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
-
-    // TODO: Add admin permission check
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let result = state
         .dispute_service
@@ -522,19 +722,21 @@ pub async fn admin_resolve_rematch(
     tag = "disputes"
 )]
 pub async fn admin_resolve_adjusted(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<ResolveAdjustedRequest>,
 ) -> ApiResult<Json<DataResponse<DisputeResolutionResultResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
-
-    // TODO: Add admin permission check
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let result = state
         .dispute_service
@@ -572,19 +774,21 @@ pub async fn admin_resolve_adjusted(
     tag = "disputes"
 )]
 pub async fn admin_resolve_double_dq(
-    State(state): State<AppState>,
+    State(state): State<DisputeState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(dispute_id): Path<String>,
+    Path(dispute_id): Path<DisputeId>,
     ValidatedJson(req): ValidatedJson<ResolveDoubleDqRequest>,
 ) -> ApiResult<Json<DataResponse<DisputeResolutionResultResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let dispute_id: DisputeId = dispute_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid dispute ID format"))?;
-
-    // TODO: Add admin permission check
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let result = state
         .dispute_service

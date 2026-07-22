@@ -11,12 +11,12 @@ use crate::dto::responses::{
     LeagueTeamWithSeasonResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
+use crate::state::LeagueTeamState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{LeagueSeasonId, LeagueTeamId};
+use portal_core::{LeagueSeasonId, LeagueTeamId, permissions};
 
 /// Query parameters for listing teams in a league.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
@@ -64,31 +64,21 @@ pub struct ListTeamSeasonsParams {
     tag = "league-teams"
 )]
 pub async fn create_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(season_id): Path<String>,
+    Path(season_id): Path<LeagueSeasonId>,
     ValidatedJson(req): ValidatedJson<CreateLeagueTeamRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueTeamWithSeasonResponse>>)> {
     let request_id = get_request_id(&headers);
 
-    let season_id: LeagueSeasonId = season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid season ID format"))?;
-
     // Get the season to find the league
     let season = state.league_season_service.get_season(season_id).await?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
 
     let cmd = req.into_command(season.league_id, season_id);
     let (team, team_season) = state
         .league_team_service
-        .create_team(player.id, cmd)
+        .create_team(auth.player_id, cmd)
         .await?;
 
     let response = LeagueTeamWithSeasonResponse {
@@ -122,43 +112,33 @@ pub async fn create_team(
     tag = "league-teams"
 )]
 pub async fn register_team_for_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
-    Path(season_id): Path<String>,
+    Path(season_id): Path<LeagueSeasonId>,
     ValidatedJson(req): ValidatedJson<RegisterTeamForSeasonRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<LeagueTeamSeasonResponse>>)> {
     let request_id = get_request_id(&headers);
-
-    let season_id: LeagueSeasonId = season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid season ID format"))?;
 
     let team_id: LeagueTeamId = req
         .team_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    // Check if the player is the owner of the team
-    let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(player.id) {
-        return Err(ApiError::forbidden("Only the team owner can register for seasons"));
-    }
+    require_team_settings_manage(&perm, &auth, team_id).await?;
 
     let team_season = state
         .league_team_service
-        .register_for_season(team_id, season_id, player.id)
+        .register_for_season(team_id, season_id, auth.player_id)
         .await?;
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(LeagueTeamSeasonResponse::from(team_season), request_id)),
+        Json(DataResponse::new(
+            LeagueTeamSeasonResponse::from(team_season),
+            request_id,
+        )),
     ))
 }
 
@@ -176,15 +156,11 @@ pub async fn register_team_for_season(
     tag = "league-teams"
 )]
 pub async fn get_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
-    Path(team_id): Path<String>,
+    Path(team_id): Path<LeagueTeamId>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let team_id: LeagueTeamId = team_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
 
     let team = state.league_team_service.get_team(team_id).await?;
 
@@ -209,16 +185,12 @@ pub async fn get_team(
     tag = "league-teams"
 )]
 pub async fn list_teams_in_season(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     headers: HeaderMap,
-    Path(season_id): Path<String>,
+    Path(season_id): Path<LeagueSeasonId>,
     Query(params): Query<ListTeamSeasonsParams>,
 ) -> ApiResult<Json<PaginatedResponse<LeagueTeamSummaryResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let season_id: LeagueSeasonId = season_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid season ID format"))?;
 
     let per_page = params.per_page.clamp(1, 100) as u32;
     let page = params.page.max(1) as u32;
@@ -261,29 +233,16 @@ pub async fn list_teams_in_season(
     tag = "league-teams"
 )]
 pub async fn update_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
-    Path(team_id): Path<String>,
+    Path(team_id): Path<LeagueTeamId>,
     ValidatedJson(req): ValidatedJson<UpdateLeagueTeamRequest>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let team_id: LeagueTeamId = team_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    // Check if the player is the owner
-    let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(player.id) {
-        return Err(ApiError::forbidden("Only the team owner can update team settings"));
-    }
+    require_team_settings_manage(&perm, &auth, team_id).await?;
 
     let cmd = req.into();
     let updated = state
@@ -314,29 +273,39 @@ pub async fn update_team(
     tag = "league-teams"
 )]
 pub async fn disband_team(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
-    Path(team_id): Path<String>,
+    perm: PermissionChecker,
+    Path(team_id): Path<LeagueTeamId>,
 ) -> ApiResult<StatusCode> {
-    let team_id: LeagueTeamId = team_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
-
-    // Get the player ID for the authenticated user
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
-
-    // Check if the player is the owner
-    let team = state.league_team_service.get_team(team_id).await?;
-    if !team.is_owner(player.id) {
-        return Err(ApiError::forbidden("Only the team owner can disband the team"));
-    }
+    require_team_settings_manage(&perm, &auth, team_id).await?;
 
     state.league_team_service.disband_team(team_id).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Require that the caller holds `team.settings.manage` for `team_id`.
+///
+/// Team owners are granted the `team_captain` RBAC role (scoped to the
+/// team) at creation time — see
+/// `PgLeagueTeamRepository::create_team_with_season_and_captain` and the
+/// 0061 backfill migration — so this single check now covers owners,
+/// explicitly-assigned captains, and platform admins (via the
+/// `admin.teams.manage_any` override folded into
+/// `require_team_permission`).
+///
+/// Thin wrapper kept for readability at the call sites, and because the
+/// earlier `require_team_owner_or_admin` helper — which did an extra
+/// `get_team()` roundtrip before checking ownership — was removed as
+/// part of the I4 cleanup.
+async fn require_team_settings_manage(
+    perm: &PermissionChecker,
+    auth: &AuthenticatedUser,
+    team_id: LeagueTeamId,
+) -> ApiResult<()> {
+    perm.require_team_permission(auth, team_id.as_uuid(), permissions::team::SETTINGS_MANAGE)
+        .await
 }
 
 /// Transfer team ownership to another player (owner only).
@@ -358,29 +327,19 @@ pub async fn disband_team(
     tag = "league-teams"
 )]
 pub async fn transfer_ownership(
-    State(state): State<AppState>,
+    State(state): State<LeagueTeamState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(team_id): Path<String>,
+    Path(team_id): Path<LeagueTeamId>,
     ValidatedJson(req): ValidatedJson<TransferOwnershipRequest>,
 ) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let team_id: LeagueTeamId = team_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid team ID format"))?;
-
     let new_owner_id = req.parse_new_owner()?;
-
-    // Get the player ID for the authenticated user (current owner)
-    let player = state
-        .player_service
-        .get_player_by_user_id(auth.user_id)
-        .await?;
 
     let team = state
         .league_team_service
-        .transfer_ownership(team_id, player.id, new_owner_id)
+        .transfer_ownership(team_id, auth.player_id, new_owner_id)
         .await?;
 
     Ok(Json(DataResponse::new(

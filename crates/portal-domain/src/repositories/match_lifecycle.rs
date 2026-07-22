@@ -19,10 +19,8 @@ pub trait MatchStatusLogRepository: Send + Sync + 'static {
     async fn create(&self, log: CreateMatchStatusLog) -> Result<MatchStatusLog, DomainError>;
 
     /// Find a log entry by ID.
-    async fn find_by_id(
-        &self,
-        id: MatchStatusLogId,
-    ) -> Result<Option<MatchStatusLog>, DomainError>;
+    async fn find_by_id(&self, id: MatchStatusLogId)
+    -> Result<Option<MatchStatusLog>, DomainError>;
 
     /// Find all log entries for a match, ordered by transition time (oldest first).
     async fn find_by_match_id(

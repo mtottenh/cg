@@ -19,6 +19,8 @@ pub struct UserRow {
     // Authentication
     pub password_hash: Option<String>,
     pub password_changed_at: Option<DateTime<Utc>>,
+    /// Authentication provider: 'local' (password) or 'steam' (OpenID).
+    pub auth_provider: String,
 
     // Two-Factor Authentication
     pub two_factor_enabled: bool,

@@ -1,10 +1,10 @@
 //! Player builder for tests.
 
 use chrono::Utc;
-use fake::faker::name::en::Name;
 use fake::Fake;
-use portal_db::entities::PlayerRow;
+use fake::faker::name::en::Name;
 use portal_db::DbPool;
+use portal_db::entities::PlayerRow;
 use uuid::Uuid;
 
 use super::UserBuilder;
@@ -126,6 +126,7 @@ impl PlayerBuilder {
             steam_id: self.steam_id,
             steam_id_64: None,
             steam_profile: None,
+            looking_for_team: false,
             featured_badge_id: None,
             title: None,
             created_at: now,

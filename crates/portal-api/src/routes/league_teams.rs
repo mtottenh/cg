@@ -6,10 +6,10 @@
 //! - `/league-team-seasons` - Seasonal roster management
 //! - `/league-team-invitations` - Invitation management
 
-use crate::handlers::league_teams;
+use crate::handlers::{awards, league_teams, uploads};
 use crate::state::AppState;
-use axum::routing::{delete, get, patch, post};
 use axum::Router;
+use axum::routing::{delete, get, patch, post};
 
 /// League season routes (nested under /league-seasons).
 pub fn season_routes() -> Router<AppState> {
@@ -20,11 +20,39 @@ pub fn season_routes() -> Router<AppState> {
         .route("/{season_id}", get(league_teams::get_season))
         .route("/{season_id}", patch(league_teams::update_season))
         // Teams in a season (list team seasons, create new team)
-        .route("/{season_id}/teams", get(league_teams::list_teams_in_season))
+        .route(
+            "/{season_id}/teams",
+            get(league_teams::list_teams_in_season),
+        )
         .route("/{season_id}/teams", post(league_teams::create_team))
         .route(
             "/{season_id}/teams/register",
             post(league_teams::register_team_for_season),
+        )
+        // Awards + leaderboards
+        .route(
+            "/{season_id}/awards",
+            get(awards::list_season_awards).post(awards::create_season_award),
+        )
+        .route(
+            "/{season_id}/awards/{award_id}",
+            patch(awards::update_season_award).delete(awards::void_season_award),
+        )
+        .route(
+            "/{season_id}/awards/{award_id}/standings",
+            get(awards::get_season_award_standings),
+        )
+        .route(
+            "/{season_id}/awards/{award_id}/finalize",
+            post(awards::finalize_season_award),
+        )
+        .route(
+            "/{season_id}/leaderboards",
+            get(awards::get_season_leaderboard),
+        )
+        .route(
+            "/{season_id}/stats-leaderboard",
+            get(awards::get_season_player_stats),
         )
 }
 
@@ -40,6 +68,9 @@ pub fn team_routes() -> Router<AppState> {
             "/{team_id}/transfer-ownership",
             post(league_teams::transfer_ownership),
         )
+        // Image uploads (team settings manage permission — i.e. owner/captain/admin)
+        .route("/{team_id}/logo", post(uploads::upload_team_logo))
+        .route("/{team_id}/banner", post(uploads::upload_team_banner))
 }
 
 /// League team season routes (nested under /league-team-seasons).

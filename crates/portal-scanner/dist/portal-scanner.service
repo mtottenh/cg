@@ -1,0 +1,50 @@
+[Unit]
+Description=Gaming Portal demo scanner
+Documentation=https://github.com/community-gaming/gaming-portal
+After=network-online.target portal-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=portal
+Group=portal
+WorkingDirectory=/var/lib/portal
+EnvironmentFile=/etc/portal/scanner.env
+
+ExecStart=/usr/bin/portal-scanner
+
+Restart=on-failure
+RestartSec=10s
+StartLimitIntervalSec=120s
+StartLimitBurst=5
+
+TimeoutStopSec=30s
+
+LimitNOFILE=32768
+MemoryMax=512M
+TasksMax=256
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=portal-scanner
+
+[Install]
+WantedBy=multi-user.target

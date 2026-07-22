@@ -6,54 +6,70 @@
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
-use portal_core::{DomainError, TournamentMatchId, TournamentRegistrationId, UserId, VetoSessionId};
+use portal_core::{
+    DomainError, TournamentMatchId, TournamentRegistrationId, UserId, VetoSessionId,
+};
+use rand::Rng;
 use rand::seq::IndexedRandom;
 use tracing::{info, instrument, warn};
 
 use crate::entities::veto::{
-    MapStatus, MapVetoStatus, VetoAction, VetoActionResult, VetoActionType, VetoFormat,
-    VetoFormatAction, VetoSession, VetoSessionState, VetoStatus,
+    MapStatus, MapVetoStatus, VetoAction, VetoActionResult, VetoFormat, VetoFormatAction,
+    VetoSession, VetoSessionState, VetoStatus,
 };
 use crate::repositories::tournament::{
-    CreateVetoAction, CreateVetoSession, TournamentMatchRepository, TournamentRegistrationRepository,
-    UpdateVetoSession, VetoActionRepository, VetoSessionRepository,
+    CreateVetoAction, CreateVetoSession, TournamentMatchRepository, UpdateVetoSession,
+    VetoActionRepository, VetoSessionRepository,
 };
+use portal_core::{SideSelectionMode, VetoActionType, VetoFormatConfig};
+
+// =============================================================================
+// PROVIDER TRAITS
+// =============================================================================
+
+/// Provides veto format resolution — implemented by the API layer's plugin adapter.
+pub trait VetoFormatProvider: Send + Sync {
+    /// Look up a veto format by its ID (e.g., "bo1_standard", "bo3_standard").
+    fn get_format(&self, format_id: &str) -> Option<VetoFormatConfig>;
+}
+
+/// Provides game-specific side selection behavior.
+pub trait SideSelectionProvider: Send + Sync {
+    /// Pick a random side for auto-assignment (CoinFlip mode).
+    /// Returns None if the game has no sides.
+    fn random_side(&self, game_id: &str) -> Option<String>;
+}
 
 /// Service for managing map veto sessions.
 #[derive(Clone)]
-pub struct VetoService<VSR, VAR, TMR, TRR>
+pub struct VetoService<VSR, VAR, TMR>
 where
     VSR: VetoSessionRepository,
     VAR: VetoActionRepository,
     TMR: TournamentMatchRepository,
-    TRR: TournamentRegistrationRepository,
 {
     session_repo: Arc<VSR>,
     action_repo: Arc<VAR>,
     match_repo: Arc<TMR>,
-    registration_repo: Arc<TRR>,
+    format_provider: Option<Arc<dyn VetoFormatProvider>>,
+    side_provider: Option<Arc<dyn SideSelectionProvider>>,
     default_timeout_seconds: u32,
 }
 
-impl<VSR, VAR, TMR, TRR> VetoService<VSR, VAR, TMR, TRR>
+impl<VSR, VAR, TMR> VetoService<VSR, VAR, TMR>
 where
     VSR: VetoSessionRepository,
     VAR: VetoActionRepository,
     TMR: TournamentMatchRepository,
-    TRR: TournamentRegistrationRepository,
 {
     /// Create a new veto service.
-    pub fn new(
-        session_repo: Arc<VSR>,
-        action_repo: Arc<VAR>,
-        match_repo: Arc<TMR>,
-        registration_repo: Arc<TRR>,
-    ) -> Self {
+    pub fn new(session_repo: Arc<VSR>, action_repo: Arc<VAR>, match_repo: Arc<TMR>) -> Self {
         Self {
             session_repo,
             action_repo,
             match_repo,
-            registration_repo,
+            format_provider: None,
+            side_provider: None,
             default_timeout_seconds: 30,
         }
     }
@@ -61,6 +77,18 @@ where
     /// Create a new veto service with custom timeout.
     pub fn with_timeout(mut self, timeout_seconds: u32) -> Self {
         self.default_timeout_seconds = timeout_seconds;
+        self
+    }
+
+    /// Inject a veto format provider (plugin-backed format resolution).
+    pub fn with_format_provider(mut self, provider: Arc<dyn VetoFormatProvider>) -> Self {
+        self.format_provider = Some(provider);
+        self
+    }
+
+    /// Inject a side selection provider (plugin-backed random side picks).
+    pub fn with_side_provider(mut self, provider: Arc<dyn SideSelectionProvider>) -> Self {
+        self.side_provider = Some(provider);
         self
     }
 
@@ -72,11 +100,14 @@ where
         veto_format: &VetoFormat,
         map_pool: Vec<String>,
         timeout_seconds: Option<u32>,
+        side_selection_mode: SideSelectionMode,
     ) -> Result<VetoSession, DomainError> {
         // Verify the match exists
-        let match_ = self.match_repo.find_by_id(match_id).await?.ok_or_else(|| {
-            DomainError::TournamentMatchNotFound(match_id.to_string())
-        })?;
+        let match_ = self
+            .match_repo
+            .find_by_id(match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         // Verify match has both participants
         if !match_.has_both_participants() {
@@ -107,8 +138,15 @@ where
                 veto_format_id: veto_format.id.clone(),
                 map_pool: map_pool.clone(),
                 timeout_seconds: timeout_seconds.unwrap_or(self.default_timeout_seconds),
+                side_selection_mode,
             })
             .await?;
+
+        // A veto session existing IS what makes the match veto-gated: flip
+        // veto_required so check-in auto-advances into pick_ban (not straight
+        // to in_progress) and clients show the veto panel. Nothing at
+        // bracket-generation time sets this flag.
+        self.match_repo.set_veto_required(match_id, true).await?;
 
         info!(
             session_id = %session.id,
@@ -162,10 +200,26 @@ where
             )));
         }
 
+        // Idempotency guard: once a coin-flip winner is recorded it must never
+        // be re-randomized. A second (racing or retried) flip that still
+        // observes `can_coin_flip()` returns the already-recorded outcome
+        // unchanged rather than overwriting it with a fresh random winner.
+        // This also makes the lifecycle auto-flip (`ensure_veto_session`) a
+        // no-op once a winner exists, since it routes through this method.
+        if session.coin_flip_winner_registration_id.is_some() {
+            info!(
+                session_id = %session_id,
+                "Coin flip already recorded; returning existing result (idempotent)"
+            );
+            return Ok(session);
+        }
+
         // Verify winner is a participant
-        let match_ = self.match_repo.find_by_id(session.match_id).await?.ok_or_else(|| {
-            DomainError::TournamentMatchNotFound(session.match_id.to_string())
-        })?;
+        let match_ = self
+            .match_repo
+            .find_by_id(session.match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(session.match_id))?;
 
         let is_participant = match_.participant1_registration_id == Some(winner)
             || match_.participant2_registration_id == Some(winner);
@@ -186,9 +240,8 @@ where
         let first_action = if winner_goes_first {
             winner
         } else {
-            other_team.ok_or_else(|| {
-                DomainError::InvalidState("Other participant not set".to_string())
-            })?
+            other_team
+                .ok_or_else(|| DomainError::InvalidState("Other participant not set".to_string()))?
         };
 
         // Set deadline for first action
@@ -251,15 +304,14 @@ where
         // Verify map is available
         if !session.is_map_available(map_id) {
             return Err(DomainError::InvalidMatchResult(format!(
-                "Map '{}' is not available for selection",
-                map_id
+                "Map '{map_id}' is not available for selection"
             )));
         }
 
         // Get the current team turn
-        let current_team = session.current_team_turn.ok_or_else(|| {
-            DomainError::InvalidState("No team turn set".to_string())
-        })?;
+        let current_team = session
+            .current_team_turn
+            .ok_or_else(|| DomainError::InvalidState("No team turn set".to_string()))?;
 
         // Verify it's actually this team's turn
         if current_team != acting_for_registration {
@@ -271,12 +323,12 @@ where
         // Get the veto format to determine action type
         let format = self.get_format(&session.veto_format_id)?;
         let action_index = (session.current_action_number as usize).saturating_sub(1);
-        let format_action = format.get_action(action_index).ok_or_else(|| {
-            DomainError::InvalidState("Action index out of bounds".to_string())
-        })?;
+        let format_action = format
+            .get_action(action_index)
+            .ok_or_else(|| DomainError::InvalidState("Action index out of bounds".to_string()))?;
 
         // Record the action
-        let result = self
+        let mut result = self
             .record_action_internal(
                 &session,
                 &format,
@@ -288,6 +340,45 @@ where
                 None,
             )
             .await?;
+
+        // Auto-chain decider actions (team 0 = automatic, last remaining map)
+        while !result.veto_complete {
+            if let Some(next_type) = result.next_action_type {
+                if !matches!(next_type, VetoActionType::Decider) {
+                    break;
+                }
+            } else {
+                break;
+            }
+
+            let updated_session = self.get_session(session_id).await?;
+            let next_index = (updated_session.current_action_number as usize).saturating_sub(1);
+            let next_format_action = format.get_action(next_index).ok_or_else(|| {
+                DomainError::InvalidState("Decider action index out of bounds".to_string())
+            })?;
+
+            // Pick the last remaining map as the decider
+            let decider_map = updated_session
+                .remaining_maps
+                .first()
+                .cloned()
+                .ok_or_else(|| {
+                    DomainError::InvalidState("No maps remaining for decider".to_string())
+                })?;
+
+            result = self
+                .record_action_internal(
+                    &updated_session,
+                    &format,
+                    next_format_action,
+                    &decider_map,
+                    None,
+                    None,
+                    true,
+                    Some("decider_auto"),
+                )
+                .await?;
+        }
 
         Ok(result)
     }
@@ -318,9 +409,9 @@ where
         let current_team = session.current_team_turn;
         let format = self.get_format(&session.veto_format_id)?;
         let action_index = (session.current_action_number as usize).saturating_sub(1);
-        let format_action = format.get_action(action_index).ok_or_else(|| {
-            DomainError::InvalidState("Action index out of bounds".to_string())
-        })?;
+        let format_action = format
+            .get_action(action_index)
+            .ok_or_else(|| DomainError::InvalidState("Action index out of bounds".to_string()))?;
 
         let result = self
             .record_action_internal(
@@ -387,33 +478,43 @@ where
             ));
         }
 
-        // Side selection is by the opponent of who picked
-        let match_ = self.match_repo.find_by_id(session.match_id).await?.ok_or_else(|| {
-            DomainError::TournamentMatchNotFound(session.match_id.to_string())
-        })?;
-
-        let picker = action.performed_by_registration_id.ok_or_else(|| {
-            DomainError::InvalidState("Action has no performer".to_string())
-        })?;
-
-        let opponent = if match_.participant1_registration_id == Some(picker) {
-            match_.participant2_registration_id
-        } else {
-            match_.participant1_registration_id
+        // Validate side selection is allowed for this mode
+        match session.side_selection_mode {
+            SideSelectionMode::Knife => {
+                return Err(DomainError::InvalidState(
+                    "Side selection is not available in knife mode".to_string(),
+                ));
+            }
+            SideSelectionMode::CoinFlip => {
+                return Err(DomainError::InvalidState(
+                    "Side selection is automatic in coin flip mode".to_string(),
+                ));
+            }
+            SideSelectionMode::PickerChoice => {
+                // The opponent (non-picker) chooses side — reject for decider maps
+                if action.is_decider() {
+                    return Err(DomainError::InvalidState(
+                        "Side selection is not available for decider maps".to_string(),
+                    ));
+                }
+            }
         }
-        .ok_or_else(|| DomainError::InvalidState("Opponent not found".to_string()))?;
 
-        // Verify the acting registration is the opponent (who should select side)
-        if acting_for_registration != opponent {
+        let picker = action
+            .performed_by_registration_id
+            .ok_or_else(|| DomainError::InvalidState("Action has no performer".to_string()))?;
+
+        // In picker_choice mode, the OPPONENT (non-picker) selects the side.
+        if acting_for_registration == picker {
             return Err(DomainError::NotAuthorized(
-                "Only the opponent of the picker can select the side".to_string(),
+                "The opponent of the picker selects the side".to_string(),
             ));
         }
 
-        // Record side selection
+        // Record side selection, attributed to the opponent who selected it.
         let action = self
             .action_repo
-            .update_side_selection(action.id, side.to_string(), opponent)
+            .update_side_selection(action.id, side.to_string(), acting_for_registration)
             .await?;
 
         info!(
@@ -436,7 +537,14 @@ where
             .session_repo
             .find_by_match(match_id)
             .await?
-            .ok_or_else(|| DomainError::Internal("Veto session not found".to_string()))?;
+            // 404, not 500: "this match has no veto session" is a normal
+            // client-visible outcome (every veto endpoint resolves the
+            // session through here), and a public 500 pollutes error-rate
+            // monitoring.
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "veto session",
+                query: format!("match {match_id}"),
+            })?;
 
         let actions = self.action_repo.list_by_session(session.id).await?;
         let format = self.get_format(&session.veto_format_id)?;
@@ -474,19 +582,24 @@ where
         self.session_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Veto session {} not found", id)))
+            .ok_or(DomainError::VetoSessionNotFound(id))
     }
 
     fn get_format(&self, format_id: &str) -> Result<VetoFormat, DomainError> {
-        // For now, return built-in formats
-        // In the future, this will query the plugin system
+        // Try injected provider first (plugin-backed)
+        if let Some(provider) = &self.format_provider
+            && let Some(fmt) = provider.get_format(format_id)
+        {
+            return Ok(fmt);
+        }
+
+        // Fall back to built-in formats
         match format_id {
             "bo1_veto" | "bo1_standard" => Ok(VetoFormat::bo1()),
             "bo3_veto" | "bo3_standard" => Ok(VetoFormat::bo3()),
             "bo5_veto" | "bo5_standard" => Ok(VetoFormat::bo5()),
             _ => Err(DomainError::InvalidMatchResult(format!(
-                "Unknown veto format: {}",
-                format_id
+                "Unknown veto format: {format_id}"
             ))),
         }
     }
@@ -502,8 +615,16 @@ where
         was_auto: bool,
         auto_reason: Option<&str>,
     ) -> Result<VetoActionResult, DomainError> {
-        // Create the action
-        let action = self
+        // Create the action.
+        //
+        // The insert is idempotent on (session_id, action_number): if the
+        // process previously died between this insert and the session-cursor
+        // update below, the already-committed row is returned instead of a
+        // unique violation, so this call finishes the interrupted work rather
+        // than leaving the session wedged forever. The committed row — not
+        // this call's arguments — is therefore the source of truth for the
+        // session state computed below.
+        let mut action = self
             .action_repo
             .create(CreateVetoAction {
                 session_id: session.id,
@@ -517,13 +638,48 @@ where
             })
             .await?;
 
+        // The persisted map wins (it equals `map_id` on the normal path, and
+        // is the recorded map when we are recovering an already-committed
+        // action row).
+        let map_id = action.map_id.clone();
+
+        // Auto-assign random side in CoinFlip mode for pick actions
+        if session.side_selection_mode == SideSelectionMode::CoinFlip
+            && matches!(format_action.action_type, VetoActionType::Pick)
+            && !action.has_side_selection()
+        {
+            // Use injected side provider for game-agnostic random side,
+            // falling back to coin-flip between "ct" and "t".
+            let side = self
+                .side_provider
+                .as_ref()
+                .and_then(|sp| sp.random_side(&session.veto_format_id))
+                .unwrap_or_else(|| {
+                    if rand::rng().random_bool(0.5) {
+                        "ct".to_string()
+                    } else {
+                        "t".to_string()
+                    }
+                });
+            let selector = performed_by
+                .unwrap_or_else(|| session.first_action_registration_id.unwrap_or_default());
+            action = self
+                .action_repo
+                .update_side_selection(action.id, side, selector)
+                .await?;
+        }
+
         // Update session state
         let mut remaining = session.remaining_maps.clone();
-        remaining.retain(|m| m != map_id);
+        remaining.retain(|m| m != &map_id);
 
         let mut selected = session.selected_maps.clone();
-        if matches!(format_action.action_type, VetoActionType::Pick | VetoActionType::Decider) {
-            selected.push(map_id.to_string());
+        if matches!(
+            format_action.action_type,
+            VetoActionType::Pick | VetoActionType::Decider
+        ) && !selected.contains(&map_id)
+        {
+            selected.push(map_id.clone());
         }
 
         let next_action_number = session.current_action_number + 1;
@@ -534,7 +690,9 @@ where
             (None, VetoStatus::Completed, None)
         } else {
             let next_format_action = format.get_action(next_action_number as usize - 1);
-            let next_team = self.determine_next_team(session, next_format_action).await?;
+            let next_team = self
+                .determine_next_team(session, next_format_action)
+                .await?;
             let deadline = Utc::now() + Duration::seconds(i64::from(session.timeout_seconds));
             (Some(next_team), VetoStatus::InProgress, Some(deadline))
         };
@@ -546,7 +704,11 @@ where
             selected_maps: Some(selected.clone()),
             status: Some(next_status),
             action_deadline: Some(deadline),
-            completed_at: if veto_complete { Some(Utc::now()) } else { None },
+            completed_at: if veto_complete {
+                Some(Utc::now())
+            } else {
+                None
+            },
             ..Default::default()
         };
 
@@ -568,7 +730,9 @@ where
             next_action_type: if veto_complete {
                 None
             } else {
-                format.get_action(next_action_number as usize - 1).map(|a| a.action_type)
+                format
+                    .get_action(next_action_number as usize - 1)
+                    .map(|a| a.action_type)
             },
         })
     }
@@ -578,20 +742,22 @@ where
         session: &VetoSession,
         next_action: Option<&VetoFormatAction>,
     ) -> Result<TournamentRegistrationId, DomainError> {
-        let match_ = self.match_repo.find_by_id(session.match_id).await?.ok_or_else(|| {
-            DomainError::TournamentMatchNotFound(session.match_id.to_string())
-        })?;
+        let match_ = self
+            .match_repo
+            .find_by_id(session.match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(session.match_id))?;
 
-        let team1 = match_.participant1_registration_id.ok_or_else(|| {
-            DomainError::InvalidState("Participant 1 not set".to_string())
-        })?;
-        let team2 = match_.participant2_registration_id.ok_or_else(|| {
-            DomainError::InvalidState("Participant 2 not set".to_string())
-        })?;
+        let team1 = match_
+            .participant1_registration_id
+            .ok_or_else(|| DomainError::InvalidState("Participant 1 not set".to_string()))?;
+        let team2 = match_
+            .participant2_registration_id
+            .ok_or_else(|| DomainError::InvalidState("Participant 2 not set".to_string()))?;
 
-        let first_action = session.first_action_registration_id.ok_or_else(|| {
-            DomainError::InvalidState("First action team not set".to_string())
-        })?;
+        let first_action = session
+            .first_action_registration_id
+            .ok_or_else(|| DomainError::InvalidState("First action team not set".to_string()))?;
 
         let second_action = if first_action == team1 { team2 } else { team1 };
 
@@ -604,7 +770,9 @@ where
                     }
                     1 => Ok(first_action),
                     2 => Ok(second_action),
-                    _ => Err(DomainError::InvalidMatchResult("Invalid team number in format".to_string())),
+                    _ => Err(DomainError::InvalidMatchResult(
+                        "Invalid team number in format".to_string(),
+                    )),
                 }
             }
             None => Err(DomainError::InvalidState("No next action".to_string())),
@@ -620,15 +788,31 @@ where
                 let action = actions.iter().find(|a| a.map_id == *map_id);
 
                 let (status, banned_by, picked_by, game_number) = match action {
-                    Some(a) if a.is_ban() => {
-                        (MapVetoStatus::Banned, a.performed_by_registration_id, None, None)
-                    }
+                    Some(a) if a.is_ban() => (
+                        MapVetoStatus::Banned,
+                        a.performed_by_registration_id,
+                        None,
+                        None,
+                    ),
                     Some(a) if a.is_pick() => {
-                        let game_num = session.selected_maps.iter().position(|m| m == map_id).map(|i| i as u32 + 1);
-                        (MapVetoStatus::Picked, None, a.performed_by_registration_id, game_num)
+                        let game_num = session
+                            .selected_maps
+                            .iter()
+                            .position(|m| m == map_id)
+                            .map(|i| i as u32 + 1);
+                        (
+                            MapVetoStatus::Picked,
+                            None,
+                            a.performed_by_registration_id,
+                            game_num,
+                        )
                     }
                     Some(a) if a.is_decider() => {
-                        let game_num = session.selected_maps.iter().position(|m| m == map_id).map(|i| i as u32 + 1);
+                        let game_num = session
+                            .selected_maps
+                            .iter()
+                            .position(|m| m == map_id)
+                            .map(|i| i as u32 + 1);
                         (MapVetoStatus::Decider, None, None, game_num)
                     }
                     _ if session.remaining_maps.contains(map_id) => {

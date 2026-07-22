@@ -1,7 +1,7 @@
 //! PostgreSQL implementation of ResultClaimRepository.
 
-use crate::entities::{NewResultClaim, ResultClaimRow};
 use crate::DbPool;
+use crate::entities::{NewResultClaim, ResultClaimRow};
 use async_trait::async_trait;
 use portal_core::{
     DemoMatchLinkId, DomainError, EvidenceId, ResultClaimId, TournamentMatchId,
@@ -33,13 +33,11 @@ impl PgResultClaimRepository {
 #[async_trait]
 impl ResultClaimRepository for PgResultClaimRepository {
     async fn find_by_id(&self, id: ResultClaimId) -> Result<Option<ResultClaim>, DomainError> {
-        let row = sqlx::query_as::<_, ResultClaimRow>(
-            r"SELECT * FROM result_claims WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find result claim: {e}")))?;
+        let row = sqlx::query_as::<_, ResultClaimRow>(r"SELECT * FROM result_claims WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to find result claim: {e}")))?;
 
         row.map(row_to_domain).transpose()
     }
@@ -59,9 +57,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(match_id.as_uuid())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| {
-            DomainError::Internal(format!("Failed to find pending result claim: {e}"))
-        })?;
+        .map_err(|e| DomainError::Internal(format!("Failed to find pending result claim: {e}")))?;
 
         row.map(row_to_domain).transpose()
     }
@@ -89,8 +85,16 @@ impl ResultClaimRepository for PgResultClaimRepository {
         let game_results_json = serde_json::to_value(&claim.game_results)
             .map_err(|e| DomainError::Internal(format!("Failed to serialize game results: {e}")))?;
 
-        let evidence_uuids: Vec<_> = claim.evidence_ids.iter().map(|id| id.as_uuid()).collect();
-        let demo_link_uuids: Vec<_> = claim.demo_link_ids.iter().map(|id| id.as_uuid()).collect();
+        let evidence_uuids: Vec<_> = claim
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
+        let demo_link_uuids: Vec<_> = claim
+            .demo_link_ids
+            .iter()
+            .map(portal_core::DemoMatchLinkId::as_uuid)
+            .collect();
 
         let new_claim = NewResultClaim {
             match_id: claim.match_id.as_uuid(),
@@ -201,20 +205,24 @@ impl ResultClaimRepository for PgResultClaimRepository {
         id: ResultClaimId,
         status: ClaimStatus,
     ) -> Result<ResultClaim, DomainError> {
+        // Guarded transition: every caller moves a claim *out of*
+        // pending (dispute, cancel). Racing a concurrent confirm must
+        // lose cleanly instead of overwriting a resolved claim.
         let row = sqlx::query_as::<_, ResultClaimRow>(
             r"
             UPDATE result_claims
             SET status = $2, updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND status = 'pending'
             RETURNING *
             ",
         )
         .bind(id.as_uuid())
         .bind(status.to_string())
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(|e| {
-            DomainError::Internal(format!("Failed to update result claim status: {e}"))
+        .map_err(|e| DomainError::Internal(format!("Failed to update result claim status: {e}")))?
+        .ok_or_else(|| {
+            DomainError::Conflict("Result claim has already been resolved".to_string())
         })?;
 
         row_to_domain(row)
@@ -236,7 +244,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
                 confirmed_by_user_id = $3,
                 was_auto_confirmed = $4,
                 updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND status = 'pending'
             RETURNING *
             ",
         )
@@ -244,9 +252,172 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(confirmed_by_registration_id.as_uuid())
         .bind(confirmed_by_user_id.as_uuid())
         .bind(was_auto)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(format!("Failed to confirm result claim: {e}")))?;
+        .map_err(|e| DomainError::Internal(format!("Failed to confirm result claim: {e}")))?
+        .ok_or_else(|| {
+            DomainError::Conflict("Result claim has already been resolved".to_string())
+        })?;
+
+        row_to_domain(row)
+    }
+
+    async fn confirm_and_apply_to_match(
+        &self,
+        id: ResultClaimId,
+        confirmed_by_registration_id: TournamentRegistrationId,
+        confirmed_by_user_id: UserId,
+        was_auto: bool,
+        match_id: TournamentMatchId,
+        winner_registration_id: TournamentRegistrationId,
+        loser_registration_id: TournamentRegistrationId,
+        participant1_score: i32,
+        participant2_score: i32,
+    ) -> Result<ResultClaim, DomainError> {
+        // Both the claim-side Confirm and the match-side submit_result
+        // commit in one tx or neither does. The old split
+        // `confirm(...) + submit_result(...) + complete(...)` chain
+        // could leave a Confirmed claim pointing at an incomplete
+        // match — a dangling FK target the bracket-progression saga
+        // would then trip over. Note: `submit_result` also sets
+        // `status = 'completed'` on the match, so a separate
+        // `complete(...)` write isn't needed.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to begin transaction: {e}")))?;
+
+        // Status guard: only a pending claim can be confirmed. When two
+        // confirms (or a confirm and the auto-confirm sweep) race, the
+        // loser matches zero rows, the transaction rolls back with a
+        // Conflict, and the completion saga never runs twice — which is
+        // what protects round-robin/swiss standings from double deltas.
+        let claim_row = sqlx::query_as::<_, ResultClaimRow>(
+            r"
+            UPDATE result_claims
+            SET status = 'confirmed',
+                confirmed_at = NOW(),
+                confirmed_by_registration_id = $2,
+                confirmed_by_user_id = $3,
+                was_auto_confirmed = $4,
+                updated_at = NOW()
+            WHERE id = $1 AND status = 'pending'
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(confirmed_by_registration_id.as_uuid())
+        .bind(confirmed_by_user_id.as_uuid())
+        .bind(was_auto)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to confirm result claim: {e}")))?
+        .ok_or_else(|| {
+            DomainError::Conflict("Result claim has already been resolved".to_string())
+        })?;
+
+        sqlx::query(
+            r"
+            UPDATE tournament_matches SET
+                participant1_score = $2,
+                participant2_score = $3,
+                winner_registration_id = $4,
+                loser_registration_id = $5,
+                completed_at = NOW(),
+                status = 'completed',
+                updated_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(match_id.as_uuid())
+        .bind(participant1_score)
+        .bind(participant2_score)
+        .bind(winner_registration_id.as_uuid())
+        .bind(loser_registration_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to apply match result: {e}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to commit: {e}")))?;
+
+        row_to_domain(claim_row)
+    }
+
+    async fn create_and_supersede_pending(
+        &self,
+        claim: CreateResultClaim,
+    ) -> Result<ResultClaim, DomainError> {
+        // One tx: supersede any pre-existing pending claim for the
+        // match, then insert the new one. The split version left the
+        // match in a claim-less state if the create failed after the
+        // supersede succeeded. See audit I5.
+        let game_results_json = serde_json::to_value(&claim.game_results)
+            .map_err(|e| DomainError::Internal(format!("Failed to serialize game results: {e}")))?;
+
+        let evidence_uuids: Vec<_> = claim
+            .evidence_ids
+            .iter()
+            .map(portal_core::EvidenceId::as_uuid)
+            .collect();
+        let demo_link_uuids: Vec<_> = claim
+            .demo_link_ids
+            .iter()
+            .map(portal_core::DemoMatchLinkId::as_uuid)
+            .collect();
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to begin transaction: {e}")))?;
+
+        // Supersede any existing pending claim for this match. No row
+        // is fine — first submission has nothing to supersede.
+        sqlx::query(
+            r"
+            UPDATE result_claims
+            SET status = 'superseded', updated_at = NOW()
+            WHERE match_id = $1 AND status = 'pending'
+            ",
+        )
+        .bind(claim.match_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to supersede pending claim: {e}")))?;
+
+        let row = sqlx::query_as::<_, ResultClaimRow>(
+            r"
+            INSERT INTO result_claims (
+                match_id, submitted_by_registration_id, submitted_by_user_id,
+                claimed_winner_registration_id, claimed_participant1_score,
+                claimed_participant2_score, game_results, auto_confirm_at,
+                evidence_ids, demo_link_ids, submitter_notes
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING *
+            ",
+        )
+        .bind(claim.match_id.as_uuid())
+        .bind(claim.submitted_by_registration_id.as_uuid())
+        .bind(claim.submitted_by_user_id.as_uuid())
+        .bind(claim.claimed_winner_registration_id.as_uuid())
+        .bind(claim.participant1_score)
+        .bind(claim.participant2_score)
+        .bind(&game_results_json)
+        .bind(claim.auto_confirm_at)
+        .bind(&evidence_uuids)
+        .bind(&demo_link_uuids)
+        .bind(&claim.notes)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to create result claim: {e}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to commit: {e}")))?;
 
         row_to_domain(row)
     }
@@ -269,9 +440,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(except_claim_id.as_uuid())
         .execute(&self.pool)
         .await
-        .map_err(|e| {
-            DomainError::Internal(format!("Failed to supersede pending claims: {e}"))
-        })?;
+        .map_err(|e| DomainError::Internal(format!("Failed to supersede pending claims: {e}")))?;
 
         Ok(())
     }
@@ -330,8 +499,16 @@ fn row_to_domain(row: ResultClaimRow) -> Result<ResultClaim, DomainError> {
         confirmed_by_user_id: row.confirmed_by_user_id.map(UserId::from_uuid),
         auto_confirm_at: row.auto_confirm_at,
         was_auto_confirmed: row.was_auto_confirmed,
-        evidence_ids: row.evidence_ids.into_iter().map(EvidenceId::from_uuid).collect(),
-        demo_link_ids: row.demo_link_ids.into_iter().map(DemoMatchLinkId::from_uuid).collect(),
+        evidence_ids: row
+            .evidence_ids
+            .into_iter()
+            .map(EvidenceId::from_uuid)
+            .collect(),
+        demo_link_ids: row
+            .demo_link_ids
+            .into_iter()
+            .map(DemoMatchLinkId::from_uuid)
+            .collect(),
         submitter_notes: row.submitter_notes,
         created_at: row.created_at,
         updated_at: row.updated_at,

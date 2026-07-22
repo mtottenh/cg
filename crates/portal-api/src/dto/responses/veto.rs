@@ -42,6 +42,8 @@ pub struct VetoSessionResponse {
     pub action_deadline: Option<DateTime<Utc>>,
     /// Timeout seconds per action.
     pub timeout_seconds: u32,
+    /// How starting sides are determined (picker_choice, coin_flip, knife).
+    pub side_selection_mode: String,
     /// When session started.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<DateTime<Utc>>,
@@ -72,6 +74,7 @@ impl From<VetoSession> for VetoSessionResponse {
             current_team_turn: s.current_team_turn.map(|id| id.to_string()),
             action_deadline: s.action_deadline,
             timeout_seconds: s.timeout_seconds,
+            side_selection_mode: s.side_selection_mode.to_string(),
             started_at: s.started_at,
             completed_at: s.completed_at,
             created_at: s.created_at,

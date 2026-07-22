@@ -85,6 +85,8 @@ impl std::str::FromStr for ResultReviewStatus {
 // =============================================================================
 
 /// A review record for a result claim with validation issues.
+// Each bool is an independent validation-trigger flag mirroring a DB column.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResultReview {
     pub id: ResultReviewId,
@@ -216,6 +218,12 @@ impl ResultReview {
         self.captain1_acknowledged && self.captain2_acknowledged
     }
 
+    /// Check if this review only has roster mismatches (no score/winner issues).
+    #[must_use]
+    pub const fn is_roster_only(&self) -> bool {
+        self.roster_mismatch && !self.score_mismatch && !self.winner_mismatch
+    }
+
     /// Check if this review requires admin action.
     #[must_use]
     pub const fn requires_admin(&self) -> bool {
@@ -276,11 +284,15 @@ mod tests {
     #[test]
     fn test_result_review_status_parse() {
         assert_eq!(
-            "pending_acknowledgment".parse::<ResultReviewStatus>().unwrap(),
+            "pending_acknowledgment"
+                .parse::<ResultReviewStatus>()
+                .unwrap(),
             ResultReviewStatus::PendingAcknowledgment
         );
         assert_eq!(
-            "pending_admin_review".parse::<ResultReviewStatus>().unwrap(),
+            "pending_admin_review"
+                .parse::<ResultReviewStatus>()
+                .unwrap(),
             ResultReviewStatus::PendingAdminReview
         );
         assert!("invalid".parse::<ResultReviewStatus>().is_err());
@@ -376,6 +388,9 @@ mod tests {
 
         assert_eq!(review.get_captain_side(captain1_id), Some(1));
         assert_eq!(review.get_captain_side(captain2_id), Some(2));
-        assert_eq!(review.get_captain_side(TournamentRegistrationId::new()), None);
+        assert_eq!(
+            review.get_captain_side(TournamentRegistrationId::new()),
+            None
+        );
     }
 }

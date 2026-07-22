@@ -81,6 +81,11 @@ pub struct TournamentResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rules_url: Option<String>,
 
+    // Additional settings (JSONB). Eligibility restrictions live under the
+    // `"eligibility"` key (also projected into `eligibility_restrictions`);
+    // veto side-selection mode under `"side_selection_mode"`.
+    pub settings: serde_json::Value,
+
     // Policies
     pub withdrawal_policy: String,
 
@@ -100,15 +105,63 @@ pub struct TournamentResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<DateTime<Utc>>,
 
+    // Eligibility restrictions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eligibility_restrictions: Option<EligibilityRestrictionsResponse>,
+
     // Computed fields
     pub is_registration_open: bool,
     pub is_check_in_open: bool,
+}
+
+/// Eligibility restrictions configured for a tournament.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EligibilityRestrictionsResponse {
+    /// Max current rating for any player.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_rating_per_player: Option<i32>,
+    /// Min current rating for any player.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_rating_per_player: Option<i32>,
+    /// Max peak (all-time high) rating for any player.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_peak_rating_per_player: Option<i32>,
+    /// Max average rating for any player (from history).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_avg_rating_per_player: Option<i32>,
+    /// Max sum of all team members' current ratings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_team_total_rating: Option<i32>,
+    /// Max average of team members' current ratings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_team_average_rating: Option<i32>,
+    /// Only allow players in certain rank tiers.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allowed_rank_tiers: Vec<String>,
+    /// Min matches played to be eligible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_matches_played: Option<i32>,
 }
 
 impl From<Tournament> for TournamentResponse {
     fn from(t: Tournament) -> Self {
         let is_registration_open = t.is_registration_open();
         let is_check_in_open = t.is_check_in_open();
+        let restrictions = t.eligibility_restrictions();
+        let eligibility_restrictions = if restrictions.has_restrictions() {
+            Some(EligibilityRestrictionsResponse {
+                max_rating_per_player: restrictions.max_rating_per_player,
+                min_rating_per_player: restrictions.min_rating_per_player,
+                max_peak_rating_per_player: restrictions.max_peak_rating_per_player,
+                max_avg_rating_per_player: restrictions.max_avg_rating_per_player,
+                max_team_total_rating: restrictions.max_team_total_rating,
+                max_team_average_rating: restrictions.max_team_average_rating,
+                allowed_rank_tiers: restrictions.allowed_rank_tiers,
+                min_matches_played: restrictions.min_matches_played,
+            })
+        } else {
+            None
+        };
 
         Self {
             id: t.id.to_string(),
@@ -140,6 +193,7 @@ impl From<Tournament> for TournamentResponse {
             default_map_veto_format: t.default_map_veto_format,
             prize_pool: t.prize_pool,
             rules_url: t.rules_url,
+            settings: t.settings,
             withdrawal_policy: t.withdrawal_policy.to_string(),
             status: t.status.to_string(),
             created_by: t.created_by.to_string(),
@@ -148,6 +202,7 @@ impl From<Tournament> for TournamentResponse {
             published_at: t.published_at,
             started_at: t.started_at,
             completed_at: t.completed_at,
+            eligibility_restrictions,
             is_registration_open,
             is_check_in_open,
         }
@@ -159,6 +214,10 @@ impl From<Tournament> for TournamentResponse {
 pub struct TournamentSummaryResponse {
     pub id: String,
     pub game_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub league_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season_id: Option<String>,
     pub name: String,
     pub slug: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -179,6 +238,8 @@ impl From<Tournament> for TournamentSummaryResponse {
         Self {
             id: t.id.to_string(),
             game_id: t.game_id.to_string(),
+            league_id: t.league_id.map(|id| id.to_string()),
+            season_id: t.season_id.map(|id| id.to_string()),
             name: t.name,
             slug: t.slug,
             logo_url: t.logo_url,
@@ -416,6 +477,14 @@ pub struct TournamentMatchResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vod_url: Option<String>,
 
+    // Check-in
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant1_checked_in_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant2_checked_in_at: Option<DateTime<Utc>>,
+    pub check_in_required: bool,
+    pub veto_required: bool,
+
     // Timestamps
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -452,6 +521,10 @@ impl From<TournamentMatch> for TournamentMatchResponse {
             disputed: m.disputed,
             stream_url: m.stream_url,
             vod_url: m.vod_url,
+            participant1_checked_in_at: m.participant1_checked_in_at,
+            participant2_checked_in_at: m.participant2_checked_in_at,
+            check_in_required: m.check_in_required,
+            veto_required: m.veto_required,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -517,6 +590,8 @@ pub struct TournamentStandingResponse {
     pub id: String,
     pub bracket_id: String,
     pub registration_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant_name: Option<String>,
     pub position: i32,
     pub matches_played: i32,
     pub matches_won: i32,
@@ -543,6 +618,7 @@ impl From<TournamentStanding> for TournamentStandingResponse {
             id: s.id.to_string(),
             bracket_id: s.bracket_id.to_string(),
             registration_id: s.registration_id.to_string(),
+            participant_name: s.participant_name,
             position: s.position,
             matches_played: s.matches_played,
             matches_won: s.matches_won,
@@ -725,10 +801,27 @@ pub struct ScheduleProposalResponse {
     /// Notes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// Reason provided by the responder when the proposal was rejected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
     pub updated_at: DateTime<Utc>,
+}
+
+// =============================================================================
+// TOURNAMENT MAP POOL RESPONSES
+// =============================================================================
+
+/// Response DTO for a tournament's effective map pool.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentMapPoolResponse {
+    /// Map IDs in the pool.
+    pub maps: Vec<String>,
+    /// Source of the pool: "tournament" (custom override) or "game" (default from game config).
+    #[schema(example = "game")]
+    pub source: String,
 }
 
 impl From<ScheduleProposal> for ScheduleProposalResponse {
@@ -746,6 +839,7 @@ impl From<ScheduleProposal> for ScheduleProposalResponse {
             status: p.status.as_str().to_string(),
             expires_at: p.expires_at,
             notes: p.notes,
+            rejection_reason: p.rejection_reason,
             created_at: p.created_at,
             updated_at: p.updated_at,
         }

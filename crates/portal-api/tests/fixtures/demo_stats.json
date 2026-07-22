@@ -1,0 +1,146 @@
+{
+  "map": "de_inferno",
+  "match_date": "2024-09-14T20:17:30Z",
+  "demo_file": "2024-09-14_20-17-30_9_de_inferno_team_Zan_vs_team_Maxymimi.dem.bz2",
+  "match_id": "match_20240914-201730_8de6cc31",
+  "teams": {
+    "team_Maxymimi": {
+      "team_id": 2,
+      "team_name": "team_Maxymimi",
+      "team_side": "T"
+    },
+    "team_Zan": {
+      "team_id": 1,
+      "team_name": "team_Zan",
+      "team_side": "CT"
+    }
+  },
+  "final_score": {
+    "team_Maxymimi": 13,
+    "team_Zan": 10
+  },
+  "rounds": [],
+  "player_summaries": {
+    "76561197962015608": {
+      "player_id": 76561197962015608,
+      "player_name": "dewsy",
+      "team": { "team_id": 2, "team_name": "team_Maxymimi", "team_side": "T" },
+      "kills": 18, "deaths": 14, "assists": 3,
+      "headshot_kills": 5, "flash_assists": 0,
+      "damage_dealt": 1793, "utility_damage": 0,
+      "adr": 77.96, "hs_percentage": 27.78,
+      "wallbangs": 1, "smoke_kills": 0, "blind_kills": 0, "blinded_kills": 1,
+      "flash_duration": 25.9, "enemies_flashed": 11,
+      "bomb_plants": 2, "bomb_defuses": 1
+    },
+    "76561197968706174": {
+      "player_id": 76561197968706174,
+      "player_name": "Jiffz",
+      "team": { "team_id": 2, "team_name": "team_Maxymimi", "team_side": "T" },
+      "kills": 13, "deaths": 20, "assists": 7,
+      "headshot_kills": 6, "flash_assists": 0,
+      "damage_dealt": 2286, "utility_damage": 0,
+      "adr": 99.39, "hs_percentage": 46.15,
+      "wallbangs": 0, "smoke_kills": 1, "blind_kills": 0, "blinded_kills": 0,
+      "flash_duration": 24.68, "enemies_flashed": 12,
+      "bomb_plants": 0, "bomb_defuses": 0
+    },
+    "76561197969684583": {
+      "player_id": 76561197969684583,
+      "player_name": "Daggerman",
+      "team": { "team_id": 1, "team_name": "team_Zan", "team_side": "CT" },
+      "kills": 14, "deaths": 16, "assists": 3,
+      "headshot_kills": 5, "flash_assists": 0,
+      "damage_dealt": 1614, "utility_damage": 0,
+      "adr": 70.17, "hs_percentage": 35.71,
+      "wallbangs": 0, "smoke_kills": 0, "blind_kills": 0, "blinded_kills": 0,
+      "flash_duration": 0.0, "enemies_flashed": 0,
+      "bomb_plants": 2, "bomb_defuses": 0
+    },
+    "76561197985524918": {
+      "player_id": 76561197985524918,
+      "player_name": "Padwan",
+      "team": { "team_id": 1, "team_name": "team_Zan", "team_side": "CT" },
+      "kills": 12, "deaths": 21, "assists": 7,
+      "headshot_kills": 4, "flash_assists": 0,
+      "damage_dealt": 1860, "utility_damage": 0,
+      "adr": 80.87, "hs_percentage": 33.33,
+      "wallbangs": 0, "smoke_kills": 0, "blind_kills": 0, "blinded_kills": 0,
+      "flash_duration": 28.32, "enemies_flashed": 15,
+      "bomb_plants": 0, "bomb_defuses": 1
+    },
+    "76561198019332496": {
+      "player_id": 76561198019332496,
+      "player_name": "G N M E",
+      "team": { "team_id": 1, "team_name": "team_Zan", "team_side": "CT" },
+      "kills": 21, "deaths": 18, "assists": 5,
+      "headshot_kills": 7, "flash_assists": 0,
+      "damage_dealt": 2679, "utility_damage": 0,
+      "adr": 116.48, "hs_percentage": 33.33,
+      "wallbangs": 0, "smoke_kills": 1, "blind_kills": 0, "blinded_kills": 1,
+      "flash_duration": 25.55, "enemies_flashed": 13,
+      "bomb_plants": 0, "bomb_defuses": 0
+    },
+    "76561198074283173": {
+      "player_id": 76561198074283173,
+      "player_name": "Maxymimi",
+      "team": { "team_id": 2, "team_name": "team_Maxymimi", "team_side": "T" },
+      "kills": 22, "deaths": 18, "assists": 5,
+      "headshot_kills": 12, "flash_assists": 0,
+      "damage_dealt": 3390, "utility_damage": 0,
+      "adr": 147.39, "hs_percentage": 54.55,
+      "wallbangs": 1, "smoke_kills": 2, "blind_kills": 0, "blinded_kills": 0,
+      "flash_duration": 20.91, "enemies_flashed": 10,
+      "bomb_plants": 0, "bomb_defuses": 0
+    },
+    "76561198253275090": {
+      "player_id": 76561198253275090,
+      "player_name": "Shredder",
+      "team": { "team_id": 1, "team_name": "team_Zan", "team_side": "CT" },
+      "kills": 21, "deaths": 15, "assists": 5,
+      "headshot_kills": 8, "flash_assists": 0,
+      "damage_dealt": 2295, "utility_damage": 0,
+      "adr": 99.78, "hs_percentage": 38.1,
+      "wallbangs": 2, "smoke_kills": 4, "blind_kills": 0, "blinded_kills": 0,
+      "flash_duration": 23.75, "enemies_flashed": 14,
+      "bomb_plants": 4, "bomb_defuses": 1
+    },
+    "76561198260852228": {
+      "player_id": 76561198260852228,
+      "player_name": "Kinder Wayno",
+      "team": { "team_id": 2, "team_name": "team_Maxymimi", "team_side": "T" },
+      "kills": 11, "deaths": 18, "assists": 3,
+      "headshot_kills": 5, "flash_assists": 0,
+      "damage_dealt": 1503, "utility_damage": 0,
+      "adr": 65.35, "hs_percentage": 45.45,
+      "wallbangs": 0, "smoke_kills": 2, "blind_kills": 0, "blinded_kills": 0,
+      "flash_duration": 31.75, "enemies_flashed": 19,
+      "bomb_plants": 3, "bomb_defuses": 0
+    },
+    "76561198826056418": {
+      "player_id": 76561198826056418,
+      "player_name": "Zan",
+      "team": { "team_id": 1, "team_name": "team_Zan", "team_side": "CT" },
+      "kills": 16, "deaths": 19, "assists": 12,
+      "headshot_kills": 3, "flash_assists": 0,
+      "damage_dealt": 2585, "utility_damage": 0,
+      "adr": 112.39, "hs_percentage": 18.75,
+      "wallbangs": 0, "smoke_kills": 2, "blind_kills": 0, "blinded_kills": 0,
+      "flash_duration": 6.48, "enemies_flashed": 4,
+      "bomb_plants": 0, "bomb_defuses": 1
+    },
+    "76561199496416662": {
+      "player_id": 76561199496416662,
+      "player_name": "MiT",
+      "team": { "team_id": 2, "team_name": "team_Maxymimi", "team_side": "T" },
+      "kills": 25, "deaths": 14, "assists": 6,
+      "headshot_kills": 5, "flash_assists": 1,
+      "damage_dealt": 2939, "utility_damage": 0,
+      "adr": 127.78, "hs_percentage": 20.0,
+      "wallbangs": 0, "smoke_kills": 0, "blind_kills": 0, "blinded_kills": 1,
+      "flash_duration": 38.43, "enemies_flashed": 21,
+      "bomb_plants": 4, "bomb_defuses": 1
+    }
+  },
+  "schema_version": 3
+}

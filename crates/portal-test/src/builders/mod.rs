@@ -70,4 +70,4 @@ pub use tournament_registration::TournamentRegistrationBuilder;
 pub use tournament_stage::TournamentStageBuilder;
 pub use user::UserBuilder;
 pub use veto_delegate::VetoDelegateBuilder;
-pub use veto_session::{VetoSessionBuilder, DEFAULT_CS2_MAP_POOL};
+pub use veto_session::{DEFAULT_CS2_MAP_POOL, VetoSessionBuilder};

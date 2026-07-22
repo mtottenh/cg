@@ -57,7 +57,10 @@ impl PluginManager {
 
     /// List all registered plugin IDs.
     pub fn list(&self) -> Vec<&str> {
-        self.plugins.keys().map(std::string::String::as_str).collect()
+        self.plugins
+            .keys()
+            .map(std::string::String::as_str)
+            .collect()
     }
 
     /// List all registered plugins.
@@ -91,6 +94,15 @@ impl PluginManager {
         }
     }
 
+    /// Get a plugin that supports evidence, by game ID.
+    ///
+    /// Returns `Some` only if the plugin is registered and supports
+    /// the `EvidencePlugin` extension (i.e. `as_evidence_plugin()` returns `Some`).
+    pub fn get_evidence_plugin(&self, game_id: &str) -> Option<Arc<dyn GamePlugin>> {
+        self.get(game_id)
+            .filter(|p| p.as_evidence_plugin().is_some())
+    }
+
     /// Clear all registered plugins.
     pub fn clear(&mut self) {
         debug!("Clearing all game plugins");
@@ -112,7 +124,7 @@ mod tests {
     use crate::error::StatsError;
     use crate::traits::{MapInfo, RankTier};
     use crate::types::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     /// A simple test plugin for testing the manager.
     struct TestPlugin {
@@ -159,7 +171,11 @@ mod tests {
             Ok(json!({}))
         }
 
-        fn format_player_stats(&self, _stats: &Value) -> Vec<DisplayStat> {
+        fn format_player_stats(
+            &self,
+            _stats: &Value,
+            _context: &PlayerStatsContext,
+        ) -> Vec<DisplayStat> {
             vec![]
         }
 
@@ -196,7 +212,7 @@ mod tests {
         let mut manager = PluginManager::new();
         let plugin = Arc::new(TestPlugin::new("test", "Test Game"));
 
-        assert!(manager.register(plugin.clone()).is_ok());
+        assert!(manager.register(plugin).is_ok());
         assert!(manager.has("test"));
 
         let retrieved = manager.get("test").unwrap();

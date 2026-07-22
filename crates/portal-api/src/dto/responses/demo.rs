@@ -268,6 +268,27 @@ impl From<DemoPlayerStats> for DemoPlayerStatsResponse {
     }
 }
 
+/// Response for the unlinked-demo backfill pass.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProcessUnlinkedDemosResponse {
+    /// Demos examined in this batch.
+    pub examined: i64,
+    /// Demos that were auto-linked to a match.
+    pub linked: i64,
+    /// Demos examined but not linked.
+    pub skipped: i64,
+}
+
+impl From<portal_domain::services::ProcessUnlinkedResult> for ProcessUnlinkedDemosResponse {
+    fn from(result: portal_domain::services::ProcessUnlinkedResult) -> Self {
+        Self {
+            examined: result.examined,
+            linked: result.linked,
+            skipped: result.skipped,
+        }
+    }
+}
+
 /// Response for demo status counts (admin dashboard).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DemoStatusCountsResponse {
@@ -352,16 +373,58 @@ pub struct DemoValidationResultResponse {
     pub errors: Vec<String>,
 }
 
+/// Response for batch demo cataloging.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BatchCatalogResultResponse {
+    /// Newly created demos.
+    pub created: Vec<DemoResponse>,
+    /// Demos that already existed.
+    pub existing: Vec<DemoResponse>,
+    /// Entries that failed to catalog.
+    pub errors: Vec<BatchCatalogErrorResponse>,
+}
+
+/// Error entry in batch catalog result.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BatchCatalogErrorResponse {
+    /// S3 key that failed.
+    pub s3_key: String,
+    /// Error description.
+    pub error: String,
+}
+
 impl From<portal_domain::entities::DemoValidationResult> for DemoValidationResultResponse {
     fn from(result: portal_domain::entities::DemoValidationResult) -> Self {
         Self {
             is_valid: result.is_valid,
             confidence: result.confidence,
-            extracted_score: result.extracted_score.map(|(a, b)| [a, b]),
+            extracted_score: result.extracted_score.map(Into::into),
             claimed_score: [result.claimed_score.0, result.claimed_score.1],
             map_match: result.map_match,
             warnings: result.warnings,
             errors: result.errors,
         }
     }
+}
+
+/// Demo download URL response.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DemoDownloadResponse {
+    /// Demo ID.
+    pub id: uuid::Uuid,
+    /// Original file name.
+    pub file_name: String,
+    /// S3 bucket.
+    pub s3_bucket: String,
+    /// S3 key.
+    pub s3_key: String,
+    /// Download URL.
+    pub download_url: String,
+}
+
+/// Current state of the demo auto-link setting.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AutoLinkSettingResponse {
+    /// Whether the automatic demo→match linking pass is enabled.
+    pub enabled: bool,
 }

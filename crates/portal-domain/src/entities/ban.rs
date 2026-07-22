@@ -101,10 +101,10 @@ impl Ban {
         }
 
         // Ban must not be expired (if it has an end date)
-        if let Some(ends_at) = self.ends_at {
-            if ends_at <= now {
-                return false;
-            }
+        if let Some(ends_at) = self.ends_at
+            && ends_at <= now
+        {
+            return false;
         }
 
         true

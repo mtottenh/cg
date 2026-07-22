@@ -176,7 +176,10 @@ impl RoleWithPermissionsResponse {
     pub fn new(role: RoleRow, permissions: Vec<PermissionRow>) -> Self {
         Self {
             role: RoleResponse::from(role),
-            permissions: permissions.into_iter().map(PermissionResponse::from).collect(),
+            permissions: permissions
+                .into_iter()
+                .map(PermissionResponse::from)
+                .collect(),
         }
     }
 }

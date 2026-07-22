@@ -10,9 +10,7 @@ use portal_core::{DomainError, TournamentId, TournamentRegistrationId, UserId};
 use tracing::instrument;
 
 use crate::entities::tournament::TournamentRegistration;
-use crate::repositories::tournament::{
-    TournamentRegistrationRepository, TournamentRepository,
-};
+use crate::repositories::tournament::{TournamentRegistrationRepository, TournamentRepository};
 
 /// Service for tournament registration management.
 pub struct RegistrationService<TR, TRR>
@@ -46,7 +44,7 @@ where
         self.registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentRegistrationNotFound(registration_id.to_string()))
+            .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))
     }
 
     /// Withdraw from a tournament.
@@ -74,9 +72,7 @@ where
             .tournament_repo
             .find_by_id(registration.tournament_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentNotFound(registration.tournament_id.to_string())
-            })?;
+            .ok_or(DomainError::TournamentNotFound(registration.tournament_id))?;
 
         // Check if tournament has already started and is past a certain state
         if tournament.status == TournamentStatus::InProgress
@@ -119,26 +115,22 @@ where
             )));
         }
 
-        // Get tournament to verify approval-based registration
-        let tournament = self
-            .tournament_repo
+        // Verify the tournament still exists before touching the row.
+        self.tournament_repo
             .find_by_id(registration.tournament_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentNotFound(registration.tournament_id.to_string())
-            })?;
+            .ok_or(DomainError::TournamentNotFound(registration.tournament_id))?;
 
-        // Check capacity
-        let current_count = self
-            .tournament_repo
-            .count_registrations(registration.tournament_id)
-            .await?;
-        if current_count >= i64::from(tournament.max_participants) {
-            return Err(DomainError::TournamentFull);
-        }
-
+        // Capacity check + status flip in one transaction under a lock on
+        // the tournament row, so a burst of approvals cannot push the
+        // tournament past `max_participants`. Note this counts every other
+        // slot-occupying registration: the row being approved keeps the
+        // slot it already held as a pending registration.
         self.registration_repo
-            .update_status(registration_id, TournamentRegistrationStatus::Approved)
+            .update_status_with_capacity_check(
+                registration_id,
+                TournamentRegistrationStatus::Approved,
+            )
             .await
     }
 
@@ -234,15 +226,12 @@ where
     /// - Participant is not already registered
     /// - Tournament is not full
     #[instrument(skip(self))]
-    pub async fn check_eligibility(
-        &self,
-        tournament_id: TournamentId,
-    ) -> Result<(), DomainError> {
+    pub async fn check_eligibility(&self, tournament_id: TournamentId) -> Result<(), DomainError> {
         let tournament = self
             .tournament_repo
             .find_by_id(tournament_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentNotFound(tournament_id.to_string()))?;
+            .ok_or(DomainError::TournamentNotFound(tournament_id))?;
 
         // Check registration is open
         if !tournament.is_registration_open() {
@@ -250,7 +239,10 @@ where
         }
 
         // Check capacity
-        let current_count = self.tournament_repo.count_registrations(tournament_id).await?;
+        let current_count = self
+            .tournament_repo
+            .count_registrations(tournament_id)
+            .await?;
         if current_count >= i64::from(tournament.max_participants) {
             return Err(DomainError::TournamentFull);
         }

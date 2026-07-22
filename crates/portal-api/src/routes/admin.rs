@@ -1,9 +1,11 @@
 //! Admin routes.
 
-use axum::routing::{delete, get, post};
 use axum::Router;
+use axum::routing::{delete, get, patch, post};
 
-use crate::handlers::{admin, bans, demos, dispute, forfeit, progression, result_reviews, roles, tournaments};
+use crate::handlers::{
+    admin, bans, demos, dispute, forfeit, progression, result_reviews, roles, tournaments,
+};
 use crate::state::AppState;
 
 /// Create routes for admin endpoints.
@@ -50,6 +52,11 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/tournaments/{tournament_id}/matches/{match_id}/schedule",
             post(tournaments::admin_schedule_match),
+        )
+        // Swiss next round generation
+        .route(
+            "/tournaments/{tournament_id}/generate-next-round",
+            post(tournaments::admin_generate_next_swiss_round),
         )
         // Progression admin routes
         .route(
@@ -108,20 +115,45 @@ pub fn routes() -> Router<AppState> {
             post(dispute::admin_resolve_double_dq),
         )
         // Demo admin routes
+        .route("/demos/{id}", delete(demos::delete_demo))
+        .route("/demos/{id}/notes", patch(demos::set_demo_notes))
         .route("/demos", post(demos::catalog_demo))
-        .route("/demos/stats", get(demos::get_demo_stats))
+        .route("/demos/batch", post(demos::batch_catalog_demos))
+        .route("/demos/stats", get(demos::get_demo_status_counts))
         .route("/demos/pending", get(demos::get_pending_demos))
+        .route("/demos/{id}/stats", post(demos::submit_demo_stats))
+        .route(
+            "/demos/{id}/stats-failed",
+            post(demos::mark_demo_stats_failed),
+        )
         .route("/demos/{id}/categorize", post(demos::categorize_demo))
         .route("/demos/{id}/visibility", post(demos::set_demo_visibility))
         .route("/demos/{id}/associate", post(demos::associate_demo))
         .route("/demos/{id}/link", post(demos::link_demo_to_match))
+        .route(
+            "/demos/process-unlinked",
+            post(demos::process_unlinked_demos),
+        )
+        .route(
+            "/demos/auto-link",
+            get(demos::get_auto_link_setting).put(demos::update_auto_link_setting),
+        )
         .route(
             "/demos/{demo_id}/link/{match_id}",
             delete(demos::unlink_demo_from_match),
         )
         // Result review admin routes
         .route("/result-reviews", get(result_reviews::list_pending_reviews))
-        .route("/result-reviews/{id}", get(result_reviews::get_result_review_by_id))
-        .route("/result-reviews/{id}/approve", post(result_reviews::approve_result_review))
-        .route("/result-reviews/{id}/reject", post(result_reviews::reject_result_review))
+        .route(
+            "/result-reviews/{id}",
+            get(result_reviews::get_result_review_by_id),
+        )
+        .route(
+            "/result-reviews/{id}/approve",
+            post(result_reviews::approve_result_review),
+        )
+        .route(
+            "/result-reviews/{id}/reject",
+            post(result_reviews::reject_result_review),
+        )
 }

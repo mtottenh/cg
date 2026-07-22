@@ -5,8 +5,8 @@ use crate::entities::league_team::{
     LeagueTeamSeason, LeagueTeamSummary, PlayerLeagueTeamMembership, UpdateLeagueTeamCommand,
 };
 use crate::repositories::league_team::{
-    AddLeagueTeamMember, CreateLeagueTeam, CreateLeagueTeamSeason, LeagueSeasonRepository,
-    LeagueTeamMemberRepository, LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueTeam,
+    AddLeagueTeamMember, CreateLeagueTeam, LeagueSeasonRepository, LeagueTeamMemberRepository,
+    LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueTeam,
 };
 use portal_core::types::{LeagueTeamRole, LeagueTeamSeasonStatus, LeagueTeamStatus};
 use portal_core::{
@@ -60,7 +60,7 @@ where
         self.team_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league team", id.to_string()))
+            .ok_or(DomainError::LeagueTeamNotFound(id))
     }
 
     /// Get a team season by ID.
@@ -72,7 +72,10 @@ where
         self.team_season_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league team season", id.to_string()))
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "league team season",
+                query: id.to_string(),
+            })
     }
 
     /// Get team season by team and season.
@@ -94,7 +97,9 @@ where
         team_season_id: LeagueTeamSeasonId,
     ) -> Result<Vec<LeagueTeamMemberWithPlayer>, DomainError> {
         let _ = self.get_team_season(team_season_id).await?;
-        self.member_repo.list_members_with_players(team_season_id).await
+        self.member_repo
+            .list_members_with_players(team_season_id)
+            .await
     }
 
     /// Create a new team in a league and register it for a season.
@@ -112,7 +117,7 @@ where
             .season_repo
             .find_by_id(cmd.season_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league season", cmd.season_id.to_string()))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(cmd.season_id))?;
 
         if !season.can_register_team() {
             return Err(DomainError::RegistrationClosed);
@@ -140,7 +145,11 @@ where
         }
 
         // Check name uniqueness within the league
-        if self.team_repo.name_exists(season.league_id, &cmd.name).await? {
+        if self
+            .team_repo
+            .name_exists(season.league_id, &cmd.name)
+            .await?
+        {
             return Err(DomainError::Conflict(format!(
                 "team name '{}' is already taken in this league",
                 cmd.name
@@ -148,47 +157,39 @@ where
         }
 
         // Check tag uniqueness within the league
-        if self.team_repo.tag_exists(season.league_id, &cmd.tag).await? {
+        if self
+            .team_repo
+            .tag_exists(season.league_id, &cmd.tag)
+            .await?
+        {
             return Err(DomainError::Conflict(format!(
                 "team tag '{}' is already taken in this league",
                 cmd.tag
             )));
         }
 
-        // Create the team (persistent entity at league level)
-        let team = self
+        // Atomic write: team + team_season + captain member all inside one
+        // transaction. Previously these were three independent repo calls on
+        // three connections with no rollback, so a failure after the team
+        // insert left an orphan league_teams row. The repository now owns
+        // the transaction boundary — see
+        // `PgLeagueTeamRepository::create_team_with_season_and_captain`.
+        let (team, team_season) = self
             .team_repo
-            .create(CreateLeagueTeam {
-                league_id: season.league_id,
-                name: cmd.name,
-                tag: cmd.tag,
-                description: cmd.description,
-                logo_url: cmd.logo_url,
-                primary_color: cmd.primary_color,
-                secondary_color: cmd.secondary_color,
-                owner_player_id: creator_player_id,
-            })
-            .await?;
-
-        // Register the team for this season
-        let team_season = self
-            .team_season_repo
-            .create(CreateLeagueTeamSeason {
-                team_id: team.id,
-                season_id: cmd.season_id,
-            })
-            .await?;
-
-        // Add the creator as captain on the seasonal roster
-        self.member_repo
-            .add_member(AddLeagueTeamMember {
-                team_season_id: team_season.id,
-                player_id: creator_player_id,
-                role: LeagueTeamRole::Captain,
-                position: None,
-                jersey_number: None,
-                added_by: None,
-            })
+            .create_team_with_season_and_captain(
+                CreateLeagueTeam {
+                    league_id: season.league_id,
+                    name: cmd.name,
+                    tag: cmd.tag,
+                    description: cmd.description,
+                    logo_url: cmd.logo_url,
+                    primary_color: cmd.primary_color,
+                    secondary_color: cmd.secondary_color,
+                    owner_player_id: creator_player_id,
+                },
+                cmd.season_id,
+                creator_player_id,
+            )
             .await?;
 
         info!(
@@ -215,7 +216,7 @@ where
             .season_repo
             .find_by_id(season_id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league season", season_id.to_string()))?;
+            .ok_or(DomainError::LeagueSeasonNotFound(season_id))?;
 
         // Verify team belongs to this league
         if team.league_id != season.league_id {
@@ -258,25 +259,13 @@ where
             }
         }
 
-        // Register the team for this season
+        // Atomic: season registration + captain roster seat commit together
+        // or not at all. The previous two-repo-call version could leave an
+        // orphaned `league_team_seasons` row with no captain if the member
+        // insert failed. See audit I5.
         let team_season = self
             .team_season_repo
-            .create(CreateLeagueTeamSeason {
-                team_id,
-                season_id,
-            })
-            .await?;
-
-        // Add the owner as captain on the seasonal roster
-        self.member_repo
-            .add_member(AddLeagueTeamMember {
-                team_season_id: team_season.id,
-                player_id: registering_player_id,
-                role: LeagueTeamRole::Captain,
-                position: None,
-                jersey_number: None,
-                added_by: None,
-            })
+            .create_with_captain(team_id, season_id, registering_player_id)
             .await?;
 
         info!(
@@ -299,25 +288,23 @@ where
         let team = self.get_team(team_id).await?;
 
         // Check name uniqueness if changing
-        if let Some(ref name) = cmd.name {
-            if name.to_lowercase() != team.name.to_lowercase()
-                && self.team_repo.name_exists(team.league_id, name).await?
-            {
-                return Err(DomainError::Conflict(format!(
-                    "team name '{name}' is already taken in this league"
-                )));
-            }
+        if let Some(ref name) = cmd.name
+            && name.to_lowercase() != team.name.to_lowercase()
+            && self.team_repo.name_exists(team.league_id, name).await?
+        {
+            return Err(DomainError::Conflict(format!(
+                "team name '{name}' is already taken in this league"
+            )));
         }
 
         // Check tag uniqueness if changing
-        if let Some(ref tag) = cmd.tag {
-            if tag.to_lowercase() != team.tag.to_lowercase()
-                && self.team_repo.tag_exists(team.league_id, tag).await?
-            {
-                return Err(DomainError::Conflict(format!(
-                    "team tag '{tag}' is already taken in this league"
-                )));
-            }
+        if let Some(ref tag) = cmd.tag
+            && tag.to_lowercase() != team.tag.to_lowercase()
+            && self.team_repo.tag_exists(team.league_id, tag).await?
+        {
+            return Err(DomainError::Conflict(format!(
+                "team tag '{tag}' is already taken in this league"
+            )));
         }
 
         let updated = self
@@ -398,9 +385,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::not_found("league season", team_season.season_id.to_string())
-            })?;
+            .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         // Check roster lock status
         if role.is_primary() && !season.allows_primary_roster_changes() {
@@ -425,16 +410,15 @@ where
         }
 
         // For primary roles, check one-team-per-season constraint
-        if role.is_primary() {
-            if let Some(existing_team_season_id) = self
+        if role.is_primary()
+            && let Some(existing_team_season_id) = self
                 .member_repo
                 .find_primary_team_in_season(team_season.season_id, player_id)
                 .await?
-            {
-                return Err(DomainError::Conflict(format!(
-                    "player is already a primary member of team {existing_team_season_id} in this season"
-                )));
-            }
+        {
+            return Err(DomainError::Conflict(format!(
+                "player is already a primary member of team {existing_team_season_id} in this season"
+            )));
         }
 
         // Check roster size limits
@@ -443,19 +427,19 @@ where
                 .member_repo
                 .count_primary_members(team_season_id)
                 .await?;
-            if let Some(max) = season.team_size_max {
-                if primary_count >= i64::from(max) {
-                    return Err(DomainError::TeamFull);
-                }
+            if let Some(max) = season.team_size_max
+                && primary_count >= i64::from(max)
+            {
+                return Err(DomainError::TeamFull);
             }
         } else {
             let sub_count = self.member_repo.count_substitutes(team_season_id).await?;
-            if let Some(max_subs) = season.max_substitutes {
-                if sub_count >= i64::from(max_subs) {
-                    return Err(DomainError::Conflict(
-                        "maximum number of substitutes reached".to_string(),
-                    ));
-                }
+            if let Some(max_subs) = season.max_substitutes
+                && sub_count >= i64::from(max_subs)
+            {
+                return Err(DomainError::Conflict(
+                    "maximum number of substitutes reached".to_string(),
+                ));
             }
         }
 
@@ -493,9 +477,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::not_found("league season", team_season.season_id.to_string())
-            })?;
+            .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         let member = self
             .member_repo
@@ -553,7 +535,9 @@ where
             .ok_or(DomainError::NotTeamMember)?;
 
         if member.role == LeagueTeamRole::Captain {
-            return Err(DomainError::Conflict("member is already a captain".to_string()));
+            return Err(DomainError::Conflict(
+                "member is already a captain".to_string(),
+            ));
         }
 
         if !member.is_active() {
@@ -676,9 +660,7 @@ where
             .season_repo
             .find_by_id(team_season.season_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::not_found("league season", team_season.season_id.to_string())
-            })?;
+            .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
         // Check roster lock status
         if member.role.is_primary() && !season.allows_primary_roster_changes() {
@@ -746,7 +728,9 @@ where
         &self,
         player_id: PlayerId,
     ) -> Result<Vec<PlayerLeagueTeamMembership>, DomainError> {
-        self.member_repo.list_memberships_for_player(player_id).await
+        self.member_repo
+            .list_memberships_for_player(player_id)
+            .await
     }
 
     /// Check if a player is a member of a team season.

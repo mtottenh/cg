@@ -60,6 +60,7 @@ pub struct CreateLeague {
     pub description: Option<String>,
     pub logo_url: Option<String>,
     pub access_type: String,
+    pub settings: Option<serde_json::Value>,
     pub created_by: UserId,
 }
 
@@ -153,7 +154,10 @@ pub trait LeagueInvitationRepository: Send + Sync {
     ) -> Result<Option<LeagueInvitation>, DomainError>;
 
     /// Create a new invitation/application.
-    async fn create(&self, invitation: CreateLeagueInvitation) -> Result<LeagueInvitation, DomainError>;
+    async fn create(
+        &self,
+        invitation: CreateLeagueInvitation,
+    ) -> Result<LeagueInvitation, DomainError>;
 
     /// Update invitation status (accept/reject).
     async fn update_status(
@@ -162,6 +166,22 @@ pub trait LeagueInvitationRepository: Send + Sync {
         status: LeagueInvitationStatus,
         responded_by: UserId,
     ) -> Result<LeagueInvitation, DomainError>;
+
+    /// Atomically mark an invitation/application accepted AND seat the user
+    /// as a league member.
+    ///
+    /// Replaces the old `update_status(Accepted)` + `add_member` pair: when
+    /// the second write failed (or the process died between them) the
+    /// invitation was left `accepted` with no membership row, and the
+    /// `status == Pending` guard then refused every retry — locking the user
+    /// out of an invite-only league forever. Mirrors
+    /// `LeagueTeamInvitationRepository::accept_and_add_member`.
+    async fn accept_and_add_member(
+        &self,
+        invitation_id: LeagueInvitationId,
+        responded_by: UserId,
+        member: AddLeagueMember,
+    ) -> Result<LeagueMember, DomainError>;
 
     /// Find pending invitation for a league and user.
     async fn find_pending(
@@ -177,10 +197,14 @@ pub trait LeagueInvitationRepository: Send + Sync {
     ) -> Result<Vec<LeagueInvitation>, DomainError>;
 
     /// List pending invitations/applications for a user.
-    async fn list_pending_for_user(&self, user_id: UserId) -> Result<Vec<LeagueInvitation>, DomainError>;
+    async fn list_pending_for_user(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<LeagueInvitation>, DomainError>;
 
     /// Cancel all pending invitations for a user in a league.
-    async fn cancel_pending(&self, league_id: LeagueId, user_id: UserId) -> Result<(), DomainError>;
+    async fn cancel_pending(&self, league_id: LeagueId, user_id: UserId)
+    -> Result<(), DomainError>;
 
     /// Count pending applications for a league.
     async fn count_pending_applications(&self, league_id: LeagueId) -> Result<i64, DomainError>;

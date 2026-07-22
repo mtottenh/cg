@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::league_team::LeagueSeasonRow;
 use crate::DbPool;
+use crate::entities::league_team::LeagueSeasonRow;
 use portal_core::types::{RosterLockStatus, SeasonStatus};
 use portal_core::{DomainError, LeagueId, LeagueSeasonId, UserId};
 use portal_domain::entities::league_team::LeagueSeason;
@@ -28,13 +28,12 @@ impl PgLeagueSeasonRepository {
 #[async_trait]
 impl LeagueSeasonRepository for PgLeagueSeasonRepository {
     async fn find_by_id(&self, id: LeagueSeasonId) -> Result<Option<LeagueSeason>, DomainError> {
-        let row = sqlx::query_as::<_, LeagueSeasonRow>(
-            "SELECT * FROM league_seasons WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row =
+            sqlx::query_as::<_, LeagueSeasonRow>("SELECT * FROM league_seasons WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(row.map(LeagueSeason::from))
     }

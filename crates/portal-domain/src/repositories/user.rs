@@ -1,8 +1,9 @@
 //! User and Player repository traits.
 
+use crate::entities::user::UserStatus;
 use crate::entities::{Player, SocialLinks, User, UserWithCredentials};
 use async_trait::async_trait;
-use portal_core::{DomainError, PlayerId, UserId};
+use portal_core::{DomainError, GameId, PlayerId, UserId};
 
 /// Repository trait for user operations.
 #[async_trait]
@@ -18,11 +19,33 @@ pub trait UserRepository: Send + Sync {
 
     /// Find a user for authentication by username or email.
     /// Returns user data including password hash for credential verification.
-    async fn find_for_auth(&self, username_or_email: &str)
-        -> Result<Option<UserWithCredentials>, DomainError>;
+    async fn find_for_auth(
+        &self,
+        username_or_email: &str,
+    ) -> Result<Option<UserWithCredentials>, DomainError>;
 
     /// Create a new user.
     async fn create(&self, cmd: CreateUser) -> Result<User, DomainError>;
+
+    /// Create a user **and** their player profile in one transaction.
+    ///
+    /// Local registration used to do `user_repo.create` then
+    /// `player_repo.create` on two separate connections. If the player
+    /// insert failed, the user row survived with no player: every
+    /// re-registration attempt then tripped the username/email uniqueness
+    /// checks and every login attempt died at the player lookup, so that
+    /// username and email were bricked with no recovery path. The Steam
+    /// flow self-heals (`recover_partial_steam_account`); the local flow
+    /// has no equivalent, so it gets atomicity instead.
+    ///
+    /// Lives on `UserRepository` (rather than being split across the two
+    /// traits) because a transaction cannot span repositories here — the
+    /// user+player pair is one account aggregate.
+    async fn create_account(
+        &self,
+        user: CreateUser,
+        player: CreatePlayer,
+    ) -> Result<(User, Player), DomainError>;
 
     /// Check if a username is taken.
     async fn username_exists(&self, username: &str) -> Result<bool, DomainError>;
@@ -32,6 +55,18 @@ pub trait UserRepository: Send + Sync {
 
     /// Update the last login timestamp for a user.
     async fn update_last_login(&self, id: UserId) -> Result<(), DomainError>;
+
+    /// Update a user's account status (with an optional reason).
+    ///
+    /// Used by ban enforcement (platform bans set `banned`, lifting the
+    /// last active platform ban restores `active`). Login and token
+    /// refresh both gate on this column.
+    async fn update_status(
+        &self,
+        id: UserId,
+        status: UserStatus,
+        reason: Option<&str>,
+    ) -> Result<(), DomainError>;
 }
 
 /// Data for creating a new user.
@@ -43,8 +78,24 @@ pub struct CreateUser {
     pub username: String,
     /// Email address.
     pub email: String,
-    /// Hashed password.
-    pub password_hash: String,
+    /// Hashed password. `None` for provider-authenticated accounts
+    /// (e.g. Steam) which have no usable password.
+    pub password_hash: Option<String>,
+    /// Authentication provider: `"local"` or `"steam"`.
+    pub auth_provider: String,
+}
+
+/// Filters for player search queries.
+#[derive(Debug, Clone, Default)]
+pub struct PlayerSearchFilters {
+    /// Text query matching display name prefix.
+    pub query: String,
+    /// Filter by game ID (players who have a game profile for this game).
+    pub game_id: Option<GameId>,
+    /// Filter by team status: "has_team", "no_team", or "lft".
+    pub team_status: Option<String>,
+    /// Filter by ISO 3166-1 alpha-2 country code.
+    pub country_code: Option<String>,
 }
 
 /// Repository trait for player operations.
@@ -57,22 +108,31 @@ pub trait PlayerRepository: Send + Sync {
     /// Find a player by user ID.
     async fn find_by_user_id(&self, user_id: UserId) -> Result<Option<Player>, DomainError>;
 
+    /// Batch-find players by IDs. Missing IDs are silently skipped.
+    async fn find_by_ids(&self, ids: &[PlayerId]) -> Result<Vec<Player>, DomainError>;
+
+    /// Batch-find players by their user IDs. Missing IDs are silently skipped.
+    async fn find_by_user_ids(&self, user_ids: &[UserId]) -> Result<Vec<Player>, DomainError>;
+
     /// Find a player by display name.
     async fn find_by_display_name(&self, name: &str) -> Result<Option<Player>, DomainError>;
+
+    /// Find a player by SteamID64.
+    async fn find_by_steam_id_64(&self, steam_id_64: i64) -> Result<Option<Player>, DomainError>;
 
     /// Create a new player.
     async fn create(&self, cmd: CreatePlayer) -> Result<Player, DomainError>;
 
-    /// Search players by display name.
+    /// Search players with filters.
     async fn search(
         &self,
-        query: &str,
+        filters: &PlayerSearchFilters,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Player>, DomainError>;
 
-    /// Count total players matching a search query.
-    async fn count_search(&self, query: &str) -> Result<i64, DomainError>;
+    /// Count total players matching search filters.
+    async fn count_search(&self, filters: &PlayerSearchFilters) -> Result<i64, DomainError>;
 
     /// Update a player profile.
     async fn update(&self, id: PlayerId, cmd: UpdatePlayer) -> Result<Player, DomainError>;
@@ -108,6 +168,12 @@ pub struct UpdatePlayer {
     pub timezone: Option<String>,
     /// Social media links.
     pub social_links: Option<SocialLinks>,
+    /// Steam ID (SteamID64 as string).
+    pub steam_id: Option<String>,
+    /// Steam ID as 64-bit integer (derived from steam_id).
+    pub steam_id_64: Option<i64>,
+    /// Whether the player is looking for a team.
+    pub looking_for_team: Option<bool>,
 }
 
 impl UpdatePlayer {
@@ -122,5 +188,7 @@ impl UpdatePlayer {
             || self.region.is_some()
             || self.timezone.is_some()
             || self.social_links.is_some()
+            || self.steam_id.is_some()
+            || self.looking_for_team.is_some()
     }
 }

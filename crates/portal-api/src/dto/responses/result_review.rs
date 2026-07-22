@@ -21,6 +21,9 @@ pub struct UnrecognizedPlayerResponse {
 }
 
 /// Result review response.
+// API DTO mirrors the wire format: the mismatch/acknowledged flags are
+// independent booleans in the JSON contract, so an enum refactor doesn't apply.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ResultReviewResponse {
     /// Review ID.
@@ -78,7 +81,9 @@ impl From<ResultReview> for ResultReviewResponse {
             score_mismatch: review.score_mismatch,
             winner_mismatch: review.winner_mismatch,
             demo_link_id: review.demo_link_id.map(|id| id.to_string()),
-            validation_result: review.validation_result.map(DemoValidationResultResponse::from),
+            validation_result: review
+                .validation_result
+                .map(DemoValidationResultResponse::from),
             unrecognized_players: review
                 .unrecognized_players
                 .into_iter()

@@ -12,7 +12,9 @@ use tracing::{info, instrument, warn};
 use crate::entities::forfeit::{ForfeitResult, ForfeitTrigger, ForfeitType};
 use crate::entities::tournament::TournamentMatch;
 use crate::repositories::forfeit::{CreateForfeitRecord, ForfeitRecordRepository};
-use crate::repositories::tournament::{TournamentMatchRepository, TournamentRegistrationRepository};
+use crate::repositories::tournament::{
+    TournamentMatchRepository, TournamentRegistrationRepository,
+};
 
 /// Service for handling forfeits.
 #[derive(Clone)]
@@ -29,11 +31,7 @@ where
     TRR: TournamentRegistrationRepository,
 {
     /// Create a new forfeit service.
-    pub fn new(
-        forfeit_repo: Arc<FRR>,
-        match_repo: Arc<TMR>,
-        registration_repo: Arc<TRR>,
-    ) -> Self {
+    pub fn new(forfeit_repo: Arc<FRR>, match_repo: Arc<TMR>, registration_repo: Arc<TRR>) -> Self {
         Self {
             forfeit_repo,
             match_repo,
@@ -57,13 +55,15 @@ where
         // Validate the match can be forfeited
         self.validate_can_forfeit(&match_, forfeiting_registration_id)?;
 
-        // Check if already forfeited
-        if self.forfeit_repo.exists_for_match(match_id).await? {
-            return Err(DomainError::InvalidState(format!(
-                "Match {} has already been forfeited",
-                match_id
-            )));
-        }
+        // NOTE: there is deliberately no `exists_for_match` refusal here.
+        // The forfeit record insert and the match update are two separate
+        // writes; if the process died between them the record existed while
+        // the match was still un-forfeited, and the old guard refused every
+        // retry, stranding the match forever. Re-forfeiting an *already
+        // terminal* match is still rejected by `validate_can_forfeit` above
+        // (a match in `forfeit`/`completed`/`cancelled` fails `can_forfeit`),
+        // and the record insert is idempotent (migration 0072), so a retry
+        // simply finishes the interrupted work.
 
         // Determine the winner (opponent)
         let winner_registration_id = self.determine_winner(&match_, forfeiting_registration_id)?;
@@ -139,12 +139,20 @@ where
             .participant2_registration_id
             .ok_or_else(|| DomainError::InvalidState("No participant 2 in match".to_string()))?;
 
-        // Check if already forfeited
-        if self.forfeit_repo.exists_for_match(match_id).await? {
-            return Err(DomainError::InvalidState(format!(
-                "Match {} has already been forfeited",
-                match_id
-            )));
+        // Already fully processed? Return the existing outcome as a no-op
+        // instead of refusing. A *partially* processed double forfeit (one
+        // record written, the match never cancelled) falls through and is
+        // completed by the writes below — the record inserts are idempotent
+        // (migration 0072) and the status update is naturally idempotent.
+        if match_.status == TournamentMatchStatus::Cancelled
+            && let Some(existing) = self.forfeit_repo.find_by_match(match_id).await?
+        {
+            return Ok(ForfeitResult {
+                match_id,
+                forfeit_record: existing,
+                winner_registration_id: None,
+                progression_triggered: false,
+            });
         }
 
         // Create forfeit records for both teams
@@ -204,9 +212,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(registration_id.to_string())
-            })?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         // Verify registration belongs to this tournament
         if registration.tournament_id != tournament_id {
@@ -271,9 +277,7 @@ where
             .registration_repo
             .find_by_id(registration_id)
             .await?
-            .ok_or_else(|| {
-                DomainError::TournamentRegistrationNotFound(registration_id.to_string())
-            })?;
+            .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
 
         // Verify registration belongs to this tournament
         if registration.tournament_id != tournament_id {
@@ -336,7 +340,7 @@ where
         self.match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))
     }
 
     fn validate_can_forfeit(
@@ -353,8 +357,10 @@ where
         }
 
         // Check if the forfeiting party is a participant
-        let is_participant1 = match_.participant1_registration_id == Some(forfeiting_registration_id);
-        let is_participant2 = match_.participant2_registration_id == Some(forfeiting_registration_id);
+        let is_participant1 =
+            match_.participant1_registration_id == Some(forfeiting_registration_id);
+        let is_participant2 =
+            match_.participant2_registration_id == Some(forfeiting_registration_id);
 
         if !is_participant1 && !is_participant2 {
             return Err(DomainError::not_authorized(format!(

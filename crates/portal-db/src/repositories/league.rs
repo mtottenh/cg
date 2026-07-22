@@ -1,12 +1,12 @@
 //! League repositories with trait-based design for testability.
 
+use crate::DbPool;
 use crate::entities::{
     LeagueInvitationRow, LeagueMemberRow, LeagueMemberWithUserRow, LeagueRow, NewLeague,
     NewLeagueInvitation, NewLeagueMember, UpdateLeague, UpdateLeagueInvitation,
     UserLeagueMembershipRow,
 };
 use crate::error::RepositoryError;
-use crate::DbPool;
 use async_trait::async_trait;
 #[cfg(test)]
 use mockall::automock;
@@ -31,7 +31,11 @@ pub trait LeagueRepository: Send + Sync {
     async fn create(&self, new_league: NewLeague) -> Result<LeagueRow, RepositoryError>;
 
     /// Update an existing league.
-    async fn update(&self, id: LeagueId, update: UpdateLeague) -> Result<LeagueRow, RepositoryError>;
+    async fn update(
+        &self,
+        id: LeagueId,
+        update: UpdateLeague,
+    ) -> Result<LeagueRow, RepositoryError>;
 
     /// List leagues for a game.
     async fn list_by_game(
@@ -57,7 +61,11 @@ pub trait LeagueRepository: Send + Sync {
     ) -> Result<Vec<LeagueRow>, RepositoryError>;
 
     /// Count search results.
-    async fn count_search(&self, query: &str, game_id: Option<GameId>) -> Result<i64, RepositoryError>;
+    async fn count_search(
+        &self,
+        query: &str,
+        game_id: Option<GameId>,
+    ) -> Result<i64, RepositoryError>;
 }
 
 // =============================================================================
@@ -87,7 +95,8 @@ pub trait LeagueMemberRepository: Send + Sync {
     async fn count_by_league(&self, league_id: LeagueId) -> Result<i64, RepositoryError>;
 
     /// Add a member to a league.
-    async fn create(&self, new_member: NewLeagueMember) -> Result<LeagueMemberRow, RepositoryError>;
+    async fn create(&self, new_member: NewLeagueMember)
+    -> Result<LeagueMemberRow, RepositoryError>;
 
     /// Remove a member from a league.
     async fn remove(&self, league_id: LeagueId, user_id: UserId) -> Result<(), RepositoryError>;
@@ -101,10 +110,15 @@ pub trait LeagueMemberRepository: Send + Sync {
     ) -> Result<LeagueMemberRow, RepositoryError>;
 
     /// Check if user is a member of a league.
-    async fn is_member(&self, league_id: LeagueId, user_id: UserId) -> Result<bool, RepositoryError>;
+    async fn is_member(
+        &self,
+        league_id: LeagueId,
+        user_id: UserId,
+    ) -> Result<bool, RepositoryError>;
 
     /// Check if user is an admin of a league.
-    async fn is_admin(&self, league_id: LeagueId, user_id: UserId) -> Result<bool, RepositoryError>;
+    async fn is_admin(&self, league_id: LeagueId, user_id: UserId)
+    -> Result<bool, RepositoryError>;
 
     /// Check if user is admin or moderator of a league.
     async fn is_admin_or_moderator(
@@ -177,7 +191,8 @@ pub trait LeagueInvitationRepository: Send + Sync {
     ) -> Result<(), RepositoryError>;
 
     /// Count pending applications for a league.
-    async fn count_pending_applications(&self, league_id: LeagueId) -> Result<i64, RepositoryError>;
+    async fn count_pending_applications(&self, league_id: LeagueId)
+    -> Result<i64, RepositoryError>;
 }
 
 // =============================================================================
@@ -240,7 +255,11 @@ impl LeagueRepository for PgLeagueRepository {
         Ok(league)
     }
 
-    async fn update(&self, id: LeagueId, update: UpdateLeague) -> Result<LeagueRow, RepositoryError> {
+    async fn update(
+        &self,
+        id: LeagueId,
+        update: UpdateLeague,
+    ) -> Result<LeagueRow, RepositoryError> {
         let league = sqlx::query_as::<_, LeagueRow>(
             r"
             UPDATE leagues SET
@@ -294,10 +313,12 @@ impl LeagueRepository for PgLeagueRepository {
     }
 
     async fn count_by_game(&self, game_id: &GameId) -> Result<i64, RepositoryError> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM leagues WHERE game_id = $1 AND status = 'active'")
-            .bind(game_id.to_string())
-            .fetch_one(&self.pool)
-            .await?;
+        let row = sqlx::query(
+            "SELECT COUNT(*) as count FROM leagues WHERE game_id = $1 AND status = 'active'",
+        )
+        .bind(game_id.to_string())
+        .fetch_one(&self.pool)
+        .await?;
 
         Ok(row.get("count"))
     }
@@ -355,7 +376,11 @@ impl LeagueRepository for PgLeagueRepository {
         Ok(leagues)
     }
 
-    async fn count_search(&self, query: &str, game_id: Option<GameId>) -> Result<i64, RepositoryError> {
+    async fn count_search(
+        &self,
+        query: &str,
+        game_id: Option<GameId>,
+    ) -> Result<i64, RepositoryError> {
         let row = match game_id {
             Some(gid) => {
                 sqlx::query(
@@ -464,7 +489,10 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         Ok(row.get("count"))
     }
 
-    async fn create(&self, new_member: NewLeagueMember) -> Result<LeagueMemberRow, RepositoryError> {
+    async fn create(
+        &self,
+        new_member: NewLeagueMember,
+    ) -> Result<LeagueMemberRow, RepositoryError> {
         let member = sqlx::query_as::<_, LeagueMemberRow>(
             r"
             INSERT INTO league_members (league_id, user_id, membership_type)
@@ -483,11 +511,12 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
     }
 
     async fn remove(&self, league_id: LeagueId, user_id: UserId) -> Result<(), RepositoryError> {
-        let result = sqlx::query("DELETE FROM league_members WHERE league_id = $1 AND user_id = $2")
-            .bind(league_id.as_uuid())
-            .bind(user_id.as_uuid())
-            .execute(&self.pool)
-            .await?;
+        let result =
+            sqlx::query("DELETE FROM league_members WHERE league_id = $1 AND user_id = $2")
+                .bind(league_id.as_uuid())
+                .bind(user_id.as_uuid())
+                .execute(&self.pool)
+                .await?;
 
         if result.rows_affected() == 0 {
             return Err(RepositoryError::not_found(
@@ -517,12 +546,18 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         .bind(membership_type)
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| RepositoryError::not_found("LeagueMember", format!("{league_id}/{user_id}")))?;
+        .ok_or_else(|| {
+            RepositoryError::not_found("LeagueMember", format!("{league_id}/{user_id}"))
+        })?;
 
         Ok(member)
     }
 
-    async fn is_member(&self, league_id: LeagueId, user_id: UserId) -> Result<bool, RepositoryError> {
+    async fn is_member(
+        &self,
+        league_id: LeagueId,
+        user_id: UserId,
+    ) -> Result<bool, RepositoryError> {
         let row = sqlx::query("SELECT 1 FROM league_members WHERE league_id = $1 AND user_id = $2")
             .bind(league_id.as_uuid())
             .bind(user_id.as_uuid())
@@ -532,7 +567,11 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         Ok(row.is_some())
     }
 
-    async fn is_admin(&self, league_id: LeagueId, user_id: UserId) -> Result<bool, RepositoryError> {
+    async fn is_admin(
+        &self,
+        league_id: LeagueId,
+        user_id: UserId,
+    ) -> Result<bool, RepositoryError> {
         let row = sqlx::query(
             "SELECT 1 FROM league_members WHERE league_id = $1 AND user_id = $2 AND membership_type = 'admin'",
         )
@@ -623,11 +662,12 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         &self,
         id: LeagueInvitationId,
     ) -> Result<Option<LeagueInvitationRow>, RepositoryError> {
-        let invitation =
-            sqlx::query_as::<_, LeagueInvitationRow>("SELECT * FROM league_invitations WHERE id = $1")
-                .bind(id.as_uuid())
-                .fetch_optional(&self.pool)
-                .await?;
+        let invitation = sqlx::query_as::<_, LeagueInvitationRow>(
+            "SELECT * FROM league_invitations WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await?;
 
         Ok(invitation)
     }
@@ -758,7 +798,10 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         Ok(())
     }
 
-    async fn count_pending_applications(&self, league_id: LeagueId) -> Result<i64, RepositoryError> {
+    async fn count_pending_applications(
+        &self,
+        league_id: LeagueId,
+    ) -> Result<i64, RepositoryError> {
         let row = sqlx::query(
             r"
             SELECT COUNT(*) as count FROM league_invitations
@@ -782,11 +825,11 @@ mod tests {
     // Helper to create a test user
     async fn create_test_user(pool: &DbPool, suffix: &str) -> uuid::Uuid {
         let user = sqlx::query_as::<_, (uuid::Uuid,)>(
-            r#"
+            r"
             INSERT INTO users (username, email, password_hash)
             VALUES ($1, $2, 'hash')
             RETURNING id
-            "#,
+            ",
         )
         .bind(format!("leagueuser{suffix}"))
         .bind(format!("league{suffix}@example.com"))
@@ -799,18 +842,22 @@ mod tests {
     // Helper to create a test game
     async fn create_test_game(pool: &DbPool, slug: &str) -> uuid::Uuid {
         let id = uuid::Uuid::now_v7();
-        sqlx::query(
-            r#"
-            INSERT INTO games (id, slug, name, display_name, status)
+        // ON CONFLICT DO UPDATE (a no-op touch) so RETURNING always yields
+        // the row's real id — migrations pre-seed some slugs, and returning
+        // the locally generated id for an existing row breaks FK inserts.
+        let (id,): (uuid::Uuid,) = sqlx::query_as(
+            r"
+            INSERT INTO games (id, slug, display_name, plugin_id, status)
             VALUES ($1, $2, $3, $4, 'active')
-            ON CONFLICT (slug) DO NOTHING
-            "#,
+            ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug
+            RETURNING id
+            ",
         )
         .bind(id)
         .bind(slug)
-        .bind(slug)
         .bind(slug.to_uppercase())
-        .execute(pool)
+        .bind(format!("{slug}_plugin"))
+        .fetch_one(pool)
         .await
         .unwrap();
         id
@@ -868,7 +915,10 @@ mod tests {
         assert!(found.is_some());
         assert_eq!(found.unwrap().name, "Find By ID League");
 
-        let not_found = repo.find_by_id(LeagueId::from(uuid::Uuid::nil())).await.unwrap();
+        let not_found = repo
+            .find_by_id(LeagueId::from(uuid::Uuid::nil()))
+            .await
+            .unwrap();
         assert!(not_found.is_none());
     }
 
@@ -925,7 +975,10 @@ mod tests {
             ..Default::default()
         };
 
-        let updated = repo.update(LeagueId::from(created.id), update).await.unwrap();
+        let updated = repo
+            .update(LeagueId::from(created.id), update)
+            .await
+            .unwrap();
         assert_eq!(updated.name, "Updated League");
         assert_eq!(updated.description, Some("New description".to_string()));
         assert_eq!(updated.access_type, "invite_only");
@@ -1034,14 +1087,44 @@ mod tests {
             .unwrap();
 
         // Test is_member
-        assert!(member_repo.is_member(league_id, UserId::from(admin_id)).await.unwrap());
-        assert!(member_repo.is_member(league_id, UserId::from(member_id)).await.unwrap());
-        assert!(!member_repo.is_member(league_id, UserId::from(outsider_id)).await.unwrap());
+        assert!(
+            member_repo
+                .is_member(league_id, UserId::from(admin_id))
+                .await
+                .unwrap()
+        );
+        assert!(
+            member_repo
+                .is_member(league_id, UserId::from(member_id))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !member_repo
+                .is_member(league_id, UserId::from(outsider_id))
+                .await
+                .unwrap()
+        );
 
         // Test is_admin
-        assert!(member_repo.is_admin(league_id, UserId::from(admin_id)).await.unwrap());
-        assert!(!member_repo.is_admin(league_id, UserId::from(member_id)).await.unwrap());
-        assert!(!member_repo.is_admin(league_id, UserId::from(outsider_id)).await.unwrap());
+        assert!(
+            member_repo
+                .is_admin(league_id, UserId::from(admin_id))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !member_repo
+                .is_admin(league_id, UserId::from(member_id))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !member_repo
+                .is_admin(league_id, UserId::from(outsider_id))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1074,10 +1157,23 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(member_repo.is_member(league_id, UserId::from(user_id)).await.unwrap());
+        assert!(
+            member_repo
+                .is_member(league_id, UserId::from(user_id))
+                .await
+                .unwrap()
+        );
 
-        member_repo.remove(league_id, UserId::from(user_id)).await.unwrap();
+        member_repo
+            .remove(league_id, UserId::from(user_id))
+            .await
+            .unwrap();
 
-        assert!(!member_repo.is_member(league_id, UserId::from(user_id)).await.unwrap());
+        assert!(
+            !member_repo
+                .is_member(league_id, UserId::from(user_id))
+                .await
+                .unwrap()
+        );
     }
 }

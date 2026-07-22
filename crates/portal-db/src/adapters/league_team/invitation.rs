@@ -3,12 +3,20 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::entities::league_team::{LeagueTeamInvitationRow, LeagueTeamInvitationWithTeamRow};
 use crate::DbPool;
+use crate::entities::league_team::{LeagueTeamInvitationRow, LeagueTeamInvitationWithTeamRow};
 use portal_core::types::LeagueTeamInvitationStatus;
-use portal_core::{DomainError, LeagueSeasonId, LeagueTeamInvitationId, LeagueTeamSeasonId, PlayerId};
-use portal_domain::entities::league_team::{LeagueTeamInvitation, LeagueTeamInvitationWithTeam};
-use portal_domain::repositories::league_team::{CreateLeagueTeamInvitation, LeagueTeamInvitationRepository};
+use portal_core::{
+    DomainError, LeagueSeasonId, LeagueTeamInvitationId, LeagueTeamSeasonId, PlayerId,
+};
+use portal_domain::entities::league_team::{
+    LeagueTeamInvitation, LeagueTeamInvitationWithTeam, LeagueTeamMember,
+};
+use portal_domain::repositories::league_team::{
+    AddLeagueTeamMember, CreateLeagueTeamInvitation, LeagueTeamInvitationRepository,
+};
+
+use crate::entities::league_team::LeagueTeamMemberRow;
 
 /// `PostgreSQL` implementation of `LeagueTeamInvitationRepository`.
 #[derive(Debug, Clone)]
@@ -147,7 +155,10 @@ impl LeagueTeamInvitationRepository for PgLeagueTeamInvitationRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(rows.into_iter().map(LeagueTeamInvitationWithTeam::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(LeagueTeamInvitationWithTeam::from)
+            .collect())
     }
 
     async fn find_pending_for_player_in_season(
@@ -178,7 +189,10 @@ impl LeagueTeamInvitationRepository for PgLeagueTeamInvitationRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(rows.into_iter().map(LeagueTeamInvitationWithTeam::from).collect())
+        Ok(rows
+            .into_iter()
+            .map(LeagueTeamInvitationWithTeam::from)
+            .collect())
     }
 
     async fn find_existing_pending(
@@ -225,6 +239,70 @@ impl LeagueTeamInvitationRepository for PgLeagueTeamInvitationRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(LeagueTeamInvitation::from(row))
+    }
+
+    async fn accept_and_add_member(
+        &self,
+        invitation_id: LeagueTeamInvitationId,
+        member: AddLeagueTeamMember,
+    ) -> Result<LeagueTeamMember, DomainError> {
+        // Atomic counterpart of `update_status(Accepted) + add_member`.
+        // A partial failure in the old two-call version silently
+        // dropped the player from the roster while flipping the
+        // invitation to Accepted; retries then failed "already used".
+        // See audit I5.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let now = Utc::now();
+
+        sqlx::query(
+            r"
+            UPDATE league_team_invitations SET
+                status = $2,
+                responded_at = $3,
+                response_message = $4
+            WHERE id = $1
+            ",
+        )
+        .bind(invitation_id.as_uuid())
+        .bind(LeagueTeamInvitationStatus::Accepted.to_string())
+        .bind(now)
+        .bind(None::<String>)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let member_id = uuid::Uuid::now_v7();
+        let row = sqlx::query_as::<_, LeagueTeamMemberRow>(
+            r"
+            INSERT INTO league_team_members (
+                id, team_season_id, player_id, role, position, jersey_number, added_by, joined_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *
+            ",
+        )
+        .bind(member_id)
+        .bind(member.team_season_id.as_uuid())
+        .bind(member.player_id.as_uuid())
+        .bind(member.role.to_string())
+        .bind(&member.position)
+        .bind(member.jersey_number)
+        .bind(member.added_by.map(|u| u.as_uuid()))
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(LeagueTeamMember::from(row))
     }
 
     async fn cancel_pending_for_player(

@@ -241,11 +241,7 @@ impl Cs2DemoStats {
             return self
                 .player_summaries
                 .iter()
-                .filter(|(_, ps)| {
-                    ps.team
-                        .as_ref()
-                        .is_some_and(|t| t.team_name == team_name)
-                })
+                .filter(|(_, ps)| ps.team.as_ref().is_some_and(|t| t.team_name == team_name))
                 .map(|(steam_id, _)| steam_id.clone())
                 .collect();
         }
@@ -398,7 +394,7 @@ mod tests {
             PlayerState {
                 player_id: 76561198000000001,
                 player_name: "Player1".to_string(),
-                team: team_alpha.clone(),
+                team: team_alpha,
                 starting_money: 800,
             },
         );
@@ -407,7 +403,7 @@ mod tests {
             PlayerState {
                 player_id: 76561198000000002,
                 player_name: "Player2".to_string(),
-                team: team_beta.clone(),
+                team: team_beta,
                 starting_money: 800,
             },
         );

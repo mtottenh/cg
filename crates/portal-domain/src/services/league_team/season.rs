@@ -3,10 +3,10 @@
 use crate::entities::league_team::{
     CreateLeagueSeasonCommand, LeagueSeason, UpdateLeagueSeasonCommand,
 };
+use crate::repositories::LeagueRepository;
 use crate::repositories::league_team::{
     CreateLeagueSeason, LeagueSeasonRepository, UpdateLeagueSeason,
 };
-use crate::repositories::LeagueRepository;
 use portal_core::types::{RosterLockStatus, SeasonStatus};
 use portal_core::{DomainError, LeagueId, LeagueSeasonId, UserId};
 use std::sync::Arc;
@@ -41,7 +41,7 @@ where
         self.season_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::not_found("league season", id.to_string()))
+            .ok_or(DomainError::LeagueSeasonNotFound(id))
     }
 
     /// Get a season by league and slug.
@@ -54,7 +54,10 @@ where
         self.season_repo
             .find_by_slug(league_id, slug)
             .await?
-            .ok_or_else(|| DomainError::not_found("league season", slug.to_string()))
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "league season",
+                query: slug.to_string(),
+            })
     }
 
     /// Get the current season for a league.
@@ -78,7 +81,7 @@ where
             .league_repo
             .find_by_id(cmd.league_id)
             .await?
-            .ok_or_else(|| DomainError::LeagueNotFound(cmd.league_id.to_string()))?;
+            .ok_or(DomainError::LeagueNotFound(cmd.league_id))?;
 
         // Check slug uniqueness within the league
         if self
@@ -131,12 +134,13 @@ where
         let season = self.get_season(id).await?;
 
         // Check slug uniqueness if changing
-        if let Some(ref slug) = cmd.slug {
-            if slug != &season.slug && self.season_repo.slug_exists(season.league_id, slug).await? {
-                return Err(DomainError::Conflict(format!(
-                    "season slug '{slug}' is already taken in this league"
-                )));
-            }
+        if let Some(ref slug) = cmd.slug
+            && slug != &season.slug
+            && self.season_repo.slug_exists(season.league_id, slug).await?
+        {
+            return Err(DomainError::Conflict(format!(
+                "season slug '{slug}' is already taken in this league"
+            )));
         }
 
         let updated = self
@@ -168,7 +172,10 @@ where
 
     /// List seasons for a league.
     #[instrument(skip(self))]
-    pub async fn list_seasons(&self, league_id: LeagueId) -> Result<Vec<LeagueSeason>, DomainError> {
+    pub async fn list_seasons(
+        &self,
+        league_id: LeagueId,
+    ) -> Result<Vec<LeagueSeason>, DomainError> {
         self.season_repo.list_by_league(league_id).await
     }
 

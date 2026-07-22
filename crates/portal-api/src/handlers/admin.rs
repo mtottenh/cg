@@ -4,10 +4,10 @@ use crate::dto::common::DataResponse;
 use crate::dto::responses::PlatformStatsResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::AuthenticatedUser;
-use crate::state::AppState;
+use crate::state::AdminState;
+use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::Json;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -30,7 +30,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "admin"
 )]
 pub async fn get_stats(
-    State(state): State<AppState>,
+    State(state): State<AdminState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<PlatformStatsResponse>>> {

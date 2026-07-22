@@ -4,9 +4,7 @@
 //! to other team members.
 
 use chrono::{DateTime, Utc};
-use portal_core::{
-    LeagueTeamSeasonId, PlayerId, TournamentId, UserId, VetoDelegateId,
-};
+use portal_core::{LeagueTeamSeasonId, PlayerId, TournamentId, UserId, VetoDelegateId};
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
@@ -79,7 +77,7 @@ impl DelegatedByRole {
     /// - Owners can revoke captain and owner delegations
     /// - Captains can only revoke captain delegations
     #[must_use]
-    pub const fn can_revoke(&self, other: DelegatedByRole) -> bool {
+    pub const fn can_revoke(&self, other: Self) -> bool {
         match self {
             Self::TournamentAdmin => true,
             Self::Owner => matches!(other, Self::Captain | Self::Owner),
@@ -149,14 +147,26 @@ mod tests {
     fn test_delegated_by_role_display() {
         assert_eq!(DelegatedByRole::Captain.to_string(), "captain");
         assert_eq!(DelegatedByRole::Owner.to_string(), "owner");
-        assert_eq!(DelegatedByRole::TournamentAdmin.to_string(), "tournament_admin");
+        assert_eq!(
+            DelegatedByRole::TournamentAdmin.to_string(),
+            "tournament_admin"
+        );
     }
 
     #[test]
     fn test_delegated_by_role_from_str() {
-        assert_eq!("captain".parse::<DelegatedByRole>().unwrap(), DelegatedByRole::Captain);
-        assert_eq!("owner".parse::<DelegatedByRole>().unwrap(), DelegatedByRole::Owner);
-        assert_eq!("tournament_admin".parse::<DelegatedByRole>().unwrap(), DelegatedByRole::TournamentAdmin);
+        assert_eq!(
+            "captain".parse::<DelegatedByRole>().unwrap(),
+            DelegatedByRole::Captain
+        );
+        assert_eq!(
+            "owner".parse::<DelegatedByRole>().unwrap(),
+            DelegatedByRole::Owner
+        );
+        assert_eq!(
+            "tournament_admin".parse::<DelegatedByRole>().unwrap(),
+            DelegatedByRole::TournamentAdmin
+        );
         assert!("invalid".parse::<DelegatedByRole>().is_err());
     }
 

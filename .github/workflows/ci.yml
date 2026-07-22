@@ -1,0 +1,154 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Compile-time sqlx macros (a handful of query!/query_as! call sites) need a
+  # live schema at BUILD time — this is why plain builds fail without a DB.
+  DATABASE_URL: postgres://portal:portal@localhost:5432/portal_ci
+
+jobs:
+  backend-tests:
+    name: Backend (unit + integration)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: portal
+          POSTGRES_PASSWORD: portal
+          POSTGRES_DB: portal_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U portal -d portal_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Apply migrations (plain SQL, ordered)
+        run: |
+          for f in migrations/*.sql; do
+            echo "applying $f"
+            PGPASSWORD=portal psql -h localhost -U portal -d portal_ci -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+
+      # The integration target declares required-features = ["test-utils"];
+      # plain `cargo test` runs ZERO integration tests. Testcontainers spins
+      # its own Postgres per test database — the service DB above is only for
+      # the compile-time macros.
+      - name: Integration tests
+        run: cargo test -p portal-api --features test-utils --no-fail-fast
+
+      - name: Workspace unit tests
+        run: cargo test --workspace --no-fail-fast
+
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Blocking: the workspace is fmt-clean and clippy-clean (all + pedantic +
+    # nursery) as of 2026-07-19. Keep it that way.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: portal
+          POSTGRES_PASSWORD: portal
+          POSTGRES_DB: portal_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U portal -d portal_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply migrations
+        run: |
+          for f in migrations/*.sql; do
+            PGPASSWORD=portal psql -h localhost -U portal -d portal_ci -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets --features portal-api/test-utils -- -D warnings
+
+  coverage:
+    name: Coverage (cargo llvm-cov)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Informational: publishes the measured coverage so gaps are visible.
+    # Not a gate (yet) — add `--fail-under-lines N` once a baseline is agreed.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: portal
+          POSTGRES_PASSWORD: portal
+          POSTGRES_DB: portal_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U portal -d portal_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Apply migrations
+        run: |
+          for f in migrations/*.sql; do
+            PGPASSWORD=portal psql -h localhost -U portal -d portal_ci -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+      - name: Coverage (integration + unit)
+        run: |
+          cargo llvm-cov --workspace --features portal-api/test-utils \
+            --no-fail-fast --summary-only --json --output-path coverage.json
+          cargo llvm-cov report --summary-only | tee coverage-summary.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.json
+            coverage-summary.txt
+          retention-days: 30
+
+  web-unit:
+    name: Web (vitest)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The web app lives in a sibling repo checked out under web/ when both are
+    # in the same GitHub repository; skip gracefully when it is not present.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for web workspace
+        id: webdir
+        run: echo "present=$([ -f web/package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        if: steps.webdir.outputs.present == 'true'
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Unit tests
+        if: steps.webdir.outputs.present == 'true'
+        working-directory: web
+        run: |
+          npm ci
+          npm run test:run

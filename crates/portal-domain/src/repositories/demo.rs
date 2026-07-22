@@ -5,8 +5,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::{
-    DemoCategory, DemoId, DemoLinkType, DemoMatchLinkId, DemoPlayerId, DemoStatus, GameId,
-    DomainError, LeagueId, PlayerId, TournamentId, TournamentMatchId, UserId,
+    DemoCategory, DemoId, DemoLinkType, DemoMatchLinkId, DemoPlayerId, DemoStatus, DomainError,
+    GameId, LeagueId, PlayerId, TournamentId, TournamentMatchId, UserId,
 };
 
 use crate::entities::demo::{
@@ -73,20 +73,36 @@ pub trait DemoRepository: Send + Sync {
     ) -> Result<Demo, DomainError>;
 
     /// Set admin notes on a demo.
-    async fn set_admin_notes(
-        &self,
-        id: DemoId,
-        notes: Option<String>,
-    ) -> Result<Demo, DomainError>;
+    async fn set_admin_notes(&self, id: DemoId, notes: Option<String>)
+    -> Result<Demo, DomainError>;
 
     /// Find demos pending stats processing.
     async fn find_pending_processing(&self, limit: i64) -> Result<Vec<Demo>, DomainError>;
+
+    /// Find ready demos (stats present) with no match links, oldest first.
+    ///
+    /// Feeds the auto-link backfill pass.
+    async fn find_ready_unlinked(&self, limit: i64) -> Result<Vec<Demo>, DomainError>;
 
     /// Count demos by status (for admin dashboard).
     async fn count_by_status(&self) -> Result<Vec<(DemoStatus, i64)>, DomainError>;
 
     /// Delete a demo (hard delete, use with caution).
     async fn delete(&self, id: DemoId) -> Result<(), DomainError>;
+
+    /// Find demos matching a match context (for evidence discovery).
+    ///
+    /// Searches for ready, visible demos where at least one player's steam_id
+    /// matches, optionally filtered by time window and excluding already-linked demos.
+    async fn find_matching_for_context(
+        &self,
+        game_id: GameId,
+        steam_ids: &[String],
+        time_from: Option<DateTime<Utc>>,
+        time_to: Option<DateTime<Utc>>,
+        exclude_match_id: Option<TournamentMatchId>,
+        limit: i64,
+    ) -> Result<Vec<Demo>, DomainError>;
 }
 
 /// Data for creating a demo catalog entry.
@@ -112,7 +128,8 @@ pub trait DemoMatchLinkRepository: Send + Sync {
     async fn find_by_id(&self, id: DemoMatchLinkId) -> Result<Option<DemoMatchLink>, DomainError>;
 
     /// Find links by multiple IDs.
-    async fn find_by_ids(&self, ids: &[DemoMatchLinkId]) -> Result<Vec<DemoMatchLink>, DomainError>;
+    async fn find_by_ids(&self, ids: &[DemoMatchLinkId])
+    -> Result<Vec<DemoMatchLink>, DomainError>;
 
     /// Find all links for a demo.
     async fn find_by_demo(&self, demo_id: DemoId) -> Result<Vec<DemoMatchLink>, DomainError>;
@@ -199,6 +216,12 @@ pub trait DemoPlayerRepository: Send + Sync {
         id: DemoPlayerId,
         player_id: PlayerId,
     ) -> Result<DemoPlayer, DomainError>;
+
+    /// Resolve unlinked demo player rows to portal player accounts by
+    /// matching `steam_id` against `players.steam_id_64`.
+    ///
+    /// Returns the number of rows that were linked.
+    async fn resolve_player_links(&self, demo_id: DemoId) -> Result<u64, DomainError>;
 
     /// Delete all player entries for a demo.
     async fn delete_by_demo(&self, demo_id: DemoId) -> Result<(), DomainError>;

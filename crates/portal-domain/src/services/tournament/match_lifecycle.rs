@@ -9,11 +9,13 @@ use portal_core::types::TournamentMatchStatus;
 use portal_core::{DomainError, TournamentMatchId, TournamentRegistrationId, UserId};
 use tracing::{info, instrument, warn};
 
+use crate::entities::MatchStatusLog;
 use crate::entities::match_lifecycle::TransitionTrigger;
 use crate::entities::tournament::TournamentMatch;
-use crate::entities::MatchStatusLog;
 use crate::repositories::match_lifecycle::{CreateMatchStatusLog, MatchStatusLogRepository};
-use crate::repositories::tournament::{TournamentMatchRepository, TournamentRegistrationRepository};
+use crate::repositories::tournament::{
+    ParticipantSlot, TournamentMatchRepository, TournamentRegistrationRepository,
+};
 
 /// Service for managing match lifecycle and state transitions.
 pub struct MatchLifecycleService<TMR, TRR, MSLR>
@@ -69,10 +71,7 @@ where
         }
 
         // Perform the transition
-        let updated = self
-            .match_repo
-            .update_status(match_id, to_status)
-            .await?;
+        let updated = self.match_repo.update_status(match_id, to_status).await?;
 
         // Log the transition
         self.log_transition(match_id, match_.status, to_status, &triggered_by, reason)
@@ -92,7 +91,10 @@ where
     ///
     /// This transitions from Pending to Ready once both participant slots are filled.
     #[instrument(skip(self))]
-    pub async fn mark_ready(&self, match_id: TournamentMatchId) -> Result<TournamentMatch, DomainError> {
+    pub async fn mark_ready(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<TournamentMatch, DomainError> {
         let match_ = self.get_match(match_id).await?;
 
         // Check current status
@@ -205,8 +207,31 @@ where
             ));
         }
 
-        // Update check-in timestamp using raw SQL since this is a new field
-        // (The repository would need to be extended for proper check-in tracking)
+        let slot = if is_participant1 {
+            ParticipantSlot::One
+        } else {
+            ParticipantSlot::Two
+        };
+
+        // Re-fetch match to get current check-in state (may have been transitioned above)
+        let current = self.get_match(match_id).await?;
+
+        // Guard against double check-in
+        let already_checked_in = if is_participant1 {
+            current.participant1_checked_in_at.is_some()
+        } else {
+            current.participant2_checked_in_at.is_some()
+        };
+        if already_checked_in {
+            return Ok(current);
+        }
+
+        // Persist check-in
+        let updated = self
+            .match_repo
+            .check_in_participant(match_id, slot, checked_in_by)
+            .await?;
+
         info!(
             match_id = %match_id,
             registration_id = %registration_id,
@@ -215,8 +240,26 @@ where
             "Participant checked in for match"
         );
 
-        // Get updated match state
-        self.get_match(match_id).await
+        // If both participants have now checked in, auto-advance
+        if updated.both_checked_in() {
+            let next_status = if updated.veto_required {
+                TournamentMatchStatus::PickBan
+            } else {
+                TournamentMatchStatus::InProgress
+            };
+            return self
+                .transition(
+                    match_id,
+                    next_status,
+                    TransitionTrigger::System {
+                        job_name: "both_checked_in".to_string(),
+                    },
+                    Some("Both participants checked in".to_string()),
+                )
+                .await;
+        }
+
+        Ok(updated)
     }
 
     /// Start a match that is ready to play.
@@ -313,35 +356,40 @@ where
         }
 
         // Determine winner and loser
-        let (winner_id, loser_id) = if match_.participant1_registration_id == Some(forfeiting_registration_id) {
-            (
-                match_.participant2_registration_id.ok_or_else(|| {
-                    DomainError::InvalidState("No opponent to award forfeit win".to_string())
-                })?,
-                forfeiting_registration_id,
-            )
-        } else if match_.participant2_registration_id == Some(forfeiting_registration_id) {
-            (
-                match_.participant1_registration_id.ok_or_else(|| {
-                    DomainError::InvalidState("No opponent to award forfeit win".to_string())
-                })?,
-                forfeiting_registration_id,
-            )
-        } else {
-            return Err(DomainError::NotAuthorized(
-                "Registration is not a participant in this match".to_string(),
-            ));
-        };
+        let (winner_id, loser_id) =
+            if match_.participant1_registration_id == Some(forfeiting_registration_id) {
+                (
+                    match_.participant2_registration_id.ok_or_else(|| {
+                        DomainError::InvalidState("No opponent to award forfeit win".to_string())
+                    })?,
+                    forfeiting_registration_id,
+                )
+            } else if match_.participant2_registration_id == Some(forfeiting_registration_id) {
+                (
+                    match_.participant1_registration_id.ok_or_else(|| {
+                        DomainError::InvalidState("No opponent to award forfeit win".to_string())
+                    })?,
+                    forfeiting_registration_id,
+                )
+            } else {
+                return Err(DomainError::NotAuthorized(
+                    "Registration is not a participant in this match".to_string(),
+                ));
+            };
 
         // Record the forfeit
-        self.match_repo.forfeit(match_id, winner_id, loser_id).await?;
+        self.match_repo
+            .forfeit(match_id, winner_id, loser_id)
+            .await?;
 
         self.log_transition(
             match_id,
             match_.status,
             TournamentMatchStatus::Forfeit,
             &TransitionTrigger::User(forfeited_by),
-            Some(format!("Forfeited by registration {forfeiting_registration_id}")),
+            Some(format!(
+                "Forfeited by registration {forfeiting_registration_id}"
+            )),
         )
         .await?;
 
@@ -393,7 +441,7 @@ where
         self.match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))
     }
 
     /// Log a status transition.

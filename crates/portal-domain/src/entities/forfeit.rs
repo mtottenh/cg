@@ -206,14 +206,26 @@ mod tests {
     fn test_forfeit_type_display() {
         assert_eq!(ForfeitType::NoShow.to_string(), "no_show");
         assert_eq!(ForfeitType::Withdrawal.to_string(), "withdrawal");
-        assert_eq!(ForfeitType::Disqualification.to_string(), "disqualification");
-        assert_eq!(ForfeitType::TechnicalDefault.to_string(), "technical_default");
+        assert_eq!(
+            ForfeitType::Disqualification.to_string(),
+            "disqualification"
+        );
+        assert_eq!(
+            ForfeitType::TechnicalDefault.to_string(),
+            "technical_default"
+        );
     }
 
     #[test]
     fn test_forfeit_type_from_str() {
-        assert_eq!("no_show".parse::<ForfeitType>().unwrap(), ForfeitType::NoShow);
-        assert_eq!("withdrawal".parse::<ForfeitType>().unwrap(), ForfeitType::Withdrawal);
+        assert_eq!(
+            "no_show".parse::<ForfeitType>().unwrap(),
+            ForfeitType::NoShow
+        );
+        assert_eq!(
+            "withdrawal".parse::<ForfeitType>().unwrap(),
+            ForfeitType::Withdrawal
+        );
         assert!("invalid".parse::<ForfeitType>().is_err());
     }
 
@@ -236,14 +248,19 @@ mod tests {
 
     #[test]
     fn test_forfeit_trigger_user_id() {
-        let system = ForfeitTrigger::System { reason: "timeout".to_string() };
+        let system = ForfeitTrigger::System {
+            reason: "timeout".to_string(),
+        };
         assert!(system.user_id().is_none());
 
         let user_id = UserId::new();
         let user = ForfeitTrigger::User(user_id);
         assert_eq!(user.user_id(), Some(user_id));
 
-        let admin = ForfeitTrigger::Admin { user_id, reason: "rule violation".to_string() };
+        let admin = ForfeitTrigger::Admin {
+            user_id,
+            reason: "rule violation".to_string(),
+        };
         assert_eq!(admin.user_id(), Some(user_id));
     }
 }

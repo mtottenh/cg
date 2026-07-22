@@ -46,12 +46,7 @@ impl ScopeType {
     /// Get all available scope types.
     #[must_use]
     pub const fn all() -> &'static [Self] {
-        &[
-            Self::Team,
-            Self::League,
-            Self::Tournament,
-            Self::Match,
-        ]
+        &[Self::Team, Self::League, Self::Tournament, Self::Match]
     }
 }
 
@@ -271,7 +266,7 @@ mod tests {
         let uuid = Uuid::nil();
         let scope = PermissionScope::team(uuid);
         assert_eq!(
-            format!("{}", scope),
+            format!("{scope}"),
             "team:00000000-0000-0000-0000-000000000000"
         );
     }

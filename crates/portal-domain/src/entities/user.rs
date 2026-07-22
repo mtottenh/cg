@@ -10,6 +10,8 @@ pub struct User {
     pub username: String,
     pub email: String,
     pub email_verified: bool,
+    /// Authentication provider: `"local"` (password) or `"steam"` (OpenID).
+    pub auth_provider: String,
     pub status: UserStatus,
     pub locale: String,
     pub timezone: String,
@@ -89,6 +91,8 @@ pub struct UserWithCredentials {
     pub email: String,
     /// Password hash (Argon2id PHC string).
     pub password_hash: Option<String>,
+    /// Authentication provider: `"local"` (password) or `"steam"` (OpenID).
+    pub auth_provider: String,
     /// Account status.
     pub status: UserStatus,
 }

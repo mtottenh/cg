@@ -1,8 +1,8 @@
 //! League season participant builder for tests.
 
 use chrono::Utc;
-use portal_db::entities::LeagueSeasonParticipantRow;
 use portal_db::DbPool;
+use portal_db::entities::LeagueSeasonParticipantRow;
 use uuid::Uuid;
 
 use super::{LeagueSeasonBuilder, PlayerBuilder};
@@ -135,12 +135,16 @@ impl LeagueSeasonParticipantBuilder {
     /// If `player_id` is not set, creates a test player automatically.
     pub async fn build_persisted(self, pool: &DbPool) -> LeagueSeasonParticipantRow {
         // Get or create season and player
-        let season_id = if let Some(s) = self.season_id { s } else {
+        let season_id = if let Some(s) = self.season_id {
+            s
+        } else {
             let season = LeagueSeasonBuilder::new().build_persisted(pool).await;
             season.id
         };
 
-        let player_id = if let Some(p) = self.player_id { p } else {
+        let player_id = if let Some(p) = self.player_id {
+            p
+        } else {
             let player = PlayerBuilder::new().build_persisted(pool).await;
             player.id
         };

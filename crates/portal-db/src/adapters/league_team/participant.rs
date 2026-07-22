@@ -3,11 +3,13 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::league_team::LeagueSeasonParticipantRow;
 use crate::DbPool;
+use crate::entities::league_team::LeagueSeasonParticipantRow;
 use portal_core::{DomainError, LeagueSeasonId, PlayerId};
 use portal_domain::entities::league_team::LeagueSeasonParticipant;
-use portal_domain::repositories::league_team::{LeagueSeasonParticipantRepository, RegisterLeagueSeasonParticipant};
+use portal_domain::repositories::league_team::{
+    LeagueSeasonParticipantRepository, RegisterLeagueSeasonParticipant,
+};
 
 /// `PostgreSQL` implementation of `LeagueSeasonParticipantRepository`.
 #[derive(Debug, Clone)]
@@ -122,15 +124,19 @@ impl LeagueSeasonParticipantRepository for PgLeagueSeasonParticipantRepository {
         }
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM league_season_participants WHERE season_id = $1",
-        )
-        .bind(season_id.as_uuid())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM league_season_participants WHERE season_id = $1")
+                .bind(season_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok((rows.into_iter().map(LeagueSeasonParticipant::from).collect(), count.0))
+        Ok((
+            rows.into_iter()
+                .map(LeagueSeasonParticipant::from)
+                .collect(),
+            count.0,
+        ))
     }
 
     async fn update_status(

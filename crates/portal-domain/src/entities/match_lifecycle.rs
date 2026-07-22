@@ -111,9 +111,7 @@ impl TransitionTrigger {
     pub fn to_db_fields(&self) -> (Option<UserId>, bool, serde_json::Value) {
         match self {
             Self::User(user_id) => (Some(*user_id), false, serde_json::json!({})),
-            Self::System { job_name } => {
-                (None, true, serde_json::json!({ "job_name": job_name }))
-            }
+            Self::System { job_name } => (None, true, serde_json::json!({ "job_name": job_name })),
             Self::Admin {
                 user_id,
                 override_reason,

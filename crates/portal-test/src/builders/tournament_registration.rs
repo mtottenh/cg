@@ -1,15 +1,15 @@
 //! Tournament registration builder for tests.
 
-use fake::faker::company::en::CompanyName;
 use fake::Fake;
-use portal_db::adapters::PgTournamentRegistrationRepository;
+use fake::faker::company::en::CompanyName;
+use portal_core::types::TournamentRegistrationStatus;
+use portal_core::{LeagueTeamSeasonId, PlayerId, TournamentId, UserId};
 use portal_db::DbPool;
+use portal_db::adapters::PgTournamentRegistrationRepository;
 use portal_domain::entities::tournament::TournamentRegistration;
 use portal_domain::repositories::tournament::{
     CreateTournamentRegistration, TournamentRegistrationRepository,
 };
-use portal_core::{LeagueTeamSeasonId, PlayerId, TournamentId, UserId};
-use portal_core::types::TournamentRegistrationStatus;
 use uuid::Uuid;
 
 /// Builder for creating test tournament registrations.

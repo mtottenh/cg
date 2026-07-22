@@ -72,7 +72,10 @@ impl Dispute {
     /// Check if the dispute is in a terminal state.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
-        matches!(self.status, DisputeStatus::Resolved | DisputeStatus::Cancelled)
+        matches!(
+            self.status,
+            DisputeStatus::Resolved | DisputeStatus::Cancelled
+        )
     }
 
     /// Check if the dispute can be assigned for review.
@@ -84,7 +87,10 @@ impl Dispute {
     /// Check if the dispute can be resolved.
     #[must_use]
     pub const fn can_resolve(&self) -> bool {
-        matches!(self.status, DisputeStatus::Pending | DisputeStatus::UnderReview)
+        matches!(
+            self.status,
+            DisputeStatus::Pending | DisputeStatus::UnderReview
+        )
     }
 }
 
@@ -160,8 +166,10 @@ impl DisputeStatus {
     pub const fn can_transition_to(&self, target: Self) -> bool {
         matches!(
             (self, target),
-            (Self::Pending, Self::UnderReview | Self::Resolved | Self::Cancelled)
-                | (Self::UnderReview, Self::Resolved | Self::Pending)
+            (
+                Self::Pending,
+                Self::UnderReview | Self::Resolved | Self::Cancelled
+            ) | (Self::UnderReview, Self::Resolved | Self::Pending)
         )
     }
 }
@@ -453,7 +461,10 @@ mod tests {
 
     #[test]
     fn test_dispute_reason_from_str() {
-        assert_eq!("wrong_score".parse::<DisputeReason>().unwrap(), DisputeReason::WrongScore);
+        assert_eq!(
+            "wrong_score".parse::<DisputeReason>().unwrap(),
+            DisputeReason::WrongScore
+        );
         assert!("invalid".parse::<DisputeReason>().is_err());
     }
 

@@ -38,6 +38,20 @@ fn validate_slug(slug: &str) -> Result<(), validator::ValidationError> {
     Ok(())
 }
 
+/// Validate that a URL uses the http or https scheme.
+///
+/// Used together with `#[validate(url)]` (which only checks the value parses
+/// as a URL) to reject schemes like `javascript:` or `ftp:`.
+fn validate_http_url(url: &str) -> Result<(), validator::ValidationError> {
+    let lower = url.trim_start().to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        let mut err = validator::ValidationError::new("url_scheme");
+        err.message = Some("URL must use http or https".into());
+        return Err(err);
+    }
+    Ok(())
+}
+
 // =============================================================================
 // TOURNAMENT REQUESTS
 // =============================================================================
@@ -137,13 +151,84 @@ pub struct CreateTournamentRequest {
     pub withdrawal_policy: String,
 
     /// URL to tournament rules.
-    #[validate(url)]
+    #[validate(url, custom(function = "validate_http_url"))]
     #[serde(default)]
     pub rules_url: Option<String>,
 
     /// Additional settings.
     #[serde(default)]
     pub settings: Option<serde_json::Value>,
+
+    /// Map pool for this tournament — **required**, at least one map.
+    ///
+    /// Every map ID must exist in the game's map catalog. Tournaments own an
+    /// explicit pool so map validation on result submission can fail closed.
+    /// Pass the game's default pool if you don't want to customise it.
+    #[validate(length(min = 1, max = 64, message = "map_pool must contain at least one map"))]
+    pub map_pool: Vec<String>,
+
+    /// Eligibility restrictions for tournament registration.
+    ///
+    /// Controls which players/teams are allowed to register based on
+    /// their in-game rating, peak rating, rank tier, etc.
+    #[serde(default)]
+    pub eligibility_restrictions: Option<EligibilityRestrictionsInput>,
+}
+
+/// Typed input for eligibility restrictions.
+///
+/// All fields are optional — only specified fields are enforced.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct EligibilityRestrictionsInput {
+    /// Max current rating for any individual player.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rating_per_player: Option<i32>,
+
+    /// Min current rating for any individual player.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_rating_per_player: Option<i32>,
+
+    /// Max peak (all-time high) rating for any player (anti-smurf).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_peak_rating_per_player: Option<i32>,
+
+    /// Max average rating for any player (computed from history).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_avg_rating_per_player: Option<i32>,
+
+    /// Max sum of all team members' current ratings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_team_total_rating: Option<i32>,
+
+    /// Max average of team members' current ratings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_team_average_rating: Option<i32>,
+
+    /// Only allow players in certain rank tiers (e.g., `["silver", "gold"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_rank_tiers: Vec<String>,
+
+    /// Min matches played to be eligible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_matches_played: Option<i32>,
+}
+
+/// Merge an optional typed eligibility input into the settings JSON.
+fn merge_eligibility_into_settings(
+    settings: Option<serde_json::Value>,
+    eligibility: Option<EligibilityRestrictionsInput>,
+) -> Option<serde_json::Value> {
+    let Some(eligibility) = eligibility else {
+        return settings;
+    };
+
+    let eligibility_json = serde_json::to_value(eligibility).unwrap_or_default();
+
+    let mut settings = settings.unwrap_or_else(|| serde_json::json!({}));
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert("eligibility".to_string(), eligibility_json);
+    }
+    Some(settings)
 }
 
 fn default_registration_type() -> String {
@@ -241,7 +326,8 @@ impl CreateTournamentRequest {
             default_map_veto_format: self.default_map_veto_format,
             withdrawal_policy,
             rules_url: self.rules_url,
-            settings: self.settings,
+            settings: merge_eligibility_into_settings(self.settings, self.eligibility_restrictions),
+            map_pool: self.map_pool,
         })
     }
 }
@@ -324,13 +410,17 @@ pub struct UpdateTournamentRequest {
     pub prize_pool: Option<serde_json::Value>,
 
     /// Updated rules URL.
-    #[validate(url)]
+    #[validate(url, custom(function = "validate_http_url"))]
     #[serde(default)]
     pub rules_url: Option<String>,
 
     /// Updated settings.
     #[serde(default)]
     pub settings: Option<serde_json::Value>,
+
+    /// Updated eligibility restrictions for tournament registration.
+    #[serde(default)]
+    pub eligibility_restrictions: Option<EligibilityRestrictionsInput>,
 
     /// Updated withdrawal policy.
     #[serde(default)]
@@ -378,7 +468,7 @@ impl TryFrom<UpdateTournamentRequest> for UpdateTournamentCommand {
             default_map_veto_format: req.default_map_veto_format,
             prize_pool: req.prize_pool,
             rules_url: req.rules_url,
-            settings: req.settings,
+            settings: merge_eligibility_into_settings(req.settings, req.eligibility_restrictions),
             withdrawal_policy,
         })
     }
@@ -498,10 +588,7 @@ pub struct RegisterPlayerRequest {
 
 impl RegisterPlayerRequest {
     /// Parse player ID from the authenticated user.
-    pub fn into_command(
-        self,
-        player_id: PlayerId,
-    ) -> (PlayerId, String) {
+    pub fn into_command(self, player_id: PlayerId) -> (PlayerId, String) {
         (player_id, self.participant_name)
     }
 }
@@ -691,6 +778,11 @@ pub struct ProposeScheduleRequest {
     /// Proposed time slots (1-5 options).
     #[validate(length(min = 1, max = 5))]
     pub proposed_times: Vec<DateTime<Utc>>,
+
+    /// Optional message to the opponent about the proposal.
+    #[validate(length(max = 1000))]
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 /// Request to accept a schedule proposal.
@@ -708,6 +800,11 @@ pub struct AcceptScheduleProposalRequest {
 pub struct RejectScheduleProposalRequest {
     /// ID of the proposal to reject.
     pub proposal_id: String,
+
+    /// Optional reason for the rejection, shown to the proposer.
+    #[validate(length(max = 1000))]
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// Request to counter-propose new times.
@@ -719,6 +816,11 @@ pub struct CounterProposeRequest {
     /// New proposed time slots (1-5 options).
     #[validate(length(min = 1, max = 5))]
     pub proposed_times: Vec<DateTime<Utc>>,
+
+    /// Optional message to the opponent about the counter-proposal.
+    #[validate(length(max = 1000))]
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 /// Request for admin to directly schedule a match.
@@ -730,4 +832,41 @@ pub struct AdminScheduleRequest {
     /// Optional notes for the scheduling decision.
     #[serde(default)]
     pub notes: Option<String>,
+}
+
+/// Query parameters for listing the current user's tournament matches.
+#[derive(Debug, Clone, Deserialize, ToSchema, utoipa::IntoParams)]
+pub struct MyMatchesQuery {
+    /// Filter by match status (e.g., "in_progress", "scheduled", "completed").
+    pub status: Option<String>,
+
+    /// Filter by tournament ID.
+    pub tournament_id: Option<String>,
+
+    /// Maximum number of results to return (default: 50, max: 100).
+    #[serde(default = "default_my_matches_limit")]
+    pub limit: Option<i64>,
+
+    /// Offset for pagination (default: 0).
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+// Serde `default = "..."` for an `Option<i64>` field requires the function to
+// return `Option<i64>`, so the wrap is necessary here.
+#[allow(clippy::unnecessary_wraps)]
+fn default_my_matches_limit() -> Option<i64> {
+    Some(50)
+}
+
+// =============================================================================
+// TOURNAMENT MAP POOL REQUESTS
+// =============================================================================
+
+/// Request to set a tournament-specific map pool.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct SetTournamentMapPoolRequest {
+    /// Map IDs for the tournament pool (must exist in the game's map catalog).
+    #[validate(length(min = 1, max = 20))]
+    pub map_ids: Vec<String>,
 }

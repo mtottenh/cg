@@ -1,7 +1,9 @@
 //! PostgreSQL implementations of Demo repositories.
 
-use crate::entities::{DemoMatchLinkRow, DemoPlayerRow, DemoRow, NewDemo, NewDemoMatchLink, NewDemoPlayer};
 use crate::DbPool;
+use crate::entities::{
+    DemoMatchLinkRow, DemoPlayerRow, DemoRow, NewDemo, NewDemoMatchLink, NewDemoPlayer,
+};
 use async_trait::async_trait;
 use portal_core::{
     DemoCategory, DemoId, DemoLinkType, DemoMatchLinkId, DemoPlayerId, DemoStatus, DomainError,
@@ -37,13 +39,11 @@ impl PgDemoRepository {
 #[async_trait]
 impl DemoRepository for PgDemoRepository {
     async fn find_by_id(&self, id: DemoId) -> Result<Option<Demo>, DomainError> {
-        let row = sqlx::query_as::<_, DemoRow>(
-            r"SELECT * FROM demos WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("Failed to find demo: {e}")))?;
+        let row = sqlx::query_as::<_, DemoRow>(r"SELECT * FROM demos WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("Failed to find demo: {e}")))?;
 
         row.map(demo_row_to_domain).transpose()
     }
@@ -92,8 +92,7 @@ impl DemoRepository for PgDemoRepository {
         }
         if filter.team_name_contains.is_some() {
             conditions.push(format!(
-                "(metadata->>'team1_name' ILIKE ${p} OR metadata->>'team2_name' ILIKE ${p})",
-                p = param_index
+                "(metadata->>'team1_name' ILIKE ${param_index} OR metadata->>'team2_name' ILIKE ${param_index})"
             ));
             param_index += 1;
         }
@@ -104,11 +103,15 @@ impl DemoRepository for PgDemoRepository {
             param_index += 1;
         }
         if filter.match_date_from.is_some() {
-            conditions.push(format!("(metadata->>'match_date')::timestamptz >= ${param_index}"));
+            conditions.push(format!(
+                "(metadata->>'match_date')::timestamptz >= ${param_index}"
+            ));
             param_index += 1;
         }
         if filter.match_date_to.is_some() {
-            conditions.push(format!("(metadata->>'match_date')::timestamptz <= ${param_index}"));
+            conditions.push(format!(
+                "(metadata->>'match_date')::timestamptz <= ${param_index}"
+            ));
             param_index += 1;
         }
         if !filter.include_hidden {
@@ -188,7 +191,8 @@ impl DemoRepository for PgDemoRepository {
             .await
             .map_err(|e| DomainError::internal(format!("Failed to list demos: {e}")))?;
 
-        let demos: Result<Vec<Demo>, DomainError> = rows.into_iter().map(demo_row_to_domain).collect();
+        let demos: Result<Vec<Demo>, DomainError> =
+            rows.into_iter().map(demo_row_to_domain).collect();
 
         Ok(DemoListResult {
             demos: demos?,
@@ -356,7 +360,11 @@ impl DemoRepository for PgDemoRepository {
         demo_row_to_domain(row)
     }
 
-    async fn set_admin_notes(&self, id: DemoId, notes: Option<String>) -> Result<Demo, DomainError> {
+    async fn set_admin_notes(
+        &self,
+        id: DemoId,
+        notes: Option<String>,
+    ) -> Result<Demo, DomainError> {
         let row = sqlx::query_as::<_, DemoRow>(
             r"UPDATE demos SET admin_notes = $2, updated_at = NOW() WHERE id = $1 RETURNING *",
         )
@@ -370,13 +378,52 @@ impl DemoRepository for PgDemoRepository {
     }
 
     async fn find_pending_processing(&self, limit: i64) -> Result<Vec<Demo>, DomainError> {
+        // Reclaim, not just 'pending':
+        //   * 'failed'  — a transient stats-service error must be retryable,
+        //     otherwise the demo is parked permanently.
+        //   * 'ready' with zero demo_players — the marker-before-effect crash
+        //     window (status flipped to 'ready' before the player rows were
+        //     written). Normal 'ready' demos have player rows and are excluded,
+        //     so they are not reprocessed.
         let rows = sqlx::query_as::<_, DemoRow>(
-            r"SELECT * FROM demos WHERE status = 'pending' ORDER BY discovered_at ASC LIMIT $1",
+            r"
+            SELECT * FROM demos d
+            WHERE d.status IN ('pending', 'failed')
+               OR (
+                    d.status = 'ready'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM demo_players dp WHERE dp.demo_id = d.id
+                    )
+               )
+            ORDER BY d.discovered_at ASC
+            LIMIT $1
+            ",
         )
         .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DomainError::internal(format!("Failed to find pending demos: {e}")))?;
+
+        rows.into_iter().map(demo_row_to_domain).collect()
+    }
+
+    async fn find_ready_unlinked(&self, limit: i64) -> Result<Vec<Demo>, DomainError> {
+        let rows = sqlx::query_as::<_, DemoRow>(
+            r"
+            SELECT d.* FROM demos d
+            WHERE d.status = 'ready'
+              AND d.stats_json IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM demo_match_links l WHERE l.demo_id = d.id
+              )
+            ORDER BY d.discovered_at ASC
+            LIMIT $1
+            ",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("Failed to find unlinked demos: {e}")))?;
 
         rows.into_iter().map(demo_row_to_domain).collect()
     }
@@ -408,6 +455,50 @@ impl DemoRepository for PgDemoRepository {
 
         Ok(())
     }
+
+    async fn find_matching_for_context(
+        &self,
+        game_id: GameId,
+        steam_ids: &[String],
+        time_from: Option<chrono::DateTime<chrono::Utc>>,
+        time_to: Option<chrono::DateTime<chrono::Utc>>,
+        exclude_match_id: Option<TournamentMatchId>,
+        limit: i64,
+    ) -> Result<Vec<portal_domain::entities::demo::Demo>, DomainError> {
+        if steam_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query_as::<_, DemoRow>(
+            r"
+            SELECT DISTINCT d.*
+            FROM demos d
+            JOIN demo_players dp ON dp.demo_id = d.id
+            WHERE d.game_id = $1
+              AND d.status = 'ready'
+              AND d.is_hidden = false
+              AND dp.steam_id = ANY($2)
+              AND ($3::timestamptz IS NULL OR (d.metadata->>'match_date')::timestamptz >= $3)
+              AND ($4::timestamptz IS NULL OR (d.metadata->>'match_date')::timestamptz <= $4)
+              AND ($5::uuid IS NULL OR NOT EXISTS (
+                  SELECT 1 FROM demo_match_links dml WHERE dml.demo_id = d.id AND dml.match_id = $5
+              ))
+            ORDER BY d.discovered_at DESC
+            LIMIT $6
+            ",
+        )
+        .bind(game_id.as_uuid())
+        .bind(steam_ids)
+        .bind(time_from)
+        .bind(time_to)
+        .bind(exclude_match_id.map(|id| id.as_uuid()))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("Failed to find matching demos: {e}")))?;
+
+        rows.into_iter().map(demo_row_to_domain).collect()
+    }
 }
 
 // =============================================================================
@@ -431,23 +522,30 @@ impl PgDemoMatchLinkRepository {
 #[async_trait]
 impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
     async fn find_by_id(&self, id: DemoMatchLinkId) -> Result<Option<DemoMatchLink>, DomainError> {
-        let row = sqlx::query_as::<_, DemoMatchLinkRow>(
-            r"SELECT * FROM demo_match_links WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("Failed to find demo match link: {e}")))?;
+        let row =
+            sqlx::query_as::<_, DemoMatchLinkRow>(r"SELECT * FROM demo_match_links WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| {
+                    DomainError::internal(format!("Failed to find demo match link: {e}"))
+                })?;
 
         row.map(link_row_to_domain).transpose()
     }
 
-    async fn find_by_ids(&self, ids: &[DemoMatchLinkId]) -> Result<Vec<DemoMatchLink>, DomainError> {
+    async fn find_by_ids(
+        &self,
+        ids: &[DemoMatchLinkId],
+    ) -> Result<Vec<DemoMatchLink>, DomainError> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
 
-        let uuids: Vec<uuid::Uuid> = ids.iter().map(|id| id.as_uuid()).collect();
+        let uuids: Vec<uuid::Uuid> = ids
+            .iter()
+            .map(portal_core::DemoMatchLinkId::as_uuid)
+            .collect();
         let rows = sqlx::query_as::<_, DemoMatchLinkRow>(
             r"SELECT * FROM demo_match_links WHERE id = ANY($1)",
         )
@@ -471,7 +569,10 @@ impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
         rows.into_iter().map(link_row_to_domain).collect()
     }
 
-    async fn find_by_match(&self, match_id: TournamentMatchId) -> Result<Vec<DemoMatchLink>, DomainError> {
+    async fn find_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<DemoMatchLink>, DomainError> {
         let rows = sqlx::query_as::<_, DemoMatchLinkRow>(
             r"SELECT * FROM demo_match_links WHERE match_id = $1 ORDER BY game_number, linked_at",
         )
@@ -504,13 +605,11 @@ impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
         let demo_ids: Vec<uuid::Uuid> = link_rows.iter().map(|l| l.demo_id).collect();
 
         // Fetch all demos
-        let demo_rows = sqlx::query_as::<_, DemoRow>(
-            r"SELECT * FROM demos WHERE id = ANY($1)",
-        )
-        .bind(&demo_ids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("Failed to find demos: {e}")))?;
+        let demo_rows = sqlx::query_as::<_, DemoRow>(r"SELECT * FROM demos WHERE id = ANY($1)")
+            .bind(&demo_ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("Failed to find demos: {e}")))?;
 
         // Fetch all players for these demos
         let player_rows = sqlx::query_as::<_, DemoPlayerRow>(
@@ -526,7 +625,13 @@ impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
             .into_iter()
             .filter_map(|row| {
                 let id = row.id;
-                demo_row_to_domain(row).ok().map(|d| (id, d))
+                match demo_row_to_domain(row) {
+                    Ok(d) => Some((id, d)),
+                    Err(e) => {
+                        tracing::warn!(demo_id = %id, error = %e, "demo_row_to_domain failed");
+                        None
+                    }
+                }
             })
             .collect();
 
@@ -534,9 +639,8 @@ impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
             std::collections::HashMap::new();
         for row in player_rows {
             let demo_id = row.demo_id;
-            if let Ok(player) = player_row_to_domain(row) {
-                players_map.entry(demo_id).or_default().push(player);
-            }
+            let player = player_row_to_domain(row);
+            players_map.entry(demo_id).or_default().push(player);
         }
 
         // Build result
@@ -667,15 +771,13 @@ impl PgDemoPlayerRepository {
 #[async_trait]
 impl DemoPlayerRepository for PgDemoPlayerRepository {
     async fn find_by_id(&self, id: DemoPlayerId) -> Result<Option<DemoPlayer>, DomainError> {
-        let row = sqlx::query_as::<_, DemoPlayerRow>(
-            r"SELECT * FROM demo_players WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("Failed to find demo player: {e}")))?;
+        let row = sqlx::query_as::<_, DemoPlayerRow>(r"SELECT * FROM demo_players WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("Failed to find demo player: {e}")))?;
 
-        row.map(player_row_to_domain).transpose()
+        Ok(row.map(player_row_to_domain))
     }
 
     async fn find_by_demo(&self, demo_id: DemoId) -> Result<Vec<DemoPlayer>, DomainError> {
@@ -687,7 +789,7 @@ impl DemoPlayerRepository for PgDemoPlayerRepository {
         .await
         .map_err(|e| DomainError::internal(format!("Failed to find demo players: {e}")))?;
 
-        rows.into_iter().map(player_row_to_domain).collect()
+        Ok(rows.into_iter().map(player_row_to_domain).collect())
     }
 
     async fn find_demos_by_steam_id(&self, steam_id: &str) -> Result<Vec<DemoId>, DomainError> {
@@ -711,7 +813,7 @@ impl DemoPlayerRepository for PgDemoPlayerRepository {
         .await
         .map_err(|e| DomainError::internal(format!("Failed to find players by steam_id: {e}")))?;
 
-        rows.into_iter().map(player_row_to_domain).collect()
+        Ok(rows.into_iter().map(player_row_to_domain).collect())
     }
 
     async fn create_batch(
@@ -771,7 +873,7 @@ impl DemoPlayerRepository for PgDemoPlayerRepository {
             .await
             .map_err(|e| DomainError::internal(format!("Failed to create demo player: {e}")))?;
 
-            results.push(player_row_to_domain(row)?);
+            results.push(player_row_to_domain(row));
         }
 
         Ok(results)
@@ -791,7 +893,29 @@ impl DemoPlayerRepository for PgDemoPlayerRepository {
         .await
         .map_err(|e| DomainError::internal(format!("Failed to link demo player: {e}")))?;
 
-        player_row_to_domain(row)
+        Ok(player_row_to_domain(row))
+    }
+
+    async fn resolve_player_links(&self, demo_id: DemoId) -> Result<u64, DomainError> {
+        // The numeric guard makes the ::bigint cast safe for arbitrary
+        // steam_id strings and lets the players.steam_id_64 index be used.
+        let result = sqlx::query(
+            r"
+            UPDATE demo_players dp
+            SET player_id = p.id
+            FROM players p
+            WHERE dp.demo_id = $1
+              AND dp.player_id IS NULL
+              AND dp.steam_id ~ '^[0-9]{1,19}$'
+              AND p.steam_id_64 = dp.steam_id::bigint
+            ",
+        )
+        .bind(demo_id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("Failed to resolve demo player links: {e}")))?;
+
+        Ok(result.rows_affected())
     }
 
     async fn delete_by_demo(&self, demo_id: DemoId) -> Result<(), DomainError> {
@@ -823,7 +947,7 @@ fn demo_row_to_domain(row: DemoRow) -> Result<Demo, DomainError> {
 
     let metadata: Option<ParsedDemoMetadata> = row
         .metadata
-        .map(|m| serde_json::from_value(m))
+        .map(serde_json::from_value)
         .transpose()
         .map_err(|e| DomainError::internal(format!("Failed to parse metadata: {e}")))?;
 
@@ -878,8 +1002,8 @@ fn link_row_to_domain(row: DemoMatchLinkRow) -> Result<DemoMatchLink, DomainErro
 }
 
 /// Convert a DemoPlayerRow to a domain DemoPlayer.
-fn player_row_to_domain(row: DemoPlayerRow) -> Result<DemoPlayer, DomainError> {
-    Ok(DemoPlayer {
+fn player_row_to_domain(row: DemoPlayerRow) -> DemoPlayer {
+    DemoPlayer {
         id: DemoPlayerId::from_uuid(row.id),
         demo_id: DemoId::from_uuid(row.demo_id),
         steam_id: row.steam_id,
@@ -896,5 +1020,5 @@ fn player_row_to_domain(row: DemoPlayerRow) -> Result<DemoPlayer, DomainError> {
             hs_percentage: row.hs_percentage,
         },
         created_at: row.created_at,
-    })
+    }
 }

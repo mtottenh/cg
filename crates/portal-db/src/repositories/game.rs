@@ -1,8 +1,8 @@
 //! Game repository.
 
+use crate::DbPool;
 use crate::entities::{GameRow, NewGame, UpdateGame};
 use crate::error::RepositoryError;
-use crate::DbPool;
 use uuid::Uuid;
 
 /// Repository for game operations.
@@ -38,13 +38,32 @@ impl GameRepository {
         Ok(game)
     }
 
+    /// Find a game by UUID **or** slug.
+    ///
+    /// `GET /v1/games` hands out UUIDs as `id` while the single-game routes
+    /// are addressed by slug, so path parameters must accept either form.
+    /// A value that parses as a UUID is looked up by id first and falls back
+    /// to a slug lookup (a slug can never be a valid UUID, so the fallback
+    /// only matters for a UUID that isn't a game).
+    pub async fn find_by_id_or_slug(
+        &self,
+        id_or_slug: &str,
+    ) -> Result<Option<GameRow>, RepositoryError> {
+        if let Ok(uuid) = id_or_slug.parse::<Uuid>()
+            && let Some(game) = self.find_by_id(uuid).await?
+        {
+            return Ok(Some(game));
+        }
+
+        self.find_by_slug(id_or_slug).await
+    }
+
     /// List all games.
     pub async fn list(&self) -> Result<Vec<GameRow>, RepositoryError> {
-        let games = sqlx::query_as::<_, GameRow>(
-            "SELECT * FROM games ORDER BY sort_order, display_name",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let games =
+            sqlx::query_as::<_, GameRow>("SELECT * FROM games ORDER BY sort_order, display_name")
+                .fetch_all(&self.pool)
+                .await?;
 
         Ok(games)
     }
@@ -104,6 +123,9 @@ impl GameRepository {
                 status = COALESCE($12, status),
                 is_featured = COALESCE($13, is_featured),
                 sort_order = COALESCE($14, sort_order),
+                team_size_min = COALESCE($15, team_size_min),
+                team_size_max = COALESCE($16, team_size_max),
+                team_size_default = COALESCE($17, team_size_default),
                 updated_at = NOW()
             WHERE slug = $1
             RETURNING *
@@ -123,6 +145,9 @@ impl GameRepository {
         .bind(update.status)
         .bind(update.is_featured)
         .bind(update.sort_order)
+        .bind(update.team_size_min)
+        .bind(update.team_size_max)
+        .bind(update.team_size_default)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| RepositoryError::not_found("Game", slug.to_string()))?;
@@ -188,10 +213,10 @@ mod tests {
     fn new_test_game(slug: &str) -> NewGame {
         NewGame {
             slug: slug.to_string(),
-            display_name: format!("{} Game", slug),
+            display_name: format!("{slug} Game"),
             short_name: Some(slug.to_string()),
             description: Some("A test game".to_string()),
-            plugin_id: format!("{}_plugin", slug),
+            plugin_id: format!("{slug}_plugin"),
             plugin_version: "1.0.0".to_string(),
             team_size_min: 1,
             team_size_max: 5,
@@ -236,7 +261,9 @@ mod tests {
         let initial_count = repo.list().await.unwrap().len();
 
         for i in 1..=3 {
-            repo.create(new_test_game(&format!("listgame{}", i))).await.unwrap();
+            repo.create(new_test_game(&format!("listgame{i}")))
+                .await
+                .unwrap();
         }
 
         let games = repo.list().await.unwrap();

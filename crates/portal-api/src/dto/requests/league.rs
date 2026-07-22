@@ -33,6 +33,11 @@ pub struct CreateLeagueRequest {
     /// Access type: open, `invite_only`, or application.
     #[serde(default = "default_access_type")]
     pub access_type: String,
+
+    /// Optional league settings (entry requirements, etc.).
+    /// Entry requirements go under the `"eligibility"` key.
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
 }
 
 fn default_access_type() -> String {
@@ -88,6 +93,7 @@ impl TryFrom<CreateLeagueRequest> for CreateLeagueCommand {
             description: req.description,
             logo_url: req.logo_url,
             access_type,
+            settings: req.settings,
         })
     }
 }

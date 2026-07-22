@@ -2,10 +2,12 @@
 //!
 //! Handles availability windows, overrides, and time suggestions for match scheduling.
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{AvailabilityExceptionId, AvailabilityWindowId, PlayerId, TournamentMatchId};
+use portal_core::{
+    AvailabilityExceptionId, AvailabilityWindowId, PlayerId, TournamentId, TournamentMatchId,
+};
 use portal_domain::entities::{
     CreateAvailabilityOverride, CreateAvailabilityWindow, OverrideType, UpdateAvailabilityWindow,
 };
@@ -20,8 +22,8 @@ use crate::dto::responses::{
     SuggestedTimeResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
+use crate::state::AvailabilityState;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -50,7 +52,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "availability"
 )]
 pub async fn create_player_window(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<CreateAvailabilityWindowRequest>,
@@ -91,7 +93,7 @@ pub async fn create_player_window(
     tag = "availability"
 )]
 pub async fn get_player_windows(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<AvailabilityWindowResponse>>>> {
@@ -102,8 +104,7 @@ pub async fn get_player_windows(
         .get_player_windows(auth.player_id)
         .await?;
 
-    let response: Vec<AvailabilityWindowResponse> =
-        windows.into_iter().map(Into::into).collect();
+    let response: Vec<AvailabilityWindowResponse> = windows.into_iter().map(Into::into).collect();
 
     Ok(Json(DataResponse::new(response, request_id)))
 }
@@ -126,17 +127,13 @@ pub async fn get_player_windows(
     tag = "availability"
 )]
 pub async fn update_player_window(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(window_id): Path<String>,
+    Path(window_id): Path<AvailabilityWindowId>,
     ValidatedJson(req): ValidatedJson<UpdateAvailabilityWindowRequest>,
 ) -> ApiResult<Json<DataResponse<AvailabilityWindowResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let window_id: AvailabilityWindowId = window_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid window ID format"))?;
 
     // Verify ownership
     let existing = state
@@ -146,7 +143,9 @@ pub async fn update_player_window(
         .ok_or_else(|| ApiError::not_found("Availability window not found"))?;
 
     if existing.player_id != Some(auth.player_id) {
-        return Err(ApiError::forbidden("Cannot modify another player's availability"));
+        return Err(ApiError::forbidden(
+            "Cannot modify another player's availability",
+        ));
     }
 
     let command = UpdateAvailabilityWindow {
@@ -185,14 +184,10 @@ pub async fn update_player_window(
     tag = "availability"
 )]
 pub async fn delete_player_window(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
-    Path(window_id): Path<String>,
+    Path(window_id): Path<AvailabilityWindowId>,
 ) -> ApiResult<StatusCode> {
-    let window_id: AvailabilityWindowId = window_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid window ID format"))?;
-
     // Verify ownership
     let existing = state
         .availability_service
@@ -201,7 +196,9 @@ pub async fn delete_player_window(
         .ok_or_else(|| ApiError::not_found("Availability window not found"))?;
 
     if existing.player_id != Some(auth.player_id) {
-        return Err(ApiError::forbidden("Cannot delete another player's availability"));
+        return Err(ApiError::forbidden(
+            "Cannot delete another player's availability",
+        ));
     }
 
     state.availability_service.delete_window(window_id).await?;
@@ -227,7 +224,7 @@ pub async fn delete_player_window(
     tag = "availability"
 )]
 pub async fn create_player_override(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<CreateAvailabilityOverrideRequest>,
@@ -272,7 +269,7 @@ pub async fn create_player_override(
     tag = "availability"
 )]
 pub async fn get_player_overrides(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
 ) -> ApiResult<Json<DataResponse<Vec<AvailabilityOverrideResponse>>>> {
@@ -305,14 +302,10 @@ pub async fn get_player_overrides(
     tag = "availability"
 )]
 pub async fn delete_player_override(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
-    Path(override_id): Path<String>,
+    Path(override_id): Path<AvailabilityExceptionId>,
 ) -> ApiResult<StatusCode> {
-    let override_id: AvailabilityExceptionId = override_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid override ID format"))?;
-
     // Verify ownership
     let existing = state
         .availability_service
@@ -321,10 +314,15 @@ pub async fn delete_player_override(
         .ok_or_else(|| ApiError::not_found("Availability override not found"))?;
 
     if existing.player_id != Some(auth.player_id) {
-        return Err(ApiError::forbidden("Cannot delete another player's availability"));
+        return Err(ApiError::forbidden(
+            "Cannot delete another player's availability",
+        ));
     }
 
-    state.availability_service.delete_override(override_id).await?;
+    state
+        .availability_service
+        .delete_override(override_id)
+        .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -349,7 +347,7 @@ pub async fn delete_player_override(
     tag = "availability"
 )]
 pub async fn get_player_date_availability(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Query(query): Query<GetAvailabilityQuery>,
@@ -383,16 +381,12 @@ pub async fn get_player_date_availability(
     tag = "availability"
 )]
 pub async fn get_player_date_availability_public(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     headers: HeaderMap,
-    Path(player_id): Path<String>,
+    Path(player_id): Path<PlayerId>,
     Query(query): Query<GetAvailabilityQuery>,
 ) -> ApiResult<Json<DataResponse<DateAvailabilityResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let player_id: PlayerId = player_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
 
     let availability = state
         .availability_service
@@ -422,23 +416,44 @@ pub async fn get_player_date_availability_public(
         (status = 201, description = "Suggestions generated", body = DataResponse<Vec<SuggestedTimeResponse>>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not a participant of this match", body = ApiError),
         (status = 404, description = "Match not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "availability"
 )]
 pub async fn generate_suggestions(
-    State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    State(state): State<AvailabilityState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path((_tournament_id, match_id)): Path<(String, String)>,
+    Path((tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<GenerateSuggestionsRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<Vec<SuggestedTimeResponse>>>)> {
     let request_id = get_request_id(&headers);
 
+    let tournament_id: TournamentId = tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
     let match_id: TournamentMatchId = match_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    // Only match participants (or tournament admins) may generate suggestion
+    // rows: this endpoint writes to the database, so it must not be open to
+    // arbitrary authenticated users against arbitrary matches.
+    if !perm_checker
+        .has_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await
+    {
+        state
+            .availability_service
+            .verify_match_participant(tournament_id, match_id, auth.user_id, auth.player_id)
+            .await?;
+    }
 
     let suggestions = state
         .availability_service
@@ -473,7 +488,7 @@ pub async fn generate_suggestions(
     tag = "availability"
 )]
 pub async fn get_suggestions(
-    State(state): State<AppState>,
+    State(state): State<AvailabilityState>,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<Vec<SuggestedTimeResponse>>>> {

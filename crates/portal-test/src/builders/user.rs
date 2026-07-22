@@ -1,8 +1,8 @@
 //! User builder for tests.
 
 use chrono::Utc;
-use portal_db::entities::UserRow;
 use portal_db::DbPool;
+use portal_db::entities::UserRow;
 use uuid::Uuid;
 
 /// Builder for creating test users.
@@ -104,12 +104,17 @@ impl UserBuilder {
         let unique_id = Uuid::new_v4();
         UserRow {
             id: self.id.unwrap_or_else(Uuid::now_v7),
-            username: self.username.unwrap_or_else(|| format!("user_{}", &unique_id.to_string()[..16])),
-            email: self.email.unwrap_or_else(|| format!("{}@test.com", &unique_id.to_string()[..16])),
+            username: self
+                .username
+                .unwrap_or_else(|| format!("user_{}", &unique_id.to_string()[..16])),
+            email: self
+                .email
+                .unwrap_or_else(|| format!("{}@test.com", &unique_id.to_string()[..16])),
             email_verified: self.email_verified,
             email_verified_at: if self.email_verified { Some(now) } else { None },
             password_hash: self.password_hash,
             password_changed_at: None,
+            auth_provider: "local".to_string(),
             two_factor_enabled: self.two_factor_enabled,
             two_factor_secret: None,
             two_factor_backup_codes: None,

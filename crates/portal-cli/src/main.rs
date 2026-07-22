@@ -6,14 +6,18 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod commands;
 mod config;
 mod output;
 mod repl;
 
-use commands::{audit, ban, bootstrap, db, demo, game, league_team, player, role, user};
+#[cfg(feature = "scanner")]
+use commands::scan;
+use commands::{
+    api_key, audit, ban, bootstrap, db, demo, game, league_team, player, role, seed, user,
+};
 use config::CliConfig;
 use output::OutputFormat;
 
@@ -49,6 +53,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// API key management
+    ApiKey(api_key::ApiKeyCommand),
+
     /// User management commands
     User(user::UserCommand),
 
@@ -78,6 +85,13 @@ pub enum Commands {
 
     /// Demo catalog management
     Demo(demo::DemoCommand),
+
+    /// Seed database with development test data
+    Seed(seed::SeedCommand),
+
+    /// Scan S3 for new demos and ingest via API
+    #[cfg(feature = "scanner")]
+    Scan(scan::ScanCommand),
     // TODO: Add these commands as they are implemented:
     // Tournament(tournament::TournamentCommand),
 }
@@ -111,6 +125,7 @@ async fn main() -> Result<()> {
 
     // Execute command
     match command {
+        Commands::ApiKey(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::User(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Role(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Player(cmd) => cmd.execute(&pool, cli.format).await?,
@@ -121,6 +136,9 @@ async fn main() -> Result<()> {
         Commands::Audit(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::LeagueTeam(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Demo(cmd) => cmd.execute(&pool, cli.format).await?,
+        Commands::Seed(cmd) => cmd.execute(&pool, cli.format).await?,
+        #[cfg(feature = "scanner")]
+        Commands::Scan(cmd) => cmd.execute().await?,
     }
 
     Ok(())

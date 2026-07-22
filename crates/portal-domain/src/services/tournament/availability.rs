@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveTime, Utc};
 use portal_core::{
-    AvailabilityExceptionId, AvailabilityWindowId, DomainError, PlayerId, TournamentMatchId,
-    TournamentRegistrationId,
+    AvailabilityExceptionId, AvailabilityWindowId, DomainError, PlayerId, TournamentId,
+    TournamentMatchId, TournamentRegistrationId, UserId,
 };
 
 use crate::entities::{
@@ -138,7 +138,9 @@ where
         &self,
         registration_id: TournamentRegistrationId,
     ) -> Result<Vec<AvailabilityWindow>, DomainError> {
-        self.window_repo.find_by_registration_id(registration_id).await
+        self.window_repo
+            .find_by_registration_id(registration_id)
+            .await
     }
 
     /// Update an availability window.
@@ -148,12 +150,12 @@ where
         command: UpdateAvailabilityWindow,
     ) -> Result<AvailabilityWindow, DomainError> {
         // Validate time range if provided
-        if let (Some(start), Some(end)) = (command.start_time, command.end_time) {
-            if start >= end {
-                return Err(DomainError::InvalidState(
-                    "Start time must be before end time".to_string(),
-                ));
-            }
+        if let (Some(start), Some(end)) = (command.start_time, command.end_time)
+            && start >= end
+        {
+            return Err(DomainError::InvalidState(
+                "Start time must be before end time".to_string(),
+            ));
         }
 
         self.window_repo.update(id, command).await
@@ -174,7 +176,9 @@ where
         &self,
         registration_id: TournamentRegistrationId,
     ) -> Result<u64, DomainError> {
-        self.window_repo.delete_by_registration_id(registration_id).await
+        self.window_repo
+            .delete_by_registration_id(registration_id)
+            .await
     }
 
     // =========================================================================
@@ -194,12 +198,12 @@ where
         }
 
         // Validate time range if provided
-        if let (Some(start), Some(end)) = (command.start_time, command.end_time) {
-            if start >= end {
-                return Err(DomainError::InvalidState(
-                    "Start time must be before end time".to_string(),
-                ));
-            }
+        if let (Some(start), Some(end)) = (command.start_time, command.end_time)
+            && start >= end
+        {
+            return Err(DomainError::InvalidState(
+                "Start time must be before end time".to_string(),
+            ));
         }
 
         self.override_repo.create(command).await
@@ -226,7 +230,9 @@ where
         &self,
         registration_id: TournamentRegistrationId,
     ) -> Result<Vec<AvailabilityOverride>, DomainError> {
-        self.override_repo.find_by_registration_id(registration_id).await
+        self.override_repo
+            .find_by_registration_id(registration_id)
+            .await
     }
 
     /// Get overrides for a player within a date range.
@@ -267,9 +273,13 @@ where
 
         // Get recurring windows for this day
         let windows = if let Some(pid) = player_id {
-            self.window_repo.find_by_player_and_day(pid, day_of_week).await?
+            self.window_repo
+                .find_by_player_and_day(pid, day_of_week)
+                .await?
         } else if let Some(rid) = registration_id {
-            self.window_repo.find_by_registration_and_day(rid, day_of_week).await?
+            self.window_repo
+                .find_by_registration_and_day(rid, day_of_week)
+                .await?
         } else {
             return Err(DomainError::InvalidState(
                 "Must provide player_id or registration_id".to_string(),
@@ -301,10 +311,7 @@ where
                 date,
                 available_slots: vec![],
                 is_blocked: true,
-                notes: overrides
-                    .iter()
-                    .filter_map(|o| o.reason.clone())
-                    .collect(),
+                notes: overrides.iter().filter_map(|o| o.reason.clone()).collect(),
             });
         }
 
@@ -326,9 +333,7 @@ where
                     if let (Some(start), Some(end)) = (ovr.start_time, ovr.end_time) {
                         slots = slots
                             .into_iter()
-                            .flat_map(|slot| {
-                                remove_time_from_slot(&slot, start, end)
-                            })
+                            .flat_map(|slot| remove_time_from_slot(&slot, start, end))
                             .collect();
                     }
                 }
@@ -352,16 +357,61 @@ where
             date,
             available_slots: slots,
             is_blocked: false,
-            notes: overrides
-                .iter()
-                .filter_map(|o| o.reason.clone())
-                .collect(),
+            notes: overrides.iter().filter_map(|o| o.reason.clone()).collect(),
         })
     }
 
     // =========================================================================
     // TIME SUGGESTIONS
     // =========================================================================
+
+    /// Verify that a match belongs to the given tournament and that the
+    /// caller is one of its participants.
+    ///
+    /// A caller counts as a participant when either side's registration was
+    /// registered by them, or is a solo registration for their player.
+    ///
+    /// # Errors
+    ///
+    /// - `TournamentMatchNotFound` if the match does not exist or does not
+    ///   belong to `tournament_id`
+    /// - `NotAuthorized` if the caller is not a participant
+    pub async fn verify_match_participant(
+        &self,
+        tournament_id: TournamentId,
+        match_id: TournamentMatchId,
+        user_id: UserId,
+        player_id: PlayerId,
+    ) -> Result<(), DomainError> {
+        let tournament_match = self
+            .match_repo
+            .find_by_id(match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
+
+        // The match must belong to the tournament named in the request path.
+        if tournament_match.tournament_id != tournament_id {
+            return Err(DomainError::TournamentMatchNotFound(match_id));
+        }
+
+        for reg_id in [
+            tournament_match.participant1_registration_id,
+            tournament_match.participant2_registration_id,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
+                && (reg.registered_by == user_id || reg.player_id == Some(player_id))
+            {
+                return Ok(());
+            }
+        }
+
+        Err(DomainError::NotAuthorized(format!(
+            "User {user_id} is not a participant in match {match_id}"
+        )))
+    }
 
     /// Generate time suggestions for a match based on participant availability.
     pub async fn generate_suggestions(
@@ -376,14 +426,26 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        let reg1_id = tournament_match.participant1_registration_id.ok_or_else(|| {
-            DomainError::InvalidState("Match participant 1 not assigned".to_string())
-        })?;
-        let reg2_id = tournament_match.participant2_registration_id.ok_or_else(|| {
-            DomainError::InvalidState("Match participant 2 not assigned".to_string())
-        })?;
+        let reg1_id = tournament_match
+            .participant1_registration_id
+            .ok_or_else(|| {
+                DomainError::InvalidState("Match participant 1 not assigned".to_string())
+            })?;
+        let reg2_id = tournament_match
+            .participant2_registration_id
+            .ok_or_else(|| {
+                DomainError::InvalidState("Match participant 2 not assigned".to_string())
+            })?;
+
+        // Replace semantics: clear stale auto-generated pending suggestions
+        // before regenerating so repeated generation does not accumulate
+        // duplicates. Manually-added slots and accepted/rejected decisions are
+        // left untouched.
+        self.suggestion_repo
+            .delete_auto_generated_pending(match_id)
+            .await?;
 
         let mut suggestions = Vec::new();
 
@@ -406,12 +468,8 @@ where
                         let duration_mins = (overlap.end - overlap.start).num_minutes();
                         if duration_mins >= min_duration_minutes {
                             // Convert to DateTime
-                            let suggested_start = current_date
-                                .and_time(overlap.start)
-                                .and_utc();
-                            let suggested_end = current_date
-                                .and_time(overlap.end)
-                                .and_utc();
+                            let suggested_start = current_date.and_time(overlap.start).and_utc();
+                            let suggested_end = current_date.and_time(overlap.end).and_utc();
 
                             // Calculate confidence score
                             let confidence = calculate_confidence_score(
@@ -493,7 +551,11 @@ where
 // =============================================================================
 
 /// Remove a time range from a slot, potentially splitting it.
-fn remove_time_from_slot(slot: &TimeSlot, block_start: NaiveTime, block_end: NaiveTime) -> Vec<TimeSlot> {
+fn remove_time_from_slot(
+    slot: &TimeSlot,
+    block_start: NaiveTime,
+    block_end: NaiveTime,
+) -> Vec<TimeSlot> {
     // No overlap
     if block_end <= slot.start || block_start >= slot.end {
         return vec![slot.clone()];

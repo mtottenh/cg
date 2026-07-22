@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    purge)
+        # Only on `dpkg --purge portal-api`, not on `apt remove`. Removes
+        # the config; data under /var/lib/portal is kept regardless
+        # because it may contain uploads the operator wants to keep.
+        rm -rf /etc/portal
+        if getent passwd portal >/dev/null; then
+            deluser --quiet --system portal || true
+        fi
+        if getent group portal >/dev/null; then
+            delgroup --quiet --system portal 2>/dev/null || true
+        fi
+        ;;
+
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+
+    *)
+        echo "postrm called with unknown argument \`$1\`" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#

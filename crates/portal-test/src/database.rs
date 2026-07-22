@@ -274,6 +274,10 @@ mod tests {
             .fetch_one(db1.pool())
             .await
             .unwrap();
-        assert_eq!(db1_count.0, initial_count.0 + 1, "db1 should have the new user");
+        assert_eq!(
+            db1_count.0,
+            initial_count.0 + 1,
+            "db1 should have the new user"
+        );
     }
 }

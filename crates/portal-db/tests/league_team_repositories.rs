@@ -13,11 +13,12 @@ use portal_core::types::{
     LeagueTeamSeasonStatus, LeagueTeamStatus, RosterLockStatus, SeasonStatus,
 };
 use portal_core::{LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamSeasonId, PlayerId, UserId};
-use portal_db::adapters::{
-    PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository, PgLeagueTeamInvitationRepository,
-    PgLeagueTeamMemberRepository, PgLeagueTeamRepository, PgLeagueTeamSeasonRepository,
-};
 use portal_db::DbPool;
+use portal_db::adapters::{
+    PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
+    PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
+    PgLeagueTeamSeasonRepository,
+};
 use portal_domain::repositories::league_team::{
     AddLeagueTeamMember, CreateLeagueSeason, CreateLeagueTeam, CreateLeagueTeamInvitation,
     CreateLeagueTeamSeason, LeagueSeasonParticipantRepository, LeagueSeasonRepository,
@@ -35,8 +36,8 @@ use portal_test::prelude::*;
 async fn create_test_league(pool: &DbPool) -> LeagueId {
     let unique = uuid::Uuid::new_v4();
     let league = LeagueBuilder::new()
-        .name(&format!("Test League {}", &unique.to_string()[..8]))
-        .slug(&format!("test-league-{}", &unique.to_string()[..12]))
+        .name(format!("Test League {}", &unique.to_string()[..8]))
+        .slug(format!("test-league-{}", &unique.to_string()[..12]))
         .build_persisted(pool)
         .await;
     LeagueId::from_uuid(league.id)
@@ -47,8 +48,8 @@ async fn create_test_user(pool: &DbPool, _suffix: &str) -> UserId {
     let unique = uuid::Uuid::new_v4();
     // Keep username short (max 32 chars)
     let user = UserBuilder::new()
-        .username(&format!("u{}", &unique.to_string()[..12]))
-        .email(&format!("{}@t.com", &unique.to_string()[..12]))
+        .username(format!("u{}", &unique.to_string()[..12]))
+        .email(format!("{}@t.com", &unique.to_string()[..12]))
         .build_persisted(pool)
         .await;
     UserId::from_uuid(user.id)
@@ -59,8 +60,8 @@ async fn create_test_player(pool: &DbPool, _suffix: &str) -> (PlayerId, UserId) 
     let unique = uuid::Uuid::new_v4();
     // Keep username short (max 32 chars)
     let user = UserBuilder::new()
-        .username(&format!("p{}", &unique.to_string()[..12]))
-        .email(&format!("p{}@t.com", &unique.to_string()[..12]))
+        .username(format!("p{}", &unique.to_string()[..12]))
+        .email(format!("p{}@t.com", &unique.to_string()[..12]))
         .build_persisted(pool)
         .await;
     // UserBuilder::build_persisted already creates a player with the same ID as the user
@@ -171,7 +172,10 @@ mod league_season_repository {
 
         repo.create(cmd).await.unwrap();
 
-        let found = repo.find_by_slug(league_id, "slug-season-test").await.unwrap();
+        let found = repo
+            .find_by_slug(league_id, "slug-season-test")
+            .await
+            .unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().slug, "slug-season-test");
     }
@@ -250,10 +254,16 @@ mod league_season_repository {
         let created = repo.create(cmd).await.unwrap();
         assert_eq!(created.status, SeasonStatus::Draft);
 
-        let updated = repo.update_status(created.id, SeasonStatus::Registration).await.unwrap();
+        let updated = repo
+            .update_status(created.id, SeasonStatus::Registration)
+            .await
+            .unwrap();
         assert_eq!(updated.status, SeasonStatus::Registration);
 
-        let updated = repo.update_status(created.id, SeasonStatus::Active).await.unwrap();
+        let updated = repo
+            .update_status(created.id, SeasonStatus::Active)
+            .await
+            .unwrap();
         assert_eq!(updated.status, SeasonStatus::Active);
     }
 
@@ -355,7 +365,12 @@ mod league_season_repository {
         repo.create(cmd).await.unwrap();
 
         assert!(repo.slug_exists(league_id, "unique-slug").await.unwrap());
-        assert!(!repo.slug_exists(league_id, "nonexistent-slug").await.unwrap());
+        assert!(
+            !repo
+                .slug_exists(league_id, "nonexistent-slug")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -681,7 +696,10 @@ mod league_team_repository {
             .unwrap();
         }
 
-        let (teams, count) = repo.list_by_league(league_id, None, None, 10, 0).await.unwrap();
+        let (teams, count) = repo
+            .list_by_league(league_id, None, None, 10, 0)
+            .await
+            .unwrap();
         assert_eq!(teams.len(), 5);
         assert_eq!(count, 5);
     }
@@ -708,11 +726,17 @@ mod league_team_repository {
             .unwrap();
         }
 
-        let (teams, count) = repo.list_by_league(league_id, None, None, 3, 0).await.unwrap();
+        let (teams, count) = repo
+            .list_by_league(league_id, None, None, 3, 0)
+            .await
+            .unwrap();
         assert_eq!(teams.len(), 3);
         assert_eq!(count, 10);
 
-        let (teams, _) = repo.list_by_league(league_id, None, None, 3, 3).await.unwrap();
+        let (teams, _) = repo
+            .list_by_league(league_id, None, None, 3, 3)
+            .await
+            .unwrap();
         assert_eq!(teams.len(), 3);
     }
 
@@ -754,7 +778,9 @@ mod league_team_repository {
             })
             .await
             .unwrap();
-        repo.update_status(team.id, LeagueTeamStatus::Disbanded).await.unwrap();
+        repo.update_status(team.id, LeagueTeamStatus::Disbanded)
+            .await
+            .unwrap();
 
         let (active_teams, _) = repo
             .list_by_league(league_id, Some(LeagueTeamStatus::Active), None, 10, 0)
@@ -791,7 +817,12 @@ mod league_team_repository {
 
         assert!(repo.name_exists(league_id, "Existing Team").await.unwrap());
         assert!(repo.name_exists(league_id, "existing team").await.unwrap()); // Case insensitive
-        assert!(!repo.name_exists(league_id, "Nonexistent Team").await.unwrap());
+        assert!(
+            !repo
+                .name_exists(league_id, "Nonexistent Team")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -923,7 +954,10 @@ mod league_team_season_repository {
             .await
             .unwrap();
 
-        let found = repo.find_by_team_and_season(team_id, season_id).await.unwrap();
+        let found = repo
+            .find_by_team_and_season(team_id, season_id)
+            .await
+            .unwrap();
         assert!(found.is_some());
         assert_eq!(found.as_ref().unwrap().team_id, team_id);
         assert_eq!(found.as_ref().unwrap().season_id, season_id);
@@ -965,7 +999,10 @@ mod league_team_season_repository {
                 .unwrap();
         }
 
-        let (team_seasons, count) = repo.list_by_season(season_id, None, None, 10, 0).await.unwrap();
+        let (team_seasons, count) = repo
+            .list_by_season(season_id, None, None, 10, 0)
+            .await
+            .unwrap();
         assert_eq!(team_seasons.len(), 5);
         assert_eq!(count, 5);
     }
@@ -1251,7 +1288,12 @@ mod league_team_member_repository {
         .unwrap();
 
         assert_eq!(repo.count_captains(team_season_id).await.unwrap(), 2);
-        assert_eq!(repo.count_by_role(team_season_id, LeagueTeamRole::Player).await.unwrap(), 3);
+        assert_eq!(
+            repo.count_by_role(team_season_id, LeagueTeamRole::Player)
+                .await
+                .unwrap(),
+            3
+        );
         assert_eq!(repo.count_substitutes(team_season_id).await.unwrap(), 1);
         assert_eq!(repo.count_primary_members(team_season_id).await.unwrap(), 5); // captains + players
         assert_eq!(repo.count_active_members(team_season_id).await.unwrap(), 6);
@@ -1277,7 +1319,12 @@ mod league_team_member_repository {
         .unwrap();
 
         assert!(repo.is_member(team_season_id, player_id).await.unwrap());
-        assert!(!repo.is_member(team_season_id, other_player_id).await.unwrap());
+        assert!(
+            !repo
+                .is_member(team_season_id, other_player_id)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1322,7 +1369,10 @@ mod league_team_member_repository {
         let (player_id, _) = create_test_player(&db.pool, "primaryteam").await;
 
         // Initially not in any team
-        let result = repo.find_primary_team_in_season(season_id, player_id).await.unwrap();
+        let result = repo
+            .find_primary_team_in_season(season_id, player_id)
+            .await
+            .unwrap();
         assert!(result.is_none());
 
         // Add as player (primary role)
@@ -1337,7 +1387,10 @@ mod league_team_member_repository {
         .await
         .unwrap();
 
-        let result = repo.find_primary_team_in_season(season_id, player_id).await.unwrap();
+        let result = repo
+            .find_primary_team_in_season(season_id, player_id)
+            .await
+            .unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap(), team_season_id);
     }
@@ -1515,7 +1568,10 @@ mod league_team_invitation_repository {
         let (player_id, _) = create_test_player(&db.pool, "existingpending").await;
 
         // No existing pending
-        let result = repo.find_existing_pending(team_season_id, player_id).await.unwrap();
+        let result = repo
+            .find_existing_pending(team_season_id, player_id)
+            .await
+            .unwrap();
         assert!(result.is_none());
 
         // Create invitation
@@ -1531,7 +1587,10 @@ mod league_team_invitation_repository {
         .unwrap();
 
         // Should find existing
-        let result = repo.find_existing_pending(team_season_id, player_id).await.unwrap();
+        let result = repo
+            .find_existing_pending(team_season_id, player_id)
+            .await
+            .unwrap();
         assert!(result.is_some());
     }
 
@@ -1554,7 +1613,9 @@ mod league_team_invitation_repository {
             .await
             .unwrap();
 
-        repo.cancel_pending_for_player(team_season_id, player_id).await.unwrap();
+        repo.cancel_pending_for_player(team_season_id, player_id)
+            .await
+            .unwrap();
 
         let updated = repo.find_by_id(invitation.id).await.unwrap().unwrap();
         assert_eq!(updated.status, LeagueTeamInvitationStatus::Cancelled);
@@ -1604,7 +1665,10 @@ mod league_team_invitation_repository {
             .await
             .unwrap();
 
-        assert_eq!(invitation.invitation_type, LeagueTeamInvitationType::Request);
+        assert_eq!(
+            invitation.invitation_type,
+            LeagueTeamInvitationType::Request
+        );
         assert!(invitation.invited_by.is_none());
     }
 }
@@ -1651,7 +1715,10 @@ mod league_season_participant_repository {
         let (player_id, _) = create_test_player(&db.pool, "registerparticipant").await;
 
         let participant = repo
-            .register(RegisterLeagueSeasonParticipant { season_id, player_id })
+            .register(RegisterLeagueSeasonParticipant {
+                season_id,
+                player_id,
+            })
             .await
             .unwrap();
 
@@ -1668,7 +1735,10 @@ mod league_season_participant_repository {
         let (player_id, _) = create_test_player(&db.pool, "findparticipant").await;
 
         let created = repo
-            .register(RegisterLeagueSeasonParticipant { season_id, player_id })
+            .register(RegisterLeagueSeasonParticipant {
+                season_id,
+                player_id,
+            })
             .await
             .unwrap();
 
@@ -1684,11 +1754,17 @@ mod league_season_participant_repository {
         let season_id = setup_participant_season(&db).await;
         let (player_id, _) = create_test_player(&db.pool, "findseasonplayer").await;
 
-        repo.register(RegisterLeagueSeasonParticipant { season_id, player_id })
+        repo.register(RegisterLeagueSeasonParticipant {
+            season_id,
+            player_id,
+        })
+        .await
+        .unwrap();
+
+        let found = repo
+            .find_by_season_and_player(season_id, player_id)
             .await
             .unwrap();
-
-        let found = repo.find_by_season_and_player(season_id, player_id).await.unwrap();
         assert!(found.is_some());
     }
 
@@ -1700,7 +1776,10 @@ mod league_season_participant_repository {
         let (player_id, _) = create_test_player(&db.pool, "withdrawparticipant").await;
 
         let participant = repo
-            .register(RegisterLeagueSeasonParticipant { season_id, player_id })
+            .register(RegisterLeagueSeasonParticipant {
+                season_id,
+                player_id,
+            })
             .await
             .unwrap();
 
@@ -1720,12 +1799,20 @@ mod league_season_participant_repository {
 
         assert!(!repo.is_registered(season_id, player_id).await.unwrap());
 
-        repo.register(RegisterLeagueSeasonParticipant { season_id, player_id })
-            .await
-            .unwrap();
+        repo.register(RegisterLeagueSeasonParticipant {
+            season_id,
+            player_id,
+        })
+        .await
+        .unwrap();
 
         assert!(repo.is_registered(season_id, player_id).await.unwrap());
-        assert!(!repo.is_registered(season_id, other_player_id).await.unwrap());
+        assert!(
+            !repo
+                .is_registered(season_id, other_player_id)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1736,9 +1823,12 @@ mod league_season_participant_repository {
 
         for i in 1..=10 {
             let (player_id, _) = create_test_player(&db.pool, &format!("listparticipant{i}")).await;
-            repo.register(RegisterLeagueSeasonParticipant { season_id, player_id })
-                .await
-                .unwrap();
+            repo.register(RegisterLeagueSeasonParticipant {
+                season_id,
+                player_id,
+            })
+            .await
+            .unwrap();
         }
 
         let (participants, count) = repo.list_by_season(season_id, None, 10, 0).await.unwrap();
@@ -1754,9 +1844,12 @@ mod league_season_participant_repository {
 
         for i in 1..=20 {
             let (player_id, _) = create_test_player(&db.pool, &format!("pageparticipant{i}")).await;
-            repo.register(RegisterLeagueSeasonParticipant { season_id, player_id })
-                .await
-                .unwrap();
+            repo.register(RegisterLeagueSeasonParticipant {
+                season_id,
+                player_id,
+            })
+            .await
+            .unwrap();
         }
 
         let (page1, count) = repo.list_by_season(season_id, None, 5, 0).await.unwrap();

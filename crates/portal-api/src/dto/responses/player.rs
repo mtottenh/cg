@@ -1,8 +1,11 @@
 //! Player response DTOs.
 
 use portal_domain::entities::{Player, SocialLinks};
+use portal_plugins::types::DisplayStat;
 use serde::Serialize;
 use utoipa::ToSchema;
+
+use super::DisplayStatResponse;
 
 /// Social links response DTO.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -82,8 +85,16 @@ pub struct PlayerResponse {
     /// Social media links.
     pub social_links: SocialLinksResponse,
 
+    /// The player's SteamID64 (null if not linked).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "76561198012345678")]
+    pub steam_id: Option<String>,
+
     /// Whether Steam account is linked.
     pub steam_linked: bool,
+
+    /// Whether the player is looking for a team.
+    pub looking_for_team: bool,
 
     /// When the player profile was created.
     #[schema(example = "2024-01-15T10:30:00Z")]
@@ -107,7 +118,9 @@ impl From<Player> for PlayerResponse {
             region: player.region,
             timezone: player.timezone,
             social_links: SocialLinksResponse::from(player.social_links),
+            steam_id: player.steam_id,
             steam_linked,
+            looking_for_team: player.looking_for_team,
             created_at: player.created_at.to_rfc3339(),
             updated_at: player.updated_at.to_rfc3339(),
         }
@@ -131,6 +144,30 @@ pub struct PlayerSearchResponse {
     /// Country code.
     #[schema(example = "US")]
     pub country_code: Option<String>,
+
+    /// Whether the player is looking for a team.
+    pub looking_for_team: bool,
+
+    /// Game-specific display stats (populated when game_id filter is used).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display_stats: Vec<DisplayStatResponse>,
+}
+
+impl PlayerSearchResponse {
+    /// Create a search response enriched with plugin-formatted display stats.
+    pub fn with_display_stats(player: Player, display_stats: Vec<DisplayStat>) -> Self {
+        Self {
+            id: player.id.to_string(),
+            display_name: player.display_name,
+            avatar_url: player.avatar_url,
+            country_code: player.country_code,
+            looking_for_team: player.looking_for_team,
+            display_stats: display_stats
+                .into_iter()
+                .map(DisplayStatResponse::from)
+                .collect(),
+        }
+    }
 }
 
 impl From<Player> for PlayerSearchResponse {
@@ -140,6 +177,8 @@ impl From<Player> for PlayerSearchResponse {
             display_name: player.display_name,
             avatar_url: player.avatar_url,
             country_code: player.country_code,
+            looking_for_team: player.looking_for_team,
+            display_stats: Vec::new(),
         }
     }
 }

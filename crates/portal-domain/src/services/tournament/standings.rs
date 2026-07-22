@@ -11,7 +11,6 @@ use tracing::{info, instrument};
 use crate::entities::tournament::{HeadToHead, TournamentRegistration, TournamentStanding};
 use crate::repositories::tournament::{
     CreateTournamentStanding, TournamentMatchRepository, TournamentStandingsRepository,
-    UpdateTournamentStanding,
 };
 
 /// Service for managing tournament standings.
@@ -64,45 +63,22 @@ where
         Ok(standings)
     }
 
-    /// Update standings after a match result.
+    /// Recompute a bracket's standings from its completed match rows and
+    /// recorded byes.
+    ///
+    /// Standings are derived, not accumulated: this delegates to the
+    /// repository's idempotent [`recompute_bracket`], so it can be run any
+    /// number of times without double-counting. The winner/loser arguments
+    /// are read off the persisted match rows, so the previous per-result
+    /// delta parameters are no longer needed.
+    ///
+    /// [`recompute_bracket`]: TournamentStandingsRepository::recompute_bracket
     #[instrument(skip(self))]
-    pub async fn update_for_match_result(
+    pub async fn recompute_for_bracket(
         &self,
         bracket_id: TournamentBracketId,
-        winner_id: TournamentRegistrationId,
-        loser_id: TournamentRegistrationId,
-        winner_games: i32,
-        loser_games: i32,
-        is_draw: bool,
     ) -> Result<Vec<TournamentStanding>, DomainError> {
-        // Update winner
-        let winner_update = UpdateTournamentStanding {
-            bracket_id,
-            registration_id: winner_id,
-            matches_won_delta: if is_draw { 0 } else { 1 },
-            matches_lost_delta: 0,
-            matches_drawn_delta: if is_draw { 1 } else { 0 },
-            game_wins_delta: winner_games,
-            game_losses_delta: loser_games,
-            points_delta: if is_draw { 1 } else { 3 },
-        };
-        self.standing_repo.update_after_match(winner_update).await?;
-
-        // Update loser
-        let loser_update = UpdateTournamentStanding {
-            bracket_id,
-            registration_id: loser_id,
-            matches_won_delta: 0,
-            matches_lost_delta: if is_draw { 0 } else { 1 },
-            matches_drawn_delta: if is_draw { 1 } else { 0 },
-            game_wins_delta: loser_games,
-            game_losses_delta: winner_games,
-            points_delta: if is_draw { 1 } else { 0 },
-        };
-        self.standing_repo.update_after_match(loser_update).await?;
-
-        // Recalculate positions
-        self.standing_repo.recalculate_positions(bracket_id).await
+        self.standing_repo.recompute_bracket(bracket_id).await
     }
 
     /// Recalculate all standings from scratch.
@@ -115,13 +91,11 @@ where
         let standings = self.standing_repo.list_by_bracket(bracket_id).await?;
 
         // Create a map to accumulate stats
-        let mut stats: std::collections::HashMap<
-            TournamentRegistrationId,
-            StandingStats,
-        > = standings
-            .iter()
-            .map(|s| (s.registration_id, StandingStats::default()))
-            .collect();
+        let mut stats: std::collections::HashMap<TournamentRegistrationId, StandingStats> =
+            standings
+                .iter()
+                .map(|s| (s.registration_id, StandingStats::default()))
+                .collect();
 
         // Replay all completed matches
         for match_ in &matches {
@@ -190,7 +164,10 @@ where
                     .keys()
                     .filter_map(|opp_id| stats.get(opp_id))
                     .fold((0, 0), |(wins, matches), opp_stats| {
-                        (wins + opp_stats.matches_won, matches + opp_stats.matches_played)
+                        (
+                            wins + opp_stats.matches_won,
+                            matches + opp_stats.matches_played,
+                        )
                     });
 
                 let omw = if total_opp_matches > 0 {
@@ -260,10 +237,10 @@ where
             };
 
             // Add opponent's points
-            if let Some(opp_id) = opponent_id {
-                if let Some(opp_standing) = standings.iter().find(|s| s.registration_id == opp_id) {
-                    buchholz += f64::from(opp_standing.points);
-                }
+            if let Some(opp_id) = opponent_id
+                && let Some(opp_standing) = standings.iter().find(|s| s.registration_id == opp_id)
+            {
+                buchholz += f64::from(opp_standing.points);
             }
         }
 

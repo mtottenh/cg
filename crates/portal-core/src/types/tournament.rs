@@ -65,7 +65,10 @@ impl TournamentFormat {
     /// Check if the format uses standings (not bracket position).
     #[must_use]
     pub const fn uses_standings(&self) -> bool {
-        matches!(self, Self::RoundRobin | Self::Swiss)
+        matches!(
+            self,
+            Self::RoundRobin | Self::Swiss | Self::GroupsAndPlayoffs
+        )
     }
 
     /// Check if the format supports bye allocation.
@@ -171,7 +174,10 @@ impl RegistrationType {
     /// Check if registration requires approval.
     #[must_use]
     pub const fn requires_approval(&self) -> bool {
-        matches!(self, Self::InviteOnly | Self::Qualification | Self::Approval)
+        matches!(
+            self,
+            Self::InviteOnly | Self::Qualification | Self::Approval
+        )
     }
 }
 
@@ -293,10 +299,7 @@ impl TournamentMatchStatus {
     /// Terminal states are final - no further transitions are possible.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::Cancelled | Self::Forfeit
-        )
+        matches!(self, Self::Completed | Self::Cancelled | Self::Forfeit)
     }
 
     /// Check if the match can be started.
@@ -491,7 +494,10 @@ impl TournamentRegistrationStatus {
     /// Check if the participant can withdraw.
     #[must_use]
     pub const fn can_withdraw(&self) -> bool {
-        matches!(self, Self::Pending | Self::Approved | Self::CheckedIn | Self::Active)
+        matches!(
+            self,
+            Self::Pending | Self::Approved | Self::CheckedIn | Self::Active
+        )
     }
 }
 
@@ -1071,8 +1077,32 @@ mod tests {
     #[test]
     fn test_tournament_match_status_transitions() {
         assert!(TournamentMatchStatus::Pending.can_transition_to(TournamentMatchStatus::Ready));
-        assert!(!TournamentMatchStatus::Pending.can_transition_to(TournamentMatchStatus::Completed));
-        assert!(TournamentMatchStatus::InProgress.can_transition_to(TournamentMatchStatus::Completed));
+        assert!(
+            !TournamentMatchStatus::Pending.can_transition_to(TournamentMatchStatus::Completed)
+        );
+        // Completion goes through AwaitingResult; there is no direct
+        // InProgress -> Completed edge since the result-submission rework.
+        assert!(
+            TournamentMatchStatus::InProgress
+                .can_transition_to(TournamentMatchStatus::AwaitingResult)
+        );
+        assert!(
+            !TournamentMatchStatus::InProgress.can_transition_to(TournamentMatchStatus::Completed)
+        );
+        assert!(
+            TournamentMatchStatus::AwaitingResult
+                .can_transition_to(TournamentMatchStatus::Completed)
+        );
+        assert!(
+            TournamentMatchStatus::AwaitingResult
+                .can_transition_to(TournamentMatchStatus::Disputed)
+        );
+        assert!(
+            TournamentMatchStatus::Disputed.can_transition_to(TournamentMatchStatus::Completed)
+        );
+        assert!(
+            !TournamentMatchStatus::Completed.can_transition_to(TournamentMatchStatus::Disputed)
+        );
     }
 
     #[test]

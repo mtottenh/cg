@@ -7,10 +7,10 @@ use crate::dto::requests::{ProcessProgressionRequest, ReapplyProgressionRequest}
 use crate::dto::responses::ProgressionResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
-use crate::state::AppState;
+use crate::state::ProgressionState;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::Json;
 use portal_core::{TournamentMatchId, TournamentRegistrationId};
 
 /// Extract request ID from headers.
@@ -43,15 +43,11 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "progression"
 )]
 pub async fn get_progression(
-    State(_state): State<AppState>,
+    State(_state): State<ProgressionState>,
     _auth: AuthenticatedUser,
     _headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(_match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<ProgressionResponse>>> {
-    let _match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
-
     // Progression info is typically computed/stored during match completion.
     // This endpoint would need match progression history tracking to show past progression.
     // For now, we return not implemented as progression is typically processed automatically.
@@ -85,20 +81,20 @@ pub async fn get_progression(
     tag = "progression"
 )]
 pub async fn revert_progression(
-    State(state): State<AppState>,
+    State(state): State<ProgressionState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<()>>> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Require admin permission
     perm_checker
-        .require_permission(&auth, "tournament.admin")
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     state
@@ -132,21 +128,21 @@ pub async fn revert_progression(
     tag = "progression"
 )]
 pub async fn reapply_progression(
-    State(state): State<AppState>,
+    State(state): State<ProgressionState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<ReapplyProgressionRequest>,
 ) -> ApiResult<Json<DataResponse<ProgressionResponse>>> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Require admin permission
     perm_checker
-        .require_permission(&auth, "tournament.admin")
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let new_winner: TournamentRegistrationId = req
@@ -188,21 +184,21 @@ pub async fn reapply_progression(
     tag = "progression"
 )]
 pub async fn process_progression(
-    State(state): State<AppState>,
+    State(state): State<ProgressionState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<ProcessProgressionRequest>,
 ) -> ApiResult<Json<DataResponse<ProgressionResponse>>> {
     let request_id = get_request_id(&headers);
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Require admin permission
     perm_checker
-        .require_permission(&auth, "tournament.admin")
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
         .await?;
 
     let winner_registration_id: TournamentRegistrationId = req

@@ -40,6 +40,9 @@ pub struct PlayerRow {
     pub steam_id_64: Option<i64>,
     pub steam_profile: Option<serde_json::Value>,
 
+    // Looking for Team
+    pub looking_for_team: bool,
+
     // Metadata
     pub featured_badge_id: Option<Uuid>,
     pub title: Option<String>,
@@ -82,7 +85,7 @@ pub struct PlayerGameProfileRow {
 
     // Relationships
     pub player_id: Uuid,
-    pub game_id: String,
+    pub game_id: Uuid,
 
     // Rating System (Glicko-2)
     pub rating: i32,
@@ -127,7 +130,7 @@ pub struct PlayerGameProfileRow {
 #[derive(Debug, Clone)]
 pub struct NewPlayerGameProfile {
     pub player_id: Uuid,
-    pub game_id: String,
+    pub game_id: Uuid,
 }
 
 /// Data for updating rating after a match.

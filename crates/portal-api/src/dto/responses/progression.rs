@@ -24,6 +24,8 @@ pub struct ProgressionResponse {
     pub bracket_complete: bool,
     /// Whether the tournament is now complete
     pub tournament_complete: bool,
+    /// Whether a stage transition was triggered (e.g., groups → playoffs)
+    pub stage_advanced: bool,
 }
 
 impl From<ProgressionResult> for ProgressionResponse {
@@ -33,9 +35,14 @@ impl From<ProgressionResult> for ProgressionResponse {
             winner_advancement: p.winner_advancement.map(Into::into),
             loser_result: p.loser_result.into(),
             updated_standings_count: p.updated_standings.len(),
-            newly_ready_matches: p.newly_ready_matches.iter().map(|id| id.as_uuid()).collect(),
+            newly_ready_matches: p
+                .newly_ready_matches
+                .iter()
+                .map(portal_core::TournamentMatchId::as_uuid)
+                .collect(),
             bracket_complete: p.bracket_complete,
             tournament_complete: p.tournament_complete,
+            stage_advanced: p.stage_advanced,
         }
     }
 }

@@ -5,17 +5,20 @@ use crate::dto::requests::{
     CreateVetoSessionRequest, PerformVetoActionRequest, RecordCoinFlipRequest, SelectSideRequest,
 };
 use crate::dto::responses::{
-    VetoActionResponse, VetoActionResultResponse, VetoSessionResponse, VetoSessionStateResponse,
+    MapStatusResponse, VetoActionResponse, VetoActionResultResponse, VetoSessionResponse,
+    VetoSessionStateResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::AppState;
-use crate::websocket::{LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast, VetoStateBroadcast};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
+use crate::state::VetoState;
+use crate::websocket::{
+    LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast, VetoStateBroadcast,
+};
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
-use portal_core::{TournamentMatchId, TournamentRegistrationId};
-use portal_domain::entities::veto::VetoFormat;
+use portal_core::{TournamentMatchId, TournamentRegistrationId, VetoFormatConfig};
+use portal_domain::repositories::TournamentMatchRepository;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -25,14 +28,30 @@ fn get_request_id(headers: &HeaderMap) -> &str {
         .unwrap_or("unknown")
 }
 
-/// Parse a veto format ID string into a VetoFormat.
-fn parse_veto_format(format_id: &str) -> ApiResult<VetoFormat> {
+/// Resolve a veto format ID to a format config.
+///
+/// Tries the plugin manager first (game-specific formats), then falls back
+/// to the built-in standard formats.
+pub(crate) fn resolve_veto_format(
+    format_id: &str,
+    state: &VetoState,
+) -> ApiResult<VetoFormatConfig> {
+    // Try plugin-provided formats
+    for plugin in state.plugin_manager.list_plugins() {
+        if let Some(tp) = plugin.as_tournament_plugin()
+            && let Some(f) = tp.veto_formats().into_iter().find(|f| f.id == format_id)
+        {
+            return Ok(f);
+        }
+    }
+
+    // Fall back to built-in formats
     match format_id {
-        "bo1_veto" | "bo1_standard" => Ok(VetoFormat::bo1()),
-        "bo3_veto" | "bo3_standard" => Ok(VetoFormat::bo3()),
-        "bo5_veto" | "bo5_standard" => Ok(VetoFormat::bo5()),
+        "bo1_veto" | "bo1_standard" => Ok(VetoFormatConfig::bo1()),
+        "bo3_veto" | "bo3_standard" => Ok(VetoFormatConfig::bo3()),
+        "bo5_veto" | "bo5_standard" => Ok(VetoFormatConfig::bo5()),
         _ => Err(ApiError::bad_request(format!(
-            "Unknown veto format: {format_id}. Valid formats: bo1_veto, bo3_veto, bo5_veto"
+            "Unknown veto format: {format_id}. Valid formats: bo1_standard, bo3_standard, bo5_standard"
         ))),
     }
 }
@@ -60,42 +79,95 @@ fn parse_veto_format(format_id: &str) -> ApiResult<VetoFormat> {
     tag = "veto"
 )]
 pub async fn create_veto_session(
-    State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    State(state): State<VetoState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<CreateVetoSessionRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<VetoSessionResponse>>)> {
     let request_id = get_request_id(&headers);
 
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+    // Verify user is a match participant (via veto authorization) or tournament admin
+    let match_ = require_veto_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
-    // TODO: Verify user has permission to create veto session for this match
+    let veto_format = resolve_veto_format(&req.veto_format_id, &state)?;
 
-    let veto_format = parse_veto_format(&req.veto_format_id)?;
+    // Resolve side selection mode: request → tournament settings → plugin default
+    let side_selection_mode = if let Some(ref mode_str) = req.side_selection_mode {
+        mode_str.parse::<portal_core::SideSelectionMode>().map_err(|_| {
+            ApiError::bad_request(format!(
+                "Invalid side selection mode: {mode_str}. Valid modes: picker_choice, coin_flip, knife"
+            ))
+        })?
+    } else {
+        let tournament = state
+            .tournament_service
+            .get_tournament(match_.tournament_id)
+            .await?;
+        let plugin_id = state
+            .game_repo
+            .find_by_id(tournament.game_id.as_uuid())
+            .await
+            .ok()
+            .flatten()
+            .map(|g| g.plugin_id)
+            .unwrap_or_default();
+        resolve_side_selection_mode(&tournament, &plugin_id, &state.plugin_manager)
+    };
+
+    // Resolve map pool: explicit request → tournament pool → game default
+    let map_pool = if let Some(pool) = req.map_pool {
+        pool
+    } else {
+        use portal_domain::repositories::tournament::TournamentMapPoolRepository as _;
+        // Try tournament-specific pool, then game default
+        let tournament = state
+            .tournament_service
+            .get_tournament(match_.tournament_id)
+            .await?;
+
+        if let Ok(Some(pool)) = state
+            .tournament_map_pool_repo
+            .get_effective(match_.tournament_id, Some(match_.stage_id))
+            .await
+        {
+            pool.maps
+        } else if let Ok(Some(game)) = state
+            .game_repo
+            .find_by_id(tournament.game_id.as_uuid())
+            .await
+        {
+            crate::handlers::games::extract_map_pool(&game)
+        } else {
+            vec![]
+        }
+    };
 
     let session = state
         .veto_service
         .create_session(
             match_id,
             &veto_format,
-            req.map_pool.unwrap_or_default(),
+            map_pool,
             Some(req.timeout_seconds),
+            side_selection_mode,
         )
         .await?;
 
     // Broadcast session creation to WebSocket lobby (if any connections exist)
     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
-        let _ = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
+        let () = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
             session: VetoSessionResponse::from(session.clone()),
         }));
     }
 
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(VetoSessionResponse::from(session), request_id)),
+        Json(DataResponse::new(
+            VetoSessionResponse::from(session),
+            request_id,
+        )),
     ))
 }
 
@@ -113,22 +185,18 @@ pub async fn create_veto_session(
     tag = "veto"
 )]
 pub async fn get_veto_session(
-    State(state): State<AppState>,
+    State(state): State<VetoState>,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<VetoSessionStateResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
-
     let session_state = state.veto_service.get_session_state(match_id).await?;
 
-    Ok(Json(DataResponse::new(
-        VetoSessionStateResponse::from(session_state),
-        request_id,
-    )))
+    let mut response = VetoSessionStateResponse::from(session_state);
+    enrich_map_metadata(&state, match_id, &mut response.maps).await;
+
+    Ok(Json(DataResponse::new(response, request_id)))
 }
 
 /// Record coin flip result to determine first action.
@@ -143,24 +211,25 @@ pub async fn get_veto_session(
         (status = 200, description = "Coin flip recorded", body = DataResponse<VetoSessionResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 404, description = "Veto session not found", body = ApiError),
+        (status = 403, description = "Not a match participant or admin", body = ApiError),
+        (status = 404, description = "Match or veto session not found", body = ApiError),
         (status = 409, description = "Coin flip already recorded", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "veto"
 )]
 pub async fn record_coin_flip(
-    State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    State(state): State<VetoState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     Json(req): Json<RecordCoinFlipRequest>,
 ) -> ApiResult<Json<DataResponse<VetoSessionResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+    // Same gate as `create_veto_session`: match participant or tournament admin.
+    require_veto_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
     let winner_registration_id: TournamentRegistrationId = req
         .winner_registration_id
@@ -181,7 +250,7 @@ pub async fn record_coin_flip(
 
     // Broadcast coin flip result to WebSocket lobby
     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
-        let _ = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
+        let () = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
             session: VetoSessionResponse::from(updated.clone()),
         }));
     }
@@ -203,23 +272,24 @@ pub async fn record_coin_flip(
         (status = 200, description = "Veto session started", body = DataResponse<VetoSessionResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 404, description = "Veto session not found", body = ApiError),
+        (status = 403, description = "Not a match participant or admin", body = ApiError),
+        (status = 404, description = "Match or veto session not found", body = ApiError),
         (status = 409, description = "Session already started", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "veto"
 )]
 pub async fn start_veto_session(
-    State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    State(state): State<VetoState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
 ) -> ApiResult<Json<DataResponse<VetoSessionResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+    // Same gate as `create_veto_session`: match participant or tournament admin.
+    require_veto_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
     // Get session by match
     let session_state = state.veto_service.get_session_state(match_id).await?;
@@ -231,7 +301,7 @@ pub async fn start_veto_session(
 
     // Broadcast session start to WebSocket lobby
     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
-        let _ = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
+        let () = lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
             session: VetoSessionResponse::from(updated.clone()),
         }));
     }
@@ -261,17 +331,13 @@ pub async fn start_veto_session(
     tag = "veto"
 )]
 pub async fn perform_veto_action(
-    State(state): State<AppState>,
+    State(state): State<VetoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<PerformVetoActionRequest>,
 ) -> ApiResult<Json<DataResponse<VetoActionResultResponse>>> {
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Get session by match
     let session_state = state.veto_service.get_session_state(match_id).await?;
@@ -290,24 +356,31 @@ pub async fn perform_veto_action(
 
     let result = state
         .veto_service
-        .perform_action(session_state.session.id, &req.map_id, current_team, auth.user_id)
+        .perform_action(
+            session_state.session.id,
+            &req.map_id,
+            current_team,
+            auth.user_id,
+        )
         .await?;
 
     // Broadcast action to WebSocket lobby
     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
         if result.veto_complete {
             // Broadcast veto completion
-            let _ = lobby.broadcast(LobbyBroadcast::VetoComplete(VetoCompleteBroadcast {
+            let () = lobby.broadcast(LobbyBroadcast::VetoComplete(VetoCompleteBroadcast {
                 session: VetoSessionResponse::from(result.session.clone()),
                 selected_maps: result.session.selected_maps.clone(),
             }));
         } else {
             // Broadcast the action performed
-            let _ = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
-                session: VetoSessionResponse::from(result.session.clone()),
-                action: VetoActionResponse::from(result.action.clone()),
-                is_complete: false,
-            }));
+            let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(Box::new(
+                VetoActionBroadcast {
+                    session: VetoSessionResponse::from(result.session.clone()),
+                    action: VetoActionResponse::from(result.action.clone()),
+                    is_complete: false,
+                },
+            )));
         }
     }
 
@@ -345,19 +418,15 @@ pub async fn perform_veto_action(
     tag = "veto"
 )]
 pub async fn select_side(
-    State(state): State<AppState>,
+    State(state): State<VetoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(match_id): Path<String>,
+    Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<SelectSideRequest>,
 ) -> ApiResult<Json<DataResponse<VetoActionResponse>>> {
     use portal_domain::repositories::TournamentMatchRepository;
 
     let request_id = get_request_id(&headers);
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     // Get session by match
     let session_state = state.veto_service.get_session_state(match_id).await?;
@@ -378,7 +447,7 @@ pub async fn select_side(
         .tournament_match_repo
         .find_by_id(match_id)
         .await?
-        .ok_or_else(|| ApiError::not_found(format!("Match {} not found", match_id)))?;
+        .ok_or_else(|| ApiError::not_found(format!("Match {match_id} not found")))?;
 
     // Determine opponent (who should select side)
     let opponent = if match_.participant1_registration_id == Some(picker) {
@@ -407,18 +476,153 @@ pub async fn select_side(
 
     // Broadcast side selection to WebSocket lobby
     // Get the updated session state for the broadcast
-    if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
-        if let Ok(new_session_state) = state.veto_service.get_session_state(match_id).await {
-            let _ = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(VetoActionBroadcast {
+    if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id)
+        && let Ok(new_session_state) = state.veto_service.get_session_state(match_id).await
+    {
+        let () = lobby.broadcast(LobbyBroadcast::VetoActionPerformed(Box::new(
+            VetoActionBroadcast {
                 session: VetoSessionResponse::from(new_session_state.session),
                 action: VetoActionResponse::from(updated.clone()),
                 is_complete: false,
-            }));
-        }
+            },
+        )));
     }
 
     Ok(Json(DataResponse::new(
         VetoActionResponse::from(updated),
         request_id,
     )))
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/// Require that the caller may manage the veto lifecycle for `match_id`.
+///
+/// Allowed when the caller can act for either participant registration
+/// (captain / owner / delegate / individual player, via the veto
+/// authorization service) or holds the tournament admin permission.
+/// Returns the loaded match for further use.
+async fn require_veto_participant_or_admin(
+    state: &VetoState,
+    perm_checker: &PermissionChecker,
+    auth: &AuthenticatedUser,
+    match_id: TournamentMatchId,
+) -> ApiResult<portal_domain::entities::TournamentMatch> {
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("Match {match_id} not found")))?;
+
+    let mut is_participant = false;
+    for reg_id in [
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if state
+            .veto_authorization_service
+            .can_perform_veto_action(reg_id, auth.user_id, auth.player_id)
+            .await
+            .is_ok()
+        {
+            is_participant = true;
+            break;
+        }
+    }
+
+    if !is_participant {
+        perm_checker
+            .require_permission(
+                auth,
+                portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+            )
+            .await?;
+    }
+
+    Ok(match_)
+}
+
+/// Best-effort enrichment of map display names and image URLs from the game's map catalog.
+async fn enrich_map_metadata(
+    state: &VetoState,
+    match_id: TournamentMatchId,
+    maps: &mut [MapStatusResponse],
+) {
+    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+        // match -> tournament -> game
+        let match_ = state
+            .tournament_match_repo
+            .find_by_id(match_id)
+            .await?
+            .ok_or("match not found")?;
+
+        let tournament = state
+            .tournament_service
+            .get_tournament(match_.tournament_id)
+            .await?;
+
+        let game = state
+            .game_repo
+            .find_by_id(tournament.game_id.as_uuid())
+            .await?
+            .ok_or("game not found")?;
+
+        let plugin = state.plugin_manager.get(&game.plugin_id);
+        let catalog = crate::handlers::games::load_available_maps(&game, &plugin);
+
+        // Build lookup by map ID
+        let lookup: std::collections::HashMap<&str, _> =
+            catalog.iter().map(|m| (m.id.as_str(), m)).collect();
+
+        for map in maps.iter_mut() {
+            if let Some(info) = lookup.get(map.map_id.as_str()) {
+                map.map_name = info.display_name.clone();
+                map.image_url = info.image_url.clone();
+            }
+        }
+
+        Ok(())
+    }
+    .await;
+
+    // Best-effort: silently ignore errors — maps keep raw IDs
+    if let Err(e) = result {
+        tracing::warn!("Failed to enrich map metadata for match {match_id}: {e}");
+    }
+}
+
+/// Resolve side selection mode from tournament settings or plugin default.
+///
+/// Now that both plugin and domain share the same `SideSelectionMode` from portal-core,
+/// no manual conversion is needed.
+pub(crate) fn resolve_side_selection_mode(
+    tournament: &portal_domain::entities::tournament::Tournament,
+    plugin_id: &str,
+    plugin_manager: &portal_plugins::PluginManager,
+) -> portal_core::SideSelectionMode {
+    use portal_core::SideSelectionMode;
+
+    // Try tournament settings first
+    if let Some(mode_str) = tournament
+        .settings
+        .get("side_selection_mode")
+        .and_then(|v| v.as_str())
+        && let Ok(mode) = mode_str.parse::<SideSelectionMode>()
+    {
+        return mode;
+    }
+
+    // Fall back to plugin default — plugins are keyed by plugin_id (a slug
+    // like "cs2"), not the game's UUID. No conversion needed, same type.
+    if let Some(plugin) = plugin_manager.get(plugin_id)
+        && let Some(tp) = plugin.as_tournament_plugin()
+    {
+        return tp.default_side_selection_mode();
+    }
+    SideSelectionMode::Knife
 }

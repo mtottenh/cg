@@ -114,19 +114,25 @@ impl Tournament {
         let now = Utc::now();
 
         // Check registration window if defined
-        if let Some(start) = self.registration_start {
-            if now < start {
-                return false;
-            }
+        if let Some(start) = self.registration_start
+            && now < start
+        {
+            return false;
         }
 
-        if let Some(end) = self.registration_end {
-            if now > end {
-                return false;
-            }
+        if let Some(end) = self.registration_end
+            && now > end
+        {
+            return false;
         }
 
         true
+    }
+
+    /// Parse eligibility restrictions from tournament settings.
+    #[must_use]
+    pub fn eligibility_restrictions(&self) -> super::eligibility::EligibilityRestrictions {
+        super::eligibility::EligibilityRestrictions::from_settings(&self.settings)
     }
 
     /// Check if check-in is currently open.
@@ -219,6 +225,11 @@ pub struct CreateTournamentCommand {
     pub withdrawal_policy: WithdrawalPolicy,
     pub rules_url: Option<String>,
     pub settings: Option<serde_json::Value>,
+    /// Explicit map pool for the tournament.
+    ///
+    /// Required: every tournament owns a pool so that map validation on
+    /// result submission can fail closed instead of skipping.
+    pub map_pool: Vec<String>,
 }
 
 /// Command to update a tournament.
@@ -601,12 +612,27 @@ pub struct TournamentMatch {
     pub stream_url: Option<String>,
     pub vod_url: Option<String>,
 
+    // Check-in
+    pub check_in_opens_at: Option<DateTime<Utc>>,
+    pub check_in_deadline: Option<DateTime<Utc>>,
+    pub participant1_checked_in_at: Option<DateTime<Utc>>,
+    pub participant2_checked_in_at: Option<DateTime<Utc>>,
+    pub participant1_checked_in_by: Option<UserId>,
+    pub participant2_checked_in_by: Option<UserId>,
+    pub veto_required: bool,
+    pub check_in_required: bool,
+
     // Timestamps
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl TournamentMatch {
+    /// Check if both participants have checked in.
+    #[must_use]
+    pub const fn both_checked_in(&self) -> bool {
+        self.participant1_checked_in_at.is_some() && self.participant2_checked_in_at.is_some()
+    }
     /// Check if the match is pending (waiting for participants).
     #[must_use]
     pub const fn is_pending(&self) -> bool {
@@ -844,6 +870,9 @@ pub struct TournamentStanding {
     pub bracket_id: TournamentBracketId,
     pub registration_id: TournamentRegistrationId,
 
+    // Denormalized participant info
+    pub participant_name: Option<String>,
+
     // Position
     pub position: i32,
 
@@ -886,17 +915,13 @@ impl TournamentStanding {
     /// Check if this standing beats another via head-to-head.
     #[must_use]
     pub fn beats_head_to_head(&self, other: &Self) -> Option<bool> {
-        if let Some(record) = self.head_to_head.get(&other.registration_id) {
-            if record.wins > record.losses {
-                Some(true)
-            } else if record.losses > record.wins {
-                Some(false)
-            } else {
-                None // Tied
-            }
-        } else {
-            None
-        }
+        self.head_to_head
+            .get(&other.registration_id)
+            .and_then(|record| match record.wins.cmp(&record.losses) {
+                std::cmp::Ordering::Greater => Some(true),
+                std::cmp::Ordering::Less => Some(false),
+                std::cmp::Ordering::Equal => None, // Tied
+            })
     }
 }
 

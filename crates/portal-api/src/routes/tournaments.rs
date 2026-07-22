@@ -1,9 +1,9 @@
 //! Tournament routes.
 
-use crate::handlers::{availability, dispute, forfeit, tournaments};
+use crate::handlers::{availability, awards, dispute, forfeit, tournaments};
 use crate::state::AppState;
-use axum::routing::{delete, get, patch, post};
 use axum::Router;
+use axum::routing::{delete, get, patch, post};
 
 /// Tournament routes.
 pub fn routes() -> Router<AppState> {
@@ -15,16 +15,54 @@ pub fn routes() -> Router<AppState> {
         .route("/{tournament_id}", patch(tournaments::update_tournament))
         .route("/by-slug/{slug}", get(tournaments::get_tournament_by_slug))
         // Tournament lifecycle
-        .route("/{tournament_id}/publish", post(tournaments::publish_tournament))
-        .route("/{tournament_id}/open-registration", post(tournaments::open_registration))
-        .route("/{tournament_id}/start", post(tournaments::start_tournament))
+        .route(
+            "/{tournament_id}/publish",
+            post(tournaments::publish_tournament),
+        )
+        .route(
+            "/{tournament_id}/open-registration",
+            post(tournaments::open_registration),
+        )
+        .route(
+            "/{tournament_id}/start",
+            post(tournaments::start_tournament),
+        )
+        .route(
+            "/{tournament_id}/close-registration",
+            post(tournaments::close_registration),
+        )
+        .route(
+            "/{tournament_id}/reopen-registration",
+            post(tournaments::reopen_registration),
+        )
+        .route(
+            "/{tournament_id}/cancel",
+            post(tournaments::cancel_tournament),
+        )
+        .route(
+            "/{tournament_id}/complete",
+            post(tournaments::complete_tournament),
+        )
+        .route(
+            "/{tournament_id}/finalize",
+            post(tournaments::finalize_tournament),
+        )
         // Tournament stages
         .route("/{tournament_id}/stages", post(tournaments::create_stage))
         .route("/{tournament_id}/stages", get(tournaments::get_stages))
         // Tournament registrations
-        .route("/{tournament_id}/registrations", get(tournaments::get_registrations))
-        .route("/{tournament_id}/registrations/team", post(tournaments::register_team))
-        .route("/{tournament_id}/registrations/player", post(tournaments::register_player))
+        .route(
+            "/{tournament_id}/registrations",
+            get(tournaments::get_registrations),
+        )
+        .route(
+            "/{tournament_id}/registrations/team",
+            post(tournaments::register_team),
+        )
+        .route(
+            "/{tournament_id}/registrations/player",
+            post(tournaments::register_player),
+        )
         .route(
             "/{tournament_id}/registrations/{registration_id}/check-in",
             post(tournaments::check_in),
@@ -51,16 +89,39 @@ pub fn routes() -> Router<AppState> {
             post(tournaments::admin_check_in),
         )
         // Check-in status
-        .route("/{tournament_id}/check-in-status", get(tournaments::get_check_in_status))
-        .route("/{tournament_id}/process-no-shows", post(tournaments::process_no_shows))
+        .route(
+            "/{tournament_id}/check-in-status",
+            get(tournaments::get_check_in_status),
+        )
+        .route(
+            "/{tournament_id}/process-no-shows",
+            post(tournaments::process_no_shows),
+        )
         // Seeding
         .route("/{tournament_id}/seeding", get(tournaments::get_seeding))
-        .route("/{tournament_id}/seeding", delete(tournaments::clear_seeding))
-        .route("/{tournament_id}/seeding/auto", post(tournaments::auto_seed))
-        .route("/{tournament_id}/seeding/manual", post(tournaments::manual_seed))
-        // Tournament brackets and matches
+        .route(
+            "/{tournament_id}/seeding",
+            delete(tournaments::clear_seeding),
+        )
+        .route(
+            "/{tournament_id}/seeding/auto",
+            post(tournaments::auto_seed),
+        )
+        .route(
+            "/{tournament_id}/seeding/manual",
+            post(tournaments::manual_seed),
+        )
+        // Tournament brackets, matches, and standings
         .route("/{tournament_id}/brackets", get(tournaments::get_brackets))
+        .route(
+            "/{tournament_id}/brackets/{bracket_id}/standings",
+            get(tournaments::get_bracket_standings),
+        )
         .route("/{tournament_id}/matches", get(tournaments::get_matches))
+        .route(
+            "/{tournament_id}/matches/{match_id}",
+            get(tournaments::get_match),
+        )
         // Match lifecycle
         .route(
             "/{tournament_id}/matches/{match_id}/status",
@@ -124,6 +185,38 @@ pub fn routes() -> Router<AppState> {
         // Dispute routes (participant)
         .route(
             "/{tournament_id}/matches/{match_id}/dispute",
-            post(dispute::raise_dispute),
+            get(dispute::get_match_dispute).post(dispute::raise_dispute),
+        )
+        // Map pool routes
+        .route(
+            "/{tournament_id}/map-pool",
+            get(tournaments::get_tournament_map_pool)
+                .put(tournaments::set_tournament_map_pool)
+                .delete(tournaments::delete_tournament_map_pool),
+        )
+        // Awards + leaderboards
+        .route(
+            "/{tournament_id}/awards",
+            get(awards::list_tournament_awards).post(awards::create_tournament_award),
+        )
+        .route(
+            "/{tournament_id}/awards/{award_id}",
+            patch(awards::update_tournament_award).delete(awards::void_tournament_award),
+        )
+        .route(
+            "/{tournament_id}/awards/{award_id}/standings",
+            get(awards::get_tournament_award_standings),
+        )
+        .route(
+            "/{tournament_id}/awards/{award_id}/finalize",
+            post(awards::finalize_tournament_award),
+        )
+        .route(
+            "/{tournament_id}/leaderboards",
+            get(awards::get_tournament_leaderboard),
+        )
+        .route(
+            "/{tournament_id}/stats-leaderboard",
+            get(awards::get_tournament_player_stats),
         )
 }

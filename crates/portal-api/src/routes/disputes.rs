@@ -1,7 +1,7 @@
 //! Dispute routes.
 
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
 
 use crate::handlers::dispute;
 use crate::state::AppState;

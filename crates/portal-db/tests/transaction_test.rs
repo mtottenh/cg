@@ -15,7 +15,7 @@ use portal_db::adapters::{
     PgTournamentBracketRepository, PgTournamentMatchRepository, PgTournamentRegistrationRepository,
     PgTournamentRepository, PgTournamentStageRepository,
 };
-use portal_db::{begin_transaction, complete_match_in_transaction, MatchCompletionTxInput};
+use portal_db::{MatchCompletionTxInput, begin_transaction, complete_match_in_transaction};
 use portal_domain::repositories::tournament::{
     CreateTournamentBracket, CreateTournamentMatch, CreateTournamentRegistration,
     CreateTournamentStage, TournamentBracketRepository, TournamentMatchRepository,
@@ -46,8 +46,8 @@ async fn setup_tournament_with_match(
     // Create a user for registration
     let unique = uuid::Uuid::new_v4();
     let user = UserBuilder::new()
-        .username(&format!("txuser{}", &unique.to_string()[..8]))
-        .email(&format!("tx{}@test.com", &unique.to_string()[..8]))
+        .username(format!("txuser{}", &unique.to_string()[..8]))
+        .email(format!("tx{}@test.com", &unique.to_string()[..8]))
         .build_persisted(pool)
         .await;
     let user_id = portal_core::UserId::from_uuid(user.id);
@@ -142,8 +142,11 @@ async fn setup_tournament_with_match(
 
     // Create second user for second registration
     let user2 = UserBuilder::new()
-        .username(&format!("txuser2{}", &uuid::Uuid::new_v4().to_string()[..8]))
-        .email(&format!("tx2{}@test.com", &uuid::Uuid::new_v4().to_string()[..8]))
+        .username(format!("txuser2{}", &uuid::Uuid::new_v4().to_string()[..8]))
+        .email(format!(
+            "tx2{}@test.com",
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ))
         .build_persisted(pool)
         .await;
 
@@ -350,8 +353,7 @@ async fn test_match_completion_transaction_rollback_on_invalid_participant() {
     let err = result.unwrap_err();
     assert!(
         err.to_string().contains("not a participant"),
-        "Error should mention invalid participant: {}",
-        err
+        "Error should mention invalid participant: {err}"
     );
 }
 
@@ -439,7 +441,6 @@ async fn test_match_completion_fails_for_wrong_status() {
     let err = result.unwrap_err();
     assert!(
         err.to_string().contains("cannot be completed"),
-        "Error should mention invalid status: {}",
-        err
+        "Error should mention invalid status: {err}"
     );
 }

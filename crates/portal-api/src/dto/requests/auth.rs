@@ -6,7 +6,8 @@ use utoipa::ToSchema;
 use validator::Validate;
 
 /// Regex for validating usernames (alphanumeric with underscores).
-static USERNAME_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^[a-zA-Z][a-zA-Z0-9_]*$").unwrap());
+static USERNAME_REGEX: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"^[a-zA-Z][a-zA-Z0-9_]*$").unwrap());
 
 /// Validate a username.
 fn validate_username(username: &str) -> Result<(), validator::ValidationError> {
@@ -15,6 +16,21 @@ fn validate_username(username: &str) -> Result<(), validator::ValidationError> {
     } else {
         Err(validator::ValidationError::new("username_format"))
     }
+}
+
+/// Reject emails in the reserved Steam placeholder domain.
+///
+/// `steam_<id64>@steam.invalid` addresses are derivable from public
+/// SteamID64s and are used internally to provision Steam sign-in accounts.
+/// Letting a registration claim one would let the registrant capture that
+/// Steam user's first sign-in (pre-registration account takeover).
+fn validate_email_not_reserved(email: &str) -> Result<(), validator::ValidationError> {
+    if portal_domain::services::is_reserved_placeholder_email(email) {
+        let mut err = validator::ValidationError::new("reserved_email_domain");
+        err.message = Some("Email addresses in the steam.invalid domain are reserved".into());
+        return Err(err);
+    }
+    Ok(())
 }
 
 /// Request body for user registration.
@@ -28,6 +44,7 @@ pub struct RegisterRequest {
 
     /// Email address.
     #[validate(email(message = "Invalid email address"))]
+    #[validate(custom(function = "validate_email_not_reserved"))]
     #[schema(example = "john@example.com")]
     pub email: String,
 
@@ -39,6 +56,18 @@ pub struct RegisterRequest {
     #[validate(length(min = 2, max = 32, message = "Display name must be 2-32 characters"))]
     #[schema(example = "John Doe")]
     pub display_name: String,
+}
+
+/// Request body for refreshing an access token.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct RefreshTokenRequest {
+    /// The refresh token issued during login or previous refresh.
+    ///
+    /// Optional: when omitted, the server falls back to the
+    /// `refresh_token` httpOnly cookie set by login/refresh.
+    #[serde(default)]
+    #[validate(length(min = 1, message = "Refresh token must not be empty"))]
+    pub refresh_token: Option<String>,
 }
 
 /// Request body for user login.

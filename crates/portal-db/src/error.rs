@@ -104,33 +104,132 @@ impl RepositoryError {
     }
 }
 
-// Convert repository errors to domain errors for use in services
+// Convert repository errors to domain errors for use in services.
+//
+// Two principles:
+//
+//   1. **Every known NotFound variant maps to its typed DomainError**.
+//      The previous version handled only 8 entity types and silently
+//      collapsed the rest to DomainError::Internal — turning legitimate
+//      404s into 500s and leaking the constructed message into the
+//      response body.
+//
+//   2. **Raw database errors never reach the response body**. Database,
+//      Connection, and Serialization errors carry source-level detail
+//      (table names, constraint names, sometimes row data) that must
+//      not be exposed to API clients. We log the source via tracing
+//      and return an opaque message.
 impl From<RepositoryError> for DomainError {
     fn from(err: RepositoryError) -> Self {
+        // Parse the String id (adapter boundary is untyped) into the typed
+        // ID expected by each DomainError variant. The id is produced by the
+        // adapter itself — a parse failure here means the adapter wrote a
+        // malformed string, not user input. We still fail closed to a
+        // generic Internal error rather than panicking, and log loudly.
+        macro_rules! typed {
+            ($id:expr, $ty:ty, $variant:ident) => {
+                match $id.parse::<$ty>() {
+                    Ok(parsed) => Self::$variant(parsed),
+                    Err(_) => {
+                        tracing::error!(
+                            id = %$id,
+                            target_type = stringify!($ty),
+                            "adapter returned malformed id in RepositoryError::NotFound"
+                        );
+                        Self::Internal("entity not found".into())
+                    }
+                }
+            };
+        }
+
+        use portal_core::ids::{
+            BanId, DemoId, DemoMatchLinkId, DisputeId, EvidenceId, ForfeitRecordId, GameId,
+            LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LobbyId, MatchId,
+            PlayerId, ResultClaimId, ResultReviewId, TournamentBracketId, TournamentId,
+            TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId, VetoSessionId,
+        };
+
         match err {
             RepositoryError::NotFound { entity_type, id } => match entity_type {
-                "User" => Self::UserNotFound(id),
-                "Player" => Self::PlayerNotFound(id),
+                "User" => typed!(id, UserId, UserNotFound),
+                "Player" => typed!(id, PlayerId, PlayerNotFound),
+                // Team has no typed ID yet (matchmaking/lobby feature pending).
                 "Team" => Self::TeamNotFound(id),
-                "Game" => Self::GameNotFound(id),
-                "Match" => Self::MatchNotFound(id),
-                "Tournament" => Self::TournamentNotFound(id),
-                "League" => Self::LeagueNotFound(id),
-                "Lobby" => Self::LobbyNotFound(id),
-                _ => Self::Internal(format!("{entity_type} not found: {id}")),
+                // Games are addressed by slug at the API boundary, so the id
+                // here may legitimately be a non-UUID user-supplied string —
+                // still a 404, not a malformed-adapter-id 500.
+                "Game" => match id.parse::<GameId>() {
+                    Ok(parsed) => Self::GameNotFound(parsed),
+                    Err(_) => Self::GameNotFoundBySlug(id),
+                },
+                "Match" => typed!(id, MatchId, MatchNotFound),
+                "Tournament" => typed!(id, TournamentId, TournamentNotFound),
+                "TournamentStage" => typed!(id, TournamentStageId, TournamentStageNotFound),
+                "TournamentBracket" => typed!(id, TournamentBracketId, TournamentBracketNotFound),
+                "TournamentMatch" => typed!(id, TournamentMatchId, TournamentMatchNotFound),
+                "TournamentRegistration" => {
+                    typed!(id, TournamentRegistrationId, TournamentRegistrationNotFound)
+                }
+                "League" | "LeagueMember" | "LeagueInvitation" => {
+                    typed!(id, LeagueId, LeagueNotFound)
+                }
+                "LeagueSeason" => typed!(id, LeagueSeasonId, LeagueSeasonNotFound),
+                "LeagueTeam" => typed!(id, LeagueTeamId, LeagueTeamNotFound),
+                "LeagueTeamInvitation" => {
+                    typed!(id, LeagueTeamInvitationId, LeagueTeamInvitationNotFound)
+                }
+                "Lobby" => typed!(id, LobbyId, LobbyNotFound),
+                "Ban" => typed!(id, BanId, BanNotFound),
+                "Dispute" => typed!(id, DisputeId, DisputeNotFound),
+                "ForfeitRecord" => typed!(id, ForfeitRecordId, ForfeitRecordNotFound),
+                "Evidence" => typed!(id, EvidenceId, EvidenceNotFound),
+                "ResultClaim" => typed!(id, ResultClaimId, ResultClaimNotFound),
+                "VetoSession" => typed!(id, VetoSessionId, VetoSessionNotFound),
+                "Demo" => typed!(id, DemoId, DemoNotFound),
+                "DemoMatchLink" => typed!(id, DemoMatchLinkId, DemoMatchLinkNotFound),
+                "ResultReview" => typed!(id, ResultReviewId, ResultReviewNotFound),
+                other => {
+                    // Programmer error: an adapter returned a NotFound for an
+                    // entity type we don't know how to surface. Log loudly so
+                    // it can be added; do not leak the constructed string.
+                    tracing::error!(
+                        entity_type = %other,
+                        id = %id,
+                        "RepositoryError::NotFound for unknown entity type — add a match arm in portal-db/src/error.rs"
+                    );
+                    Self::Internal("entity not found".into())
+                }
             },
             RepositoryError::Duplicate { field, value } => {
+                // Field name + value are user-facing (e.g. "username" / "alice")
+                // and so are intentionally preserved.
                 Self::Conflict(format!("{field} already exists: {value}"))
             }
             RepositoryError::ForeignKeyViolation { entity_type, id } => {
-                Self::Internal(format!("referenced {entity_type} not found: {id}"))
+                // A referenced row is missing — a 409 Conflict, not a 500.
+                tracing::warn!(
+                    entity_type = %entity_type,
+                    id = %id,
+                    "foreign key violation"
+                );
+                Self::Conflict("referenced entity does not exist".into())
             }
             RepositoryError::ConstraintViolation { message } => {
-                Self::InvalidState(message)
+                tracing::warn!(constraint = %message, "check constraint violation");
+                Self::InvalidState("constraint violation".into())
             }
-            RepositoryError::Connection(msg) => Self::Internal(msg),
-            RepositoryError::Database(err) => Self::Internal(err.to_string()),
-            RepositoryError::Serialization(err) => Self::Internal(err.to_string()),
+            RepositoryError::Connection(msg) => {
+                tracing::error!(error = %msg, "database connection error");
+                Self::Internal("database unavailable".into())
+            }
+            RepositoryError::Database(err) => {
+                tracing::error!(error = %err, "database error");
+                Self::Internal("database error".into())
+            }
+            RepositoryError::Serialization(err) => {
+                tracing::error!(error = %err, "serialization error");
+                Self::Internal("serialization error".into())
+            }
         }
     }
 }

@@ -44,8 +44,5 @@ pub trait ScheduleProposalRepository: Send + Sync + 'static {
     ) -> Result<Vec<ScheduleProposal>, DomainError>;
 
     /// Mark a proposal as expired.
-    async fn mark_expired(
-        &self,
-        id: ScheduleProposalId,
-    ) -> Result<ScheduleProposal, DomainError>;
+    async fn mark_expired(&self, id: ScheduleProposalId) -> Result<ScheduleProposal, DomainError>;
 }

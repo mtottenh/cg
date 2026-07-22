@@ -19,8 +19,8 @@
 //! let token = create_test_token(user_id, player_id, "testuser", "jwt-secret");
 //! ```
 
-use portal_db::repositories::{GameRepository, RoleRepository};
 use portal_db::DbPool;
+use portal_db::repositories::{GameRepository, RoleRepository};
 use portal_domain::generate_access_token;
 use uuid::Uuid;
 
@@ -48,7 +48,7 @@ pub async fn get_game_id(pool: &DbPool, slug: &str) -> Uuid {
     repo.find_by_slug(slug)
         .await
         .expect("Database query failed")
-        .unwrap_or_else(|| panic!("Game '{}' not found in database", slug))
+        .unwrap_or_else(|| panic!("Game '{slug}' not found in database"))
         .id
 }
 
@@ -77,7 +77,7 @@ pub async fn assign_role_to_user(pool: &DbPool, user_id: Uuid, role_name: &str) 
         .find_by_name(role_name)
         .await
         .expect("Database query failed")
-        .unwrap_or_else(|| panic!("Role '{}' not found in database", role_name));
+        .unwrap_or_else(|| panic!("Role '{role_name}' not found in database"));
 
     // Assign the role globally (no scope)
     let assignment = portal_db::entities::NewUserRole {
@@ -157,13 +157,16 @@ pub fn create_test_token(user_id: Uuid, player_id: Uuid, username: &str, secret:
 ///
 /// # Returns
 ///
-/// A JWT token string with `is_admin: true` that can be used for admin endpoints.
+/// A JWT token string for the given user. Admin status is not encoded in the
+/// token — tests that need admin privileges must also grant the user the
+/// appropriate RBAC role (e.g. `super_admin`) in the database. Kept as
+/// `create_admin_token` for test-side readability.
 ///
 /// # Panics
 ///
 /// Panics if token generation fails.
 pub fn create_admin_token(user_id: Uuid, player_id: Uuid, username: &str, secret: &str) -> String {
-    portal_domain::generate_access_token_with_admin(user_id, player_id, username, secret, true)
+    portal_domain::generate_access_token(user_id, player_id, username, secret)
         .expect("Failed to create admin token")
 }
 
@@ -175,7 +178,7 @@ pub fn create_admin_token(user_id: Uuid, player_id: Uuid, username: &str, secret
 ///
 /// Panics if the dev user is not found.
 pub async fn get_dev_user_id(pool: &DbPool) -> Uuid {
-    sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE username = 'dev'")
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE username = 'devuser'")
         .fetch_one(pool)
         .await
         .expect("Dev user should exist (seeded by migrations)")
@@ -188,7 +191,7 @@ pub async fn get_dev_user_id(pool: &DbPool) -> Uuid {
 /// Panics if the dev player is not found.
 pub async fn get_dev_player_id(pool: &DbPool) -> Uuid {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT p.id FROM players p JOIN users u ON u.id = p.user_id WHERE u.username = 'dev'",
+        "SELECT p.id FROM players p JOIN users u ON u.id = p.user_id WHERE u.username = 'devuser'",
     )
     .fetch_one(pool)
     .await

@@ -18,7 +18,9 @@ use crate::entities::evidence::{
 };
 use crate::entities::result_claim::GameResult;
 use crate::repositories::evidence::{CreateEvidence, CreateEvidenceAccessLog, EvidenceRepository};
-use crate::repositories::tournament::{TournamentMatchRepository, TournamentRegistrationRepository};
+use crate::repositories::tournament::{
+    TournamentMatchRepository, TournamentRegistrationRepository,
+};
 
 /// S3 client trait for presigned URLs.
 ///
@@ -131,16 +133,27 @@ where
     /// Initiate an evidence upload.
     ///
     /// Returns presigned URL information for the client to upload directly to S3.
+    /// The evidence record is created with `Pending` status until `complete_upload()` is called.
+    ///
+    /// `s3_key_prefix` — optional human-readable prefix built by the handler from
+    /// league/tournament slugs. Falls back to UUID-based key if `None`.
+    ///
+    /// `acting_as_admin` — set by the handler when the caller holds the
+    /// tournament admin permission; only then may a non-participant attach
+    /// evidence (attributed to no registration).
     #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn initiate_upload(
         &self,
         match_id: TournamentMatchId,
+        s3_key_prefix: Option<String>,
         game_number: Option<i32>,
         evidence_type: EvidenceType,
         file_name: String,
         file_size_bytes: i64,
         mime_type: String,
         uploaded_by: UserId,
+        acting_as_admin: bool,
     ) -> Result<EvidenceUploadInfo, DomainError> {
         // Validate file size
         if file_size_bytes > self.config.max_file_size_bytes {
@@ -155,26 +168,29 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        // Find user's registration
-        let registration_id = self.find_user_registration(&match_, uploaded_by).await.ok();
+        // Find user's registration. Non-participants may only attach evidence
+        // when the handler has verified the tournament admin permission.
+        let registration_id = self
+            .resolve_uploader_registration(&match_, uploaded_by, acting_as_admin)
+            .await?;
 
-        // Generate S3 key
+        // Generate S3 key — use human-readable prefix if provided, else UUID-based
         let extension = file_name.rsplit('.').next().unwrap_or("bin");
         let evidence_id = EvidenceId::new();
-        let s3_key = format!(
-            "evidence/{}/{}/{}.{}",
-            match_.tournament_id,
-            match_id,
-            evidence_id,
-            extension
-        );
+        let s3_key = match s3_key_prefix {
+            Some(prefix) => format!("{prefix}/{evidence_id}.{extension}"),
+            None => format!(
+                "evidence/{}/{}/{}.{}",
+                match_.tournament_id, match_id, evidence_id, extension
+            ),
+        };
 
         // Calculate expiration
         let expires_at = Utc::now() + ChronoDuration::days(self.config.default_retention_days);
 
-        // Create evidence record in pending state
+        // Create evidence record as Pending (not yet uploaded)
         let evidence = self
             .evidence_repo
             .create(CreateEvidence {
@@ -196,6 +212,7 @@ where
                 discovered_by_plugin: None,
                 discovered_at: None,
                 expires_at: Some(expires_at),
+                status: Some(EvidenceStatus::Pending),
             })
             .await?;
 
@@ -210,8 +227,8 @@ where
             )
             .await?;
 
-        let url_expires_at = Utc::now()
-            + ChronoDuration::seconds(self.config.upload_url_ttl_seconds as i64);
+        let url_expires_at =
+            Utc::now() + ChronoDuration::seconds(self.config.upload_url_ttl_seconds as i64);
 
         info!(
             evidence_id = %evidence.id,
@@ -227,24 +244,29 @@ where
             upload_headers: {
                 let mut headers = HashMap::new();
                 headers.insert("Content-Type".to_string(), mime_type);
-                headers.insert(
-                    "Content-Length".to_string(),
-                    file_size_bytes.to_string(),
-                );
+                headers.insert("Content-Length".to_string(), file_size_bytes.to_string());
                 headers
             },
             expires_at: url_expires_at,
         })
     }
 
-    /// Complete an evidence upload (verify file was uploaded).
+    /// Complete an evidence upload (verify file was uploaded and transition to Active).
     #[instrument(skip(self))]
     pub async fn complete_upload(&self, evidence_id: EvidenceId) -> Result<Evidence, DomainError> {
         let evidence = self
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {} not found", evidence_id)))?;
+            .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
+
+        // Only pending evidence can be completed
+        if evidence.status != EvidenceStatus::Pending {
+            return Err(DomainError::InvalidState(format!(
+                "Evidence {} is already {} (expected pending)",
+                evidence_id, evidence.status
+            )));
+        }
 
         // Verify the file was actually uploaded
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
@@ -256,16 +278,27 @@ where
             }
         }
 
+        // Transition Pending → Active
+        let updated = self
+            .evidence_repo
+            .update_status(evidence_id, EvidenceStatus::Active)
+            .await?;
+
         info!(
             evidence_id = %evidence_id,
             "Evidence upload completed"
         );
 
-        Ok(evidence)
+        Ok(updated)
     }
 
     /// Add an external link as evidence.
+    ///
+    /// `acting_as_admin` — set by the handler when the caller holds the
+    /// tournament admin permission; only then may a non-participant attach
+    /// evidence (attributed to no registration).
     #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn add_link(
         &self,
         match_id: TournamentMatchId,
@@ -275,12 +308,12 @@ where
         name: String,
         description: Option<String>,
         added_by: UserId,
+        acting_as_admin: bool,
     ) -> Result<Evidence, DomainError> {
         // Validate evidence type allows URL storage
         if !matches!(evidence_type, EvidenceType::Video | EvidenceType::Link) {
             return Err(DomainError::InvalidState(format!(
-                "Evidence type {:?} cannot be a URL",
-                evidence_type
+                "Evidence type {evidence_type:?} cannot be a URL"
             )));
         }
 
@@ -289,10 +322,13 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        // Find user's registration
-        let registration_id = self.find_user_registration(&match_, added_by).await.ok();
+        // Find user's registration. Non-participants may only attach evidence
+        // when the handler has verified the tournament admin permission.
+        let registration_id = self
+            .resolve_uploader_registration(&match_, added_by, acting_as_admin)
+            .await?;
 
         // Calculate expiration
         let expires_at = Utc::now() + ChronoDuration::days(self.config.default_retention_days);
@@ -315,6 +351,7 @@ where
                 discovered_by_plugin: None,
                 discovered_at: None,
                 expires_at: Some(expires_at),
+                status: None, // Links are immediately Active
             })
             .await?;
 
@@ -325,6 +362,15 @@ where
         );
 
         Ok(evidence)
+    }
+
+    /// Get a single evidence record by ID.
+    #[instrument(skip(self))]
+    pub async fn get_evidence(&self, id: EvidenceId) -> Result<Evidence, DomainError> {
+        self.evidence_repo
+            .find_by_id(id)
+            .await?
+            .ok_or(DomainError::EvidenceNotFound(id))
     }
 
     /// Get all evidence for a match.
@@ -354,6 +400,7 @@ where
         &self,
         evidence_id: EvidenceId,
         accessed_by: UserId,
+        acting_as_admin: bool,
         ip_address: Option<std::net::IpAddr>,
         user_agent: Option<String>,
     ) -> Result<EvidenceAccessUrl, DomainError> {
@@ -361,7 +408,20 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {} not found", evidence_id)))?;
+            .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
+
+        // Authorization: uploader, match participant, or admin — evidence
+        // downloads (dispute screenshots, demos) are not public. Mirrors
+        // delete_evidence.
+        if !acting_as_admin && evidence.uploaded_by_user_id != Some(accessed_by) {
+            let match_ = self
+                .match_repo
+                .find_by_id(evidence.match_id)
+                .await?
+                .ok_or(DomainError::TournamentMatchNotFound(evidence.match_id))?;
+            // Propagates NotAuthorized when the caller is not a participant.
+            self.find_user_registration(&match_, accessed_by).await?;
+        }
 
         // Check if evidence is accessible
         if !evidence.is_accessible() {
@@ -374,8 +434,7 @@ where
         // Check expiration
         if evidence.is_expired() {
             return Err(DomainError::InvalidState(format!(
-                "Evidence {} has expired",
-                evidence_id
+                "Evidence {evidence_id} has expired"
             )));
         }
 
@@ -422,17 +481,32 @@ where
     }
 
     /// Delete evidence.
+    ///
+    /// Only the original uploader, a participant of the evidence's match, or
+    /// an admin (`acting_as_admin`, verified by the handler) may delete.
     #[instrument(skip(self))]
     pub async fn delete_evidence(
         &self,
         evidence_id: EvidenceId,
         deleted_by: UserId,
+        acting_as_admin: bool,
     ) -> Result<(), DomainError> {
         let evidence = self
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {} not found", evidence_id)))?;
+            .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
+
+        // Authorization: uploader, match participant, or admin.
+        if !acting_as_admin && evidence.uploaded_by_user_id != Some(deleted_by) {
+            let match_ = self
+                .match_repo
+                .find_by_id(evidence.match_id)
+                .await?
+                .ok_or(DomainError::TournamentMatchNotFound(evidence.match_id))?;
+            // Propagates NotAuthorized when the caller is not a participant.
+            self.find_user_registration(&match_, deleted_by).await?;
+        }
 
         // Delete from storage if S3
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
@@ -463,15 +537,15 @@ where
 
         for evidence in expired {
             // Delete from storage if S3
-            if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
-                if let Err(e) = self.s3_client.delete_object(bucket, key).await {
-                    warn!(
-                        evidence_id = %evidence.id,
-                        error = %e,
-                        "Failed to delete expired evidence from S3"
-                    );
-                    continue;
-                }
+            if let EvidenceStorage::S3 { bucket, key } = &evidence.storage
+                && let Err(e) = self.s3_client.delete_object(bucket, key).await
+            {
+                warn!(
+                    evidence_id = %evidence.id,
+                    error = %e,
+                    "Failed to delete expired evidence from S3"
+                );
+                continue;
             }
 
             // Mark as expired
@@ -491,9 +565,63 @@ where
         Ok(processed)
     }
 
+    /// Clean up stale pending evidence (abandoned uploads).
+    ///
+    /// Deletes any evidence that has been in `Pending` status for longer than
+    /// the specified max age. Also removes the S3 object if one was partially uploaded.
+    #[instrument(skip(self))]
+    pub async fn cleanup_stale_pending(
+        &self,
+        max_age: ChronoDuration,
+    ) -> Result<Vec<Evidence>, DomainError> {
+        let cutoff = Utc::now() - max_age;
+        let stale = self.evidence_repo.find_stale_pending(cutoff).await?;
+
+        let mut cleaned = Vec::new();
+        for evidence in stale {
+            // Best-effort delete from storage
+            if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
+                let _ = self.s3_client.delete_object(bucket, key).await;
+            }
+
+            if let Ok(updated) = self
+                .evidence_repo
+                .update_status(evidence.id, EvidenceStatus::Deleted)
+                .await
+            {
+                cleaned.push(updated);
+            }
+        }
+
+        if !cleaned.is_empty() {
+            info!(count = cleaned.len(), "Cleaned up stale pending evidence");
+        }
+
+        Ok(cleaned)
+    }
+
     // =========================================================================
     // INTERNAL HELPERS
     // =========================================================================
+
+    /// Resolve the registration to attribute an upload/link to.
+    ///
+    /// Participants get their own registration. Non-participants are rejected
+    /// with `NotAuthorized` unless the handler verified the tournament admin
+    /// permission (`acting_as_admin`), in which case the evidence is attached
+    /// without a registration attribution.
+    async fn resolve_uploader_registration(
+        &self,
+        match_: &crate::entities::TournamentMatch,
+        user_id: UserId,
+        acting_as_admin: bool,
+    ) -> Result<Option<TournamentRegistrationId>, DomainError> {
+        match self.find_user_registration(match_, user_id).await {
+            Ok(reg_id) => Ok(Some(reg_id)),
+            Err(DomainError::NotAuthorized(_)) if acting_as_admin => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 
     async fn find_user_registration(
         &self,
@@ -501,21 +629,19 @@ where
         user_id: UserId,
     ) -> Result<TournamentRegistrationId, DomainError> {
         // Check participant 1
-        if let Some(reg_id) = match_.participant1_registration_id {
-            if let Some(reg) = self.registration_repo.find_by_id(reg_id).await? {
-                if reg.registered_by == user_id {
-                    return Ok(reg_id);
-                }
-            }
+        if let Some(reg_id) = match_.participant1_registration_id
+            && let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
+            && reg.registered_by == user_id
+        {
+            return Ok(reg_id);
         }
 
         // Check participant 2
-        if let Some(reg_id) = match_.participant2_registration_id {
-            if let Some(reg) = self.registration_repo.find_by_id(reg_id).await? {
-                if reg.registered_by == user_id {
-                    return Ok(reg_id);
-                }
-            }
+        if let Some(reg_id) = match_.participant2_registration_id
+            && let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
+            && reg.registered_by == user_id
+        {
+            return Ok(reg_id);
         }
 
         Err(DomainError::NotAuthorized(
@@ -533,30 +659,25 @@ where
     S3C: EvidenceS3Client,
 {
     /// Discover available evidence for a match using a plugin.
+    ///
+    /// The caller is responsible for building the [`MatchEvidenceContext`] with
+    /// the correct `game_id` and participant data (the handler layer has access
+    /// to the game repository and registration services needed for this).
     #[instrument(skip(self, plugin))]
     pub async fn discover_available<P: EvidencePluginClient>(
         &self,
         match_id: TournamentMatchId,
+        context: &MatchEvidenceContext,
         plugin: &P,
     ) -> Result<Vec<DiscoveredEvidence>, DomainError> {
-        let match_ = self
+        // Verify match exists
+        let _match = self
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        // Build context
-        let context = MatchEvidenceContext {
-            tournament_id: match_.tournament_id,
-            match_id,
-            game_id: portal_core::GameId::new(), // TODO: Get from tournament
-            participants: Vec::new(),             // TODO: Build participant context
-            scheduled_at: match_.scheduled_at,
-            started_at: match_.started_at,
-            completed_at: match_.completed_at,
-        };
-
-        plugin.discover_evidence(&context).await
+        plugin.discover_evidence(context).await
     }
 
     /// Link discovered evidence to a match.
@@ -573,7 +694,7 @@ where
             .match_repo
             .find_by_id(match_id)
             .await?
-            .ok_or_else(|| DomainError::TournamentMatchNotFound(match_id.to_string()))?;
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         // Find user's registration
         let registration_id = self.find_user_registration(&match_, linked_by).await.ok();
@@ -599,6 +720,7 @@ where
                 discovered_by_plugin: None, // Plugin ID would come from context
                 discovered_at: Some(discovered.discovered_at),
                 expires_at: Some(expires_at),
+                status: None, // Discovered evidence is immediately Active
             })
             .await?;
 
@@ -624,13 +746,16 @@ where
             .evidence_repo
             .find_by_id(evidence_id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Evidence {} not found", evidence_id)))?;
+            .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
 
         let validation = plugin.validate_evidence(&evidence, result).await?;
 
         // Update evidence with validation result
         self.evidence_repo
-            .mark_validated(evidence_id, serde_json::to_value(&validation).unwrap_or_default())
+            .mark_validated(
+                evidence_id,
+                serde_json::to_value(&validation).unwrap_or_default(),
+            )
             .await?;
 
         Ok(validation)

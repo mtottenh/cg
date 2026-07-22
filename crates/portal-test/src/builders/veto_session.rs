@@ -1,10 +1,10 @@
 //! Veto session builder for tests.
 
-use portal_db::adapters::PgVetoSessionRepository;
+use portal_core::TournamentMatchId;
 use portal_db::DbPool;
+use portal_db::adapters::PgVetoSessionRepository;
 use portal_domain::entities::veto::VetoSession;
 use portal_domain::repositories::tournament::{CreateVetoSession, VetoSessionRepository};
-use portal_core::TournamentMatchId;
 
 /// Default CS2 map pool used in tests.
 pub const DEFAULT_CS2_MAP_POOL: &[&str] = &[
@@ -24,6 +24,7 @@ pub struct VetoSessionBuilder {
     veto_format_id: String,
     map_pool: Vec<String>,
     timeout_seconds: u32,
+    side_selection_mode: portal_core::SideSelectionMode,
 }
 
 impl Default for VetoSessionBuilder {
@@ -39,9 +40,20 @@ impl VetoSessionBuilder {
         Self {
             match_id: None,
             veto_format_id: "bo3_veto".to_string(),
-            map_pool: DEFAULT_CS2_MAP_POOL.iter().map(|s| (*s).to_string()).collect(),
+            map_pool: DEFAULT_CS2_MAP_POOL
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
             timeout_seconds: 30,
+            side_selection_mode: portal_core::SideSelectionMode::Knife,
         }
+    }
+
+    /// Set the side selection mode (default: knife).
+    #[must_use]
+    pub const fn side_selection_mode(mut self, mode: portal_core::SideSelectionMode) -> Self {
+        self.side_selection_mode = mode;
+        self
     }
 
     /// Set the match ID (required).
@@ -122,6 +134,7 @@ impl VetoSessionBuilder {
             veto_format_id: self.veto_format_id,
             map_pool: self.map_pool,
             timeout_seconds: self.timeout_seconds,
+            side_selection_mode: self.side_selection_mode,
         };
 
         repo.create(create)

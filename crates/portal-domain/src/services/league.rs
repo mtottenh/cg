@@ -11,7 +11,7 @@ use crate::repositories::league::{
 };
 use portal_core::{DomainError, GameId, LeagueId, LeagueInvitationId, UserId};
 use std::sync::Arc;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 /// Service for league-related business logic.
 pub struct LeagueService<LR, LMR, LIR>
@@ -32,7 +32,11 @@ where
     LIR: LeagueInvitationRepository,
 {
     /// Create a new league service.
-    pub const fn new(league_repo: Arc<LR>, member_repo: Arc<LMR>, invitation_repo: Arc<LIR>) -> Self {
+    pub const fn new(
+        league_repo: Arc<LR>,
+        member_repo: Arc<LMR>,
+        invitation_repo: Arc<LIR>,
+    ) -> Self {
         Self {
             league_repo,
             member_repo,
@@ -46,7 +50,7 @@ where
         self.league_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::LeagueNotFound(id.to_string()))
+            .ok_or(DomainError::LeagueNotFound(id))
     }
 
     /// Get a league by slug.
@@ -55,7 +59,10 @@ where
         self.league_repo
             .find_by_slug(slug)
             .await?
-            .ok_or_else(|| DomainError::LeagueNotFound(slug.to_string()))
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "league",
+                query: slug.to_string(),
+            })
     }
 
     /// Create a new league.
@@ -85,6 +92,7 @@ where
                 description: cmd.description,
                 logo_url: cmd.logo_url,
                 access_type: cmd.access_type.as_str().to_string(),
+                settings: cmd.settings,
                 created_by: creator_id,
             })
             .await?;
@@ -149,7 +157,10 @@ where
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<League>, i64), DomainError> {
-        let leagues = self.league_repo.list_by_game(game_id, limit, offset).await?;
+        let leagues = self
+            .league_repo
+            .list_by_game(game_id, limit, offset)
+            .await?;
         let total = self.league_repo.count_by_game(game_id).await?;
         Ok((leagues, total))
     }
@@ -163,7 +174,10 @@ where
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<League>, i64), DomainError> {
-        let leagues = self.league_repo.search(query, game_id, limit, offset).await?;
+        let leagues = self
+            .league_repo
+            .search(query, game_id, limit, offset)
+            .await?;
         let total = self.league_repo.count_search(query, game_id).await?;
         Ok((leagues, total))
     }
@@ -182,14 +196,21 @@ where
     ) -> Result<(Vec<LeagueMemberWithUser>, i64), DomainError> {
         // Verify league exists
         let _ = self.get_league(league_id).await?;
-        let members = self.member_repo.list_members(league_id, limit, offset).await?;
+        let members = self
+            .member_repo
+            .list_members(league_id, limit, offset)
+            .await?;
         let total = self.member_repo.count_members(league_id).await?;
         Ok((members, total))
     }
 
     /// Join an open league.
     #[instrument(skip(self))]
-    pub async fn join_league(&self, league_id: LeagueId, user_id: UserId) -> Result<LeagueMember, DomainError> {
+    pub async fn join_league(
+        &self,
+        league_id: LeagueId,
+        user_id: UserId,
+    ) -> Result<LeagueMember, DomainError> {
         let league = self.get_league(league_id).await?;
 
         // Only open leagues can be joined directly
@@ -199,7 +220,9 @@ where
 
         // Check if already a member
         if self.member_repo.is_member(league_id, user_id).await? {
-            return Err(DomainError::Conflict("Already a member of this league".to_string()));
+            return Err(DomainError::Conflict(
+                "Already a member of this league".to_string(),
+            ));
         }
 
         let member = self
@@ -218,7 +241,11 @@ where
 
     /// Leave a league voluntarily.
     #[instrument(skip(self))]
-    pub async fn leave_league(&self, league_id: LeagueId, user_id: UserId) -> Result<(), DomainError> {
+    pub async fn leave_league(
+        &self,
+        league_id: LeagueId,
+        user_id: UserId,
+    ) -> Result<(), DomainError> {
         // Check if member
         let member = self
             .member_repo
@@ -266,7 +293,9 @@ where
             }
         }
 
-        self.member_repo.remove_member(league_id, target_user_id).await?;
+        self.member_repo
+            .remove_member(league_id, target_user_id)
+            .await?;
 
         info!(
             league_id = %league_id,
@@ -292,7 +321,9 @@ where
             .ok_or(DomainError::NotLeagueMember)?;
 
         // If demoting an admin, ensure there's at least one other admin
-        if member.membership_type == LeagueMembershipType::Admin && new_role != LeagueMembershipType::Admin {
+        if member.membership_type == LeagueMembershipType::Admin
+            && new_role != LeagueMembershipType::Admin
+        {
             let admin_count = self.member_repo.count_admins(league_id).await?;
             if admin_count <= 1 {
                 return Err(DomainError::Conflict(
@@ -318,17 +349,28 @@ where
 
     /// Get a user's league memberships.
     #[instrument(skip(self))]
-    pub async fn get_user_leagues(&self, user_id: UserId) -> Result<Vec<UserLeagueMembership>, DomainError> {
+    pub async fn get_user_leagues(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<UserLeagueMembership>, DomainError> {
         self.member_repo.list_memberships_for_user(user_id).await
     }
 
     /// Check if a user is a member of a league.
-    pub async fn is_member(&self, league_id: LeagueId, user_id: UserId) -> Result<bool, DomainError> {
+    pub async fn is_member(
+        &self,
+        league_id: LeagueId,
+        user_id: UserId,
+    ) -> Result<bool, DomainError> {
         self.member_repo.is_member(league_id, user_id).await
     }
 
     /// Check if a user is an admin of a league.
-    pub async fn is_admin(&self, league_id: LeagueId, user_id: UserId) -> Result<bool, DomainError> {
+    pub async fn is_admin(
+        &self,
+        league_id: LeagueId,
+        user_id: UserId,
+    ) -> Result<bool, DomainError> {
         self.member_repo.is_admin(league_id, user_id).await
     }
 
@@ -338,7 +380,9 @@ where
         league_id: LeagueId,
         user_id: UserId,
     ) -> Result<bool, DomainError> {
-        self.member_repo.is_admin_or_moderator(league_id, user_id).await
+        self.member_repo
+            .is_admin_or_moderator(league_id, user_id)
+            .await
     }
 
     // =========================================================================
@@ -364,11 +408,18 @@ where
 
         // Check if already a member
         if self.member_repo.is_member(league_id, user_id).await? {
-            return Err(DomainError::Conflict("Already a member of this league".to_string()));
+            return Err(DomainError::Conflict(
+                "Already a member of this league".to_string(),
+            ));
         }
 
         // Check if already has pending application
-        if self.invitation_repo.find_pending(league_id, user_id).await?.is_some() {
+        if self
+            .invitation_repo
+            .find_pending(league_id, user_id)
+            .await?
+            .is_some()
+        {
             return Err(DomainError::Conflict(
                 "You already have a pending application".to_string(),
             ));
@@ -402,8 +453,14 @@ where
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<LeagueInvitation, DomainError> {
         // Check if already a member
-        if self.member_repo.is_member(league_id, target_user_id).await? {
-            return Err(DomainError::Conflict("User is already a member".to_string()));
+        if self
+            .member_repo
+            .is_member(league_id, target_user_id)
+            .await?
+        {
+            return Err(DomainError::Conflict(
+                "User is already a member".to_string(),
+            ));
         }
 
         // Check if already has pending invitation
@@ -458,31 +515,49 @@ where
             return Err(DomainError::InvitationInvalid);
         }
 
-        // Check status
-        if invitation.status != LeagueInvitationStatus::Pending {
-            return Err(DomainError::InvitationInvalid);
-        }
-
-        // Check expiration
-        if let Some(expires_at) = invitation.expires_at {
-            if expires_at < chrono::Utc::now() {
-                return Err(DomainError::InvitationExpired);
+        // Check status. `Accepted` is allowed through ONLY as recovery from
+        // a partial write (status flipped, membership never inserted); if the
+        // membership exists the invitation really is spent.
+        match invitation.status {
+            LeagueInvitationStatus::Pending => {
+                // Expiry only applies to a genuinely pending invitation — a
+                // recovery retry must not be blocked by the clock.
+                if let Some(expires_at) = invitation.expires_at
+                    && expires_at < chrono::Utc::now()
+                {
+                    return Err(DomainError::InvitationExpired);
+                }
             }
+            LeagueInvitationStatus::Accepted => {
+                if self
+                    .member_repo
+                    .is_member(invitation.league_id, user_id)
+                    .await?
+                {
+                    return Err(DomainError::InvitationInvalid);
+                }
+                warn!(
+                    league_id = %invitation.league_id,
+                    user_id = %user_id,
+                    invitation_id = %invitation_id,
+                    "Recovering an accepted league invitation with no membership row"
+                );
+            }
+            _ => return Err(DomainError::InvitationInvalid),
         }
 
-        // Update invitation status
-        self.invitation_repo
-            .update_status(invitation_id, LeagueInvitationStatus::Accepted, user_id)
-            .await?;
-
-        // Add user as member
+        // Flip the status and seat the member in one transaction.
         let member = self
-            .member_repo
-            .add_member(AddLeagueMember {
-                league_id: invitation.league_id,
+            .invitation_repo
+            .accept_and_add_member(
+                invitation_id,
                 user_id,
-                membership_type: LeagueMembershipType::Member,
-            })
+                AddLeagueMember {
+                    league_id: invitation.league_id,
+                    user_id,
+                    membership_type: LeagueMembershipType::Member,
+                },
+            )
             .await?;
 
         info!(
@@ -508,24 +583,41 @@ where
             .await?
             .ok_or(DomainError::InvitationInvalid)?;
 
-        // Check status
-        if invitation.status != LeagueInvitationStatus::Pending {
-            return Err(DomainError::InvitationInvalid);
+        // Check status. As in `accept_invitation`, `Accepted` is allowed
+        // through only to recover an application whose membership insert
+        // never landed.
+        match invitation.status {
+            LeagueInvitationStatus::Pending => {}
+            LeagueInvitationStatus::Accepted => {
+                if self
+                    .member_repo
+                    .is_member(invitation.league_id, invitation.user_id)
+                    .await?
+                {
+                    return Err(DomainError::InvitationInvalid);
+                }
+                warn!(
+                    league_id = %invitation.league_id,
+                    applicant = %invitation.user_id,
+                    invitation_id = %invitation_id,
+                    "Recovering an approved league application with no membership row"
+                );
+            }
+            _ => return Err(DomainError::InvitationInvalid),
         }
 
-        // Update invitation status
-        self.invitation_repo
-            .update_status(invitation_id, LeagueInvitationStatus::Accepted, approved_by)
-            .await?;
-
-        // Add user as member
+        // Flip the status and seat the member in one transaction.
         let member = self
-            .member_repo
-            .add_member(AddLeagueMember {
-                league_id: invitation.league_id,
-                user_id: invitation.user_id,
-                membership_type: LeagueMembershipType::Member,
-            })
+            .invitation_repo
+            .accept_and_add_member(
+                invitation_id,
+                approved_by,
+                AddLeagueMember {
+                    league_id: invitation.league_id,
+                    user_id: invitation.user_id,
+                    membership_type: LeagueMembershipType::Member,
+                },
+            )
             .await?;
 
         info!(

@@ -8,7 +8,9 @@ use crate::repositories::league_team::{
 };
 use crate::services::league_team::LeagueTeamService;
 use portal_core::types::{LeagueTeamRole, LeagueTeamStatus, SeasonStatus};
-use portal_core::{DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamSeasonId, PlayerId};
+use portal_core::{
+    DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamSeasonId, PlayerId,
+};
 use std::sync::Arc;
 
 fn create_service(
@@ -78,7 +80,7 @@ async fn test_get_team_not_found() {
 #[tokio::test]
 async fn test_create_team_success() {
     let mut team_repo = MockLeagueTeamRepository::new();
-    let mut team_season_repo = MockLeagueTeamSeasonRepository::new();
+    let team_season_repo = MockLeagueTeamSeasonRepository::new();
     let mut member_repo = MockLeagueTeamMemberRepository::new();
     let mut season_repo = MockLeagueSeasonRepository::new();
 
@@ -94,9 +96,7 @@ async fn test_create_team_success() {
         .returning(move |_| Ok(Some(season_clone.clone())));
 
     // Check name/tag uniqueness
-    team_repo
-        .expect_name_exists()
-        .returning(|_, _| Ok(false));
+    team_repo.expect_name_exists().returning(|_, _| Ok(false));
     team_repo.expect_tag_exists().returning(|_, _| Ok(false));
 
     // Check player not already in a team this season
@@ -104,27 +104,20 @@ async fn test_create_team_success() {
         .expect_find_primary_team_in_season()
         .returning(|_, _| Ok(None));
 
-    // Create team
+    // Atomic create: team + team_season + captain member in one transaction.
     let team = make_team(league_id);
     let team_id = team.id;
-    let team_clone = team.clone();
-    team_repo
-        .expect_create()
-        .returning(move |_| Ok(team_clone.clone()));
-
-    // Create team season
     let team_season = make_team_season(team_id, season_id);
     let team_season_id = team_season.id;
-    let ts_clone = team_season.clone();
-    team_season_repo
-        .expect_create()
-        .returning(move |_| Ok(ts_clone.clone()));
+    let result_clone = (team.clone(), team_season.clone());
+    team_repo
+        .expect_create_team_with_season_and_captain()
+        .returning(move |_, _, _| Ok(result_clone.clone()));
 
-    // Add owner as captain
-    let member = make_member(team_season_id, owner_player_id);
-    member_repo
-        .expect_add_member()
-        .returning(move |_| Ok(member.clone()));
+    // `make_member` was previously used to seed the separate add_member mock;
+    // keep it here so the test still exercises the helper but discard the
+    // value since the atomic method doesn't return the member.
+    let _ = make_member(team_season_id, owner_player_id);
 
     let service = create_service(team_repo, team_season_repo, member_repo, season_repo);
 
@@ -213,9 +206,7 @@ async fn test_create_team_name_taken() {
         .expect_find_primary_team_in_season()
         .returning(|_, _| Ok(None));
 
-    team_repo
-        .expect_name_exists()
-        .returning(|_, _| Ok(true)); // Name already taken
+    team_repo.expect_name_exists().returning(|_, _| Ok(true)); // Name already taken
 
     let service = create_service(team_repo, team_season_repo, member_repo, season_repo);
 
@@ -255,9 +246,7 @@ async fn test_create_team_player_already_in_team() {
         .expect_find_by_id()
         .returning(move |_| Ok(Some(season.clone())));
 
-    team_repo
-        .expect_name_exists()
-        .returning(|_, _| Ok(false));
+    team_repo.expect_name_exists().returning(|_, _| Ok(false));
     team_repo.expect_tag_exists().returning(|_, _| Ok(false));
 
     // Player already in another team

@@ -9,6 +9,41 @@ use portal_core::{PermissionScope, ScopeType};
 use portal_db::PermissionRepository;
 use uuid::Uuid;
 
+/// Whether the given user is the well-known dev account, granted blanket
+/// permissions in `test-utils` builds. Always returns `false` in production
+/// builds (the body is feature-gated, not the call site, so production code
+/// can keep calling this without `cfg!()` noise).
+#[cfg(feature = "test-utils")]
+fn is_dev_user(user: &AuthenticatedUser) -> bool {
+    user.username == crate::extractors::auth::DEV_USERNAME
+}
+
+#[cfg(not(feature = "test-utils"))]
+const fn is_dev_user(_user: &AuthenticatedUser) -> bool {
+    false
+}
+
+/// Collapse a permission-check `Result` into a `bool`, logging failures so a
+/// permissions-DB outage doesn't manifest as silent global denial.
+///
+/// Fails closed: a DB error becomes `false` (deny). Without the log, the only
+/// signal of a permissions-backend failure was "everyone gets 403".
+fn log_and_deny<E: std::fmt::Display>(
+    result: Result<bool, E>,
+    user: &AuthenticatedUser,
+    check: &str,
+) -> bool {
+    result.unwrap_or_else(|e| {
+        tracing::error!(
+            error = %e,
+            user_id = %user.user_id,
+            check = %check,
+            "permission check failed; failing closed"
+        );
+        false
+    })
+}
+
 /// Wrapper for `PermissionRepository` that can be extracted from state.
 #[derive(Clone)]
 pub struct PermissionChecker(pub PermissionRepository);
@@ -32,17 +67,27 @@ where
 }
 
 impl PermissionChecker {
+    /// Whether this user bypasses permission checks entirely (the well-known
+    /// dev account in `test-utils` builds; always `false` in production).
+    ///
+    /// Handlers that layer extra authorization logic on top of
+    /// `require_permission` (e.g. the role-assignment priority ceiling) use
+    /// this so the dev account keeps its blanket-permission behaviour.
+    pub(crate) fn is_bypass(user: &AuthenticatedUser) -> bool {
+        is_dev_user(user)
+    }
+
     /// Check if a user has a specific permission.
     pub async fn has_permission(&self, user: &AuthenticatedUser, permission: &str) -> bool {
-        // Dev users have all permissions
-        if AuthenticatedUser::is_dev_auth_enabled() && user.username == "devuser" {
+        if is_dev_user(user) {
             return true;
         }
 
-        self.0
-            .user_has_permission(user.user_id, permission)
-            .await
-            .unwrap_or(false)
+        log_and_deny(
+            self.0.user_has_permission(user.user_id, permission).await,
+            user,
+            permission,
+        )
     }
 
     /// Require a permission or return 403 Forbidden.
@@ -66,18 +111,16 @@ impl PermissionChecker {
         user: &AuthenticatedUser,
         permissions: &[&str],
     ) -> Result<(), ApiError> {
-        // Dev users have all permissions
-        if AuthenticatedUser::is_dev_auth_enabled() && user.username == "devuser" {
+        if is_dev_user(user) {
             return Ok(());
         }
 
         for permission in permissions {
-            if self
-                .0
-                .user_has_permission(user.user_id, permission)
-                .await
-                .unwrap_or(false)
-            {
+            if log_and_deny(
+                self.0.user_has_permission(user.user_id, permission).await,
+                user,
+                permission,
+            ) {
                 return Ok(());
             }
         }
@@ -93,18 +136,16 @@ impl PermissionChecker {
         user: &AuthenticatedUser,
         permissions: &[&str],
     ) -> Result<(), ApiError> {
-        // Dev users have all permissions
-        if AuthenticatedUser::is_dev_auth_enabled() && user.username == "devuser" {
+        if is_dev_user(user) {
             return Ok(());
         }
 
         for permission in permissions {
-            if !self
-                .0
-                .user_has_permission(user.user_id, permission)
-                .await
-                .unwrap_or(false)
-            {
+            if !log_and_deny(
+                self.0.user_has_permission(user.user_id, permission).await,
+                user,
+                permission,
+            ) {
                 return Err(ApiError::forbidden(format!(
                     "Missing required permission: {permission}"
                 )));
@@ -130,16 +171,21 @@ impl PermissionChecker {
         scope_type: ScopeType,
         scope_id: Uuid,
     ) -> bool {
-        // Dev users have all permissions
-        if AuthenticatedUser::is_dev_auth_enabled() && user.username == "devuser" {
+        if is_dev_user(user) {
             return true;
         }
 
-        let scope = PermissionScope { scope_type, scope_id };
-        self.0
-            .user_has_scoped_permission(user.user_id, permission, Some(&scope))
-            .await
-            .unwrap_or(false)
+        let scope = PermissionScope {
+            scope_type,
+            scope_id,
+        };
+        log_and_deny(
+            self.0
+                .user_has_scoped_permission(user.user_id, permission, Some(&scope))
+                .await,
+            user,
+            permission,
+        )
     }
 
     /// Check if a user has global admin override for a scope type.
@@ -148,9 +194,12 @@ impl PermissionChecker {
     /// - Team scope: `admin.teams.manage_any`
     /// - League scope: `admin.leagues.manage_any`
     /// - Tournament scope: `admin.tournaments.manage_any`
-    pub async fn has_admin_override(&self, user: &AuthenticatedUser, scope_type: ScopeType) -> bool {
-        // Dev users have all permissions
-        if AuthenticatedUser::is_dev_auth_enabled() && user.username == "devuser" {
+    pub async fn has_admin_override(
+        &self,
+        user: &AuthenticatedUser,
+        scope_type: ScopeType,
+    ) -> bool {
+        if is_dev_user(user) {
             return true;
         }
 
@@ -161,10 +210,13 @@ impl PermissionChecker {
             ScopeType::Match => "admin.tournaments.manage_any", // Matches fall under tournament admin
         };
 
-        self.0
-            .user_has_permission(user.user_id, admin_permission)
-            .await
-            .unwrap_or(false)
+        log_and_deny(
+            self.0
+                .user_has_permission(user.user_id, admin_permission)
+                .await,
+            user,
+            admin_permission,
+        )
     }
 
     /// Require a scoped permission or admin override, or return 403 Forbidden.
@@ -178,7 +230,10 @@ impl PermissionChecker {
         scope_id: Uuid,
     ) -> Result<(), ApiError> {
         // Check scoped permission first
-        if self.has_scoped_permission(user, permission, scope_type, scope_id).await {
+        if self
+            .has_scoped_permission(user, permission, scope_type, scope_id)
+            .await
+        {
             return Ok(());
         }
 

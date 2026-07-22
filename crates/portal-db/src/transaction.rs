@@ -56,13 +56,12 @@ where
     E: From<sqlx::Error>,
 {
     let tx = pool.begin().await.map_err(E::from)?;
-    let result = f(tx).await;
 
     // Note: The transaction is automatically committed or rolled back
     // when the closure returns. If Ok, commit happens. If Err, rollback happens.
     // This is because the transaction is moved into the closure.
 
-    result
+    f(tx).await
 }
 
 #[cfg(test)]

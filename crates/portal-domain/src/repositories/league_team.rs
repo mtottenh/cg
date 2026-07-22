@@ -163,6 +163,28 @@ pub trait LeagueTeamRepository: Send + Sync {
     /// Create a new team.
     async fn create(&self, team: CreateLeagueTeam) -> Result<LeagueTeam, DomainError>;
 
+    /// Atomically create a team, register it for a season, and add the
+    /// founding captain to the seasonal roster — all in a single database
+    /// transaction.
+    ///
+    /// Before this existed, the service composed three separate repository
+    /// calls, which ran on three different connections with no rollback on
+    /// partial failure. A team insert that succeeded followed by a
+    /// team_season insert that hit a constraint left an orphan row in
+    /// `league_teams`. This method binds the three writes to one
+    /// transaction so either everything commits or nothing does.
+    ///
+    /// The member is not returned because callers of
+    /// `LeagueTeamService::create_team` only ever consumed the team and
+    /// team_season; if you need the member, look it up after the call
+    /// (it's keyed by `(team_season_id, captain_player_id)`).
+    async fn create_team_with_season_and_captain(
+        &self,
+        team: CreateLeagueTeam,
+        season_id: LeagueSeasonId,
+        captain_player_id: PlayerId,
+    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError>;
+
     /// Update a team's profile.
     async fn update(
         &self,
@@ -265,6 +287,23 @@ pub trait LeagueTeamSeasonRepository: Send + Sync {
         registration: CreateLeagueTeamSeason,
     ) -> Result<LeagueTeamSeason, DomainError>;
 
+    /// Register a team for a new season *and* seat the captain on the
+    /// seasonal roster in a single transaction.
+    ///
+    /// Both writes commit or neither does. Splitting these into two
+    /// separate calls (as [`Self::create`] + `member_repo.add_member`)
+    /// left orphaned `league_team_seasons` rows with no roster captain
+    /// on partial failure — see audit I5. Prefer this method from
+    /// services; keep the non-atomic `create` for paths that don't need
+    /// a captain (e.g. admin re-registration of a team whose captain
+    /// isn't changing).
+    async fn create_with_captain(
+        &self,
+        team_id: LeagueTeamId,
+        season_id: LeagueSeasonId,
+        captain_player_id: PlayerId,
+    ) -> Result<LeagueTeamSeason, DomainError>;
+
     /// Update a team-season.
     async fn update(
         &self,
@@ -351,7 +390,10 @@ pub trait LeagueTeamMemberRepository: Send + Sync {
     ) -> Result<Option<LeagueTeamMember>, DomainError>;
 
     /// Add a member to a team-season roster.
-    async fn add_member(&self, member: AddLeagueTeamMember) -> Result<LeagueTeamMember, DomainError>;
+    async fn add_member(
+        &self,
+        member: AddLeagueTeamMember,
+    ) -> Result<LeagueTeamMember, DomainError>;
 
     /// Update a member's role.
     async fn update_role(
@@ -396,8 +438,10 @@ pub trait LeagueTeamMemberRepository: Send + Sync {
     ) -> Result<i64, DomainError>;
 
     /// Count all active members in a team-season.
-    async fn count_active_members(&self, team_season_id: LeagueTeamSeasonId)
-        -> Result<i64, DomainError>;
+    async fn count_active_members(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<i64, DomainError>;
 
     /// Count primary members (captain + players) in a team-season.
     async fn count_primary_members(
@@ -406,7 +450,10 @@ pub trait LeagueTeamMemberRepository: Send + Sync {
     ) -> Result<i64, DomainError>;
 
     /// Count substitutes in a team-season.
-    async fn count_substitutes(&self, team_season_id: LeagueTeamSeasonId) -> Result<i64, DomainError>;
+    async fn count_substitutes(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<i64, DomainError>;
 
     /// Count captains in a team-season.
     async fn count_captains(&self, team_season_id: LeagueTeamSeasonId) -> Result<i64, DomainError>;
@@ -519,6 +566,22 @@ pub trait LeagueTeamInvitationRepository: Send + Sync {
         status: LeagueTeamInvitationStatus,
         response_message: Option<String>,
     ) -> Result<LeagueTeamInvitation, DomainError>;
+
+    /// Mark an invitation `Accepted` **and** insert the player onto the
+    /// team-season roster as a single transaction.
+    ///
+    /// Replaces the two-call `update_status(Accepted) + add_member`
+    /// pattern in `LeagueTeamInvitationService::accept_invitation`. If
+    /// the member insert failed in that pattern, the invitation was
+    /// already flipped to Accepted and the player was silently missing
+    /// from the roster — they saw "invitation accepted" but were not on
+    /// the team, and a retry failed with "invitation already used".
+    /// See audit I5.
+    async fn accept_and_add_member(
+        &self,
+        invitation_id: LeagueTeamInvitationId,
+        member: AddLeagueTeamMember,
+    ) -> Result<LeagueTeamMember, DomainError>;
 
     /// Cancel all pending invitations for a player on a specific team-season.
     async fn cancel_pending_for_player(

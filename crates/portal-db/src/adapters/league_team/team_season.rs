@@ -3,10 +3,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::entities::league_team::{LeagueTeamSeasonRow, LeagueTeamSummaryRow};
 use crate::DbPool;
-use portal_core::types::LeagueTeamSeasonStatus;
-use portal_core::{DomainError, LeagueSeasonId, LeagueTeamId, LeagueTeamSeasonId};
+use crate::entities::league_team::{LeagueTeamSeasonRow, LeagueTeamSummaryRow};
+use portal_core::types::{LeagueTeamRole, LeagueTeamSeasonStatus};
+use portal_core::{DomainError, LeagueSeasonId, LeagueTeamId, LeagueTeamSeasonId, PlayerId};
 use portal_domain::entities::league_team::{LeagueTeamSeason, LeagueTeamSummary};
 use portal_domain::repositories::league_team::{
     CreateLeagueTeamSeason, LeagueTeamSeasonRepository, UpdateLeagueTeamSeason,
@@ -59,10 +59,7 @@ impl LeagueTeamSeasonRepository for PgLeagueTeamSeasonRepository {
         Ok(row.map(LeagueTeamSeason::from))
     }
 
-    async fn create(
-        &self,
-        cmd: CreateLeagueTeamSeason,
-    ) -> Result<LeagueTeamSeason, DomainError> {
+    async fn create(&self, cmd: CreateLeagueTeamSeason) -> Result<LeagueTeamSeason, DomainError> {
         let id = uuid::Uuid::now_v7();
         let now = Utc::now();
 
@@ -86,6 +83,71 @@ impl LeagueTeamSeasonRepository for PgLeagueTeamSeasonRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(LeagueTeamSeason::from(row))
+    }
+
+    async fn create_with_captain(
+        &self,
+        team_id: LeagueTeamId,
+        season_id: LeagueSeasonId,
+        captain_player_id: PlayerId,
+    ) -> Result<LeagueTeamSeason, DomainError> {
+        // Both writes share one transaction: on any error the tx drops
+        // without committing, so a failed member insert can never leave
+        // behind a captain-less league_team_seasons row. See audit I5.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let now = Utc::now();
+        let team_season_id = uuid::Uuid::now_v7();
+
+        let team_season_row = sqlx::query_as::<_, LeagueTeamSeasonRow>(
+            r"
+            INSERT INTO league_team_seasons (
+                id, team_id, season_id, status, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING *
+            ",
+        )
+        .bind(team_season_id)
+        .bind(team_id.as_uuid())
+        .bind(season_id.as_uuid())
+        .bind("forming")
+        .bind(now)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let member_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            r"
+            INSERT INTO league_team_members (
+                id, team_season_id, player_id, role, position, jersey_number, added_by, joined_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ",
+        )
+        .bind(member_id)
+        .bind(team_season_id)
+        .bind(captain_player_id.as_uuid())
+        .bind(LeagueTeamRole::Captain.to_string())
+        .bind(None::<String>)
+        .bind(None::<i32>)
+        .bind(None::<uuid::Uuid>)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(LeagueTeamSeason::from(team_season_row))
     }
 
     async fn list_by_season(
@@ -170,18 +232,23 @@ impl LeagueTeamSeasonRepository for PgLeagueTeamSeasonRepository {
         }
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM league_team_seasons WHERE season_id = $1",
-        )
-        .bind(season_id.as_uuid())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM league_team_seasons WHERE season_id = $1")
+                .bind(season_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok((rows.into_iter().map(LeagueTeamSeason::from).collect(), count.0))
+        Ok((
+            rows.into_iter().map(LeagueTeamSeason::from).collect(),
+            count.0,
+        ))
     }
 
-    async fn list_by_team(&self, team_id: LeagueTeamId) -> Result<Vec<LeagueTeamSeason>, DomainError> {
+    async fn list_by_team(
+        &self,
+        team_id: LeagueTeamId,
+    ) -> Result<Vec<LeagueTeamSeason>, DomainError> {
         let rows = sqlx::query_as::<_, LeagueTeamSeasonRow>(
             "SELECT * FROM league_team_seasons WHERE team_id = $1 ORDER BY created_at DESC",
         )
@@ -242,15 +309,17 @@ impl LeagueTeamSeasonRepository for PgLeagueTeamSeasonRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM v_league_team_summary WHERE season_id = $1",
-        )
-        .bind(season_id.as_uuid())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM v_league_team_summary WHERE season_id = $1")
+                .bind(season_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok((rows.into_iter().map(LeagueTeamSummary::from).collect(), count.0))
+        Ok((
+            rows.into_iter().map(LeagueTeamSummary::from).collect(),
+            count.0,
+        ))
     }
 
     async fn update(

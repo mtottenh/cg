@@ -1,8 +1,8 @@
 //! Veto delegate builder for tests.
 
 use chrono::Utc;
-use portal_db::entities::VetoDelegateRow;
 use portal_db::DbPool;
+use portal_db::entities::VetoDelegateRow;
 use uuid::Uuid;
 
 use super::{LeagueTeamSeasonBuilder, PlayerBuilder, UserBuilder};

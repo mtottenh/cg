@@ -16,6 +16,7 @@ futures = { workspace = true }
 bytes = { workspace = true }
 aws-config = { workspace = true, optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
 
 # Image processing
 image = { workspace = true }
@@ -33,7 +34,7 @@ uuid = { workspace = true }
 [features]
 default = ["local"]
 local = []
-s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:chrono"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -42,7 +42,7 @@ pub use error::StorageError;
 pub use local::LocalStorage;
 
 #[cfg(feature = "s3")]
-pub use s3::{ObjectInfo, ObjectMetadata, S3EvidenceClient, S3Storage};
+pub use s3::{ObjectInfo, ObjectMetadata, S3Config, S3EvidenceClient, S3Storage};
 
 use async_trait::async_trait;
 use bytes::Bytes;

@@ -71,6 +71,16 @@ pub trait TournamentRepository: Send + Sync {
         banner_url: Option<String>,
     ) -> Result<Tournament, DomainError>;
 
+    /// Atomically claim the start of a tournament.
+    ///
+    /// Compare-and-set: transitions `scheduled`/`registration` → `in_progress`
+    /// and stamps `started_at` in a single UPDATE. Returns `Some` only for the
+    /// caller that wins the transition; a concurrent or retried caller (whose
+    /// row no longer matches the status predicate) gets `None` and must NOT
+    /// build a second bracket set. This closes the gate→build→mark race that
+    /// `mark_started` (no status predicate) leaves open.
+    async fn try_claim_start(&self, id: TournamentId) -> Result<Option<Tournament>, DomainError>;
+
     /// Set tournament started timestamp.
     async fn mark_started(&self, id: TournamentId) -> Result<Tournament, DomainError>;
 
@@ -223,6 +233,22 @@ pub trait TournamentStageRepository: Send + Sync {
         status: StageStatus,
     ) -> Result<TournamentStage, DomainError>;
 
+    /// Flip two stages' statuses in a single transaction.
+    ///
+    /// Designed for the stage-advancement path in
+    /// `ProgressionService::advance_to_next_stage`, where the old
+    /// sequential pair — mark group stage Completed, then playoff
+    /// stage Active — could fail between the two updates and leave
+    /// the tournament with a finished group stage but no active
+    /// playoff. Returns the two updated rows in (`from`, `to`) order.
+    async fn transition_stages(
+        &self,
+        from_stage_id: TournamentStageId,
+        from_status: StageStatus,
+        to_stage_id: TournamentStageId,
+        to_status: StageStatus,
+    ) -> Result<(TournamentStage, TournamentStage), DomainError>;
+
     /// List all stages for a tournament (ordered by `stage_order`).
     async fn list_by_tournament(
         &self,
@@ -284,7 +310,10 @@ pub trait TournamentBracketRepository: Send + Sync {
     ) -> Result<Option<TournamentBracket>, DomainError>;
 
     /// Create a new bracket.
-    async fn create(&self, bracket: CreateTournamentBracket) -> Result<TournamentBracket, DomainError>;
+    async fn create(
+        &self,
+        bracket: CreateTournamentBracket,
+    ) -> Result<TournamentBracket, DomainError>;
 
     /// Update a bracket.
     async fn update(
@@ -301,7 +330,10 @@ pub trait TournamentBracketRepository: Send + Sync {
     ) -> Result<TournamentBracket, DomainError>;
 
     /// Advance current round.
-    async fn advance_round(&self, id: TournamentBracketId) -> Result<TournamentBracket, DomainError>;
+    async fn advance_round(
+        &self,
+        id: TournamentBracketId,
+    ) -> Result<TournamentBracket, DomainError>;
 
     /// List all brackets for a stage.
     async fn list_by_stage(
@@ -370,6 +402,43 @@ pub trait TournamentRegistrationRepository: Send + Sync {
     async fn create(
         &self,
         registration: CreateTournamentRegistration,
+    ) -> Result<TournamentRegistration, DomainError>;
+
+    /// Create a registration only if the tournament still has room,
+    /// counting and inserting inside **one** transaction that holds a
+    /// `SELECT ... FOR UPDATE` lock on the tournament row.
+    ///
+    /// Replaces the `count_registrations()` + `create()` pair in
+    /// `TournamentService::register_team` / `register_player`. Those ran on
+    /// two separate pool connections, so N concurrent registrations against
+    /// a tournament with one free slot all saw the same pre-insert count and
+    /// all succeeded — overflowing `max_participants` and breaking the
+    /// seeding / bracket-generation assumptions built on it.
+    ///
+    /// Returns [`DomainError::TournamentFull`] when the tournament is at
+    /// capacity. `withdrawn` / `rejected` rows do not count, matching
+    /// [`TournamentRepository::count_registrations`].
+    ///
+    /// `replace_terminal` optionally names a terminal (withdrawn /
+    /// disqualified / rejected) registration to delete inside the same
+    /// transaction, so re-registration after a withdrawal cannot lose its
+    /// slot to a racer between the delete and the insert.
+    async fn create_with_capacity_check(
+        &self,
+        registration: CreateTournamentRegistration,
+        replace_terminal: Option<TournamentRegistrationId>,
+    ) -> Result<TournamentRegistration, DomainError>;
+
+    /// Set a registration's status only if the tournament still has room
+    /// for it, under the same tournament-row lock as
+    /// [`Self::create_with_capacity_check`].
+    ///
+    /// Used by admin approval of a pending registration, which had the same
+    /// count-then-write race.
+    async fn update_status_with_capacity_check(
+        &self,
+        id: TournamentRegistrationId,
+        status: TournamentRegistrationStatus,
     ) -> Result<TournamentRegistration, DomainError>;
 
     /// Update a registration.
@@ -508,6 +577,76 @@ pub trait TournamentMatchRepository: Send + Sync {
         status: TournamentMatchStatus,
     ) -> Result<TournamentMatch, DomainError>;
 
+    /// Set whether the match requires a map veto before play.
+    ///
+    /// Flipped on when a veto session is created for the match — nothing at
+    /// bracket-generation time sets it, so this is the only writer.
+    async fn set_veto_required(
+        &self,
+        id: TournamentMatchId,
+        veto_required: bool,
+    ) -> Result<TournamentMatch, DomainError>;
+
+    /// Cross-tournament query: matches in `scheduled` status whose
+    /// `scheduled_at` is at or before `before`.
+    ///
+    /// Feeds the lifecycle automation loop that opens check-in windows.
+    async fn list_scheduled_due(
+        &self,
+        before: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError>;
+
+    /// Cross-tournament query: matches in `checking_in` status whose
+    /// `check_in_deadline` has passed.
+    ///
+    /// Feeds the lifecycle automation loop that processes no-shows.
+    async fn list_checkin_expired(
+        &self,
+        now: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError>;
+
+    /// Cross-tournament repair query: matches stuck in `checking_in` with no
+    /// `check_in_deadline` at all.
+    ///
+    /// Such a row is a partially opened check-in window (the status write
+    /// landed, the deadline write did not). It is invisible to both
+    /// `list_scheduled_due` (status is no longer `scheduled`) and
+    /// `list_checkin_expired` (the deadline is NULL), so without this query
+    /// the match is stranded forever. Feeds the lifecycle repair pass.
+    async fn list_checkin_missing_deadline(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError>;
+
+    /// Set the check-in deadline for a match.
+    ///
+    /// Written when the automation loop opens the check-in window; nothing
+    /// else sets it.
+    async fn set_check_in_deadline(
+        &self,
+        id: TournamentMatchId,
+        deadline: DateTime<Utc>,
+    ) -> Result<TournamentMatch, DomainError>;
+
+    /// Transition every match in `ids` from Pending → Ready in one
+    /// statement.
+    ///
+    /// Designed for the progression-service path that flips newly-
+    /// populated matches to Ready after a round advances. The old
+    /// per-id loop meant a failure on match N left matches 1..N-1
+    /// Ready and the rest Pending — visually inconsistent and the
+    /// bracket would stall on the first unreferenced match. Uses a
+    /// single `UPDATE ... WHERE id = ANY($1) AND status = 'pending'`
+    /// so the set transition is atomic; returns the number of rows
+    /// that actually flipped (matches that had already advanced or
+    /// been forfeited are silently skipped).
+    async fn mark_pending_as_ready_bulk(
+        &self,
+        ids: &[TournamentMatchId],
+    ) -> Result<u64, DomainError>;
+
     /// Assign a participant to a match slot.
     async fn assign_participant(
         &self,
@@ -529,6 +668,16 @@ pub trait TournamentMatchRepository: Send + Sync {
         loser_id: TournamentRegistrationId,
     ) -> Result<TournamentMatch, DomainError>;
 
+    /// Clear a recorded result: drop `winner_registration_id`,
+    /// `loser_registration_id` and `completed_at`, leaving the scores in
+    /// place for audit.
+    ///
+    /// Standings are derived from the completed match rows that carry a
+    /// winner, so "reverting" a result means removing it from that source —
+    /// subtracting deltas is no longer meaningful (and was never idempotent).
+    /// Calling this on a match with no recorded result is a no-op.
+    async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
+
     /// Schedule a match.
     async fn schedule(
         &self,
@@ -538,6 +687,14 @@ pub trait TournamentMatchRepository: Send + Sync {
 
     /// Start a match.
     async fn start(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
+
+    /// Record a participant check-in.
+    async fn check_in_participant(
+        &self,
+        id: TournamentMatchId,
+        slot: ParticipantSlot,
+        checked_in_by: UserId,
+    ) -> Result<TournamentMatch, DomainError>;
 
     /// Complete a match.
     async fn complete(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
@@ -603,6 +760,19 @@ pub trait TournamentMatchRepository: Send + Sync {
         registration_id: TournamentRegistrationId,
     ) -> Result<Vec<TournamentMatch>, DomainError>;
 
+    /// List matches for a player across all tournaments.
+    ///
+    /// Finds matches where the player is a participant via either direct solo
+    /// registration or team registration (through `league_team_members`).
+    async fn list_by_player(
+        &self,
+        player_id: PlayerId,
+        status: Option<TournamentMatchStatus>,
+        tournament_id: Option<TournamentId>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError>;
+
     /// List upcoming scheduled matches.
     async fn list_upcoming(
         &self,
@@ -621,6 +791,46 @@ pub trait TournamentMatchRepository: Send + Sync {
 
     /// Delete all matches for a bracket (for regeneration).
     async fn delete_by_bracket(&self, bracket_id: TournamentBracketId) -> Result<(), DomainError>;
+
+    /// Set progression links on a match (winner_progresses_to / loser_progresses_to).
+    async fn set_progression_links(
+        &self,
+        id: TournamentMatchId,
+        winner_progresses_to: Option<TournamentMatchId>,
+        loser_progresses_to: Option<TournamentMatchId>,
+    ) -> Result<(), DomainError>;
+
+    /// List candidate matches for demo auto-linking.
+    ///
+    /// Returns matches (with both registrations present) for the given game
+    /// whose `scheduled_at` lies within `window_hours` of `match_date`. When
+    /// `scheduled_at` is null, the match qualifies if `match_date` falls
+    /// inside the tournament's running window (start .. completion, padded by
+    /// `window_hours`); matches whose tournament has no start time are
+    /// skipped. Each candidate carries the Steam IDs of its participants —
+    /// the registration's player for individual entries, the active team
+    /// members for team entries — so the caller can score overlap in a
+    /// single round trip.
+    async fn list_auto_link_candidates(
+        &self,
+        game_id: GameId,
+        match_date: DateTime<Utc>,
+        window_hours: i64,
+        limit: i64,
+    ) -> Result<Vec<MatchLinkCandidate>, DomainError>;
+}
+
+/// A candidate tournament match for demo auto-linking.
+#[derive(Debug, Clone)]
+pub struct MatchLinkCandidate {
+    /// The candidate match.
+    pub match_id: TournamentMatchId,
+    /// The tournament the match belongs to.
+    pub tournament_id: TournamentId,
+    /// The tournament's league, if any.
+    pub league_id: Option<LeagueId>,
+    /// Steam IDs (steam64 as strings) of the match participants.
+    pub steam_ids: Vec<String>,
 }
 
 /// Participant slot (1 or 2).
@@ -686,7 +896,10 @@ pub trait TournamentMatchGameRepository: Send + Sync {
     ) -> Result<Option<TournamentMatchGame>, DomainError>;
 
     /// Create a new game.
-    async fn create(&self, game: CreateTournamentMatchGame) -> Result<TournamentMatchGame, DomainError>;
+    async fn create(
+        &self,
+        game: CreateTournamentMatchGame,
+    ) -> Result<TournamentMatchGame, DomainError>;
 
     /// Update a game.
     async fn update(
@@ -785,11 +998,40 @@ pub trait TournamentStandingsRepository: Send + Sync {
         standing: CreateTournamentStanding,
     ) -> Result<TournamentStanding, DomainError>;
 
-    /// Update standings after a match.
-    async fn update_after_match(
+    /// Recompute every standing in a bracket from its source of truth and
+    /// re-rank, atomically.
+    ///
+    /// This replaces the old delta pair (`update_after_match` /
+    /// `revert_after_match`). Those were accumulative — `points = points +
+    /// $8` — so every path that could fire twice for the same match
+    /// double-counted it, and a second revert drove the columns negative.
+    ///
+    /// The source of truth is:
+    /// * the bracket's **completed** `tournament_matches` rows that carry
+    ///   both a winner and a loser (3 points for the winner, 0 for the
+    ///   loser, game wins/losses taken from the participant slot the winner
+    ///   occupies), plus
+    /// * the bracket's recorded **byes** (see [`Self::record_bye`]), which
+    ///   have no match row to derive from.
+    ///
+    /// Because the result is a pure function of those rows, calling this any
+    /// number of times converges instead of drifting.
+    async fn recompute_bracket(
         &self,
-        standing: UpdateTournamentStanding,
-    ) -> Result<TournamentStanding, DomainError>;
+        bracket_id: TournamentBracketId,
+    ) -> Result<Vec<TournamentStanding>, DomainError>;
+
+    /// Record a Swiss bye for `registration_id` in `round`.
+    ///
+    /// Idempotent: re-recording the same (bracket, registration, round)
+    /// is a no-op. Byes are not represented as match rows, so without this
+    /// the recompute would have nothing to derive their points from.
+    async fn record_bye(
+        &self,
+        bracket_id: TournamentBracketId,
+        registration_id: TournamentRegistrationId,
+        round: i32,
+    ) -> Result<(), DomainError>;
 
     /// Recalculate positions for a bracket.
     async fn recalculate_positions(
@@ -816,19 +1058,6 @@ pub struct CreateTournamentStanding {
     pub bracket_id: TournamentBracketId,
     pub registration_id: TournamentRegistrationId,
     pub position: i32,
-}
-
-/// Data for updating tournament standings after a match.
-#[derive(Debug, Clone)]
-pub struct UpdateTournamentStanding {
-    pub bracket_id: TournamentBracketId,
-    pub registration_id: TournamentRegistrationId,
-    pub matches_won_delta: i32,
-    pub matches_lost_delta: i32,
-    pub matches_drawn_delta: i32,
-    pub game_wins_delta: i32,
-    pub game_losses_delta: i32,
-    pub points_delta: i32,
 }
 
 // =============================================================================
@@ -865,7 +1094,8 @@ pub trait TournamentMapPoolRepository: Send + Sync {
     ) -> Result<Option<TournamentMapPool>, DomainError>;
 
     /// Create or update map pool.
-    async fn upsert(&self, pool: UpsertTournamentMapPool) -> Result<TournamentMapPool, DomainError>;
+    async fn upsert(&self, pool: UpsertTournamentMapPool)
+    -> Result<TournamentMapPool, DomainError>;
 
     /// Delete a map pool.
     async fn delete(&self, id: TournamentMapPoolId) -> Result<(), DomainError>;
@@ -931,6 +1161,7 @@ pub struct CreateVetoSession {
     pub veto_format_id: String,
     pub map_pool: Vec<String>,
     pub timeout_seconds: u32,
+    pub side_selection_mode: crate::entities::veto::SideSelectionMode,
 }
 
 /// Data for updating a veto session.
@@ -967,8 +1198,10 @@ pub trait VetoActionRepository: Send + Sync {
     ) -> Result<Option<VetoAction>, DomainError>;
 
     /// List all actions for a session (ordered by action number).
-    async fn list_by_session(&self, session_id: VetoSessionId)
-        -> Result<Vec<VetoAction>, DomainError>;
+    async fn list_by_session(
+        &self,
+        session_id: VetoSessionId,
+    ) -> Result<Vec<VetoAction>, DomainError>;
 
     /// Create a new veto action.
     async fn create(&self, action: CreateVetoAction) -> Result<VetoAction, DomainError>;
@@ -1016,8 +1249,10 @@ pub trait ResultClaimRepository: Send + Sync {
     ) -> Result<Option<ResultClaim>, DomainError>;
 
     /// List all claims for a match (ordered by created_at desc).
-    async fn list_by_match(&self, match_id: TournamentMatchId)
-        -> Result<Vec<ResultClaim>, DomainError>;
+    async fn list_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<ResultClaim>, DomainError>;
 
     /// Create a new result claim.
     async fn create(&self, claim: CreateResultClaim) -> Result<ResultClaim, DomainError>;
@@ -1030,6 +1265,11 @@ pub trait ResultClaimRepository: Send + Sync {
     ) -> Result<ResultClaim, DomainError>;
 
     /// Update result claim status.
+    ///
+    /// Guarded transition: only a claim that is currently `pending` can
+    /// move (dispute/cancel/supersede all act on pending claims).
+    /// Returns [`DomainError::Conflict`] when the claim was already
+    /// resolved by a concurrent confirm/dispute/cancel.
     async fn update_status(
         &self,
         id: ResultClaimId,
@@ -1037,6 +1277,9 @@ pub trait ResultClaimRepository: Send + Sync {
     ) -> Result<ResultClaim, DomainError>;
 
     /// Confirm a result claim.
+    ///
+    /// Guarded on `status = 'pending'`; returns
+    /// [`DomainError::Conflict`] if the claim was already resolved.
     async fn confirm(
         &self,
         id: ResultClaimId,
@@ -1045,12 +1288,61 @@ pub trait ResultClaimRepository: Send + Sync {
         was_auto: bool,
     ) -> Result<ResultClaim, DomainError>;
 
+    /// Confirm a claim **and** apply its result to the match in a single
+    /// transaction.
+    ///
+    /// Performs three writes atomically:
+    /// 1. flip the claim to Confirmed (via the same path as
+    ///    [`Self::confirm`]),
+    /// 2. submit the claimed scores on the match row,
+    /// 3. transition the match status to Completed.
+    ///
+    /// Replaces the previous `confirm(...) + submit_result(...) +
+    /// complete(...)` chain in `ResultService::confirm_claim` /
+    /// `auto_confirm_claim`. Partial failure of the chain left the
+    /// claim marked Confirmed but the match still Pending, which
+    /// dangled FK targets for the bracket progression saga. See audit
+    /// item I5.
+    ///
+    /// The claim UPDATE is guarded on `status = 'pending'`: when two
+    /// confirms race, exactly one wins and the other receives
+    /// [`DomainError::Conflict`] (nothing is written for the loser —
+    /// the whole transaction rolls back). This is what prevents the
+    /// completion saga from running twice and double-counting
+    /// round-robin/swiss standings.
+    async fn confirm_and_apply_to_match(
+        &self,
+        id: ResultClaimId,
+        confirmed_by_registration_id: TournamentRegistrationId,
+        confirmed_by_user_id: UserId,
+        was_auto: bool,
+        match_id: TournamentMatchId,
+        winner_registration_id: TournamentRegistrationId,
+        loser_registration_id: TournamentRegistrationId,
+        participant1_score: i32,
+        participant2_score: i32,
+    ) -> Result<ResultClaim, DomainError>;
+
     /// Supersede all pending claims for a match (when a new claim is submitted).
     async fn supersede_pending_claims(
         &self,
         match_id: TournamentMatchId,
         except_claim_id: ResultClaimId,
     ) -> Result<(), DomainError>;
+
+    /// Create a new result claim and mark any prior pending claim for
+    /// the same match as `Superseded`, all in one transaction.
+    ///
+    /// Replaces the sequential `update_status(Superseded) + create`
+    /// pair in `ResultService::submit_claim`. Partial failure there
+    /// left the old claim marked Superseded with no replacement, so
+    /// the match had *no* actionable claim until the user resubmitted
+    /// — and during that window both confirmation and auto-confirm
+    /// treated the match as unclaimed. See audit I5.
+    async fn create_and_supersede_pending(
+        &self,
+        create: CreateResultClaim,
+    ) -> Result<ResultClaim, DomainError>;
 
     /// Find claims ready for auto-confirmation.
     async fn find_ready_for_auto_confirm(&self) -> Result<Vec<ResultClaim>, DomainError>;

@@ -1,5 +1,8 @@
 -- Migration: Seed dev user for local development
--- Description: Creates a well-known dev user and player for DEV_AUTH_ENABLED mode
+-- Description: Creates a well-known dev user and player consumed by the
+-- dev-token auth path that is compiled in only under the `test-utils` cargo
+-- feature. Production binaries do not contain the dev-token branch, so this
+-- user has no special meaning there.
 -- Note: This user has a fixed UUID that matches the auth extractor constants
 
 -- Create dev user (only if not exists)

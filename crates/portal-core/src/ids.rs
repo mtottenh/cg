@@ -481,6 +481,54 @@ define_id!(
     VetoDelegateId
 );
 
+// Bot / Service IDs
+define_id!(
+    /// Unique identifier for an API key used by bots and services.
+    ApiKeyId
+);
+
+define_id!(
+    /// Unique identifier for a steam tracking entry.
+    SteamTrackingId
+);
+
+define_id!(
+    /// Unique identifier for a discovered match from Steam.
+    DiscoveredMatchId
+);
+
+define_id!(
+    /// Unique identifier for a player rating history entry.
+    PlayerRatingHistoryId
+);
+
+define_id!(
+    /// Unique identifier for a player's public matchmaking aggregate stats.
+    PlayerMmStatsId
+);
+
+define_id!(
+    /// Unique identifier for a player match history entry.
+    PlayerMatchHistoryId
+);
+
+// Awards
+define_id!(
+    /// Unique identifier for an award template (per-game default catalog).
+    AwardTemplateId
+);
+
+define_id!(
+    /// Unique identifier for an award instance scoped to a tournament or
+    /// league season.
+    AwardId
+);
+
+define_id!(
+    /// Unique identifier for a finalized award result (podium row).
+    AwardResultId
+);
+
 // =============================================================================
 // String-based Slugs
 // =============================================================================

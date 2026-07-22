@@ -4,11 +4,11 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{CreateBanRequest, LiftBanRequest, ListBansQuery};
 use crate::dto::responses::{BanListResponse, BanResponse};
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::AuthenticatedUser;
-use crate::state::AppState;
+use crate::extractors::{AuthenticatedUser, PermissionChecker};
+use crate::state::BanState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use portal_core::{BanId, UserId};
 use portal_domain::entities::{BanFilters, BanType, CreateBanCommand, LiftBanCommand};
 use validator::Validate;
@@ -43,7 +43,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
     tag = "admin"
 )]
 pub async fn list_bans(
-    State(state): State<AppState>,
+    State(state): State<BanState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Query(query): Query<ListBansQuery>,
@@ -63,7 +63,10 @@ pub async fn list_bans(
 
     let filters = BanFilters {
         user_id: query.user_id.map(UserId::from),
-        ban_type: query.ban_type.as_ref().and_then(|t| t.parse::<BanType>().ok()),
+        ban_type: query
+            .ban_type
+            .as_ref()
+            .and_then(|t| t.parse::<BanType>().ok()),
         active_only: query.active_only,
         scope_type: query.scope_type,
         scope_id: query.scope_id,
@@ -97,7 +100,7 @@ pub async fn list_bans(
     tag = "admin"
 )]
 pub async fn get_ban(
-    State(state): State<AppState>,
+    State(state): State<BanState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -115,7 +118,9 @@ pub async fn get_ban(
         return Err(ApiError::forbidden("Admin access required"));
     }
 
-    let ban_id: BanId = id.parse().map_err(|_| ApiError::bad_request("Invalid ban ID"))?;
+    let ban_id: BanId = id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid ban ID"))?;
 
     let ban = state.ban_service.get_ban(ban_id).await?;
 
@@ -138,8 +143,9 @@ pub async fn get_ban(
     tag = "admin"
 )]
 pub async fn create_ban(
-    State(state): State<AppState>,
+    State(state): State<BanState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Json(body): Json<CreateBanRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<BanResponse>>)> {
@@ -149,16 +155,11 @@ pub async fn create_ban(
     body.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    // Check if user is admin
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
+    // Mutation: requires the explicit manage permission, not the read-level
+    // is_admin (users.view_all) check that moderators also pass.
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::BANS_MANAGE)
+        .await?;
 
     let ban_type: BanType = body
         .ban_type
@@ -203,8 +204,9 @@ pub async fn create_ban(
     tag = "admin"
 )]
 pub async fn lift_ban(
-    State(state): State<AppState>,
+    State(state): State<BanState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<LiftBanRequest>,
@@ -215,18 +217,15 @@ pub async fn lift_ban(
     body.validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    // Check if user is admin
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
+    // Mutation: requires the explicit manage permission, not the read-level
+    // is_admin (users.view_all) check that moderators also pass.
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::BANS_MANAGE)
+        .await?;
 
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
-
-    let ban_id: BanId = id.parse().map_err(|_| ApiError::bad_request("Invalid ban ID"))?;
+    let ban_id: BanId = id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid ban ID"))?;
 
     let cmd = LiftBanCommand {
         ban_id,
@@ -255,10 +254,10 @@ pub async fn lift_ban(
     tag = "admin"
 )]
 pub async fn get_user_bans(
-    State(state): State<AppState>,
+    State(state): State<BanState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path(user_id): Path<String>,
+    Path(user_id): Path<UserId>,
 ) -> ApiResult<Json<DataResponse<Vec<BanResponse>>>> {
     let request_id = get_request_id(&headers);
 
@@ -272,10 +271,6 @@ pub async fn get_user_bans(
     if !is_admin {
         return Err(ApiError::forbidden("Admin access required"));
     }
-
-    let user_id: UserId = user_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid user ID"))?;
 
     let bans = state.ban_service.get_user_ban_history(user_id).await?;
 

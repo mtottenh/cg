@@ -28,7 +28,7 @@ use crate::repositories::evidence::{
 };
 use crate::repositories::tournament::{
     ParticipantSlot, TournamentBracketRepository, TournamentMatchRepository,
-    TournamentRegistrationRepository, TournamentStandingsRepository, UpdateTournamentStanding,
+    TournamentRegistrationRepository, TournamentStandingsRepository,
 };
 use crate::services::tournament::{Saga, SagaCoordinator, SagaDefinition, SagaResult};
 use portal_core::types::MatchParticipantSource;
@@ -308,6 +308,44 @@ where
             }
         }
 
+        // Idempotency guard for the double-resume.
+        //
+        // `Acknowledged` is not a terminal review status, so both captains
+        // acknowledging a roster-only review resumes this saga (running the
+        // progression steps to completion) AND a subsequent admin `approve`
+        // of that same non-terminal review resumes it a *second* time. The
+        // standings step is now idempotent (it recomputes rather than adds),
+        // but the best-effort player-stats step is not — a second resume
+        // would double-count every participant's match/win/streak.
+        //
+        // Once a `match_completion` saga for this match has run to
+        // completion, the progression effects are already applied, so any
+        // further resume is a no-op. This does not affect the background
+        // re-drive of a *failed* saga (that path goes through
+        // `redrive_stuck_completion_sagas`, never here), which the derived
+        // standings recompute makes safe on its own.
+        let prior_sagas = self.saga_repo.find_by_match(match_id).await?;
+        if let Some(done) = prior_sagas
+            .into_iter()
+            .find(|s| s.saga_type == "match_completion" && s.is_completed())
+        {
+            info!(
+                match_id = %match_id,
+                saga_id = %done.id,
+                "Match completion already applied; skipping duplicate review resume"
+            );
+            let output = MatchCompletionOutput {
+                match_id,
+                winner_next_match_id: None,
+                loser_next_match_id: None,
+                standings_updated: false,
+                review_pending: false,
+                review_id: review.as_ref().map(|r| r.id),
+                summary: "Match completion already applied; resume skipped".to_string(),
+            };
+            return Ok(SagaResult::success(done, output));
+        }
+
         let saga_coordinator = SagaCoordinator::new(Arc::clone(&self.saga_repo));
 
         // Create a new saga execution for the continuation
@@ -442,7 +480,7 @@ where
 
         // Step 7: Update standings (if applicable)
         let standings_updated = self
-            .step_update_standings(saga_coordinator, execution, match_, &bracket, &input)
+            .step_update_standings(saga_coordinator, execution, match_, &bracket)
             .await?;
 
         // Step 8: Update player stats (best-effort, non-blocking)
@@ -994,7 +1032,6 @@ where
         execution: &mut SagaExecution,
         match_: &TournamentMatch,
         bracket: &TournamentBracket,
-        input: &MatchCompletionInput,
     ) -> Result<bool, DomainError> {
         const STEP_NAME: &str = "update_standings";
 
@@ -1015,38 +1052,15 @@ where
             return Ok(false);
         }
 
-        // Update standings using delta-based update
-        // Update winner
-        let winner_update = UpdateTournamentStanding {
-            bracket_id: match_.bracket_id,
-            registration_id: input.winner_registration_id,
-            matches_won_delta: 1,
-            matches_lost_delta: 0,
-            matches_drawn_delta: 0,
-            game_wins_delta: input.winner_score,
-            game_losses_delta: input.loser_score,
-            points_delta: 3, // 3 points for a win
-        };
+        // Recompute the bracket from its completed match rows instead of
+        // adding this match's deltas. `step_complete_match` has already
+        // persisted the winner/loser on the row, so this result is
+        // included — and because the write is a pure function of those
+        // rows, a saga re-drive (or an admin approving a review that was
+        // already resumed by captain acknowledgment) converges on the same
+        // numbers instead of counting the match twice.
         self.standings_repo
-            .update_after_match(winner_update)
-            .await?;
-
-        // Update loser
-        let loser_update = UpdateTournamentStanding {
-            bracket_id: match_.bracket_id,
-            registration_id: input.loser_registration_id,
-            matches_won_delta: 0,
-            matches_lost_delta: 1,
-            matches_drawn_delta: 0,
-            game_wins_delta: input.loser_score,
-            game_losses_delta: input.winner_score,
-            points_delta: 0,
-        };
-        self.standings_repo.update_after_match(loser_update).await?;
-
-        // Recalculate positions
-        self.standings_repo
-            .recalculate_positions(match_.bracket_id)
+            .recompute_bracket(match_.bracket_id)
             .await?;
 
         saga_coordinator

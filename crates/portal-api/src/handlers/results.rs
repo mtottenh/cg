@@ -8,13 +8,14 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, ValidatedJson};
-use crate::state::ResultState;
+use crate::state::{DisputeState, ResultState};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{
     DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId, UserId,
 };
+use portal_domain::entities::dispute::DisputeReason;
 use portal_domain::entities::result_claim::GameResultInput;
 use portal_domain::repositories::tournament::TournamentMatchRepository;
 use portal_domain::services::tournament::MatchCompletionInput;
@@ -343,11 +344,17 @@ pub async fn confirm_result(
             Ok(Json(DataResponse::new(response, request_id)))
         }
         Err(e) => {
-            // Saga failed — log but still return success since the claim was confirmed
+            // Saga failed after the claim-confirm tx already committed, so
+            // the result stands and this is still a 200 — but the winner
+            // has not been advanced yet. The saga row is left `failed` and
+            // the lifecycle re-drive pass
+            // (`background::redrive_stuck_completion_sagas`) picks it up on
+            // the next tick; previously nothing retried it at all.
             warn!(
                 match_id = %match_id,
                 error = %e,
-                "Match completion saga failed after result confirmation"
+                "Match completion saga failed after result confirmation; \
+                 queued for lifecycle re-drive"
             );
             let response = ResultConfirmationResponse {
                 claim: ResultClaimResponse::from(claim),
@@ -382,6 +389,7 @@ pub async fn confirm_result(
 )]
 pub async fn dispute_result(
     State(state): State<ResultState>,
+    State(dispute_state): State<DisputeState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path((match_id, claim_id)): Path<(String, String)>,
@@ -397,10 +405,42 @@ pub async fn dispute_result(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid claim ID format"))?;
 
-    let claim = state
+    let evidence_ids: Vec<EvidenceId> = req
+        .evidence_ids
+        .iter()
+        .map(|id| {
+            id.parse()
+                .map_err(|_| ApiError::bad_request("Invalid evidence ID format"))
+        })
+        .collect::<ApiResult<Vec<_>>>()?;
+
+    // Authorize first (claim must exist and be pending, caller must be the
+    // opposing participant), then let DisputeService do every write in one
+    // transaction. This endpoint used to run its own two-write path that
+    // never created a `disputes` row, so claim-path disputes never reached
+    // the admin queue.
+    let (claim, disputer_registration) = state
         .result_service
-        .dispute_claim(claim_id, auth.user_id, &req.reason)
+        .authorize_claim_dispute(claim_id, auth.user_id)
         .await?;
+
+    dispute_state
+        .dispute_service
+        .raise_dispute(
+            claim.match_id,
+            Some(claim_id),
+            // The endpoint only carries free text, so the structured
+            // reason is `Other` and the text becomes the description.
+            DisputeReason::Other,
+            req.reason,
+            evidence_ids,
+            disputer_registration,
+            auth.user_id,
+        )
+        .await?;
+
+    // Re-read so the response carries the post-dispute claim status.
+    let claim = state.result_service.get_claim_by_id(claim_id).await?;
 
     let response = ResultDisputeResponse {
         claim: ResultClaimResponse::from(claim),

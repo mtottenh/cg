@@ -523,7 +523,14 @@ where
             .session_repo
             .find_by_match(match_id)
             .await?
-            .ok_or_else(|| DomainError::Internal("Veto session not found".to_string()))?;
+            // 404, not 500: "this match has no veto session" is a normal
+            // client-visible outcome (every veto endpoint resolves the
+            // session through here), and a public 500 pollutes error-rate
+            // monitoring.
+            .ok_or_else(|| DomainError::LookupFailed {
+                resource: "veto session",
+                query: format!("match {match_id}"),
+            })?;
 
         let actions = self.action_repo.list_by_session(session.id).await?;
         let format = self.get_format(&session.veto_format_id)?;
@@ -561,7 +568,7 @@ where
         self.session_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Veto session {id} not found")))
+            .ok_or(DomainError::VetoSessionNotFound(id))
     }
 
     fn get_format(&self, format_id: &str) -> Result<VetoFormat, DomainError> {
@@ -594,7 +601,15 @@ where
         was_auto: bool,
         auto_reason: Option<&str>,
     ) -> Result<VetoActionResult, DomainError> {
-        // Create the action
+        // Create the action.
+        //
+        // The insert is idempotent on (session_id, action_number): if the
+        // process previously died between this insert and the session-cursor
+        // update below, the already-committed row is returned instead of a
+        // unique violation, so this call finishes the interrupted work rather
+        // than leaving the session wedged forever. The committed row — not
+        // this call's arguments — is therefore the source of truth for the
+        // session state computed below.
         let mut action = self
             .action_repo
             .create(CreateVetoAction {
@@ -609,9 +624,15 @@ where
             })
             .await?;
 
+        // The persisted map wins (it equals `map_id` on the normal path, and
+        // is the recorded map when we are recovering an already-committed
+        // action row).
+        let map_id = action.map_id.clone();
+
         // Auto-assign random side in CoinFlip mode for pick actions
         if session.side_selection_mode == SideSelectionMode::CoinFlip
             && matches!(format_action.action_type, VetoActionType::Pick)
+            && !action.has_side_selection()
         {
             // Use injected side provider for game-agnostic random side,
             // falling back to coin-flip between "ct" and "t".
@@ -636,14 +657,15 @@ where
 
         // Update session state
         let mut remaining = session.remaining_maps.clone();
-        remaining.retain(|m| m != map_id);
+        remaining.retain(|m| m != &map_id);
 
         let mut selected = session.selected_maps.clone();
         if matches!(
             format_action.action_type,
             VetoActionType::Pick | VetoActionType::Decider
-        ) {
-            selected.push(map_id.to_string());
+        ) && !selected.contains(&map_id)
+        {
+            selected.push(map_id.clone());
         }
 
         let next_action_number = session.current_action_number + 1;

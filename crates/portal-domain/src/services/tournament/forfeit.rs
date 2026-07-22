@@ -55,12 +55,15 @@ where
         // Validate the match can be forfeited
         self.validate_can_forfeit(&match_, forfeiting_registration_id)?;
 
-        // Check if already forfeited
-        if self.forfeit_repo.exists_for_match(match_id).await? {
-            return Err(DomainError::InvalidState(format!(
-                "Match {match_id} has already been forfeited"
-            )));
-        }
+        // NOTE: there is deliberately no `exists_for_match` refusal here.
+        // The forfeit record insert and the match update are two separate
+        // writes; if the process died between them the record existed while
+        // the match was still un-forfeited, and the old guard refused every
+        // retry, stranding the match forever. Re-forfeiting an *already
+        // terminal* match is still rejected by `validate_can_forfeit` above
+        // (a match in `forfeit`/`completed`/`cancelled` fails `can_forfeit`),
+        // and the record insert is idempotent (migration 0072), so a retry
+        // simply finishes the interrupted work.
 
         // Determine the winner (opponent)
         let winner_registration_id = self.determine_winner(&match_, forfeiting_registration_id)?;
@@ -136,11 +139,20 @@ where
             .participant2_registration_id
             .ok_or_else(|| DomainError::InvalidState("No participant 2 in match".to_string()))?;
 
-        // Check if already forfeited
-        if self.forfeit_repo.exists_for_match(match_id).await? {
-            return Err(DomainError::InvalidState(format!(
-                "Match {match_id} has already been forfeited"
-            )));
+        // Already fully processed? Return the existing outcome as a no-op
+        // instead of refusing. A *partially* processed double forfeit (one
+        // record written, the match never cancelled) falls through and is
+        // completed by the writes below — the record inserts are idempotent
+        // (migration 0072) and the status update is naturally idempotent.
+        if match_.status == TournamentMatchStatus::Cancelled
+            && let Some(existing) = self.forfeit_repo.find_by_match(match_id).await?
+        {
+            return Ok(ForfeitResult {
+                match_id,
+                forfeit_record: existing,
+                winner_registration_id: None,
+                progression_triggered: false,
+            });
         }
 
         // Create forfeit records for both teams

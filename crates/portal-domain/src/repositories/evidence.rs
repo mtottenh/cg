@@ -163,6 +163,21 @@ pub trait SagaExecutionRepository: Send + Sync {
     /// Find pending sagas.
     async fn find_pending(&self) -> Result<Vec<SagaExecution>, DomainError>;
 
+    /// Find sagas of `saga_type` that need re-driving: `failed`, or
+    /// `running` since before `stuck_since` (the process that owned them
+    /// died mid-flight). Only rows with retries left are returned.
+    ///
+    /// Backs the lifecycle re-drive pass. Before it existed, a completion
+    /// saga that failed after the result claim had already been confirmed
+    /// was simply logged — the handler returned 200 with
+    /// `bracket_advanced: false` and nothing ever advanced the winner.
+    async fn find_retryable(
+        &self,
+        saga_type: &str,
+        stuck_since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<SagaExecution>, DomainError>;
+
     /// Find sagas by status.
     async fn find_by_status(&self, status: SagaStatus) -> Result<Vec<SagaExecution>, DomainError>;
 

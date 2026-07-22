@@ -32,6 +32,54 @@ fn get_request_id(headers: &HeaderMap) -> &str {
         .unwrap_or("unknown")
 }
 
+/// Participant-or-admin gate for evidence endpoints that mutate or persist
+/// match state.
+///
+/// Mirrors the binding `add_link_evidence` / `initiate_upload` get from
+/// `EvidenceService::resolve_uploader_registration`: the caller must be the
+/// registrant of one of the match's two participant registrations, or hold
+/// the tournament admin override. Handlers that never reach the evidence
+/// service's own check (validation endpoints) must call this explicitly —
+/// otherwise any authenticated user can stamp results onto any match.
+async fn require_match_participant_or_admin(
+    state: &EvidenceState,
+    perm_checker: &PermissionChecker,
+    auth: &AuthenticatedUser,
+    match_id: TournamentMatchId,
+) -> ApiResult<()> {
+    if perm_checker
+        .has_admin_override(auth, ScopeType::Tournament)
+        .await
+    {
+        return Ok(());
+    }
+
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to load match: {e}")))?
+        .ok_or_else(|| ApiError::not_found("Match not found"))?;
+
+    for reg_id in [
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(reg) = state.registration_service.get_registration(reg_id).await
+            && reg.registered_by == auth.user_id
+        {
+            return Ok(());
+        }
+    }
+
+    Err(ApiError::forbidden(
+        "User is not a participant in this match",
+    ))
+}
+
 // =============================================================================
 // EVIDENCE UPLOAD ENDPOINTS
 // =============================================================================
@@ -119,6 +167,7 @@ pub async fn initiate_upload(
         (status = 200, description = "Upload completed", body = DataResponse<EvidenceResponse>),
         (status = 400, description = "File not uploaded", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not the uploader of this evidence", body = ApiError),
         (status = 404, description = "Evidence not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -126,7 +175,8 @@ pub async fn initiate_upload(
 )]
 pub async fn complete_upload(
     State(state): State<EvidenceState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((_match_id, evidence_id)): Path<(String, String)>,
 ) -> ApiResult<Json<DataResponse<EvidenceResponse>>> {
@@ -134,6 +184,20 @@ pub async fn complete_upload(
     let evidence_id: EvidenceId = evidence_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid evidence ID format"))?;
+
+    // Bind to the original uploader: `initiate_upload` records
+    // `uploaded_by_user_id`, so only the user who started this upload (or a
+    // tournament admin) may flip it Pending → Active.
+    let pending = state.evidence_service.get_evidence(evidence_id).await?;
+    if pending.uploaded_by_user_id != Some(auth.user_id)
+        && !perm_checker
+            .has_admin_override(&auth, ScopeType::Tournament)
+            .await
+    {
+        return Err(ApiError::forbidden(
+            "Only the user who initiated this upload may complete it",
+        ));
+    }
 
     let evidence = state.evidence_service.complete_upload(evidence_id).await?;
 
@@ -644,6 +708,8 @@ pub async fn link_discovered_evidence(
     responses(
         (status = 200, description = "Validation result", body = DataResponse<ValidationResultResponse>),
         (status = 400, description = "Validation error", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not a match participant", body = ApiError),
         (status = 404, description = "Match or evidence not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -651,12 +717,17 @@ pub async fn link_discovered_evidence(
 )]
 pub async fn validate_evidence(
     State(state): State<EvidenceState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<ValidateEvidenceRequest>,
 ) -> ApiResult<Json<DataResponse<ValidationResultResponse>>> {
     let request_id = get_request_id(&headers);
+
+    // This endpoint PERSISTS the outcome (evidence_repo.mark_validated), so
+    // it must be bound to the match like any other evidence mutation.
+    require_match_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
     let (_match, plugin) = resolve_evidence_plugin(&state, match_id).await?;
     let adapter = EvidencePluginAdapter::new(plugin)
@@ -923,6 +994,7 @@ use portal_plugins::{Cs2PluginWithEvidence, GameResult};
         (status = 200, description = "Validation result", body = DataResponse<DemoValidationResponse>),
         (status = 400, description = "Invalid request or demo not found", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not a match participant", body = ApiError),
         (status = 404, description = "Match not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -930,13 +1002,21 @@ use portal_plugins::{Cs2PluginWithEvidence, GameResult};
 )]
 pub async fn validate_demo(
     State(state): State<EvidenceState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
-    Path(_match_id): Path<String>,
+    Path(match_id): Path<String>,
     Query(query): Query<GetDemoStatsQuery>,
     ValidatedJson(req): ValidatedJson<ValidateDemoRequest>,
 ) -> ApiResult<Json<DataResponse<DemoValidationResponse>>> {
     let request_id = get_request_id(&headers);
+
+    // Demo validation reaches the CS2 plugin (and the external demo service)
+    // with caller-chosen scores; bind it to the match.
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+    require_match_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
     // Parse Steam IDs from query parameters
     let team1_steam_ids: Vec<String> = query

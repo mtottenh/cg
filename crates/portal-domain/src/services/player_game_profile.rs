@@ -2,7 +2,7 @@
 
 use crate::entities::PlayerGameProfile;
 use crate::repositories::PlayerGameProfileRepository;
-use portal_core::{DomainError, GameId, PlayerId};
+use portal_core::{DomainError, GameId, PlayerId, TournamentMatchId};
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -55,12 +55,15 @@ impl<PGPR: PlayerGameProfileRepository> PlayerGameProfileService<PGPR> {
 
     /// Update stats after a match completes.
     ///
-    /// Ensures the profile exists (via find_or_create) before updating.
+    /// Ensures the profile exists (via find_or_create) before updating. The
+    /// update is idempotent per `(player_id, match_id)`, so a saga re-drive
+    /// counts the match once.
     #[instrument(skip(self, new_stats))]
     pub async fn update_stats_after_match(
         &self,
         player_id: PlayerId,
         game_id: GameId,
+        match_id: TournamentMatchId,
         new_stats: serde_json::Value,
         is_win: bool,
         is_loss: bool,
@@ -70,7 +73,9 @@ impl<PGPR: PlayerGameProfileRepository> PlayerGameProfileService<PGPR> {
         self.profile_repo.find_or_create(player_id, game_id).await?;
 
         self.profile_repo
-            .update_stats_after_match(player_id, game_id, &new_stats, is_win, is_loss, is_draw)
+            .update_stats_after_match(
+                player_id, game_id, match_id, &new_stats, is_win, is_loss, is_draw,
+            )
             .await
     }
 

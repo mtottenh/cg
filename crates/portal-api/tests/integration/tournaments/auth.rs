@@ -357,9 +357,8 @@ async fn test_create_tournament_invalid_participant_range() {
     let app = TestApp::new().await;
     let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
-    // min_participants > max_participants
-    // This is validated by a database constraint, so we get a 500 error
-    // (In a production system, this would ideally be validated before hitting the DB)
+    // min_participants > max_participants — rejected by the domain
+    // service's cross-field check before it reaches the DB constraint.
     let response = app
         .post_json(
             "/v1/tournaments",
@@ -379,7 +378,5 @@ async fn test_create_tournament_invalid_participant_range() {
         )
         .await;
 
-    // The database constraint catches this, resulting in an internal error
-    // A proper validation layer would return 400 instead
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    response.assert_status(StatusCode::BAD_REQUEST);
 }

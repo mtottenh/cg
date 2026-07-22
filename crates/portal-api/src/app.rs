@@ -86,14 +86,35 @@ const DEFAULT_BODY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 /// in [`crate::handlers::evidence::local_evidence_upload`].
 const LOCAL_UPLOADS_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
+/// Configuration error raised while building the app.
+///
+/// Kept as a concrete error type (rather than a panic string) so
+/// [`try_create_app`] can surface it to a caller that wants to fail startup
+/// gracefully.
+#[derive(Debug, thiserror::Error)]
+pub enum AppConfigError {
+    /// `PORTAL_CORS_ORIGINS` is unset, empty, or parses to zero valid origins
+    /// in a release build.
+    #[error(
+        "PORTAL_CORS_ORIGINS must be set to a comma-separated origin list (or the literal \"*\") in release builds: {0}"
+    )]
+    CorsOrigins(String),
+}
+
 /// Build the CORS layer.
 ///
 /// `PORTAL_CORS_ORIGINS` (comma-separated origins) configures the allow-list.
-/// If unset, defaults to wildcard `*` — appropriate for local dev only.
-/// **In production, always set this env var explicitly** to a finite origin
-/// list; wildcard CORS combined with credentialed requests is a CSRF
-/// foot-gun.
-fn build_cors_layer() -> CorsLayer {
+///
+/// Fail-closed in release builds: unset, empty, or "set but nothing parsed"
+/// is a hard error, mirroring how `JWT_SECRET` hard-fails at boot. A silent
+/// wildcard fallback means a misconfigured deployment lets any website read
+/// authenticated API responses that the browser attaches a Bearer token to.
+/// An explicit literal `*` is still honored — that is a deliberate signal,
+/// not an accident.
+///
+/// Debug builds keep the permissive default so `cargo run` and the
+/// integration-test harness work with no env at all.
+fn build_cors_layer() -> Result<CorsLayer, AppConfigError> {
     let raw = std::env::var("PORTAL_CORS_ORIGINS").ok();
     // Enumerate allowed headers explicitly rather than using `Any` (wildcard).
     // Per the CORS spec, a wildcard `Access-Control-Allow-Headers: *` does
@@ -116,7 +137,7 @@ fn build_cors_layer() -> CorsLayer {
     match raw.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         // Explicit "*" is honored as wildcard (still a deliberate signal,
         // not a silent default).
-        Some("*") => base.allow_origin(Any),
+        Some("*") => Ok(base.allow_origin(Any)),
         Some(list) => {
             let origins: Vec<HeaderValue> = list
                 .split(',')
@@ -125,22 +146,39 @@ fn build_cors_layer() -> CorsLayer {
                 .filter_map(|o| HeaderValue::from_str(o).ok())
                 .collect();
             if origins.is_empty() {
-                tracing::warn!(
-                    "PORTAL_CORS_ORIGINS set but no valid origins parsed — falling back to wildcard"
-                );
-                base.allow_origin(Any)
+                cors_origins_unusable("set but no valid origins parsed")?;
+                Ok(base.allow_origin(Any))
             } else {
                 tracing::info!(?origins, "CORS origins configured from PORTAL_CORS_ORIGINS");
-                base.allow_origin(origins)
+                Ok(base.allow_origin(origins))
             }
         }
         None => {
-            tracing::warn!(
-                "PORTAL_CORS_ORIGINS not set — defaulting to wildcard CORS (dev-only; set to a comma-separated origin list in production)"
-            );
-            base.allow_origin(Any)
+            cors_origins_unusable("not set")?;
+            Ok(base.allow_origin(Any))
         }
     }
+}
+
+/// Debug builds: warn about an unusable `PORTAL_CORS_ORIGINS` and let the
+/// caller fall back to wildcard so `cargo run` and the integration-test
+/// harness work with no env at all.
+#[cfg(debug_assertions)]
+// Mirrors the release variant's signature, which genuinely returns an error.
+#[allow(clippy::unnecessary_wraps)]
+fn cors_origins_unusable(reason: &str) -> Result<(), AppConfigError> {
+    tracing::warn!(
+        reason,
+        "PORTAL_CORS_ORIGINS unusable — defaulting to wildcard CORS (debug build only; \
+         this is a hard startup failure in release)"
+    );
+    Ok(())
+}
+
+/// Release builds: refuse to start rather than silently serving wildcard CORS.
+#[cfg(not(debug_assertions))]
+fn cors_origins_unusable(reason: &str) -> Result<(), AppConfigError> {
+    Err(AppConfigError::CorsOrigins(reason.to_string()))
 }
 
 /// Tracing span builder that attaches the server-generated request id.
@@ -162,9 +200,13 @@ fn make_http_span(req: &Request<Body>) -> tracing::Span {
     )
 }
 
-/// Create the Axum application.
-pub fn create_app(state: AppState) -> Router {
-    let cors = build_cors_layer();
+/// Create the Axum application, failing on invalid configuration.
+///
+/// Prefer this over [`create_app`] in the server entry point: it lets a
+/// misconfigured deployment (see [`AppConfigError`]) exit with a diagnostic
+/// instead of panicking.
+pub fn try_create_app(state: AppState) -> Result<Router, AppConfigError> {
+    let cors = build_cors_layer()?;
 
     // Uploads sub-router: PUT writes files, everything else served by ServeDir.
     // Override the global body limit because file uploads are larger than
@@ -174,7 +216,7 @@ pub fn create_app(state: AppState) -> Router {
         .fallback_service(ServeDir::new(&state.uploads_path))
         .layer(DefaultBodyLimit::max(LOCAL_UPLOADS_BODY_LIMIT_BYTES));
 
-    Router::new()
+    Ok(Router::new()
         // API routes under /v1
         .nest("/v1", api_routes())
         // Swagger UI at /swagger-ui (also serves /api-docs/openapi.json)
@@ -194,5 +236,22 @@ pub fn create_app(state: AppState) -> Router {
         .layer(middleware::from_fn(request_id_middleware))
         .layer(cors)
         // State
-        .with_state(state)
+        .with_state(state))
+}
+
+/// Create the Axum application, panicking on invalid configuration.
+///
+/// Thin wrapper over [`try_create_app`] kept for the existing call sites
+/// (tests and the current entry point). A panic here still fails startup —
+/// the process never serves traffic with a wildcard CORS policy in release —
+/// but [`try_create_app`] gives a cleaner exit.
+///
+/// # Panics
+///
+/// Panics when the environment is misconfigured; see [`AppConfigError`].
+pub fn create_app(state: AppState) -> Router {
+    match try_create_app(state) {
+        Ok(app) => app,
+        Err(e) => panic!("invalid application configuration: {e}"),
+    }
 }

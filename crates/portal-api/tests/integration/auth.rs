@@ -638,3 +638,165 @@ async fn test_register_rejects_reserved_steam_placeholder_email() {
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
 }
+
+// ===========================================
+// Logout Tests
+// ===========================================
+
+/// Register a user and return `(access_token, refresh_token)`.
+async fn register_and_get_tokens(app: &TestApp, username: &str) -> (String, String) {
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/register",
+            &json!({
+                "username": username,
+                "email": format!("{username}@example.com"),
+                "password": "SecurePass123!",
+                "display_name": username
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    (
+        body["data"]["access_token"].as_str().unwrap().to_string(),
+        body["data"]["refresh_token"].as_str().unwrap().to_string(),
+    )
+}
+
+/// POST /v1/auth/logout revokes the presented refresh token so it can no
+/// longer be exchanged (previously a stolen token stayed live for 7 days).
+#[tokio::test]
+async fn test_logout_revokes_presented_refresh_token() {
+    let app = TestApp::new().await;
+    let (_access, refresh_token) = register_and_get_tokens(&app, "logoutuser").await;
+
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/logout",
+            &json!({ "refresh_token": refresh_token.as_str() }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["logged_out"], true);
+
+    // The token is dead.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/refresh",
+            &json!({ "refresh_token": refresh_token.as_str() }),
+        )
+        .await;
+    assert_eq!(
+        response.status,
+        StatusCode::UNAUTHORIZED,
+        "Refresh after logout must fail, got {}: {}",
+        response.status,
+        response.text()
+    );
+}
+
+/// Logout is idempotent and does not leak whether a token existed.
+#[tokio::test]
+async fn test_logout_unknown_token_is_ok() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/logout",
+            &json!({ "refresh_token": "definitely-not-a-real-refresh-token" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // No token at all is a 400 (nothing to revoke).
+    let response = app.post_json_no_auth("/v1/auth/logout", &json!({})).await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// Logging out one session must not kill the user's other sessions.
+#[tokio::test]
+async fn test_logout_does_not_affect_other_sessions() {
+    let app = TestApp::new().await;
+    let (_access, first_refresh) = register_and_get_tokens(&app, "logoutscopeduser").await;
+
+    // A second session for the same user.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/login",
+            &json!({
+                "username_or_email": "logoutscopeduser",
+                "password": "SecurePass123!"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let second_refresh = body["data"]["refresh_token"].as_str().unwrap().to_string();
+
+    // Log the first session out.
+    app.post_json_no_auth(
+        "/v1/auth/logout",
+        &json!({ "refresh_token": first_refresh.as_str() }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // The second session still refreshes.
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/refresh",
+            &json!({ "refresh_token": second_refresh.as_str() }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+}
+
+/// POST /v1/auth/logout-all revokes every refresh token for the caller.
+#[tokio::test]
+async fn test_logout_all_revokes_every_session() {
+    let app = TestApp::new().await;
+    let (access, first_refresh) = register_and_get_tokens(&app, "logoutalluser").await;
+
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/login",
+            &json!({
+                "username_or_email": "logoutalluser",
+                "password": "SecurePass123!"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let second_refresh = body["data"]["refresh_token"].as_str().unwrap().to_string();
+
+    // logout-all is bound to the access token, not to a refresh token value.
+    let response = app.post_with_token("/v1/auth/logout-all", &access).await;
+    response.assert_status(StatusCode::OK);
+
+    for token in [&first_refresh, &second_refresh] {
+        let response = app
+            .post_json_no_auth("/v1/auth/refresh", &json!({ "refresh_token": token }))
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNAUTHORIZED,
+            "Refresh after logout-all must fail, got {}: {}",
+            response.status,
+            response.text()
+        );
+    }
+}
+
+/// logout-all requires authentication.
+#[tokio::test]
+async fn test_logout_all_requires_auth() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .post_json_no_auth("/v1/auth/logout-all", &json!({}))
+        .await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+}

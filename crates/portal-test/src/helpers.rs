@@ -178,7 +178,7 @@ pub fn create_admin_token(user_id: Uuid, player_id: Uuid, username: &str, secret
 ///
 /// Panics if the dev user is not found.
 pub async fn get_dev_user_id(pool: &DbPool) -> Uuid {
-    sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE username = 'dev'")
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE username = 'devuser'")
         .fetch_one(pool)
         .await
         .expect("Dev user should exist (seeded by migrations)")
@@ -191,7 +191,7 @@ pub async fn get_dev_user_id(pool: &DbPool) -> Uuid {
 /// Panics if the dev player is not found.
 pub async fn get_dev_player_id(pool: &DbPool) -> Uuid {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT p.id FROM players p JOIN users u ON u.id = p.user_id WHERE u.username = 'dev'",
+        "SELECT p.id FROM players p JOIN users u ON u.id = p.user_id WHERE u.username = 'devuser'",
     )
     .fetch_one(pool)
     .await

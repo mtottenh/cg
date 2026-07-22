@@ -343,3 +343,99 @@ async fn test_get_check_in_status() {
     assert_eq!(body["data"]["tournament_id"], tournament_id);
     assert!(body["data"]["total_eligible"].as_i64().unwrap() >= 2);
 }
+
+// ============================================================================
+// CAPACITY RACE (audit: count-then-insert overflowed max_participants)
+// ============================================================================
+
+/// `max_participants` must hold under concurrent registration.
+///
+/// The old `count_registrations()` + `create()` pair ran on two separate
+/// pool connections, so N+1 racers all read the same pre-insert count and
+/// all inserted. `create_with_capacity_check` does both inside one
+/// transaction behind `SELECT ... FOR UPDATE` on the tournament row.
+#[tokio::test]
+async fn test_concurrent_registrations_cannot_exceed_max_participants() {
+    use portal_db::adapters::PgTournamentRegistrationRepository;
+    use portal_domain::repositories::tournament::{
+        CreateTournamentRegistration, TournamentRegistrationRepository,
+    };
+    use std::sync::Arc;
+
+    const CAPACITY: i32 = 4;
+    const RACERS: i32 = CAPACITY + 3;
+
+    let app = TestApp::new().await;
+
+    let tournament = TournamentBuilder::new()
+        .slug(format!("cap-race-{}", Uuid::new_v4()))
+        .individual()
+        .participants(2, CAPACITY)
+        .registration_open()
+        .build_persisted(app.pool())
+        .await;
+
+    // Distinct players so the per-tournament uniqueness constraints are
+    // not what limits the winners.
+    // `UserBuilder::build_persisted` also creates the 1:1 player row with
+    // the same UUID.
+    let mut players = Vec::new();
+    for _ in 0..RACERS {
+        let user = UserBuilder::new().build_persisted(app.pool()).await;
+        players.push((user.id, user.id));
+    }
+
+    let repo = Arc::new(PgTournamentRegistrationRepository::new(app.pool().clone()));
+
+    let mut handles = Vec::new();
+    for (i, (user_id, player_id)) in players.into_iter().enumerate() {
+        let repo = Arc::clone(&repo);
+        let tournament_id = TournamentId::from(tournament.id);
+        handles.push(tokio::spawn(async move {
+            repo.create_with_capacity_check(
+                CreateTournamentRegistration {
+                    tournament_id,
+                    team_season_id: None,
+                    player_id: Some(PlayerId::from(player_id)),
+                    adhoc_team_id: None,
+                    participant_name: format!("Racer {i}"),
+                    participant_logo_url: None,
+                    registered_by: UserId::from(user_id),
+                    seed_rating: None,
+                },
+                None,
+            )
+            .await
+        }));
+    }
+
+    let mut succeeded = 0;
+    let mut full = 0;
+    for handle in handles {
+        match handle.await.expect("task panicked") {
+            Ok(_) => succeeded += 1,
+            Err(DomainError::TournamentFull) => full += 1,
+            Err(e) => panic!("unexpected error from concurrent registration: {e}"),
+        }
+    }
+
+    assert_eq!(
+        succeeded, CAPACITY,
+        "exactly max_participants registrations should succeed"
+    );
+    assert_eq!(full, RACERS - CAPACITY, "the rest must see TournamentFull");
+
+    let stored: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM tournament_registrations
+         WHERE tournament_id = $1 AND status NOT IN ('withdrawn', 'rejected')",
+    )
+    .bind(tournament.id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        stored,
+        i64::from(CAPACITY),
+        "database must not hold more registrations than max_participants"
+    );
+}

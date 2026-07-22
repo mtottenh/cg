@@ -68,7 +68,11 @@ where
         let match_ = self.get_match(match_id).await?;
 
         // Validate the match can be disputed
-        self.validate_can_dispute(&match_, disputed_by_registration_id)?;
+        self.validate_can_dispute(
+            &match_,
+            disputed_by_registration_id,
+            result_claim_id.is_some(),
+        )?;
 
         // Check if there's already a pending dispute
         if self.dispute_repo.exists_pending_for_match(match_id).await? {
@@ -681,12 +685,20 @@ where
         &self,
         match_: &TournamentMatch,
         disputed_by_registration_id: TournamentRegistrationId,
+        targets_result_claim: bool,
     ) -> Result<(), DomainError> {
-        // Check if match can be disputed
-        if !matches!(
-            match_.status,
-            TournamentMatchStatus::Completed | TournamentMatchStatus::Disputed
-        ) {
+        // Check if match can be disputed. A dispute aimed at a specific
+        // *result claim* is also legal while the match is still live —
+        // that is exactly the "opponent submitted a bogus score, I reject
+        // it" flow behind POST /matches/{id}/result/{claim}/dispute, which
+        // fires before the claim is confirmed and the match completed.
+        let live_claim_dispute = targets_result_claim && match_.status.can_submit_result();
+        if !live_claim_dispute
+            && !matches!(
+                match_.status,
+                TournamentMatchStatus::Completed | TournamentMatchStatus::Disputed
+            )
+        {
             return Err(DomainError::InvalidState(format!(
                 "Match in {} status cannot be disputed",
                 match_.status

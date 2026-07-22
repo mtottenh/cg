@@ -47,3 +47,14 @@ pub struct LoginResponse {
     #[schema(example = "john_doe")]
     pub username: String,
 }
+
+/// Response for logout / logout-all.
+///
+/// Deliberately carries no detail about *which* tokens existed — logout is
+/// idempotent and must not become an oracle for guessing valid tokens.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct LogoutResponse {
+    /// Whether the session(s) are now revoked. Always `true` on success.
+    #[schema(example = true)]
+    pub logged_out: bool,
+}

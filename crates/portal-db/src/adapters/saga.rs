@@ -21,11 +21,92 @@ pub struct PgSagaExecutionRepository {
     pool: DbPool,
 }
 
+/// A live ('pending'/'running') saga that has not progressed for at least
+/// this long is treated as the leftover of a crashed process: `create`
+/// retires it so a fresh completion for the match can proceed. A genuinely
+/// concurrent completion runs to a terminal state in well under a second, so
+/// this threshold never races a real in-flight saga — the concurrent
+/// double-run protection from `uq_saga_executions_live_per_match` still holds
+/// for fresh rows.
+const STALE_LIVE_SAGA_MINUTES: i32 = 10;
+
+/// Whether an sqlx error is the live-saga-per-match uniqueness violation.
+fn is_live_saga_conflict(e: &sqlx::Error) -> bool {
+    matches!(
+        e,
+        sqlx::Error::Database(db_err)
+            if db_err.constraint() == Some("uq_saga_executions_live_per_match")
+    )
+}
+
 impl PgSagaExecutionRepository {
     /// Create a new repository instance.
     #[must_use]
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
+    }
+
+    /// Insert a saga row as `running` with `started_at = NOW()`.
+    ///
+    /// Sagas are created directly in `running` (never `pending`) so that
+    /// `started_at` — the only timing signal the crash-recovery machinery
+    /// has — is stamped in the same round trip. This also collapses the
+    /// window in which a crash could leave a row `pending` to nothing.
+    async fn insert_running(
+        &self,
+        saga: &CreateSagaExecution,
+    ) -> Result<SagaExecutionRow, sqlx::Error> {
+        sqlx::query_as::<_, SagaExecutionRow>(
+            r"INSERT INTO saga_executions (saga_type, saga_version, tournament_id, match_id, correlation_id, input_data, max_retries, status, started_at)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', NOW())
+              RETURNING *",
+        )
+        .bind(&saga.saga_type)
+        .bind(saga.saga_version)
+        .bind(saga.tournament_id.map(|id| id.as_uuid()))
+        .bind(saga.match_id.map(|id| id.as_uuid()))
+        .bind(&saga.correlation_id)
+        .bind(&saga.input_data)
+        .bind(saga.max_retries)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// Retire any *stale* live saga row for the same match + type to a
+    /// terminal `failed` state so a new completion can be started. Returns
+    /// whether a row was retired.
+    ///
+    /// Only rows older than [`STALE_LIVE_SAGA_MINUTES`] are affected, so a
+    /// genuinely concurrent (freshly created) live saga is never retired:
+    /// the WHERE clause matches nothing and the caller surfaces the original
+    /// `Conflict`, preserving the double-run guard. Retiring bumps
+    /// `retry_count` to the ceiling so the crashed row is not re-selected by
+    /// `find_retryable` either.
+    async fn retire_stale_live_saga(
+        &self,
+        saga: &CreateSagaExecution,
+    ) -> Result<bool, DomainError> {
+        let Some(match_id) = saga.match_id else {
+            return Ok(false);
+        };
+
+        let rows = sqlx::query(
+            r"UPDATE saga_executions
+              SET status = 'failed', retry_count = max_retries, completed_at = NOW(),
+                  last_error = COALESCE(last_error, 'retired: stale live saga superseded by a new completion')
+              WHERE match_id = $1 AND saga_type = $2
+                AND status IN ('pending', 'running')
+                AND created_at < NOW() - make_interval(mins => $3)
+              RETURNING id",
+        )
+        .bind(match_id.as_uuid())
+        .bind(&saga.saga_type)
+        .bind(STALE_LIVE_SAGA_MINUTES)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to retire stale saga: {e}")))?;
+
+        Ok(!rows.is_empty())
     }
 }
 
@@ -95,36 +176,34 @@ impl SagaExecutionRepository for PgSagaExecutionRepository {
     }
 
     async fn create(&self, saga: CreateSagaExecution) -> Result<SagaExecution, DomainError> {
-        let row = sqlx::query_as::<_, SagaExecutionRow>(
-            r"INSERT INTO saga_executions (saga_type, saga_version, tournament_id, match_id, correlation_id, input_data, max_retries, status)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
-              RETURNING *",
-        )
-        .bind(&saga.saga_type)
-        .bind(saga.saga_version)
-        .bind(saga.tournament_id.map(|id| id.as_uuid()))
-        .bind(saga.match_id.map(|id| id.as_uuid()))
-        .bind(&saga.correlation_id)
-        .bind(&saga.input_data)
-        .bind(saga.max_retries)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| {
-            // Partial unique index uq_saga_executions_live_per_match:
-            // another live saga of this type already exists for the match
-            // (e.g. two racing confirms). Surface as Conflict so callers
-            // return 409 instead of double-running the completion.
-            if let sqlx::Error::Database(ref db_err) = e
-                && db_err.constraint() == Some("uq_saga_executions_live_per_match")
-            {
-                return DomainError::Conflict(
-                    "A completion is already in progress for this match".to_string(),
-                );
+        match self.insert_running(&saga).await {
+            Ok(row) => row_to_saga(row),
+            Err(e) if is_live_saga_conflict(&e) => {
+                // Partial unique index uq_saga_executions_live_per_match:
+                // another live saga of this type already exists for the
+                // match. If it is the leftover of a crashed process (stale),
+                // retire it and retry so the match is not wedged forever.
+                // If it is a genuinely concurrent completion (fresh), leave
+                // it untouched and surface Conflict so the caller 409s
+                // instead of double-running the completion.
+                if self.retire_stale_live_saga(&saga).await? {
+                    match self.insert_running(&saga).await {
+                        Ok(row) => row_to_saga(row),
+                        // Another live row appeared between retire and retry
+                        // (a real concurrent run) — do not loop, just 409.
+                        Err(e) if is_live_saga_conflict(&e) => Err(DomainError::Conflict(
+                            "A completion is already in progress for this match".to_string(),
+                        )),
+                        Err(e) => Err(DomainError::Internal(format!("Failed to create saga: {e}"))),
+                    }
+                } else {
+                    Err(DomainError::Conflict(
+                        "A completion is already in progress for this match".to_string(),
+                    ))
+                }
             }
-            DomainError::Internal(format!("Failed to create saga: {e}"))
-        })?;
-
-        row_to_saga(row)
+            Err(e) => Err(DomainError::Internal(format!("Failed to create saga: {e}"))),
+        }
     }
 
     async fn update(&self, saga: &SagaExecution) -> Result<SagaExecution, DomainError> {
@@ -174,13 +253,48 @@ impl SagaExecutionRepository for PgSagaExecutionRepository {
         &self,
         running_since_before: DateTime<Utc>,
     ) -> Result<Vec<SagaExecution>, DomainError> {
+        // Include crash-left 'pending' rows (started_at is NULL for a
+        // never-started row, so they key off created_at) for consistency
+        // with find_retryable, even though nothing calls find_stuck today.
         let rows = sqlx::query_as::<_, SagaExecutionRow>(
-            r"SELECT * FROM saga_executions WHERE status = 'running' AND started_at < $1",
+            r"SELECT * FROM saga_executions
+              WHERE (status = 'running' AND started_at IS NOT NULL AND started_at < $1)
+                 OR (status = 'pending' AND created_at < $1)",
         )
         .bind(running_since_before)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(format!("Failed to find stuck sagas: {e}")))?;
+
+        rows.into_iter().map(row_to_saga).collect()
+    }
+
+    async fn find_retryable(
+        &self,
+        saga_type: &str,
+        stuck_since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<SagaExecution>, DomainError> {
+        let rows = sqlx::query_as::<_, SagaExecutionRow>(
+            r"
+            SELECT * FROM saga_executions
+            WHERE saga_type = $1
+              AND retry_count < max_retries
+              AND (
+                status = 'failed'
+                OR (status = 'running' AND started_at IS NOT NULL AND started_at < $2)
+                OR (status = 'pending' AND created_at < $2)
+              )
+            ORDER BY updated_at ASC
+            LIMIT $3
+            ",
+        )
+        .bind(saga_type)
+        .bind(stuck_since)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to find retryable sagas: {e}")))?;
 
         rows.into_iter().map(row_to_saga).collect()
     }

@@ -20,7 +20,7 @@ use crate::entities::tournament::{
 use crate::repositories::tournament::{
     CreateTournamentBracket, ParticipantSlot, TournamentBracketRepository,
     TournamentMatchRepository, TournamentRegistrationRepository, TournamentStageRepository,
-    TournamentStandingsRepository, UpdateTournamentStanding,
+    TournamentStandingsRepository,
 };
 
 use super::bracket_generator::groups;
@@ -322,14 +322,16 @@ where
         })
     }
 
-    /// Update standings after a match.
+    /// Persist this match's result and recompute the bracket's standings
+    /// from every completed match row it contains.
     ///
-    /// Persists the same delta-based updates the match-completion saga
-    /// uses (`update_after_match`), then re-ranks. The previous version
-    /// mutated an in-memory `Vec` and only called
-    /// `recalculate_positions`, which re-ranked *unchanged* stored
-    /// points — the admin/dispute-reapply path returned standings the
-    /// database never contained.
+    /// Standings used to be delta-accumulated here (`update_after_match`
+    /// twice, then re-rank), which meant a retried or double-delivered
+    /// admin `progression/process` counted the same match again. They are
+    /// now *derived*: we make sure the match row records this
+    /// winner/loser — that row is the source of truth, and on the reapply
+    /// path it still holds the overturned result — and then recompute.
+    /// Running it any number of times converges.
     async fn update_standings(
         &self,
         bracket: &TournamentBracket,
@@ -337,54 +339,24 @@ where
         winner_id: TournamentRegistrationId,
         loser_id: TournamentRegistrationId,
     ) -> Result<Vec<TournamentStanding>, DomainError> {
-        let (winner_delta, loser_delta) =
-            Self::standings_deltas(bracket, match_, winner_id, loser_id);
-
-        self.standing_repo.update_after_match(winner_delta).await?;
-        self.standing_repo.update_after_match(loser_delta).await?;
-
-        // Re-rank on the freshly persisted points and return the
-        // standings exactly as stored.
-        self.standing_repo.recalculate_positions(bracket.id).await
-    }
-
-    /// Build the winner/loser standings deltas for a match result —
-    /// shared between apply (`update_after_match`) and revert
-    /// (`revert_after_match`) so they always mirror each other.
-    fn standings_deltas(
-        bracket: &TournamentBracket,
-        match_: &TournamentMatch,
-        winner_id: TournamentRegistrationId,
-        loser_id: TournamentRegistrationId,
-    ) -> (UpdateTournamentStanding, UpdateTournamentStanding) {
-        let (winner_score, loser_score) = if match_.participant1_registration_id == Some(winner_id)
+        if match_.winner_registration_id != Some(winner_id)
+            || match_.loser_registration_id != Some(loser_id)
         {
-            (match_.participant1_score, match_.participant2_score)
-        } else {
-            (match_.participant2_score, match_.participant1_score)
-        };
+            // Scores stay as recorded; only the attribution changes. That
+            // matches the old delta behaviour, which read the winner's
+            // games out of whichever participant slot they occupied.
+            self.match_repo
+                .submit_result(
+                    match_.id,
+                    match_.participant1_score,
+                    match_.participant2_score,
+                    winner_id,
+                    loser_id,
+                )
+                .await?;
+        }
 
-        let winner_delta = UpdateTournamentStanding {
-            bracket_id: bracket.id,
-            registration_id: winner_id,
-            matches_won_delta: 1,
-            matches_lost_delta: 0,
-            matches_drawn_delta: 0,
-            game_wins_delta: winner_score,
-            game_losses_delta: loser_score,
-            points_delta: 3, // 3 points for a win
-        };
-        let loser_delta = UpdateTournamentStanding {
-            bracket_id: bracket.id,
-            registration_id: loser_id,
-            matches_won_delta: 0,
-            matches_lost_delta: 1,
-            matches_drawn_delta: 0,
-            game_wins_delta: loser_score,
-            game_losses_delta: winner_score,
-            points_delta: 0,
-        };
-        (winner_delta, loser_delta)
+        self.standing_repo.recompute_bracket(bracket.id).await
     }
 
     /// Find matches that are now ready to start.
@@ -857,34 +829,40 @@ where
 
     /// Revert progression for a match (used when result is overturned).
     ///
-    /// For round-robin/swiss brackets this subtracts the recorded
-    /// result's standings deltas (the exact inverse of what
-    /// `update_standings` applied), so a subsequent reapply with a
-    /// different winner does not double-count. Elimination-bracket slot
-    /// clearing still needs dedicated infrastructure and is logged only.
+    /// Standings are *derived* from the completed match rows that carry a
+    /// winner, so reverting means removing this match from that source —
+    /// clearing `winner_registration_id`/`loser_registration_id` — and
+    /// recomputing. Subtracting deltas (the old behaviour) was not
+    /// idempotent: because the winner was never cleared, a second revert
+    /// re-derived the same deltas and drove the standings negative.
+    ///
+    /// Clearing the result is a no-op on an already-reverted match, and
+    /// the recompute is a pure function of what is left, so reverting N
+    /// times lands in the same place as reverting once.
+    ///
+    /// Elimination-bracket slot clearing still needs dedicated
+    /// infrastructure and is logged only.
     #[instrument(skip(self))]
     pub async fn revert_progression(&self, match_id: TournamentMatchId) -> Result<(), DomainError> {
         let match_ = self.get_match(match_id).await?;
         let bracket = self.get_bracket(match_.bracket_id).await?;
 
-        // Subtract the previously persisted standings deltas, derived
-        // from the winner/loser recorded on the match row.
         if matches!(
             bracket.bracket_type,
             BracketType::RoundRobin | BracketType::Swiss
-        ) && let (Some(winner_id), Some(loser_id)) =
-            (match_.winner_registration_id, match_.loser_registration_id)
-        {
-            let (winner_delta, loser_delta) =
-                Self::standings_deltas(&bracket, &match_, winner_id, loser_id);
-            self.standing_repo.revert_after_match(winner_delta).await?;
-            self.standing_repo.revert_after_match(loser_delta).await?;
-            self.standing_repo.recalculate_positions(bracket.id).await?;
-            info!(
-                match_id = %match_id,
-                winner = %winner_id,
-                "Reverted standings deltas for recorded result"
-            );
+        ) {
+            if match_.winner_registration_id.is_some() || match_.loser_registration_id.is_some() {
+                self.match_repo.clear_result(match_id).await?;
+                info!(
+                    match_id = %match_id,
+                    "Cleared recorded result so standings no longer derive it"
+                );
+            }
+
+            // Always recompute — even when there was nothing to clear —
+            // so a revert converges the bracket regardless of how it got
+            // into its current state.
+            self.standing_repo.recompute_bracket(bracket.id).await?;
         }
 
         // If winner advanced, we need to clear that participant from the target match

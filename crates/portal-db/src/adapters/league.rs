@@ -634,6 +634,67 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         Ok(LeagueInvitation::from(row))
     }
 
+    async fn accept_and_add_member(
+        &self,
+        invitation_id: LeagueInvitationId,
+        responded_by: UserId,
+        member: AddLeagueMember,
+    ) -> Result<LeagueMember, DomainError> {
+        // Atomic counterpart of `update_status(Accepted) + add_member`.
+        // Both writes commit together or neither does, so a failure of the
+        // membership insert can no longer leave the invitation marked
+        // `accepted` with the user outside the league. See audit I5 / the
+        // league-team equivalent in adapters/league_team/invitation.rs.
+        //
+        // The membership insert is deliberately NOT an upsert: an existing
+        // membership row means this invitation is not the reason the user is
+        // in the league, and the whole operation must roll back rather than
+        // silently consume the invitation.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let updated = sqlx::query(
+            r"
+            UPDATE league_invitations
+            SET status = $2, responded_by = $3, responded_at = NOW()
+            WHERE id = $1
+            ",
+        )
+        .bind(invitation_id.as_uuid())
+        .bind(LeagueInvitationStatus::Accepted.as_str())
+        .bind(responded_by.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        if updated.rows_affected() == 0 {
+            return Err(DomainError::Internal("Invitation not found".to_string()));
+        }
+
+        let row = sqlx::query_as::<_, LeagueMemberRow>(
+            r"
+            INSERT INTO league_members (league_id, user_id, membership_type)
+            VALUES ($1, $2, $3)
+            RETURNING *
+            ",
+        )
+        .bind(member.league_id.as_uuid())
+        .bind(member.user_id.as_uuid())
+        .bind(member.membership_type.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(LeagueMember::from(row))
+    }
+
     async fn find_pending(
         &self,
         league_id: LeagueId,

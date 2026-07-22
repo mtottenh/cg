@@ -256,6 +256,27 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         Ok(rows.into_iter().map(TournamentMatch::from).collect())
     }
 
+    async fn list_checkin_missing_deadline(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError> {
+        let rows = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            SELECT * FROM tournament_matches
+            WHERE status = 'checking_in'
+              AND check_in_deadline IS NULL
+            ORDER BY updated_at
+            LIMIT $1
+            ",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(TournamentMatch::from).collect())
+    }
+
     async fn set_check_in_deadline(
         &self,
         id: TournamentMatchId,
@@ -407,6 +428,35 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         .bind(participant2_score)
         .bind(winner_id.as_uuid())
         .bind(loser_id.as_uuid())
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentMatch::from(row))
+    }
+
+    async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError> {
+        let now = Utc::now();
+
+        // Scores are deliberately kept: they are audit data, and the admin
+        // reapply path rewrites the winner over the same scores. Standings
+        // are derived from completed rows carrying BOTH a winner and a
+        // loser, so nulling those two columns is what takes this match out
+        // of the calculation. Running it on an already-cleared match is a
+        // no-op — which is exactly what makes revert idempotent.
+        let row = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            UPDATE tournament_matches SET
+                winner_registration_id = NULL,
+                loser_registration_id = NULL,
+                completed_at = NULL,
+                updated_at = $2
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
         .bind(now)
         .fetch_one(&self.pool)
         .await

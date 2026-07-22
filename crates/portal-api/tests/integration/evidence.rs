@@ -863,3 +863,182 @@ async fn test_access_url_denied_for_non_participants() {
         .await;
     response.assert_status(StatusCode::FORBIDDEN);
 }
+
+// ============================================================================
+// VALIDATION / COMPLETE-UPLOAD PARTICIPANT BINDING
+// ============================================================================
+
+/// `validate_evidence` persists its outcome (`evidence_repo.mark_validated`),
+/// so it must be participant-or-admin bound like every other evidence
+/// mutation — previously any authenticated user could stamp attacker-chosen
+/// validation results onto any match.
+#[tokio::test]
+async fn test_validate_evidence_requires_participant() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _reg1, _reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "evidence-val-authz")
+            .await;
+
+    // A participant attaches link evidence to validate against.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/link"),
+            &json!({
+                "evidence_type": "video",
+                "url": "https://example.com/validate-vod",
+                "name": "Validate VOD"
+            }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let evidence_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    let payload = json!({
+        "evidence_ids": [evidence_id],
+        "expected_participant1_score": 16,
+        "expected_participant2_score": 0
+    });
+
+    // Outsider is rejected before any persistence happens.
+    let outsider = UserBuilder::new()
+        .username("evidence_validator_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = evidence_outsider_token(outsider.id, "evidence_validator_outsider");
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/validate"),
+            &payload,
+            &outsider_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // A participant passes the gate. The plugin outcome itself is not
+    // asserted here (it depends on the CS2 validator and the demo service);
+    // what matters is that authorization no longer blocks them.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/validate"),
+            &payload,
+            &player2_token,
+        )
+        .await;
+    assert!(
+        response.status != StatusCode::FORBIDDEN && response.status != StatusCode::UNAUTHORIZED,
+        "Participant validate_evidence should pass the authz gate, got {}: {}",
+        response.status,
+        response.text()
+    );
+}
+
+/// `validate_demo` reaches the CS2 plugin with caller-chosen scores; it is
+/// participant-or-admin bound too.
+#[tokio::test]
+async fn test_validate_demo_requires_participant() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _reg1, _reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(
+            &app,
+            "evidence-demo-authz",
+        )
+        .await;
+
+    let payload = json!({
+        "demo_name": "some_match.dem",
+        "map_id": "de_dust2",
+        "participant1_score": 16,
+        "participant2_score": 0
+    });
+
+    let outsider = UserBuilder::new()
+        .username("evidence_demo_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = evidence_outsider_token(outsider.id, "evidence_demo_outsider");
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/validate-demo"),
+            &payload,
+            &outsider_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // A participant gets past authz (the demo itself does not exist, so the
+    // plugin fails downstream — that is a 400, not a 403).
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/validate-demo"),
+            &payload,
+            &player2_token,
+        )
+        .await;
+    assert!(
+        response.status != StatusCode::FORBIDDEN && response.status != StatusCode::UNAUTHORIZED,
+        "Participant validate_demo should pass the authz gate, got {}: {}",
+        response.status,
+        response.text()
+    );
+}
+
+/// `complete_upload` flips evidence Pending → Active, so it is bound to the
+/// user who initiated the upload — not merely to any authenticated caller.
+#[tokio::test]
+async fn test_complete_upload_bound_to_uploader() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _reg1, _reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(
+            &app,
+            "evidence-complete-authz",
+        )
+        .await;
+
+    // Player 2 (a participant) initiates the upload.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/upload"),
+            &json!({
+                "evidence_type": "demo",
+                "file_name": "player2.dem",
+                "file_size_bytes": 1024,
+                "mime_type": "application/octet-stream"
+            }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let evidence_id = body["data"]["evidence_id"].as_str().unwrap().to_string();
+
+    // An unrelated authenticated user cannot complete it.
+    let outsider = UserBuilder::new()
+        .username("evidence_complete_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = evidence_outsider_token(outsider.id, "evidence_complete_outsider");
+    let response = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/evidence/{evidence_id}/complete"),
+            &outsider_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // The original uploader passes the gate (the file was never actually
+    // PUT to storage, so the completion itself fails downstream — 400, not 403).
+    let response = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/evidence/{evidence_id}/complete"),
+            &player2_token,
+        )
+        .await;
+    assert!(
+        response.status != StatusCode::FORBIDDEN && response.status != StatusCode::UNAUTHORIZED,
+        "Uploader complete_upload should pass the authz gate, got {}: {}",
+        response.status,
+        response.text()
+    );
+}

@@ -167,6 +167,22 @@ pub trait LeagueInvitationRepository: Send + Sync {
         responded_by: UserId,
     ) -> Result<LeagueInvitation, DomainError>;
 
+    /// Atomically mark an invitation/application accepted AND seat the user
+    /// as a league member.
+    ///
+    /// Replaces the old `update_status(Accepted)` + `add_member` pair: when
+    /// the second write failed (or the process died between them) the
+    /// invitation was left `accepted` with no membership row, and the
+    /// `status == Pending` guard then refused every retry — locking the user
+    /// out of an invite-only league forever. Mirrors
+    /// `LeagueTeamInvitationRepository::accept_and_add_member`.
+    async fn accept_and_add_member(
+        &self,
+        invitation_id: LeagueInvitationId,
+        responded_by: UserId,
+        member: AddLeagueMember,
+    ) -> Result<LeagueMember, DomainError>;
+
     /// Find pending invitation for a league and user.
     async fn find_pending(
         &self,

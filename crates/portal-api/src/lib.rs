@@ -31,7 +31,7 @@ pub mod state;
 pub mod steam_openid;
 pub mod websocket;
 
-pub use app::create_app;
+pub use app::{AppConfigError, create_app, try_create_app};
 pub use background::spawn_lifecycle_task;
 pub use state::{
     AdminState, AppState, AuthState, AvailabilityState, BanState, DemoState, DisputeState,

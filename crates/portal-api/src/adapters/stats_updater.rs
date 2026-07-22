@@ -179,7 +179,9 @@ where
                 .calculate_new_stats(player_id, game_id, &plugin, &match_data)
                 .await;
             self.profile_service
-                .update_stats_after_match(player_id, game_id, new_stats, true, false, false)
+                .update_stats_after_match(
+                    player_id, game_id, match_id, new_stats, true, false, false,
+                )
                 .await?;
             debug!(player_id = %player_id, game_id = %game_id, "Updated winner stats");
         }
@@ -190,7 +192,9 @@ where
                 .calculate_new_stats(player_id, game_id, &plugin, &match_data)
                 .await;
             self.profile_service
-                .update_stats_after_match(player_id, game_id, new_stats, false, true, false)
+                .update_stats_after_match(
+                    player_id, game_id, match_id, new_stats, false, true, false,
+                )
                 .await?;
             debug!(player_id = %player_id, game_id = %game_id, "Updated loser stats");
         }

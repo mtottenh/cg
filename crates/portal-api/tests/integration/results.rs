@@ -276,9 +276,8 @@ async fn test_confirm_result_invalid_claim() {
         )
         .await;
 
-    // Returns 500 for claim not found (internal error mapping from domain error)
-    // TODO: This should ideally return 404, but the current implementation returns 500
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // Unknown claim -> 404.
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -296,9 +295,8 @@ async fn test_dispute_result_invalid_claim() {
         )
         .await;
 
-    // Returns 500 for claim not found (internal error mapping from domain error)
-    // TODO: This should ideally return 404, but the current implementation returns 500
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // Unknown claim -> 404.
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 // ============================================================================

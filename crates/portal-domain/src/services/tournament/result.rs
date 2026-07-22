@@ -323,14 +323,26 @@ where
         Ok(claim)
     }
 
-    /// Dispute a result claim.
+    /// Authorize a dispute against a result claim, without writing
+    /// anything.
+    ///
+    /// Returns the claim plus the registration the disputing user acts
+    /// for; the caller then hands both to
+    /// `DisputeService::raise_dispute`, which performs every write in one
+    /// transaction (claim → `disputed`, match → `disputed`, `disputes`
+    /// row, opening thread message).
+    ///
+    /// This replaces the old `dispute_claim`, which did
+    /// `update_status(Disputed)` + `file_dispute` as two unguarded writes
+    /// and created **no** `disputes` row at all — so a claim-path dispute
+    /// was invisible to the admin dispute queue, and a failure between the
+    /// two writes left a Disputed claim on a non-disputed match.
     #[instrument(skip(self))]
-    pub async fn dispute_claim(
+    pub async fn authorize_claim_dispute(
         &self,
         claim_id: ResultClaimId,
         disputed_by_user: UserId,
-        reason: &str,
-    ) -> Result<ResultClaim, DomainError> {
+    ) -> Result<(ResultClaim, TournamentRegistrationId), DomainError> {
         let claim = self.get_claim(claim_id).await?;
 
         if !claim.is_pending() {
@@ -355,25 +367,7 @@ where
             ));
         }
 
-        // Dispute the claim
-        let claim = self
-            .claim_repo
-            .update_status(claim_id, ClaimStatus::Disputed)
-            .await?;
-
-        // Mark match as disputed
-        self.match_repo
-            .file_dispute(claim.match_id, reason.to_string())
-            .await?;
-
-        warn!(
-            claim_id = %claim_id,
-            match_id = %claim.match_id,
-            reason = reason,
-            "Result claim disputed"
-        );
-
-        Ok(claim)
+        Ok((claim, disputer_registration))
     }
 
     /// Cancel a result claim (by submitter).
@@ -474,7 +468,7 @@ where
         self.claim_repo
             .find_by_id(id)
             .await?
-            .ok_or_else(|| DomainError::Internal(format!("Result claim {id} not found")))
+            .ok_or(DomainError::ResultClaimNotFound(id))
     }
 
     async fn find_user_registration(

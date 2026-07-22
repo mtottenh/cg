@@ -708,14 +708,37 @@ impl DisputeRepository for PgDisputeRepository {
             r"
             UPDATE tournament_matches SET
                 status = 'disputed',
+                disputed = true,
+                dispute_reason = $2,
                 updated_at = NOW()
             WHERE id = $1
             ",
         )
         .bind(create.match_id.as_uuid())
+        .bind(&create.description)
         .execute(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // When the dispute targets a specific result claim, retire that
+        // claim in the same tx. The old claim-path (`update_status` then
+        // `file_dispute` — two unguarded writes, and no `disputes` row at
+        // all) could leave a Disputed claim on a non-disputed match, and
+        // the admin dispute queue never saw it. Guarded on `pending` so
+        // disputing an already-resolved claim leaves its status alone.
+        if let Some(claim_id) = create.result_claim_id {
+            sqlx::query(
+                r"
+                UPDATE result_claims
+                SET status = 'disputed', updated_at = NOW()
+                WHERE id = $1 AND status = 'pending'
+                ",
+            )
+            .bind(claim_id.as_uuid())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        }
 
         let msg_evidence_ids: Vec<uuid::Uuid> = initial_message
             .evidence_ids

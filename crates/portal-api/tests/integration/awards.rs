@@ -971,3 +971,455 @@ async fn test_complete_tournament_auto_finalizes_awards() {
     assert_eq!(trophies[0]["result"]["rank"], 1);
     assert_eq!(trophies[0]["result"]["value"], 9.0);
 }
+
+// =============================================================================
+// LEAGUE-SEASON AWARDS
+// =============================================================================
+
+/// A league season on the CS2 game, containing one tournament whose linked
+/// demo facts fall inside the season scope.
+struct SeasonAwardsFixture {
+    season_id: Uuid,
+    /// Season name, echoed as `scope_name` on trophies.
+    season_name: String,
+    p1_player_id: Uuid,
+    p2_player_id: Uuid,
+}
+
+impl SeasonAwardsFixture {
+    fn awards_url(&self) -> String {
+        format!("/v1/league-seasons/{}/awards", self.season_id)
+    }
+}
+
+/// Create a league season whose league is on CS2 — award templates and the
+/// stat catalog are resolved through the league's game plugin, so a builder
+/// default (`test-plugin`) would have neither.
+async fn create_cs2_season(app: &TestApp, slug: &str) -> (Uuid, String) {
+    let game_id = get_game_id(app.pool(), "cs2").await;
+    let league = LeagueBuilder::new()
+        .game_id(game_id)
+        .name(format!("League {slug}"))
+        .slug(format!("league-{slug}"))
+        .build_persisted(app.pool())
+        .await;
+    let season_name = format!("Season {slug}");
+    let season = LeagueSeasonBuilder::new()
+        .league_id(league.id)
+        .name(season_name.clone())
+        .slug(format!("season-{slug}"))
+        .build_persisted(app.pool())
+        .await;
+    (season.id, season_name)
+}
+
+/// Build a CS2 league + season, run a tournament inside it, and submit a
+/// demo so the season scope has facts to rank. `p1_mag7`/`p2_mag7` drive the
+/// `swag7` metric.
+async fn setup_season_awards_fixture(
+    app: &TestApp,
+    slug: &str,
+    p1_mag7: i64,
+    p2_mag7: i64,
+) -> SeasonAwardsFixture {
+    let (season_id, season_name) = create_cs2_season(app, slug).await;
+
+    let fixture = setup_awards_fixture(app, slug).await;
+    set_tournament_season(app, &fixture.tournament_id, season_id).await;
+    submit_linked_demo(
+        app,
+        &fixture,
+        &format!("demos/{slug}.dem"),
+        &awards_stats_body(
+            &[
+                player_stats(P1_STEAM, 20, 9, p1_mag7, 2),
+                player_stats(P2_STEAM, 10, 4, p2_mag7, 0),
+            ],
+            &fixture.match_time,
+            &format!("{slug}.dem"),
+        ),
+    )
+    .await;
+
+    SeasonAwardsFixture {
+        season_id,
+        season_name,
+        p1_player_id: fixture.p1_player_id,
+        p2_player_id: fixture.p2_player_id,
+    }
+}
+
+/// Instantiating the seeded `swag7` template in a season carries its
+/// branding, lists under the season, and its standings match the plain
+/// season leaderboard for the same metric.
+#[tokio::test]
+async fn test_season_award_from_template_and_standings() {
+    let app = TestApp::new().await;
+    let fixture = setup_season_awards_fixture(&app, "season-awards-template", 3, 1).await;
+
+    let response = app
+        .post_json(&fixture.awards_url(), &json!({ "template_key": "swag7" }))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: Value = response.json();
+    let award = &body["data"];
+    assert_eq!(award["name"], "Swag 7");
+    assert_eq!(award["stat_key"], "kills.weapon.mag7");
+    assert_eq!(award["icon"], "mdi-spray");
+    assert_eq!(award["status"], "active");
+    let award_id = award["id"].as_str().unwrap().to_string();
+
+    // The award lists under its season.
+    let response = app.get(&fixture.awards_url()).await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    let awards = body["data"].as_array().unwrap();
+    assert_eq!(awards.len(), 1);
+    assert_eq!(awards[0]["id"], award_id);
+
+    // Standings rank the season's linked demo facts.
+    let response = app
+        .get(&format!("{}/{award_id}/standings", fixture.awards_url()))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    let entries = body["data"]["entries"].as_array().unwrap().clone();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["player_id"], fixture.p1_player_id.to_string());
+    assert_eq!(entries[0]["value"], 3.0);
+    assert_eq!(entries[0]["rank"], 1);
+    assert_eq!(entries[1]["value"], 1.0);
+
+    // They mirror the plain season leaderboard for the same metric.
+    let response = app
+        .get(&format!(
+            "/v1/league-seasons/{}/leaderboards?stat_key=kills.weapon.mag7&aggregation=sum",
+            fixture.season_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    assert_eq!(body["data"].as_array().unwrap(), &entries);
+}
+
+/// Season-award authoring: custom awards from the catalog, rename via PATCH,
+/// catalog validation, duplicate names, and voiding.
+#[tokio::test]
+async fn test_season_custom_award_lifecycle() {
+    let app = TestApp::new().await;
+    let fixture = setup_season_awards_fixture(&app, "season-awards-custom", 3, 1).await;
+    let awards_url = fixture.awards_url();
+
+    // Custom award over a catalog stat.
+    let response = app
+        .post_json(
+            &awards_url,
+            &json!({ "name": "Season Blind", "stat_key": "kills.while_blind" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: Value = response.json();
+    assert_eq!(body["data"]["name"], "Season Blind");
+    assert_eq!(body["data"]["aggregation"], "sum");
+    let award_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Rename works while active.
+    let response = app
+        .patch_json(
+            &format!("{awards_url}/{award_id}"),
+            &json!({ "name": "Season Blind Monk" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    assert_eq!(body["data"]["name"], "Season Blind Monk");
+
+    // Unknown stat keys are rejected against the league game's catalog.
+    app.post_json(
+        &awards_url,
+        &json!({ "name": "Bogus", "stat_key": "not_a_real_stat" }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    // ... but the open weapon set needs no enumeration.
+    app.post_json(
+        &awards_url,
+        &json!({ "name": "Season Zeus", "stat_key": "kills.weapon.taser" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    // Duplicate names within the season scope map the unique constraint to 409.
+    app.post_json(
+        &awards_url,
+        &json!({ "name": "Season Zeus", "stat_key": "kills.weapon.taser" }),
+    )
+    .await
+    .assert_status(StatusCode::CONFLICT);
+
+    // Voiding an active award is a soft delete: the row survives with a
+    // `void` status (the list is deliberately unfiltered).
+    let response = app.delete_auth(&format!("{awards_url}/{award_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    assert_eq!(body["data"]["status"], "void");
+
+    let response = app.get(&awards_url).await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    let voided = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == award_id.as_str())
+        .expect("voided award still listed");
+    assert_eq!(voided["status"], "void");
+
+    // Voiding is idempotent.
+    let response = app.delete_auth(&format!("{awards_url}/{award_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    assert_eq!(body["data"]["status"], "void");
+
+    // A voided award can no longer be edited.
+    app.patch_json(
+        &format!("{awards_url}/{award_id}"),
+        &json!({ "name": "Resurrected" }),
+    )
+    .await
+    .assert_status(StatusCode::CONFLICT);
+}
+
+/// Season-award mutations are gated on `league.seasons.manage`: an unrelated
+/// user gets 403 on create/update/void/finalize while reads stay public.
+#[tokio::test]
+async fn test_season_award_rbac() {
+    let app = TestApp::new().await;
+    let fixture = setup_season_awards_fixture(&app, "season-awards-rbac", 3, 1).await;
+    let awards_url = fixture.awards_url();
+
+    let response = app
+        .post_json(&awards_url, &json!({ "template_key": "swag7" }))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: Value = response.json();
+    let award_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    let outsider = UserBuilder::new()
+        .username("season-awards-outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = create_test_token(
+        outsider.id,
+        outsider.id,
+        "season-awards-outsider",
+        TEST_JWT_SECRET,
+    );
+
+    app.post_json_with_token(
+        &awards_url,
+        &json!({ "name": "Sneaky", "stat_key": "kills" }),
+        &outsider_token,
+    )
+    .await
+    .assert_status(StatusCode::FORBIDDEN);
+
+    app.patch_json_with_token(
+        &format!("{awards_url}/{award_id}"),
+        &json!({ "name": "Hijacked" }),
+        &outsider_token,
+    )
+    .await
+    .assert_status(StatusCode::FORBIDDEN);
+
+    app.delete_with_token(&format!("{awards_url}/{award_id}"), &outsider_token)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+
+    app.post_json_with_token(
+        &format!("{awards_url}/{award_id}/finalize"),
+        &json!({}),
+        &outsider_token,
+    )
+    .await
+    .assert_status(StatusCode::FORBIDDEN);
+
+    // Anonymous mutations are unauthenticated, not merely forbidden.
+    app.post_json_no_auth(&awards_url, &json!({ "template_key": "swag7" }))
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+
+    // Reads stay public.
+    app.get_with_token(&awards_url, &outsider_token)
+        .await
+        .assert_status(StatusCode::OK);
+    app.get(&format!("{awards_url}/{award_id}/standings"))
+        .await
+        .assert_status(StatusCode::OK);
+
+    // The award is untouched by the rejected mutations.
+    let response = app.get(&format!("{awards_url}/{award_id}/standings")).await;
+    let body: Value = response.json();
+    assert_eq!(body["data"]["award"]["name"], "Swag 7");
+    assert_eq!(body["data"]["award"]["status"], "active");
+}
+
+/// Finalizing a season award snapshots the podium (sharing rank on ties) and
+/// the winners' trophy cases carry the season name as scope. Seasons have no
+/// completion lock, so a manager can re-finalize to recompute.
+#[tokio::test]
+async fn test_season_award_finalize_and_trophy_case() {
+    let app = TestApp::new().await;
+    // Both players land 3 MAG-7 kills: a rank-1 tie.
+    let fixture = setup_season_awards_fixture(&app, "season-awards-finalize", 3, 3).await;
+    let awards_url = fixture.awards_url();
+
+    let response = app
+        .post_json(&awards_url, &json!({ "template_key": "swag7" }))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: Value = response.json();
+    let award_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    let response = app
+        .post_auth(&format!("{awards_url}/{award_id}/finalize"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    assert_eq!(body["data"]["award"]["status"], "finalized");
+    let results = body["data"]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "tied players both make the podium");
+    assert!(results.iter().all(|r| r["rank"] == 1), "ties share rank 1");
+    assert!(results.iter().all(|r| r["value"] == 3.0));
+
+    // Both winners' trophy cases carry the season as scope.
+    for player_id in [fixture.p1_player_id, fixture.p2_player_id] {
+        let response = app.get(&format!("/v1/players/{player_id}/awards")).await;
+        response.assert_status(StatusCode::OK);
+        let body: Value = response.json();
+        let trophies = body["data"].as_array().unwrap();
+        assert_eq!(trophies.len(), 1);
+        assert_eq!(trophies[0]["award"]["name"], "Swag 7");
+        assert_eq!(trophies[0]["result"]["rank"], 1);
+        assert_eq!(trophies[0]["scope_name"], fixture.season_name);
+    }
+
+    // Renaming a finalized award is refused.
+    app.patch_json(
+        &format!("{awards_url}/{award_id}"),
+        &json!({ "name": "Too Late" }),
+    )
+    .await
+    .assert_status(StatusCode::CONFLICT);
+
+    // Voiding a finalized award is refused — trophies are permanent.
+    app.delete_auth(&format!("{awards_url}/{award_id}"))
+        .await
+        .assert_status(StatusCode::CONFLICT);
+
+    // Unlike tournaments, a season award can be re-finalized (recompute).
+    app.post_auth(&format!("{awards_url}/{award_id}/finalize"))
+        .await
+        .assert_status(StatusCode::OK);
+}
+
+/// Season-scoped award endpoints 404 on an unknown season, and on an award
+/// that belongs to a different scope.
+#[tokio::test]
+async fn test_season_award_scope_isolation() {
+    let app = TestApp::new().await;
+    let fixture = setup_season_awards_fixture(&app, "season-awards-scope", 3, 1).await;
+
+    let unknown_season = Uuid::now_v7();
+    app.get(&format!("/v1/league-seasons/{unknown_season}/awards"))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    app.post_json(
+        &format!("/v1/league-seasons/{unknown_season}/awards"),
+        &json!({ "template_key": "swag7" }),
+    )
+    .await
+    .assert_status(StatusCode::NOT_FOUND);
+
+    // An award created in a second season is not addressable through the first.
+    let (other_season_id, _) = create_cs2_season(&app, "season-awards-scope-b").await;
+    let response = app
+        .post_json(
+            &format!("/v1/league-seasons/{other_season_id}/awards"),
+            &json!({ "template_key": "swag7" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: Value = response.json();
+    let other_award_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    app.get(&format!(
+        "{}/{other_award_id}/standings",
+        fixture.awards_url()
+    ))
+    .await
+    .assert_status(StatusCode::NOT_FOUND);
+    app.patch_json(
+        &format!("{}/{other_award_id}", fixture.awards_url()),
+        &json!({ "name": "Cross Scope" }),
+    )
+    .await
+    .assert_status(StatusCode::NOT_FOUND);
+    app.delete_auth(&format!("{}/{other_award_id}", fixture.awards_url()))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    app.post_auth(&format!(
+        "{}/{other_award_id}/finalize",
+        fixture.awards_url()
+    ))
+    .await
+    .assert_status(StatusCode::NOT_FOUND);
+}
+
+// =============================================================================
+// STAT CATALOG + AWARD TEMPLATES
+// =============================================================================
+
+/// The game-scoped award-builder surfaces: the plugin's stat catalog and the
+/// seeded award templates, both addressable by slug or UUID.
+#[tokio::test]
+async fn test_stat_catalog_and_award_templates() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await;
+
+    let response = app.get("/v1/games/cs2/stat-catalog").await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    let catalog = body["data"].as_array().unwrap();
+    assert!(!catalog.is_empty(), "CS2 exposes stat definitions");
+    let keys: Vec<&str> = catalog.iter().filter_map(|d| d["key"].as_str()).collect();
+    assert!(keys.contains(&"kills"), "catalog has kills, got {keys:?}");
+    assert!(keys.contains(&"headshot_kills"));
+    assert!(keys.contains(&"kills.while_blind"));
+
+    // The UUID form resolves to the same catalog.
+    let response = app.get(&format!("/v1/games/{game_id}/stat-catalog")).await;
+    response.assert_status(StatusCode::OK);
+    let by_uuid: Value = response.json();
+    assert_eq!(by_uuid["data"].as_array().unwrap().len(), catalog.len());
+
+    let response = app.get("/v1/games/cs2/award-templates").await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    let templates = body["data"].as_array().unwrap();
+    let swag7 = templates
+        .iter()
+        .find(|t| t["key"] == "swag7")
+        .expect("swag7 template seeded for CS2");
+    assert_eq!(swag7["name"], "Swag 7");
+    assert_eq!(swag7["stat_key"], "kills.weapon.mag7");
+
+    // Unknown games 404 on both.
+    app.get("/v1/games/not-a-game/stat-catalog")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    app.get("/v1/games/not-a-game/award-templates")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+}

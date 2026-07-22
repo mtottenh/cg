@@ -26,7 +26,7 @@ pub mod veto_delegate;
 
 pub use action_item::ActionItemResponse;
 pub use admin::PlatformStatsResponse;
-pub use auth::{LoginResponse, RegisterResponse};
+pub use auth::{LoginResponse, LogoutResponse, RegisterResponse};
 pub use availability::{
     AvailabilityOverrideResponse, AvailabilityWindowResponse, DateAvailabilityResponse,
     SuggestedTimeResponse, TimeSlotResponse,

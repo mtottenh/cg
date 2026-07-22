@@ -19,7 +19,11 @@
 //!    `auto_confirm_at` deadline has passed are confirmed and their
 //!    match-completion saga is executed, exactly as a manual opponent
 //!    confirm would, so ignored claims can no longer stall a bracket.
-//! 5. **Evidence hygiene** — expired evidence is processed and stale pending
+//! 5. **Stuck completion sagas** — `match_completion` sagas left `failed`
+//!    (or `running` past a deadline, e.g. the process died mid-flight) are
+//!    re-driven, so a saga that blew up *after* the claim was already
+//!    confirmed no longer strands the winner outside the next round.
+//! 6. **Evidence hygiene** — expired evidence is processed and stale pending
 //!    uploads are cleaned, on a slower cadence.
 //!
 //! `run_lifecycle_pass` is a single, side-effect-complete pass so
@@ -33,14 +37,16 @@ use axum::extract::FromRef;
 use chrono::{Duration as ChronoDuration, Utc};
 use portal_core::DomainError;
 use portal_core::types::TournamentMatchStatus;
+use portal_db::adapters::PgSagaExecutionRepository;
 use portal_domain::entities::forfeit::ForfeitTrigger;
 use portal_domain::entities::match_lifecycle::TransitionTrigger;
 use portal_domain::entities::result_claim::ResultClaim;
+use portal_domain::entities::saga::StepStatus;
 use portal_domain::entities::tournament::TournamentMatch;
 use portal_domain::repositories::tournament::{
     TournamentMapPoolRepository as _, TournamentMatchRepository as _,
 };
-use portal_domain::services::tournament::MatchCompletionInput;
+use portal_domain::services::tournament::{MatchCompletionInput, SagaCoordinator};
 use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,6 +71,9 @@ pub struct LifecycleConfig {
     /// Run the evidence sweep every N ticks (it is cheap but there is no
     /// reason to run it every few seconds).
     pub evidence_sweep_every: u32,
+    /// How long a `running` saga may stay running before the re-drive pass
+    /// assumes its owner died and takes it over.
+    pub saga_stuck_after: ChronoDuration,
     /// Max rows pulled per query per tick — backpressure bound.
     pub batch_limit: i64,
 }
@@ -91,6 +100,9 @@ impl LifecycleConfig {
                 i64::try_from(env_u64("PORTAL_EVIDENCE_STALE_HOURS", 24)).unwrap_or(24),
             ),
             evidence_sweep_every: 20,
+            saga_stuck_after: ChronoDuration::minutes(
+                i64::try_from(env_u64("PORTAL_SAGA_STUCK_MINUTES", 10)).unwrap_or(10),
+            ),
             batch_limit: 100,
         }
     }
@@ -107,8 +119,13 @@ pub struct LifecyclePassSummary {
     pub no_shows_forfeited: u32,
     /// Matches double-forfeited (nobody showed).
     pub double_forfeits: u32,
+    /// Partially-opened check-in windows repaired (`checking_in` with a
+    /// NULL `check_in_deadline`).
+    pub check_in_deadlines_repaired: u32,
     /// Result claims auto-confirmed past their `auto_confirm_at` deadline.
     pub claims_auto_confirmed: u32,
+    /// Failed/stuck `match_completion` sagas successfully re-driven.
+    pub sagas_redriven: u32,
     /// Evidence records expired.
     pub evidence_expired: u32,
     /// Stale pending evidence records cleaned.
@@ -147,6 +164,30 @@ pub async fn run_lifecycle_pass(
     }
 
     // ------------------------------------------------------------------
+    // 2b: repair partially-opened check-in windows
+    //
+    // A match left in `checking_in` with a NULL check_in_deadline (the
+    // status write landed, the deadline write did not) is invisible to
+    // list_scheduled_due AND list_checkin_expired. Stamp the missing
+    // deadline so the no-show pass can see it again.
+    // ------------------------------------------------------------------
+    match state
+        .tournament_match_repo
+        .list_checkin_missing_deadline(cfg.batch_limit)
+        .await
+    {
+        Ok(stranded) => {
+            for match_ in stranded {
+                repair_check_in_deadline(state, cfg, &match_, &mut summary).await;
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: list_checkin_missing_deadline failed");
+            summary.errors += 1;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 3: process check-in timeouts (no-shows)
     // ------------------------------------------------------------------
     match state
@@ -171,7 +212,12 @@ pub async fn run_lifecycle_pass(
     process_overdue_result_claims(state, &mut summary).await;
 
     // ------------------------------------------------------------------
-    // 5: evidence hygiene (slower cadence)
+    // 5: re-drive failed / stuck match-completion sagas
+    // ------------------------------------------------------------------
+    redrive_stuck_completion_sagas(state, cfg, now, &mut summary).await;
+
+    // ------------------------------------------------------------------
+    // 6: evidence hygiene (slower cadence)
     // ------------------------------------------------------------------
     if sweep_evidence {
         match state.evidence_service.process_expired().await {
@@ -211,6 +257,31 @@ async fn open_check_in_window(
 ) {
     let match_id = match_.id;
 
+    // Order matters. The deadline is stamped BEFORE the status transition so
+    // a crash (or a failure) between the two writes leaves the match in
+    // `scheduled` — still visible to `list_scheduled_due`, so the next pass
+    // simply redoes both writes. The old order left the match in
+    // `checking_in` with a NULL deadline, which is invisible to
+    // `list_scheduled_due` (status != 'scheduled') AND to
+    // `list_checkin_expired` (deadline IS NULL): stranded forever. A
+    // `scheduled` match carrying an early deadline is harmless — both
+    // sweeps key off `status`, and the value is re-stamped on the retry.
+    //
+    // Deadline: grace period from whichever is later — the scheduled time
+    // or now (a match scheduled in the past still gets a full grace window).
+    let base = match_
+        .scheduled_at
+        .map_or_else(Utc::now, |s| s.max(Utc::now()));
+    if let Err(e) = state
+        .tournament_match_repo
+        .set_check_in_deadline(match_id, base + cfg.check_in_grace)
+        .await
+    {
+        error!(%match_id, error = %e, "lifecycle: failed to set check-in deadline");
+        summary.errors += 1;
+        return;
+    }
+
     if let Err(e) = state
         .match_lifecycle_service
         .transition(
@@ -228,20 +299,6 @@ async fn open_check_in_window(
         return;
     }
 
-    // Deadline: grace period from whichever is later — the scheduled time
-    // or now (a match scheduled in the past still gets a full grace window).
-    let base = match_
-        .scheduled_at
-        .map_or_else(Utc::now, |s| s.max(Utc::now()));
-    if let Err(e) = state
-        .tournament_match_repo
-        .set_check_in_deadline(match_id, base + cfg.check_in_grace)
-        .await
-    {
-        error!(%match_id, error = %e, "lifecycle: failed to set check-in deadline");
-        summary.errors += 1;
-    }
-
     summary.check_in_windows_opened += 1;
     info!(%match_id, "lifecycle: check-in window opened");
 
@@ -250,6 +307,36 @@ async fn open_check_in_window(
         Ok(false) => {}
         Err(e) => {
             error!(%match_id, error = %e, "lifecycle: veto session setup failed");
+            summary.errors += 1;
+        }
+    }
+}
+
+/// Stamp a check-in deadline on a match stranded in `checking_in` without
+/// one, so the no-show pass can pick it up again. Idempotent: once the
+/// deadline is set the match no longer matches the repair query.
+async fn repair_check_in_deadline(
+    state: &AppState,
+    cfg: &LifecycleConfig,
+    match_: &TournamentMatch,
+    summary: &mut LifecyclePassSummary,
+) {
+    let match_id = match_.id;
+    let base = match_
+        .scheduled_at
+        .map_or_else(Utc::now, |s| s.max(Utc::now()));
+
+    match state
+        .tournament_match_repo
+        .set_check_in_deadline(match_id, base + cfg.check_in_grace)
+        .await
+    {
+        Ok(_) => {
+            summary.check_in_deadlines_repaired += 1;
+            warn!(%match_id, "lifecycle: repaired check-in window with missing deadline");
+        }
+        Err(e) => {
+            error!(%match_id, error = %e, "lifecycle: failed to repair check-in deadline");
             summary.errors += 1;
         }
     }
@@ -368,6 +455,131 @@ async fn process_overdue_result_claims(state: &AppState, summary: &mut Lifecycle
                 "lifecycle: completion saga failed after auto-confirm"
             );
             summary.errors += 1;
+        }
+    }
+}
+
+/// Saga type re-driven by [`redrive_stuck_completion_sagas`].
+const MATCH_COMPLETION_SAGA: &str = "match_completion";
+
+/// Step whose completion means the (non-idempotent) standings deltas have
+/// already been applied for this saga.
+const STANDINGS_STEP: &str = "update_standings";
+
+/// Re-drive `match_completion` sagas that are `failed`, or `running` past
+/// `saga_stuck_after` (their owning process died mid-flight).
+///
+/// Why this is needed: the confirm handler executes the completion saga
+/// *after* the claim-confirm transaction has committed. If the saga then
+/// fails, the match is already `completed` but the winner was never
+/// advanced — and the handler still returns 200 (`bracket_advanced:
+/// false`). Nothing retried that, so the bracket stalled until an admin
+/// noticed and drove the progression endpoints by hand.
+///
+/// Safety: the steps are re-runnable — `complete_match` skips an
+/// already-completed match and `assign_participant` writes the same
+/// participant into the same slot. The one non-idempotent step is
+/// `update_standings` (`points = points + delta`), so any saga whose
+/// history already records that step completing is skipped rather than
+/// re-run. `retry_count` bounds the attempts at `max_retries`.
+async fn redrive_stuck_completion_sagas(
+    state: &AppState,
+    cfg: &LifecycleConfig,
+    now: chrono::DateTime<Utc>,
+    summary: &mut LifecyclePassSummary,
+) {
+    let coordinator = SagaCoordinator::new(Arc::new(PgSagaExecutionRepository::new(
+        state.db_pool.clone(),
+    )));
+
+    let candidates = match coordinator
+        .find_retryable(
+            MATCH_COMPLETION_SAGA,
+            now - cfg.saga_stuck_after,
+            cfg.batch_limit,
+        )
+        .await
+    {
+        Ok(candidates) => candidates,
+        Err(e) => {
+            error!(error = %e, "lifecycle: find_retryable sagas failed");
+            summary.errors += 1;
+            return;
+        }
+    };
+
+    for mut execution in candidates {
+        let saga_id = execution.id;
+
+        // Never re-run a saga that already applied its standings deltas.
+        // Burn its remaining retries so it stops being a candidate, and
+        // leave it for the admin progression endpoints. Note the step also
+        // "completes" as `not_applicable` on elimination brackets — that
+        // wrote nothing, so only `standings_updated: true` blocks a
+        // re-drive.
+        if execution.step_history.iter().any(|s| {
+            s.name == STANDINGS_STEP
+                && s.status == StepStatus::Completed
+                && s.output
+                    .as_ref()
+                    .and_then(|o| o.get("standings_updated"))
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+        }) {
+            warn!(
+                %saga_id,
+                "lifecycle: skipping saga re-drive — standings already applied"
+            );
+            if let Err(e) = coordinator.record_retry(&mut execution, true).await {
+                error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
+                summary.errors += 1;
+            }
+            continue;
+        }
+
+        let input =
+            match serde_json::from_value::<MatchCompletionInput>(execution.input_data.clone()) {
+                Ok(input) => MatchCompletionInput {
+                    // A fresh execution record tracks the re-drive; the old
+                    // row stays as the audit trail of the failure.
+                    saga_id: None,
+                    ..input
+                },
+                Err(e) => {
+                    error!(%saga_id, error = %e, "lifecycle: unreadable saga input, retiring");
+                    if let Err(e) = coordinator.record_retry(&mut execution, true).await {
+                        error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
+                    }
+                    summary.errors += 1;
+                    continue;
+                }
+            };
+
+        let match_id = input.match_id;
+        match state.match_completion_saga.execute_completion(input).await {
+            Ok(result) if result.is_paused() => {
+                // Waiting on a result review — not our problem to retry.
+                info!(%saga_id, %match_id, "lifecycle: saga re-drive paused for review");
+                if let Err(e) = coordinator.record_retry(&mut execution, true).await {
+                    error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
+                    summary.errors += 1;
+                }
+            }
+            Ok(_) => {
+                summary.sagas_redriven += 1;
+                info!(%saga_id, %match_id, "lifecycle: completion saga re-driven");
+                if let Err(e) = coordinator.record_retry(&mut execution, true).await {
+                    error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
+                    summary.errors += 1;
+                }
+            }
+            Err(e) => {
+                warn!(%saga_id, %match_id, error = %e, "lifecycle: saga re-drive failed");
+                summary.errors += 1;
+                if let Err(e) = coordinator.record_retry(&mut execution, false).await {
+                    error!(%saga_id, error = %e, "lifecycle: failed to bump saga retry count");
+                }
+            }
         }
     }
 }

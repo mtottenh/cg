@@ -115,24 +115,22 @@ where
             )));
         }
 
-        // Get tournament to verify approval-based registration
-        let tournament = self
-            .tournament_repo
+        // Verify the tournament still exists before touching the row.
+        self.tournament_repo
             .find_by_id(registration.tournament_id)
             .await?
             .ok_or(DomainError::TournamentNotFound(registration.tournament_id))?;
 
-        // Check capacity
-        let current_count = self
-            .tournament_repo
-            .count_registrations(registration.tournament_id)
-            .await?;
-        if current_count >= i64::from(tournament.max_participants) {
-            return Err(DomainError::TournamentFull);
-        }
-
+        // Capacity check + status flip in one transaction under a lock on
+        // the tournament row, so a burst of approvals cannot push the
+        // tournament past `max_participants`. Note this counts every other
+        // slot-occupying registration: the row being approved keeps the
+        // slot it already held as a pending registration.
         self.registration_repo
-            .update_status(registration_id, TournamentRegistrationStatus::Approved)
+            .update_status_with_capacity_check(
+                registration_id,
+                TournamentRegistrationStatus::Approved,
+            )
             .await
     }
 

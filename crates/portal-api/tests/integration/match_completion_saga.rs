@@ -826,3 +826,210 @@ async fn test_get_match_demos_with_data_returns_linked_demos() {
         "Link ID should match"
     );
 }
+
+// ============================================================================
+// TEST: lifecycle re-drives a failed completion saga
+// ============================================================================
+
+/// A completion saga that fails *after* the claim-confirm transaction has
+/// committed used to be a dead end: the handler logged a warning, returned
+/// 200 with `bracket_advanced: false`, and nothing ever advanced the
+/// winner. `run_lifecycle_pass` now re-drives failed/stuck
+/// `match_completion` sagas.
+///
+/// Setup mimics that failure after the fact: confirm normally, then wipe
+/// the winner out of the next match and mark the saga `failed` with an
+/// empty step history — exactly the state a mid-progression crash leaves.
+#[tokio::test]
+async fn test_lifecycle_redrives_failed_completion_saga() {
+    use portal_api::background::{LifecycleConfig, run_lifecycle_pass};
+    use portal_api::state::AppState;
+
+    let app = TestApp::new().await;
+    let t = create_4player_tournament(&app, "saga-redrive").await;
+
+    let claim_id = submit_claim(&app, &t.test_match_id, &t.dev_reg_id, t.dev_is_p1, &[]).await;
+    confirm_claim_as_user(
+        &app,
+        &t.test_match_id,
+        &claim_id,
+        t.opponent_user_id,
+        t.opponent_user_id,
+    )
+    .await;
+
+    let final_match_uuid: Uuid = t.final_match_id.parse().unwrap();
+    let test_match_uuid: Uuid = t.test_match_id.parse().unwrap();
+
+    // Undo the advancement and re-stage the saga as failed.
+    sqlx::query(
+        "UPDATE tournament_matches
+         SET participant1_registration_id = NULL, participant2_registration_id = NULL,
+             status = 'pending'
+         WHERE id = $1",
+    )
+    .bind(final_match_uuid)
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    let updated = sqlx::query(
+        "UPDATE saga_executions
+         SET status = 'failed', step_history = '[]'::jsonb, retry_count = 0,
+             last_error = 'simulated mid-progression failure'
+         WHERE match_id = $1 AND saga_type = 'match_completion'
+         RETURNING id",
+    )
+    .bind(test_match_uuid)
+    .fetch_all(app.pool())
+    .await
+    .unwrap();
+    assert!(
+        !updated.is_empty(),
+        "the confirm should have produced a match_completion saga to re-stage"
+    );
+
+    // Drive one lifecycle pass.
+    let state = AppState::new(app.pool().clone(), TEST_JWT_SECRET).await;
+    let cfg = LifecycleConfig {
+        tick_interval: std::time::Duration::from_secs(30),
+        check_in_lead: chrono::Duration::minutes(15),
+        check_in_grace: chrono::Duration::minutes(10),
+        evidence_stale_max_age: chrono::Duration::hours(24),
+        evidence_sweep_every: 20,
+        saga_stuck_after: chrono::Duration::minutes(10),
+        batch_limit: 100,
+    };
+    let summary = run_lifecycle_pass(&state, &cfg, false).await;
+
+    assert_eq!(
+        summary.sagas_redriven, 1,
+        "the failed completion saga should have been re-driven (summary: {summary:?})"
+    );
+
+    // The winner is back in the final.
+    let row = sqlx::query(
+        "SELECT participant1_registration_id, participant2_registration_id
+         FROM tournament_matches WHERE id = $1",
+    )
+    .bind(final_match_uuid)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    let p1: Option<Uuid> = row.get("participant1_registration_id");
+    let p2: Option<Uuid> = row.get("participant2_registration_id");
+    let winner: Uuid = t.dev_reg_id.parse().unwrap();
+    assert!(
+        p1 == Some(winner) || p2 == Some(winner),
+        "re-drive should have re-advanced the winner into the final (p1={p1:?}, p2={p2:?})"
+    );
+
+    // The retired saga is not picked up a second time.
+    let summary = run_lifecycle_pass(&state, &cfg, false).await;
+    assert_eq!(
+        summary.sagas_redriven, 0,
+        "a re-driven saga must not be retried forever"
+    );
+}
+
+// ============================================================================
+// TEST: claim-path dispute creates a real dispute record
+// ============================================================================
+
+/// `POST /matches/{id}/result/{claim}/dispute` used to do two unguarded
+/// writes (claim → disputed, match → disputed) and insert **no** row in
+/// `disputes`, so a claim-path dispute never reached the admin queue and a
+/// failure between the two writes left a disputed claim on a non-disputed
+/// match. It now routes through `DisputeService::raise_dispute`, which does
+/// all of it (plus the opening thread message) in one transaction.
+#[tokio::test]
+async fn test_claim_dispute_creates_dispute_record() {
+    let app = TestApp::new().await;
+    let t = create_4player_tournament(&app, "claim-dispute").await;
+
+    let claim_id = submit_claim(&app, &t.test_match_id, &t.dev_reg_id, t.dev_is_p1, &[]).await;
+
+    // Dispute as the opponent (the submitter cannot dispute their own claim).
+    let token = create_test_token(
+        t.opponent_user_id,
+        t.opponent_user_id,
+        "disputer",
+        TEST_JWT_SECRET,
+    );
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{}/result/{claim_id}/dispute", t.test_match_id),
+            &json!({
+                "reason": "The reported score is wrong, we won that series.",
+                "evidence_ids": []
+            }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["match_status"], "disputed");
+    assert_eq!(body["data"]["requires_admin"], true);
+    assert_eq!(
+        body["data"]["claim"]["status"], "disputed",
+        "the response must report the post-dispute claim status"
+    );
+
+    let match_uuid: Uuid = t.test_match_id.parse().unwrap();
+    let claim_uuid: Uuid = claim_id.parse().unwrap();
+
+    // A disputes row now exists and is visible to the admin queue.
+    let dispute = sqlx::query(
+        "SELECT id, status, result_claim_id, description FROM disputes WHERE match_id = $1",
+    )
+    .bind(match_uuid)
+    .fetch_one(app.pool())
+    .await
+    .expect("a disputes row must be created for a claim-path dispute");
+    let dispute_id: Uuid = dispute.get("id");
+    let linked_claim: Option<Uuid> = dispute.get("result_claim_id");
+    assert_eq!(
+        linked_claim,
+        Some(claim_uuid),
+        "dispute must link the claim"
+    );
+
+    // Opening thread message exists.
+    let messages: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM dispute_messages WHERE dispute_id = $1")
+            .bind(dispute_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(messages, 1, "the dispute thread should be opened");
+
+    // Claim and match both flipped.
+    let claim_status: String = sqlx::query_scalar("SELECT status FROM result_claims WHERE id = $1")
+        .bind(claim_uuid)
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(claim_status, "disputed");
+
+    let row = sqlx::query("SELECT status, disputed FROM tournament_matches WHERE id = $1")
+        .bind(match_uuid)
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    let match_status: String = row.get("status");
+    let disputed: bool = row.get("disputed");
+    assert_eq!(match_status, "disputed");
+    assert!(disputed, "the match disputed flag should be set");
+
+    // And it shows up on the admin dispute queue.
+    let response = app.get_auth("/v1/admin/disputes").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let found = body["data"]["disputes"]
+        .as_array()
+        .expect("admin dispute list payload")
+        .iter()
+        .any(|d| d["id"].as_str() == Some(dispute_id.to_string().as_str()));
+    assert!(found, "the new dispute must appear in the admin queue");
+}

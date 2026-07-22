@@ -213,26 +213,28 @@ where
         // single seam to change when/if we decouple the two IDs.
         let (user_id, player_id) = make_shared_account_ids();
 
-        // Create the user
-        let user = self
+        // User + player in ONE transaction. Splitting them across two
+        // connections meant a failed player insert left an orphan user
+        // row: re-registration then failed the username/email checks
+        // above and login failed at the player lookup, permanently
+        // bricking that username and email with no recovery path (unlike
+        // the Steam flow's `recover_partial_steam_account`).
+        let (user, player) = self
             .user_repo
-            .create(CreateUser {
-                id: Some(user_id),
-                username: cmd.username,
-                email: cmd.email,
-                password_hash: Some(password_hash),
-                auth_provider: "local".to_string(),
-            })
-            .await?;
-
-        // Create the player profile with the same ID
-        let player = self
-            .player_repo
-            .create(CreatePlayer {
-                id: player_id,
-                user_id,
-                display_name: cmd.display_name,
-            })
+            .create_account(
+                CreateUser {
+                    id: Some(user_id),
+                    username: cmd.username,
+                    email: cmd.email,
+                    password_hash: Some(password_hash),
+                    auth_provider: "local".to_string(),
+                },
+                CreatePlayer {
+                    id: player_id,
+                    user_id,
+                    display_name: cmd.display_name,
+                },
+            )
             .await?;
 
         info!(user_id = %user.id, player_id = %player.id, "User registered");

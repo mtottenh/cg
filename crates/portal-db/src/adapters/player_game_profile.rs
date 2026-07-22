@@ -3,7 +3,7 @@
 use crate::DbPool;
 use crate::entities::PlayerGameProfileRow;
 use async_trait::async_trait;
-use portal_core::{DomainError, GameId, PlayerGameProfileId, PlayerId};
+use portal_core::{DomainError, GameId, PlayerGameProfileId, PlayerId, TournamentMatchId};
 use portal_domain::entities::PlayerGameProfile;
 use portal_domain::repositories::PlayerGameProfileRepository;
 
@@ -140,42 +140,85 @@ impl PlayerGameProfileRepository for PgPlayerGameProfileRepository {
         &self,
         player_id: PlayerId,
         game_id: GameId,
+        match_id: TournamentMatchId,
         new_stats: &serde_json::Value,
         is_win: bool,
         is_loss: bool,
         is_draw: bool,
     ) -> Result<PlayerGameProfile, DomainError> {
-        let row = sqlx::query_as::<_, PlayerGameProfileRow>(
+        // Match-scoped idempotency: the ledger insert and the counter bump run
+        // in ONE transaction so the record and the effect cannot diverge. The
+        // ledger insert is `ON CONFLICT DO NOTHING RETURNING`; the accumulate
+        // only fires when the insert claimed a new (player, match) pair, so a
+        // saga re-drive is a no-op.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let claimed: Option<(uuid::Uuid,)> = sqlx::query_as(
             r"
-            UPDATE player_game_profiles SET
-                game_specific_stats = $3,
-                matches_played = matches_played + 1,
-                wins = wins + CASE WHEN $4 THEN 1 ELSE 0 END,
-                losses = losses + CASE WHEN $5 THEN 1 ELSE 0 END,
-                draws = draws + CASE WHEN $6 THEN 1 ELSE 0 END,
-                win_streak = CASE WHEN $4 THEN win_streak + 1 ELSE 0 END,
-                best_win_streak = GREATEST(best_win_streak, CASE WHEN $4 THEN win_streak + 1 ELSE win_streak END),
-                last_match_at = NOW(),
-                first_match_at = COALESCE(first_match_at, NOW()),
-                updated_at = NOW()
-            WHERE player_id = $1 AND game_id = $2
-            RETURNING *
+            INSERT INTO player_match_stats_applied (player_id, match_id)
+            VALUES ($1, $2)
+            ON CONFLICT (player_id, match_id) DO NOTHING
+            RETURNING id
             ",
         )
         .bind(player_id.as_uuid())
-        .bind(game_id.as_uuid())
-        .bind(new_stats)
-        .bind(is_win)
-        .bind(is_loss)
-        .bind(is_draw)
-        .fetch_optional(&self.pool)
+        .bind(match_id.as_uuid())
+        .fetch_optional(&mut *tx)
         .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let row = if claimed.is_some() {
+            // Newly claimed: accumulate this match's contribution exactly once.
+            sqlx::query_as::<_, PlayerGameProfileRow>(
+                r"
+                UPDATE player_game_profiles SET
+                    game_specific_stats = $3,
+                    matches_played = matches_played + 1,
+                    wins = wins + CASE WHEN $4 THEN 1 ELSE 0 END,
+                    losses = losses + CASE WHEN $5 THEN 1 ELSE 0 END,
+                    draws = draws + CASE WHEN $6 THEN 1 ELSE 0 END,
+                    win_streak = CASE WHEN $4 THEN win_streak + 1 ELSE 0 END,
+                    best_win_streak = GREATEST(best_win_streak, CASE WHEN $4 THEN win_streak + 1 ELSE win_streak END),
+                    last_match_at = NOW(),
+                    first_match_at = COALESCE(first_match_at, NOW()),
+                    updated_at = NOW()
+                WHERE player_id = $1 AND game_id = $2
+                RETURNING *
+                ",
+            )
+            .bind(player_id.as_uuid())
+            .bind(game_id.as_uuid())
+            .bind(new_stats)
+            .bind(is_win)
+            .bind(is_loss)
+            .bind(is_draw)
+            .fetch_optional(&mut *tx)
+            .await
+        } else {
+            // Already applied for this (player, match): skip the accumulate and
+            // return the current, unchanged profile.
+            sqlx::query_as::<_, PlayerGameProfileRow>(
+                "SELECT * FROM player_game_profiles WHERE player_id = $1 AND game_id = $2",
+            )
+            .bind(player_id.as_uuid())
+            .bind(game_id.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+        }
         .map_err(|e| DomainError::Internal(e.to_string()))?
         .ok_or_else(|| {
             DomainError::Internal(format!(
                 "Player game profile not found for {player_id}/{game_id}"
             ))
         })?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(PlayerGameProfile::from(row))
     }

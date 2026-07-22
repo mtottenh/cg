@@ -26,6 +26,7 @@ fn test_config() -> LifecycleConfig {
         check_in_grace: chrono::Duration::minutes(10),
         evidence_stale_max_age: chrono::Duration::hours(24),
         evidence_sweep_every: 20,
+        saga_stuck_after: chrono::Duration::minutes(10),
         batch_limit: 100,
     }
 }

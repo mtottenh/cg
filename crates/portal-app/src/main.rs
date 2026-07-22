@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use portal_api::{
-    AppState, TokenConfig, create_app, spawn_lifecycle_task, spawn_timeout_warning_task,
+    AppState, TokenConfig, spawn_lifecycle_task, spawn_timeout_warning_task, try_create_app,
 };
 use portal_db::{PoolConfig, create_pool};
 use std::net::SocketAddr;
@@ -80,8 +80,9 @@ async fn main() -> Result<()> {
     // Keep a handle to the pool so we can drain it after the server stops.
     let pool_for_shutdown = state.db_pool.clone();
 
-    // Create app
-    let app = create_app(state);
+    // Create app. In release builds this fails rather than silently serving a
+    // wildcard CORS policy when PORTAL_CORS_ORIGINS is unset or unparseable.
+    let app = try_create_app(state)?;
 
     // Start server
     let port: u16 = std::env::var("PORT")

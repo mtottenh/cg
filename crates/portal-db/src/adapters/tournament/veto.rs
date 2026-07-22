@@ -318,7 +318,12 @@ impl VetoActionRepository for PgVetoActionRepository {
             auto_action_reason: action.auto_action_reason,
         };
 
-        let row = sqlx::query_as::<_, VetoActionRow>(
+        // Idempotent on `veto_actions_unique (session_id, action_number)`:
+        // if the action row already exists the session cursor never advanced
+        // (the process died between the two writes), so return the committed
+        // row and let the caller finish advancing the session instead of
+        // failing with a unique violation and wedging the session forever.
+        let existing = sqlx::query_as::<_, VetoActionRow>(
             r"
             INSERT INTO veto_actions (
                 session_id, action_number, action_type, map_id,
@@ -326,6 +331,7 @@ impl VetoActionRepository for PgVetoActionRepository {
                 was_auto_action, auto_action_reason
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT ON CONSTRAINT veto_actions_unique DO NOTHING
             RETURNING *
             ",
         )
@@ -337,9 +343,23 @@ impl VetoActionRepository for PgVetoActionRepository {
         .bind(new_action.performed_by_user_id)
         .bind(new_action.was_auto_action)
         .bind(&new_action.auto_action_reason)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(format!("Failed to create veto action: {e}")))?;
+
+        let row = match existing {
+            Some(row) => row,
+            None => sqlx::query_as::<_, VetoActionRow>(
+                "SELECT * FROM veto_actions WHERE session_id = $1 AND action_number = $2",
+            )
+            .bind(new_action.session_id)
+            .bind(new_action.action_number)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                DomainError::Internal(format!("Failed to load existing veto action: {e}"))
+            })?,
+        };
 
         action_row_to_domain(row)
     }

@@ -394,6 +394,43 @@ pub trait TournamentRegistrationRepository: Send + Sync {
         registration: CreateTournamentRegistration,
     ) -> Result<TournamentRegistration, DomainError>;
 
+    /// Create a registration only if the tournament still has room,
+    /// counting and inserting inside **one** transaction that holds a
+    /// `SELECT ... FOR UPDATE` lock on the tournament row.
+    ///
+    /// Replaces the `count_registrations()` + `create()` pair in
+    /// `TournamentService::register_team` / `register_player`. Those ran on
+    /// two separate pool connections, so N concurrent registrations against
+    /// a tournament with one free slot all saw the same pre-insert count and
+    /// all succeeded — overflowing `max_participants` and breaking the
+    /// seeding / bracket-generation assumptions built on it.
+    ///
+    /// Returns [`DomainError::TournamentFull`] when the tournament is at
+    /// capacity. `withdrawn` / `rejected` rows do not count, matching
+    /// [`TournamentRepository::count_registrations`].
+    ///
+    /// `replace_terminal` optionally names a terminal (withdrawn /
+    /// disqualified / rejected) registration to delete inside the same
+    /// transaction, so re-registration after a withdrawal cannot lose its
+    /// slot to a racer between the delete and the insert.
+    async fn create_with_capacity_check(
+        &self,
+        registration: CreateTournamentRegistration,
+        replace_terminal: Option<TournamentRegistrationId>,
+    ) -> Result<TournamentRegistration, DomainError>;
+
+    /// Set a registration's status only if the tournament still has room
+    /// for it, under the same tournament-row lock as
+    /// [`Self::create_with_capacity_check`].
+    ///
+    /// Used by admin approval of a pending registration, which had the same
+    /// count-then-write race.
+    async fn update_status_with_capacity_check(
+        &self,
+        id: TournamentRegistrationId,
+        status: TournamentRegistrationStatus,
+    ) -> Result<TournamentRegistration, DomainError>;
+
     /// Update a registration.
     async fn update(
         &self,
@@ -560,6 +597,19 @@ pub trait TournamentMatchRepository: Send + Sync {
         limit: i64,
     ) -> Result<Vec<TournamentMatch>, DomainError>;
 
+    /// Cross-tournament repair query: matches stuck in `checking_in` with no
+    /// `check_in_deadline` at all.
+    ///
+    /// Such a row is a partially opened check-in window (the status write
+    /// landed, the deadline write did not). It is invisible to both
+    /// `list_scheduled_due` (status is no longer `scheduled`) and
+    /// `list_checkin_expired` (the deadline is NULL), so without this query
+    /// the match is stranded forever. Feeds the lifecycle repair pass.
+    async fn list_checkin_missing_deadline(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError>;
+
     /// Set the check-in deadline for a match.
     ///
     /// Written when the automation loop opens the check-in window; nothing
@@ -607,6 +657,16 @@ pub trait TournamentMatchRepository: Send + Sync {
         winner_id: TournamentRegistrationId,
         loser_id: TournamentRegistrationId,
     ) -> Result<TournamentMatch, DomainError>;
+
+    /// Clear a recorded result: drop `winner_registration_id`,
+    /// `loser_registration_id` and `completed_at`, leaving the scores in
+    /// place for audit.
+    ///
+    /// Standings are derived from the completed match rows that carry a
+    /// winner, so "reverting" a result means removing it from that source —
+    /// subtracting deltas is no longer meaningful (and was never idempotent).
+    /// Calling this on a match with no recorded result is a no-op.
+    async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
 
     /// Schedule a match.
     async fn schedule(
@@ -928,20 +988,40 @@ pub trait TournamentStandingsRepository: Send + Sync {
         standing: CreateTournamentStanding,
     ) -> Result<TournamentStanding, DomainError>;
 
-    /// Update standings after a match.
-    async fn update_after_match(
+    /// Recompute every standing in a bracket from its source of truth and
+    /// re-rank, atomically.
+    ///
+    /// This replaces the old delta pair (`update_after_match` /
+    /// `revert_after_match`). Those were accumulative — `points = points +
+    /// $8` — so every path that could fire twice for the same match
+    /// double-counted it, and a second revert drove the columns negative.
+    ///
+    /// The source of truth is:
+    /// * the bracket's **completed** `tournament_matches` rows that carry
+    ///   both a winner and a loser (3 points for the winner, 0 for the
+    ///   loser, game wins/losses taken from the participant slot the winner
+    ///   occupies), plus
+    /// * the bracket's recorded **byes** (see [`Self::record_bye`]), which
+    ///   have no match row to derive from.
+    ///
+    /// Because the result is a pure function of those rows, calling this any
+    /// number of times converges instead of drifting.
+    async fn recompute_bracket(
         &self,
-        standing: UpdateTournamentStanding,
-    ) -> Result<TournamentStanding, DomainError>;
+        bracket_id: TournamentBracketId,
+    ) -> Result<Vec<TournamentStanding>, DomainError>;
 
-    /// Reverse a previously applied [`Self::update_after_match`] delta
-    /// (decrements `matches_played` and subtracts every delta). Used by
-    /// the admin revert/reapply progression path so an overturned result
-    /// does not leave its points behind.
-    async fn revert_after_match(
+    /// Record a Swiss bye for `registration_id` in `round`.
+    ///
+    /// Idempotent: re-recording the same (bracket, registration, round)
+    /// is a no-op. Byes are not represented as match rows, so without this
+    /// the recompute would have nothing to derive their points from.
+    async fn record_bye(
         &self,
-        standing: UpdateTournamentStanding,
-    ) -> Result<TournamentStanding, DomainError>;
+        bracket_id: TournamentBracketId,
+        registration_id: TournamentRegistrationId,
+        round: i32,
+    ) -> Result<(), DomainError>;
 
     /// Recalculate positions for a bracket.
     async fn recalculate_positions(
@@ -968,19 +1048,6 @@ pub struct CreateTournamentStanding {
     pub bracket_id: TournamentBracketId,
     pub registration_id: TournamentRegistrationId,
     pub position: i32,
-}
-
-/// Data for updating tournament standings after a match.
-#[derive(Debug, Clone)]
-pub struct UpdateTournamentStanding {
-    pub bracket_id: TournamentBracketId,
-    pub registration_id: TournamentRegistrationId,
-    pub matches_won_delta: i32,
-    pub matches_lost_delta: i32,
-    pub matches_drawn_delta: i32,
-    pub game_wins_delta: i32,
-    pub game_losses_delta: i32,
-    pub points_delta: i32,
 }
 
 // =============================================================================

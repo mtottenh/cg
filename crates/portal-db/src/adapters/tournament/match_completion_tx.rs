@@ -13,7 +13,7 @@ use crate::adapters::tournament::{
 };
 use crate::transaction::DbTransaction;
 use portal_domain::entities::tournament::{TournamentBracket, TournamentMatch};
-use portal_domain::repositories::tournament::{ParticipantSlot, UpdateTournamentStanding};
+use portal_domain::repositories::tournament::ParticipantSlot;
 
 // =============================================================================
 // INPUT/OUTPUT TYPES
@@ -82,7 +82,7 @@ pub async fn complete_match_in_transaction(
     let loser_next_match_id = route_loser(tx, &match_, &input, &bracket).await?;
 
     // Step 6: Update standings (if applicable)
-    let standings_updated = update_standings(tx, &match_, &bracket, &input).await?;
+    let standings_updated = update_standings(tx, &match_, &bracket).await?;
 
     info!(
         match_id = %input.match_id,
@@ -281,7 +281,6 @@ async fn update_standings(
     tx: &mut DbTransaction<'_>,
     match_: &TournamentMatch,
     bracket: &TournamentBracket,
-    input: &MatchCompletionTxInput,
 ) -> Result<bool, DomainError> {
     // Only update standings for round robin and swiss formats
     let needs_standings = matches!(
@@ -293,36 +292,15 @@ async fn update_standings(
         return Ok(false);
     }
 
-    // Update winner standings
-    let winner_update = UpdateTournamentStanding {
-        bracket_id: match_.bracket_id,
-        registration_id: input.winner_registration_id,
-        matches_won_delta: 1,
-        matches_lost_delta: 0,
-        matches_drawn_delta: 0,
-        game_wins_delta: input.winner_score,
-        game_losses_delta: input.loser_score,
-        points_delta: 3, // 3 points for a win
-    };
-    PgTournamentStandingsRepository::update_after_match_in_tx(tx, winner_update).await?;
-
-    // Update loser standings
-    let loser_update = UpdateTournamentStanding {
-        bracket_id: match_.bracket_id,
-        registration_id: input.loser_registration_id,
-        matches_won_delta: 0,
-        matches_lost_delta: 1,
-        matches_drawn_delta: 0,
-        game_wins_delta: input.loser_score,
-        game_losses_delta: input.winner_score,
-        points_delta: 0,
-    };
-    PgTournamentStandingsRepository::update_after_match_in_tx(tx, loser_update).await?;
-
-    // Recalculate positions
+    // Standings are DERIVED, not accumulated. `complete_match` (step 3 of
+    // this transaction) has already written this match's winner/loser onto
+    // the row, so recomputing the bracket from its completed match rows
+    // includes this result exactly once — idempotent even if the whole
+    // transaction is retried.
+    PgTournamentStandingsRepository::recompute_bracket_in_tx(tx, match_.bracket_id).await?;
     PgTournamentStandingsRepository::recalculate_positions_in_tx(tx, match_.bracket_id).await?;
 
-    info!(bracket_id = %match_.bracket_id, "Standings updated in transaction");
+    info!(bracket_id = %match_.bracket_id, "Standings recomputed in transaction");
 
     Ok(true)
 }

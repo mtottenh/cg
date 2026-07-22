@@ -1,14 +1,14 @@
 //! Authentication handlers.
 //!
-//! All three endpoints (register, login, refresh) take the
+//! All endpoints (register, login, refresh, logout, logout-all) take the
 //! domain-scoped [`AuthState`] sub-state rather than the full
 //! `AppState`.
 
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{LoginRequest, RefreshTokenRequest, RegisterRequest};
-use crate::dto::responses::{LoginResponse, RegisterResponse};
+use crate::dto::responses::{LoginResponse, LogoutResponse, RegisterResponse};
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::ValidatedJson;
+use crate::extractors::{AuthenticatedUser, ValidatedJson};
 use crate::state::AuthState;
 use axum::Json;
 use axum::extract::State;
@@ -48,6 +48,19 @@ fn refresh_token_cookie(raw_refresh: &str, expiry_minutes: i64) -> Cookie<'stati
     cookie.set_same_site(SameSite::Lax);
     cookie.set_path("/v1/auth");
     cookie.set_max_age(time::Duration::minutes(expiry_minutes));
+    cookie
+}
+
+/// Build the cookie that clears the refresh-token cookie on logout.
+///
+/// Attributes (name, path) must match [`refresh_token_cookie`] or the browser
+/// will keep the original cookie alongside the removal.
+fn cleared_refresh_token_cookie() -> Cookie<'static> {
+    let mut cookie = Cookie::new(REFRESH_TOKEN_COOKIE, "");
+    cookie.set_http_only(true);
+    cookie.set_same_site(SameSite::Lax);
+    cookie.set_path("/v1/auth");
+    cookie.set_max_age(time::Duration::seconds(0));
     cookie
 }
 
@@ -354,4 +367,103 @@ pub async fn refresh(
     };
 
     Ok((jar, Json(DataResponse::new(response, request_id))))
+}
+
+/// Log out: revoke the presented refresh token.
+///
+/// The refresh token is the credential here, exactly as for `refresh` — no
+/// `Authorization` header is required, so a client whose access token has
+/// already expired can still terminate its session. The token is read from
+/// the body when present, otherwise from the `refresh_token` httpOnly cookie.
+///
+/// Idempotent and non-enumerable: an unknown, already-revoked or expired
+/// token still returns 200 so this endpoint cannot be used to probe which
+/// token values exist.
+#[utoipa::path(
+    post,
+    path = "/v1/auth/logout",
+    request_body = RefreshTokenRequest,
+    responses(
+        (status = 200, description = "Session revoked", body = DataResponse<LogoutResponse>),
+        (status = 400, description = "No refresh token supplied", body = ApiError),
+    ),
+    tag = "auth"
+)]
+pub async fn logout(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    ValidatedJson(req): ValidatedJson<RefreshTokenRequest>,
+) -> ApiResult<(CookieJar, Json<DataResponse<LogoutResponse>>)> {
+    let request_id = get_request_id(&headers);
+
+    let refresh_token = req
+        .refresh_token
+        .or_else(|| jar.get(REFRESH_TOKEN_COOKIE).map(|c| c.value().to_owned()))
+        .ok_or_else(|| {
+            ApiError::bad_request("Missing refresh token (provide it in the body or cookie)")
+        })?;
+
+    // Look the token up regardless of revoked state; `revoke` is idempotent.
+    // Failures to find it are deliberately not surfaced to the caller.
+    let token_hash = hash_refresh_token(&refresh_token);
+    if let Some(stored) = state.refresh_token_repo.find_by_hash(&token_hash).await?
+        && stored.revoked_at.is_none()
+    {
+        state.refresh_token_repo.revoke(stored.id).await?;
+        tracing::info!(user_id = %stored.user_id, "refresh token revoked via logout");
+    }
+
+    // Clear the httpOnly cookie so a cookie-flow client is fully signed out.
+    let jar = jar.add(cleared_refresh_token_cookie());
+
+    Ok((
+        jar,
+        Json(DataResponse::new(
+            LogoutResponse { logged_out: true },
+            request_id,
+        )),
+    ))
+}
+
+/// Log out everywhere: revoke every refresh token for the authenticated user.
+///
+/// Requires a valid access token — unlike `logout`, this affects sessions the
+/// caller did not present a token for, so it must be bound to the user
+/// identity rather than to a single token value. Use after a suspected
+/// compromise; residual access is then capped at the 15-minute access-token
+/// lifetime.
+#[utoipa::path(
+    post,
+    path = "/v1/auth/logout-all",
+    responses(
+        (status = 200, description = "All sessions revoked", body = DataResponse<LogoutResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "auth"
+)]
+pub async fn logout_all(
+    State(state): State<AuthState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    jar: CookieJar,
+) -> ApiResult<(CookieJar, Json<DataResponse<LogoutResponse>>)> {
+    let request_id = get_request_id(&headers);
+
+    state
+        .refresh_token_repo
+        .revoke_all_for_user(auth.user_id.as_uuid())
+        .await?;
+    tracing::info!(user_id = %auth.user_id, "all refresh tokens revoked via logout-all");
+
+    let jar = jar.add(cleared_refresh_token_cookie());
+
+    Ok((
+        jar,
+        Json(DataResponse::new(
+            LogoutResponse { logged_out: true },
+            request_id,
+        )),
+    ))
 }

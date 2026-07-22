@@ -9,14 +9,22 @@
 //!
 //! # Client IP
 //!
-//! The limiter extracts the client address from the TCP peer by default.
-//! When the server runs behind a reverse proxy (nginx, Envoy, a CDN), that
-//! becomes the proxy's IP — every request looks like it comes from the same
-//! origin and the limit locks out all users together. In that topology,
-//! deploy with an explicit forwarded-IP extractor and only trust the
-//! forwarded chain from known proxies. For now the peer-IP default is
-//! honest — if you see "everyone on one IP" in the metrics, that's the
-//! signal to flip the extractor rather than a silent mis-attribution.
+//! The limiter keys on the **TCP peer address** by default
+//! ([`PeerIpKeyExtractor`]). Forwarded headers (`X-Forwarded-For`,
+//! `X-Real-IP`, `Forwarded`) are client-controlled: if the API can be
+//! reached directly, an attacker rotates the header value and gets a fresh
+//! token bucket per request, which defeats the brute-force limit entirely.
+//!
+//! Behind a reverse proxy that *overwrites* the forwarded chain (our Caddy
+//! deployment sets `header_up X-Forwarded-For {remote}`), the peer address
+//! is the proxy and every user shares one bucket — there you want the
+//! forwarded-header extractor. Opt in explicitly with:
+//!
+//! * `PORTAL_TRUST_FORWARDED_FOR=true` — key on X-Forwarded-For / X-Real-IP
+//!   ([`SmartIpKeyExtractor`]). Only set this when a trusted proxy is the
+//!   *only* path to the listener (bind loopback and/or firewall port 3000).
+//!
+//! Default (unset or anything other than `true`/`1`): peer IP.
 //!
 //! # Tuning
 //!
@@ -35,10 +43,35 @@ use axum::routing::{get, post};
 use std::sync::Arc;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::key_extractor::SmartIpKeyExtractor;
+use tower_governor::key_extractor::{PeerIpKeyExtractor, SmartIpKeyExtractor};
 
 const DEFAULT_BURST: u32 = 20;
 const DEFAULT_PER_SECOND: u64 = 5;
+
+/// Whether to key the rate limiter on forwarded headers instead of the TCP
+/// peer address. Off unless explicitly enabled — see the module docs.
+fn trust_forwarded_for() -> bool {
+    std::env::var("PORTAL_TRUST_FORWARDED_FOR")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "true" || v == "1" || v == "yes"
+        })
+        .unwrap_or(false)
+}
+
+/// The rate-limited auth endpoints, without the limiter layer.
+fn auth_routes() -> Router<AppState> {
+    Router::new()
+        .route("/register", post(auth::register))
+        .route("/login", post(auth::login))
+        .route("/refresh", post(auth::refresh))
+        .route("/logout", post(auth::logout))
+        .route("/logout-all", post(auth::logout_all))
+        // Steam OpenID sign-in shares the same per-IP limiter — the
+        // callback reaches the account store just like login does.
+        .route("/steam/login", get(steam_auth::steam_login))
+        .route("/steam/callback", get(steam_auth::steam_callback))
+}
 
 /// Auth routes.
 pub fn routes() -> Router<AppState> {
@@ -53,24 +86,31 @@ pub fn routes() -> Router<AppState> {
         // per_second = 0 would deadlock the bucket; clamp up to 1.
         .max(1);
 
-    let config = GovernorConfigBuilder::default()
-        .per_second(per_second)
-        .burst_size(burst)
-        .key_extractor(SmartIpKeyExtractor)
-        .finish()
-        .expect("valid governor config: burst>=1, per_second>=1");
-
-    let governor = GovernorLayer {
-        config: Arc::new(config),
-    };
-
-    Router::new()
-        .route("/register", post(auth::register))
-        .route("/login", post(auth::login))
-        .route("/refresh", post(auth::refresh))
-        // Steam OpenID sign-in shares the same per-IP limiter — the
-        // callback reaches the account store just like login does.
-        .route("/steam/login", get(steam_auth::steam_login))
-        .route("/steam/callback", get(steam_auth::steam_callback))
-        .layer(governor)
+    // The two extractors are distinct types, so the governor layer has to be
+    // built (and applied) inside each arm rather than swapped in as a value.
+    if trust_forwarded_for() {
+        tracing::warn!(
+            "PORTAL_TRUST_FORWARDED_FOR is set — auth rate limiting keys on X-Forwarded-For/X-Real-IP. \
+             Only safe when a trusted proxy that overwrites those headers is the sole path to this listener."
+        );
+        let config = GovernorConfigBuilder::default()
+            .per_second(per_second)
+            .burst_size(burst)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("valid governor config: burst>=1, per_second>=1");
+        auth_routes().layer(GovernorLayer {
+            config: Arc::new(config),
+        })
+    } else {
+        let config = GovernorConfigBuilder::default()
+            .per_second(per_second)
+            .burst_size(burst)
+            .key_extractor(PeerIpKeyExtractor)
+            .finish()
+            .expect("valid governor config: burst>=1, per_second>=1");
+        auth_routes().layer(GovernorLayer {
+            config: Arc::new(config),
+        })
+    }
 }

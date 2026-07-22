@@ -89,8 +89,8 @@ pub use tournament::{
     TournamentRegistrationRepository, TournamentRepository, TournamentStageRepository,
     TournamentStandingsRepository, UpdateResultClaim, UpdateTournament, UpdateTournamentBracket,
     UpdateTournamentMatch, UpdateTournamentMatchGame, UpdateTournamentRegistration,
-    UpdateTournamentStage, UpdateTournamentStanding, UpdateVetoSession, UpsertTournamentMapPool,
-    VetoActionRepository, VetoSessionRepository,
+    UpdateTournamentStage, UpdateVetoSession, UpsertTournamentMapPool, VetoActionRepository,
+    VetoSessionRepository,
 };
 pub use user::{
     CreatePlayer, CreateUser, PlayerRepository, PlayerSearchFilters, UpdatePlayer, UserRepository,

@@ -56,9 +56,8 @@ async fn test_get_veto_session_not_found() {
         .get("/v1/matches/00000000-0000-0000-0000-000000000000/veto")
         .await;
 
-    // Returns 500 for session not found (internal error mapping)
-    // TODO: Should ideally return 404
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // No session for this match -> 404.
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -75,8 +74,8 @@ async fn test_perform_veto_action_no_session() {
         )
         .await;
 
-    // Returns 500 for session not found (internal error mapping)
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // No session for this match -> 404.
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -94,8 +93,8 @@ async fn test_select_side_no_session() {
         )
         .await;
 
-    // Returns 500 for session not found (internal error mapping)
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // No session for this match -> 404.
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 // ============================================================================
@@ -229,8 +228,8 @@ async fn test_veto_action_endpoint_exists() {
         StatusCode::METHOD_NOT_ALLOWED,
         "POST /veto/action endpoint should exist"
     );
-    // Returns 500 for session not found
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // No session for this match -> 404.
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -254,8 +253,8 @@ async fn test_veto_side_endpoint_exists() {
         StatusCode::METHOD_NOT_ALLOWED,
         "POST /veto/side endpoint should exist"
     );
-    // Returns 500 for session not found
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // No session for this match -> 404.
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -273,8 +272,8 @@ async fn test_veto_get_session_endpoint_exists() {
         StatusCode::METHOD_NOT_ALLOWED,
         "GET /veto endpoint should exist"
     );
-    // Returns 500 for session not found
-    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    // No session for this match -> 404.
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 // ============================================================================

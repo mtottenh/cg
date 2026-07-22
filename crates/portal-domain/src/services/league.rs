@@ -11,7 +11,7 @@ use crate::repositories::league::{
 };
 use portal_core::{DomainError, GameId, LeagueId, LeagueInvitationId, UserId};
 use std::sync::Arc;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 /// Service for league-related business logic.
 pub struct LeagueService<LR, LMR, LIR>
@@ -515,31 +515,49 @@ where
             return Err(DomainError::InvitationInvalid);
         }
 
-        // Check status
-        if invitation.status != LeagueInvitationStatus::Pending {
-            return Err(DomainError::InvitationInvalid);
+        // Check status. `Accepted` is allowed through ONLY as recovery from
+        // a partial write (status flipped, membership never inserted); if the
+        // membership exists the invitation really is spent.
+        match invitation.status {
+            LeagueInvitationStatus::Pending => {
+                // Expiry only applies to a genuinely pending invitation — a
+                // recovery retry must not be blocked by the clock.
+                if let Some(expires_at) = invitation.expires_at
+                    && expires_at < chrono::Utc::now()
+                {
+                    return Err(DomainError::InvitationExpired);
+                }
+            }
+            LeagueInvitationStatus::Accepted => {
+                if self
+                    .member_repo
+                    .is_member(invitation.league_id, user_id)
+                    .await?
+                {
+                    return Err(DomainError::InvitationInvalid);
+                }
+                warn!(
+                    league_id = %invitation.league_id,
+                    user_id = %user_id,
+                    invitation_id = %invitation_id,
+                    "Recovering an accepted league invitation with no membership row"
+                );
+            }
+            _ => return Err(DomainError::InvitationInvalid),
         }
 
-        // Check expiration
-        if let Some(expires_at) = invitation.expires_at
-            && expires_at < chrono::Utc::now()
-        {
-            return Err(DomainError::InvitationExpired);
-        }
-
-        // Update invitation status
-        self.invitation_repo
-            .update_status(invitation_id, LeagueInvitationStatus::Accepted, user_id)
-            .await?;
-
-        // Add user as member
+        // Flip the status and seat the member in one transaction.
         let member = self
-            .member_repo
-            .add_member(AddLeagueMember {
-                league_id: invitation.league_id,
+            .invitation_repo
+            .accept_and_add_member(
+                invitation_id,
                 user_id,
-                membership_type: LeagueMembershipType::Member,
-            })
+                AddLeagueMember {
+                    league_id: invitation.league_id,
+                    user_id,
+                    membership_type: LeagueMembershipType::Member,
+                },
+            )
             .await?;
 
         info!(
@@ -565,24 +583,41 @@ where
             .await?
             .ok_or(DomainError::InvitationInvalid)?;
 
-        // Check status
-        if invitation.status != LeagueInvitationStatus::Pending {
-            return Err(DomainError::InvitationInvalid);
+        // Check status. As in `accept_invitation`, `Accepted` is allowed
+        // through only to recover an application whose membership insert
+        // never landed.
+        match invitation.status {
+            LeagueInvitationStatus::Pending => {}
+            LeagueInvitationStatus::Accepted => {
+                if self
+                    .member_repo
+                    .is_member(invitation.league_id, invitation.user_id)
+                    .await?
+                {
+                    return Err(DomainError::InvitationInvalid);
+                }
+                warn!(
+                    league_id = %invitation.league_id,
+                    applicant = %invitation.user_id,
+                    invitation_id = %invitation_id,
+                    "Recovering an approved league application with no membership row"
+                );
+            }
+            _ => return Err(DomainError::InvitationInvalid),
         }
 
-        // Update invitation status
-        self.invitation_repo
-            .update_status(invitation_id, LeagueInvitationStatus::Accepted, approved_by)
-            .await?;
-
-        // Add user as member
+        // Flip the status and seat the member in one transaction.
         let member = self
-            .member_repo
-            .add_member(AddLeagueMember {
-                league_id: invitation.league_id,
-                user_id: invitation.user_id,
-                membership_type: LeagueMembershipType::Member,
-            })
+            .invitation_repo
+            .accept_and_add_member(
+                invitation_id,
+                approved_by,
+                AddLeagueMember {
+                    league_id: invitation.league_id,
+                    user_id: invitation.user_id,
+                    membership_type: LeagueMembershipType::Member,
+                },
+            )
             .await?;
 
         info!(

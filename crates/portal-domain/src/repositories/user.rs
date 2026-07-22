@@ -27,6 +27,26 @@ pub trait UserRepository: Send + Sync {
     /// Create a new user.
     async fn create(&self, cmd: CreateUser) -> Result<User, DomainError>;
 
+    /// Create a user **and** their player profile in one transaction.
+    ///
+    /// Local registration used to do `user_repo.create` then
+    /// `player_repo.create` on two separate connections. If the player
+    /// insert failed, the user row survived with no player: every
+    /// re-registration attempt then tripped the username/email uniqueness
+    /// checks and every login attempt died at the player lookup, so that
+    /// username and email were bricked with no recovery path. The Steam
+    /// flow self-heals (`recover_partial_steam_account`); the local flow
+    /// has no equivalent, so it gets atomicity instead.
+    ///
+    /// Lives on `UserRepository` (rather than being split across the two
+    /// traits) because a transaction cannot span repositories here — the
+    /// user+player pair is one account aggregate.
+    async fn create_account(
+        &self,
+        user: CreateUser,
+        player: CreatePlayer,
+    ) -> Result<(User, Player), DomainError>;
+
     /// Check if a username is taken.
     async fn username_exists(&self, username: &str) -> Result<bool, DomainError>;
 

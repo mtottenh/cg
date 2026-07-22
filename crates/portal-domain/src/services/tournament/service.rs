@@ -7,7 +7,8 @@ use portal_core::types::{
     TournamentMatchStatus, TournamentRegistrationStatus, TournamentStatus,
 };
 use portal_core::{
-    DomainError, PlayerId, TournamentBracketId, TournamentId, TournamentMatchId, UserId,
+    DomainError, FieldError, PlayerId, TournamentBracketId, TournamentId, TournamentMatchId,
+    UserId, ValidationError,
 };
 
 use crate::entities::tournament::{
@@ -19,7 +20,7 @@ use crate::repositories::tournament::{
     CreateTournamentStanding, TournamentBracketRepository, TournamentFilters,
     TournamentMapPoolRepository, TournamentMatchRepository, TournamentRegistrationRepository,
     TournamentRepository, TournamentStageRepository, TournamentStandingsRepository,
-    UpdateTournament, UpdateTournamentStanding, UpsertTournamentMapPool,
+    UpdateTournament, UpsertTournamentMapPool,
 };
 
 use super::bracket_generator::{BracketGenerator, CrossLinkType};
@@ -81,6 +82,21 @@ where
         cmd: CreateTournamentCommand,
         created_by: UserId,
     ) -> Result<Tournament, DomainError> {
+        // Cross-field participant-range check. Previously this was left to
+        // the `tournaments_participants_check` DB constraint, which surfaced
+        // as a 500 (a constraint violation is an Internal error by the time
+        // it reaches the API boundary). Validate up front so callers get a
+        // 400 with a field-scoped message.
+        if cmd.min_participants > cmd.max_participants {
+            return Err(DomainError::Validation(ValidationError::field(
+                FieldError::new(
+                    "min_participants",
+                    "min_participants cannot be greater than max_participants",
+                    "invalid_range",
+                ),
+            )));
+        }
+
         // Check slug uniqueness
         if self.tournament_repo.slug_exists(&cmd.slug).await? {
             return Err(DomainError::Conflict(format!(
@@ -183,6 +199,20 @@ where
         // Check if tournament can be updated
         if tournament.has_started() {
             return Err(DomainError::TournamentAlreadyStarted);
+        }
+
+        // Same cross-field participant-range guard as `create_tournament`,
+        // resolved against the stored values for whichever bound is absent.
+        let new_min = cmd.min_participants.unwrap_or(tournament.min_participants);
+        let new_max = cmd.max_participants.unwrap_or(tournament.max_participants);
+        if new_min > new_max {
+            return Err(DomainError::Validation(ValidationError::field(
+                FieldError::new(
+                    "min_participants",
+                    "min_participants cannot be greater than max_participants",
+                    "invalid_range",
+                ),
+            )));
         }
 
         // Check slug uniqueness if changing
@@ -422,40 +452,36 @@ where
         }
 
         // Check not already registered (allow re-registration after withdrawal)
-        if let Some(existing) = self
+        let replace_terminal = match self
             .registration_repo
             .find_by_team_season(tournament_id, team_season_id)
             .await?
         {
-            if existing.status.is_terminal() {
-                // Remove old withdrawn/disqualified/etc. registration so a fresh one can be created
-                self.registration_repo.delete(existing.id).await?;
-            } else {
-                return Err(DomainError::AlreadyRegisteredForTournament);
-            }
-        }
+            // Remove the old withdrawn/disqualified/etc. registration so a
+            // fresh one can be created — done inside the capacity tx below.
+            Some(existing) if existing.status.is_terminal() => Some(existing.id),
+            Some(_) => return Err(DomainError::AlreadyRegisteredForTournament),
+            None => None,
+        };
 
-        // Check capacity
-        let current_count = self
-            .tournament_repo
-            .count_registrations(tournament_id)
-            .await?;
-        if current_count >= i64::from(tournament.max_participants) {
-            return Err(DomainError::TournamentFull);
-        }
-
-        // Create registration
+        // Capacity check + insert happen in one transaction under a row
+        // lock on the tournament (see `create_with_capacity_check`). The
+        // previous count-then-create pair let concurrent registrations
+        // overflow `max_participants`.
         self.registration_repo
-            .create(CreateTournamentRegistration {
-                tournament_id,
-                team_season_id: Some(team_season_id),
-                player_id: None,
-                adhoc_team_id: None,
-                participant_name,
-                participant_logo_url,
-                registered_by,
-                seed_rating: None,
-            })
+            .create_with_capacity_check(
+                CreateTournamentRegistration {
+                    tournament_id,
+                    team_season_id: Some(team_season_id),
+                    player_id: None,
+                    adhoc_team_id: None,
+                    participant_name,
+                    participant_logo_url,
+                    registered_by,
+                    seed_rating: None,
+                },
+                replace_terminal,
+            )
             .await
     }
 
@@ -475,39 +501,31 @@ where
         }
 
         // Check not already registered (allow re-registration after withdrawal)
-        if let Some(existing) = self
+        let replace_terminal = match self
             .registration_repo
             .find_by_player(tournament_id, player_id)
             .await?
         {
-            if existing.status.is_terminal() {
-                self.registration_repo.delete(existing.id).await?;
-            } else {
-                return Err(DomainError::AlreadyRegisteredForTournament);
-            }
-        }
+            Some(existing) if existing.status.is_terminal() => Some(existing.id),
+            Some(_) => return Err(DomainError::AlreadyRegisteredForTournament),
+            None => None,
+        };
 
-        // Check capacity
-        let current_count = self
-            .tournament_repo
-            .count_registrations(tournament_id)
-            .await?;
-        if current_count >= i64::from(tournament.max_participants) {
-            return Err(DomainError::TournamentFull);
-        }
-
-        // Create registration
+        // Capacity check + insert in one transaction — see `register_team`.
         self.registration_repo
-            .create(CreateTournamentRegistration {
-                tournament_id,
-                team_season_id: None,
-                player_id: Some(player_id),
-                adhoc_team_id: None,
-                participant_name,
-                participant_logo_url: None,
-                registered_by,
-                seed_rating: None,
-            })
+            .create_with_capacity_check(
+                CreateTournamentRegistration {
+                    tournament_id,
+                    team_season_id: None,
+                    player_id: Some(player_id),
+                    adhoc_team_id: None,
+                    participant_name,
+                    participant_logo_url: None,
+                    registered_by,
+                    seed_rating: None,
+                },
+                replace_terminal,
+            )
             .await
     }
 
@@ -1082,20 +1100,17 @@ where
             .collect();
         self.standings_repo.bulk_create(standings).await?;
 
-        // Give bye participant +3 points if odd count
+        // Award the bye if the participant count is odd.
+        //
+        // A bye has no `tournament_matches` row, so the derived standings
+        // recompute has nothing to reconstruct it from — it is recorded
+        // explicitly (idempotently, keyed on bracket+registration+round)
+        // and then folded in by the recompute.
         if let Some(bye_id) = bye_participant {
             self.standings_repo
-                .update_after_match(UpdateTournamentStanding {
-                    bracket_id: bracket.id,
-                    registration_id: bye_id,
-                    matches_won_delta: 1,
-                    matches_lost_delta: 0,
-                    matches_drawn_delta: 0,
-                    game_wins_delta: 0,
-                    game_losses_delta: 0,
-                    points_delta: 3,
-                })
+                .record_bye(bracket.id, bye_id, 1)
                 .await?;
+            self.standings_repo.recompute_bracket(bracket.id).await?;
         }
 
         // Mark matches with both participants as Ready
@@ -1220,6 +1235,8 @@ where
                 })
                 .await?;
 
+            let mut bye_to_record: Option<portal_core::TournamentRegistrationId> = None;
+
             match config.group_format {
                 GroupStageFormat::RoundRobin => {
                     // Generate all RR matches for this group
@@ -1282,21 +1299,11 @@ where
                     )
                     .await?;
 
-                    // Give bye participant +3 points
-                    if let Some(bye_id) = bye_participant {
-                        self.standings_repo
-                            .update_after_match(UpdateTournamentStanding {
-                                bracket_id: bracket.id,
-                                registration_id: bye_id,
-                                matches_won_delta: 1,
-                                matches_lost_delta: 0,
-                                matches_drawn_delta: 0,
-                                game_wins_delta: 0,
-                                game_losses_delta: 0,
-                                points_delta: 3,
-                            })
-                            .await?;
-                    }
+                    // A bye has no `tournament_matches` row, so the
+                    // derived standings recompute has nothing to
+                    // reconstruct it from — it is recorded explicitly
+                    // below, once the standings rows it applies to exist.
+                    bye_to_record = bye_participant;
                 }
             }
 
@@ -1311,6 +1318,13 @@ where
                 })
                 .collect();
             self.standings_repo.bulk_create(standings).await?;
+
+            if let Some(bye_id) = bye_to_record {
+                self.standings_repo
+                    .record_bye(bracket.id, bye_id, 1)
+                    .await?;
+                self.standings_repo.recompute_bracket(bracket.id).await?;
+            }
 
             // Mark matches with both participants as Ready
             self.mark_ready_matches(bracket.id).await?;
@@ -1464,21 +1478,16 @@ where
         self.apply_initial_assignments(&generated.initial_assignments, &position_to_match)
             .await?;
 
-        // Give bye participant +3 points
+        // Record the round's bye, if any. Byes have no match row, so the
+        // derived standings recompute folds them in from this table
+        // instead. Recording is keyed on (bracket, registration, round),
+        // so re-running round generation cannot award it twice.
         if let Some(bye_id) = bye_participant {
             self.standings_repo
-                .update_after_match(UpdateTournamentStanding {
-                    bracket_id: bracket.id,
-                    registration_id: bye_id,
-                    matches_won_delta: 1,
-                    matches_lost_delta: 0,
-                    matches_drawn_delta: 0,
-                    game_wins_delta: 0,
-                    game_losses_delta: 0,
-                    points_delta: 3,
-                })
+                .record_bye(bracket.id, bye_id, next_round)
                 .await?;
         }
+        self.standings_repo.recompute_bracket(bracket.id).await?;
 
         // Update bracket current_round
         self.bracket_repo

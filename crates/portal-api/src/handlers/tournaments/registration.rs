@@ -158,6 +158,12 @@ pub async fn create_invitation(
 /// List a tournament's invitations.
 #[utoipa::path(
     get,
+    // `operationId` defaults to the handler name, and `leagues::list_invitations`
+    // already claims `list_invitations`. Two operations sharing an ID make the
+    // document ambiguous and break generated clients — `openapi-typescript`
+    // emits one `operations` member per ID, so the collision produced a
+    // TypeScript file that would not compile (duplicate identifier).
+    operation_id = "list_tournament_invitations",
     path = "/v1/tournaments/{tournament_id}/invitations",
     params(
         ("tournament_id" = String, Path, description = "Tournament ID")

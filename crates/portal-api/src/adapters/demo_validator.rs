@@ -78,10 +78,26 @@ impl MatchDemoValidator for DemoValidatorAdapter {
                 continue;
             }
 
-            // Find the corresponding game result for this link's game_number
+            // Find the corresponding game result for this link.
+            //
+            // Prefer the link's own `game_number`, but fall back to the game result
+            // that points at THIS link. The auto-linker creates links with
+            // `game_number: None` (services/demo.rs:498), so before the fallback every
+            // auto-linked demo fell through to the series-level score below and was
+            // compared against the demo's per-MAP score: a correct BO1 claim of 1-0
+            // (16-14 on the map) was checked against 13-7 and always "mismatched".
+            // That raised a spurious review, which pauses the completion saga
+            // (match_completion.rs:409) and stops the winner advancing until an admin
+            // approves. `GameResult.demo_link_id` carried the mapping all along.
             let game_result = link
                 .game_number
-                .and_then(|gn| claim.game_results.iter().find(|gr| gr.game_number == gn));
+                .and_then(|gn| claim.game_results.iter().find(|gr| gr.game_number == gn))
+                .or_else(|| {
+                    claim
+                        .game_results
+                        .iter()
+                        .find(|gr| gr.demo_link_id == Some(link.id))
+                });
 
             // Build validation result
             let mut validation = DemoValidationResult::default();

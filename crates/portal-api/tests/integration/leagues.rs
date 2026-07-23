@@ -377,8 +377,11 @@ async fn test_list_members() {
     let created: serde_json::Value = create_response.json();
     let league_id = created["data"]["id"].as_str().unwrap();
 
-    // List members
-    let response = app.get(&format!("/v1/leagues/{league_id}/members")).await;
+    // List members. Authenticated: P-37 closed this endpoint to anonymous callers,
+    // which this test was incidentally relying on.
+    let response = app
+        .get_auth(&format!("/v1/leagues/{league_id}/members"))
+        .await;
     response.assert_status(StatusCode::OK);
 
     let body: Vec<serde_json::Value> = response.json();
@@ -1040,7 +1043,10 @@ async fn test_remove_member() {
     response.assert_status(StatusCode::NO_CONTENT);
 
     // Verify user2 is no longer a member
-    let members_response = app.get(&format!("/v1/leagues/{league_id}/members")).await;
+    // Authenticated: see P-37.
+    let members_response = app
+        .get_auth(&format!("/v1/leagues/{league_id}/members"))
+        .await;
     let members: Vec<serde_json::Value> = members_response.json();
     assert!(!members.iter().any(|m| m["user_id"] == user2.id.to_string()));
 }

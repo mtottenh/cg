@@ -260,13 +260,23 @@ async fn test_open_tournament_auto_approves_player_registration() {
             .unwrap();
     assert_eq!(stored, "approved", "DB row must carry the approved status");
 
-    // And an organiser cannot approve it again — it is not pending.
+    // Approving it again is a no-op, not an error.
+    //
+    // This assertion originally required 400. That was the behaviour when this
+    // test was written, but P-36 deliberately changed the specification: because
+    // P-2 auto-approves open registrations, an organiser pressing Approve on a
+    // row they can see was always getting a 400. Approve is now idempotent for an
+    // already-approved registration, so the expected status here is 200.
+    //
+    // Changed because the SPEC changed, not to make a failing test pass — the
+    // narrow case (terminal statuses still rejected) is pinned separately by
+    // `test_approve_still_rejects_a_withdrawn_registration`.
     let response = app
         .post_auth(&format!(
             "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"
         ))
         .await;
-    response.assert_status(StatusCode::BAD_REQUEST);
+    response.assert_status(StatusCode::OK);
 }
 
 /// Every non-`open` registration type still requires a decision, so the

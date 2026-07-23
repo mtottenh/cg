@@ -62,11 +62,19 @@ Consequences:
    verified.** Note this is the same defect as the vacuous tests the campaign existed to
    remove — and it still got past the person auditing for it, because a green check reads
    as evidence whether or not anything was checked.
-6. **Install a mechanical ratchet.** A script that counts anti-patterns with a committed
+6. **Apply the same scrutiny to your OWN changes as to the agents'.** The asymmetry is easy to
+   miss: verifying delegated work is deliberate and systematic, while your own edits get
+   waved through because you remember writing them. In this campaign an agent caught a
+   CI-breaking clippy failure (58 needless borrows) in a file the *orchestrator* had
+   generated — introduced by a fix for a move error that a later change made unnecessary, and
+   never revisited. The orchestrator's hand-maintained status line also drifted three times
+   and was eventually replaced by one computed from the register. **Prefer derived state over
+   maintained state**, and run the full gates against your own commits, not just theirs.
+7. **Install a mechanical ratchet.** A script that counts anti-patterns with a committed
    baseline that may only decrease. Judgement does not survive fan-out across agents;
    a failing script does. Give it an explicit escape hatch (`// audit-exempt: <reason>`)
    so honest exceptions are visible rather than hidden.
-7. **Prove the fix, not the formatting.** If the bug is "matches in state X are hidden",
+8. **Prove the fix, not the formatting.** If the bug is "matches in state X are hidden",
    the test must show a match in state X *appearing*. A test that only checks the label
    would pass against the bug.
 

@@ -17,6 +17,7 @@ mod leagues;
 mod lifecycle_automation;
 mod lifecycle_races;
 mod match_completion_saga;
+mod my_matches;
 mod partial_write_recovery;
 mod player_game_profiles;
 mod players;

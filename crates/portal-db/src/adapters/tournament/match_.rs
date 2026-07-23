@@ -806,18 +806,20 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
 
         let rows = sqlx::query_as::<_, TournamentMatchRow>(
             r"
-            SELECT DISTINCT tm.*
-            FROM tournament_matches tm
-            JOIN tournament_registrations tr
-              ON tm.participant1_registration_id = tr.id
-              OR tm.participant2_registration_id = tr.id
-            LEFT JOIN league_team_members ltm
-              ON tr.team_season_id = ltm.team_season_id
-              AND ltm.player_id = $1
-            WHERE (tr.player_id = $1 OR ltm.player_id IS NOT NULL)
-              AND ($2::text IS NULL OR tm.status::text = $2)
-              AND ($3::uuid IS NULL OR tm.tournament_id = $3)
-            ORDER BY
+            -- `DISTINCT` is load-bearing: the join matches on EITHER participant
+            -- slot, so a match where the player reaches both slots (e.g. an
+            -- individual registration facing a team whose roster they are on)
+            -- would otherwise be returned twice.
+            --
+            -- Because of that `DISTINCT`, Postgres requires every ORDER BY
+            -- expression to appear in the select list — ordering by a bare
+            -- `CASE tm.status ... END` made this query fail unconditionally
+            -- (P-29): for SELECT DISTINCT, ORDER BY expressions must appear in
+            -- select list. The status ranking is therefore selected as a named
+            -- output column and ordered by that name. It is a pure function of
+            -- `tm.status`, so it cannot make two otherwise-identical rows
+            -- distinct.
+            SELECT DISTINCT tm.*,
               CASE tm.status::text
                 WHEN 'in_progress' THEN 1
                 WHEN 'pick_ban' THEN 2
@@ -830,7 +832,20 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
                 WHEN 'completed' THEN 9
                 WHEN 'forfeit' THEN 10
                 WHEN 'cancelled' THEN 11
-              END,
+                ELSE 99
+              END AS status_rank
+            FROM tournament_matches tm
+            JOIN tournament_registrations tr
+              ON tm.participant1_registration_id = tr.id
+              OR tm.participant2_registration_id = tr.id
+            LEFT JOIN league_team_members ltm
+              ON tr.team_season_id = ltm.team_season_id
+              AND ltm.player_id = $1
+            WHERE (tr.player_id = $1 OR ltm.player_id IS NOT NULL)
+              AND ($2::text IS NULL OR tm.status::text = $2)
+              AND ($3::uuid IS NULL OR tm.tournament_id = $3)
+            ORDER BY
+              status_rank,
               tm.scheduled_at ASC NULLS LAST,
               tm.created_at DESC
             LIMIT $4 OFFSET $5

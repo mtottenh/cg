@@ -606,3 +606,81 @@ async fn test_registration_check_in_requires_authority_over_registration() {
             .expect("registration should exist");
     assert!(checked_in, "the registered player's check-in must land");
 }
+
+/// Approving an already-approved registration must succeed, not 400.
+///
+/// P-2 made `Open` tournaments auto-approve on signup, so an organiser pressing
+/// Approve on such a registration was hitting
+/// `400 Cannot approve registration in approved status`. The same applied to a
+/// double-click or two organisers acting simultaneously. See P-36.
+#[tokio::test]
+async fn test_approve_is_idempotent_for_an_already_approved_registration() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "approve-idempotent", "open").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
+            &json!({ "participant_name": "AlreadyApproved" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["status"], "approved",
+        "P-2: open auto-approves"
+    );
+    let registration_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Pressing Approve on it must succeed and leave it approved.
+    let url = format!("/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve");
+    let response = app.post_auth(&url).await;
+    response.assert_status(StatusCode::OK);
+
+    // And again — genuinely idempotent, not merely tolerant of the second call.
+    let response = app.post_auth(&url).await;
+    response.assert_status(StatusCode::OK);
+
+    let stored: String =
+        sqlx::query_scalar("SELECT status FROM tournament_registrations WHERE id = $1")
+            .bind(registration_id.parse::<Uuid>().unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored, "approved", "still approved after repeated approves");
+}
+
+/// A terminal registration is still NOT approvable — the idempotency above is
+/// deliberately narrow and must not have opened that up.
+#[tokio::test]
+async fn test_approve_still_rejects_a_withdrawn_registration() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "approve-withdrawn", "approval").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
+            &json!({ "participant_name": "Withdrawer" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let registration_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    sqlx::query("UPDATE tournament_registrations SET status = 'withdrawn' WHERE id = $1")
+        .bind(registration_id.parse::<Uuid>().unwrap())
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"
+        ))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}

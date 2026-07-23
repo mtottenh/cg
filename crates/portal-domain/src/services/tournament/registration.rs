@@ -131,6 +131,22 @@ where
     ) -> Result<TournamentRegistration, DomainError> {
         let registration = self.get_registration(registration_id).await?;
 
+        // Approving something already approved is a no-op, not an error.
+        //
+        // This became load-bearing with P-2: `Open` tournaments now auto-approve
+        // on signup, so a registration an organiser sees may already be approved
+        // and pressing Approve on it would have returned 400. The same applied to
+        // a double-click, or two organisers acting at once. Returning the
+        // registration unchanged makes the endpoint idempotent, which is what
+        // every caller already assumed.
+        //
+        // Deliberately narrow: only `Approved` short-circuits. Approving a
+        // withdrawn, rejected or disqualified registration is still a genuine
+        // state error and still fails below.
+        if registration.status == TournamentRegistrationStatus::Approved {
+            return Ok(registration);
+        }
+
         // Only pending registrations can be approved
         if registration.status != TournamentRegistrationStatus::Pending {
             return Err(DomainError::InvalidState(format!(

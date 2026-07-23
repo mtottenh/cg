@@ -18,7 +18,7 @@ use crate::{LeagueId, LeagueTeamId, MatchId, TournamentId};
 /// Scoped permissions allow users to have different roles/permissions
 /// in different contexts. For example, a user might be a captain of one team
 /// but just a player on another team.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeType {
     /// Team-scoped permissions (captain, officer, player, etc.)

@@ -7,7 +7,9 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Category for demo files in the catalog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DemoCategory {
     /// Newly discovered, not yet categorized.
@@ -65,7 +67,9 @@ impl DemoCategory {
 }
 
 /// Processing status for demo files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DemoStatus {
     /// Discovered but stats not yet fetched.
@@ -129,7 +133,9 @@ impl DemoStatus {
 }
 
 /// Type of link between a demo and a match.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DemoLinkType {
     /// Manually linked by admin/user.

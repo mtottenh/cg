@@ -7,7 +7,9 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Status of a league season.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SeasonStatus {
     /// Season is being configured.
@@ -81,7 +83,9 @@ impl SeasonStatus {
 }
 
 /// Roster lock status for a season.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RosterLockStatus {
     /// Teams can modify rosters freely.
@@ -139,7 +143,9 @@ impl RosterLockStatus {
 /// Status of a league team (persistent identity).
 ///
 /// This is the status of the team entity itself, not its seasonal participation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamStatus {
     /// Team is active and can participate in seasons.
@@ -192,7 +198,9 @@ impl LeagueTeamStatus {
 ///
 /// This tracks the team's status within a specific season (forming roster,
 /// competing, eliminated, etc.)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamSeasonStatus {
     /// Still recruiting, roster incomplete.
@@ -270,7 +278,9 @@ impl LeagueTeamSeasonStatus {
 }
 
 /// Role of a member within a league team.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamRole {
     /// Team leader, can manage roster.
@@ -320,7 +330,9 @@ impl LeagueTeamRole {
 }
 
 /// Status of a league team member.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamMemberStatus {
     /// Currently on roster.
@@ -374,7 +386,9 @@ impl LeagueTeamMemberStatus {
 }
 
 /// Type of league team invitation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamInvitationType {
     /// Captain invites a player.
@@ -406,7 +420,9 @@ impl FromStr for LeagueTeamInvitationType {
 }
 
 /// Status of a league team invitation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamInvitationStatus {
     /// Waiting for response.

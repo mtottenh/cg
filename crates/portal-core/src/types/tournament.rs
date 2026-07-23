@@ -12,7 +12,9 @@ use std::str::FromStr;
 // ============================================================================
 
 /// The format/structure of a tournament.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TournamentFormat {
     /// Standard single elimination bracket.
@@ -83,7 +85,9 @@ impl TournamentFormat {
 // ============================================================================
 
 /// The type of participants in a tournament.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TournamentParticipantType {
     /// Team-based tournament using league team rosters.
@@ -92,6 +96,11 @@ pub enum TournamentParticipantType {
     /// Individual player tournament (1v1).
     Individual,
     /// Ad-hoc teams formed at registration time.
+    // Serde must emit `adhoc`, NOT the `ad_hoc` that `rename_all = "snake_case"`
+    // would produce. `Display`, `FromStr` and the DB CHECK constraint
+    // (migrations/0030_create_tournaments.sql:86) all use `adhoc`; serde was the
+    // only one disagreeing. Caught by `wire_compat_tests` (P-32).
+    #[serde(rename = "adhoc")]
     AdHoc,
 }
 
@@ -131,7 +140,9 @@ impl TournamentParticipantType {
 // ============================================================================
 
 /// How registration is handled for a tournament.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistrationType {
     /// Anyone can register.
@@ -186,7 +197,9 @@ impl RegistrationType {
 // ============================================================================
 
 /// How matches are scheduled in a tournament.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SchedulingMode {
     /// All matches at fixed times, played in real-time.
@@ -226,7 +239,9 @@ impl FromStr for SchedulingMode {
 // ============================================================================
 
 /// Status of a tournament match.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TournamentMatchStatus {
     /// Waiting for participants to be determined.
@@ -414,7 +429,9 @@ impl TournamentMatchStatus {
 // ============================================================================
 
 /// Status of a tournament registration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TournamentRegistrationStatus {
     /// Awaiting approval.
@@ -506,7 +523,9 @@ impl TournamentRegistrationStatus {
 // ============================================================================
 
 /// How to handle participant withdrawal during a tournament.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum WithdrawalPolicy {
     /// Opponent advances with walkover.
@@ -550,7 +569,9 @@ impl FromStr for WithdrawalPolicy {
 // ============================================================================
 
 /// Format of a tournament stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StageFormat {
     /// Single elimination bracket.
@@ -594,7 +615,9 @@ impl FromStr for StageFormat {
 }
 
 /// Type of bracket within a stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BracketType {
     /// Upper/winners bracket in double elimination.
@@ -642,7 +665,9 @@ impl FromStr for BracketType {
 }
 
 /// Status of a tournament stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StageStatus {
     /// Stage not yet started.
@@ -690,7 +715,9 @@ impl StageStatus {
 }
 
 /// Status of a tournament bracket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BracketStatus {
     /// Bracket not yet started.
@@ -738,7 +765,9 @@ impl BracketStatus {
 }
 
 /// Rule for advancement from one stage to the next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AdvancementRule {
     /// Top N by standing advance.
@@ -778,7 +807,9 @@ impl FromStr for AdvancementRule {
 // ============================================================================
 
 /// Format of a match (best of N).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum MatchFormat {
     /// Best of 1.
@@ -841,7 +872,9 @@ impl MatchFormat {
 // ============================================================================
 
 /// Algorithm used for seeding participants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SeedingAlgorithm {
     /// Random seeding.
@@ -885,7 +918,7 @@ impl FromStr for SeedingAlgorithm {
 // ============================================================================
 
 /// Describes where a match participant comes from.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchParticipantSource {
     /// Direct seed from registration.
@@ -914,7 +947,9 @@ impl fmt::Display for MatchParticipantSource {
 // ============================================================================
 
 /// Status of a schedule proposal in the negotiation workflow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalStatus {
     /// Proposal awaiting response from opponent.
@@ -1012,7 +1047,9 @@ impl ProposalStatus {
 // ============================================================================
 
 /// Type of availability exception.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ExceptionType {
     /// Player is completely blocked (unavailable) on this date.
@@ -1111,41 +1148,5 @@ mod tests {
         assert!(TournamentRegistrationStatus::CheckedIn.can_compete());
         assert!(TournamentRegistrationStatus::Active.can_compete());
         assert!(TournamentRegistrationStatus::Eliminated.is_terminal());
-    }
-}
-
-#[cfg(test)]
-mod schema_wire_compat_tests {
-    use super::*;
-
-    /// `Display` and `Serialize` MUST agree for every variant.
-    ///
-    /// The API historically sent these as `status.to_string()` (Display). P-31
-    /// retypes the DTO fields to the enum itself, which serialises via serde.
-    /// If the two ever diverge the wire format changes silently and every
-    /// client's status comparison breaks at once — exactly the class of bug
-    /// P-31 exists to make impossible.
-    #[test]
-    fn match_status_display_matches_serde() {
-        for v in [
-            TournamentMatchStatus::Pending,
-            TournamentMatchStatus::Ready,
-            TournamentMatchStatus::Scheduled,
-            TournamentMatchStatus::CheckingIn,
-            TournamentMatchStatus::PickBan,
-            TournamentMatchStatus::InProgress,
-            TournamentMatchStatus::AwaitingResult,
-            TournamentMatchStatus::Completed,
-            TournamentMatchStatus::Cancelled,
-            TournamentMatchStatus::Forfeit,
-            TournamentMatchStatus::Disputed,
-        ] {
-            let serde_value = serde_json::to_value(v).unwrap();
-            assert_eq!(
-                serde_json::Value::String(v.to_string()),
-                serde_value,
-                "Display and Serialize disagree for {v:?}"
-            );
-        }
     }
 }

@@ -10,6 +10,9 @@ mod status;
 mod tournament;
 pub mod veto;
 
+#[cfg(test)]
+mod wire_compat_tests;
+
 pub use demo::{DemoCategory, DemoLinkType, DemoStatus};
 pub use evidence::{
     DemoFileMetadata, DiscoveredEvidenceData, EvidenceStorage, EvidenceType,

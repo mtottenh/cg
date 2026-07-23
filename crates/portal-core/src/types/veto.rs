@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 // =============================================================================
 
 /// Type of veto action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum VetoActionType {
     /// Remove a map from the pool.
@@ -50,7 +52,9 @@ impl std::str::FromStr for VetoActionType {
 // =============================================================================
 
 /// How starting sides are determined for picked maps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SideSelectionMode {
     /// Picker chooses their starting side. Decider maps skip (knife).

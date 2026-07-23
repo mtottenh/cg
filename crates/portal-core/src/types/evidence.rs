@@ -13,7 +13,7 @@ use uuid::Uuid;
 // =============================================================================
 
 /// Type of evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceType {
     /// Game replay/demo file.
@@ -60,7 +60,7 @@ impl std::str::FromStr for EvidenceType {
 // =============================================================================
 
 /// Storage location for evidence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EvidenceStorage {
     /// Stored in S3.

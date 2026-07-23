@@ -5,7 +5,9 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Generic entity status (active/inactive/deleted).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityStatus {
     /// Entity is active and usable.
@@ -41,7 +43,9 @@ impl FromStr for EntityStatus {
 }
 
 /// Status of a match.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchStatus {
     /// Match is being set up.
@@ -113,7 +117,9 @@ impl MatchStatus {
 }
 
 /// Status of a tournament.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TournamentStatus {
     /// Tournament is a draft (not published).

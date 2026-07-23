@@ -1,11 +1,14 @@
 //! Tournament response DTOs.
 
 use chrono::{DateTime, Utc};
+use portal_core::types::{
+    BracketStatus, ProposalStatus, StageStatus, TournamentMatchStatus,
+    TournamentRegistrationStatus, TournamentStatus,
+};
 use portal_domain::entities::tournament::{
     Tournament, TournamentBracket, TournamentMatch, TournamentMatchGame, TournamentRegistration,
     TournamentStage, TournamentStanding,
 };
-use portal_core::types::TournamentMatchStatus;
 use portal_domain::entities::{MatchStatusLog, ScheduleProposal};
 use portal_domain::services::tournament::MatchStatusDetails;
 use serde::Serialize;
@@ -91,7 +94,10 @@ pub struct TournamentResponse {
     pub withdrawal_policy: String,
 
     // Status
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: TournamentStatus,
 
     // Ownership
     pub created_by: String,
@@ -196,7 +202,7 @@ impl From<Tournament> for TournamentResponse {
             rules_url: t.rules_url,
             settings: t.settings,
             withdrawal_policy: t.withdrawal_policy.to_string(),
-            status: t.status.to_string(),
+            status: t.status,
             created_by: t.created_by.to_string(),
             created_at: t.created_at,
             updated_at: t.updated_at,
@@ -225,7 +231,10 @@ pub struct TournamentSummaryResponse {
     pub logo_url: Option<String>,
     pub format: String,
     pub participant_type: String,
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: TournamentStatus,
     pub max_participants: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub starts_at: Option<DateTime<Utc>>,
@@ -246,7 +255,7 @@ impl From<Tournament> for TournamentSummaryResponse {
             logo_url: t.logo_url,
             format: t.format.to_string(),
             participant_type: t.participant_type.to_string(),
-            status: t.status.to_string(),
+            status: t.status,
             max_participants: t.max_participants,
             starts_at: t.starts_at,
             is_registration_open,
@@ -274,7 +283,10 @@ pub struct TournamentStageResponse {
     pub match_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub map_veto_format: Option<String>,
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: StageStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub starts_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -296,7 +308,7 @@ impl From<TournamentStage> for TournamentStageResponse {
             advancement_rule: s.advancement_rule.to_string(),
             match_format: s.match_format.map(|f| f.to_string()),
             map_veto_format: s.map_veto_format,
-            status: s.status.to_string(),
+            status: s.status,
             starts_at: s.starts_at,
             ends_at: s.ends_at,
             created_at: s.created_at,
@@ -321,7 +333,10 @@ pub struct TournamentBracketResponse {
     pub current_round: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_number: Option<i32>,
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: BracketStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -337,7 +352,7 @@ impl From<TournamentBracket> for TournamentBracketResponse {
             total_rounds: b.total_rounds,
             current_round: b.current_round,
             group_number: b.group_number,
-            status: b.status.to_string(),
+            status: b.status,
             created_at: b.created_at,
             updated_at: b.updated_at,
         }
@@ -381,7 +396,10 @@ pub struct TournamentRegistrationResponse {
     pub seed_rating: Option<i32>,
 
     // Status
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: TournamentRegistrationStatus,
 
     // Timestamps
     pub created_at: DateTime<Utc>,
@@ -405,7 +423,7 @@ impl From<TournamentRegistration> for TournamentRegistrationResponse {
             checked_in_at: r.checked_in_at,
             seed: r.seed,
             seed_rating: r.seed_rating,
-            status: r.status.to_string(),
+            status: r.status,
             created_at: r.created_at,
             updated_at: r.updated_at,
             withdrawn_at: r.withdrawn_at,
@@ -802,7 +820,10 @@ pub struct ScheduleProposalResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counter_proposal_id: Option<String>,
     /// Current status.
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: ProposalStatus,
     /// When this proposal expires.
     pub expires_at: DateTime<Utc>,
     /// Notes.
@@ -843,7 +864,7 @@ impl From<ScheduleProposal> for ScheduleProposalResponse {
             responded_at: p.responded_at,
             responded_by_user_id: p.responded_by_user_id.map(|id| id.to_string()),
             counter_proposal_id: p.counter_proposal_id.map(|id| id.to_string()),
-            status: p.status.as_str().to_string(),
+            status: p.status,
             expires_at: p.expires_at,
             notes: p.notes,
             rejection_reason: p.rejection_reason,

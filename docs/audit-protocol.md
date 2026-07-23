@@ -145,6 +145,13 @@ call sites.
 - **Freeze shared files before dispatch.** Identify what every agent needs to edit, make
   those edits yourself first, then declare the file read-only and tell agents to report
   rather than edit if something is missing.
+- **⚠️ `git add <path> && git commit` is NOT isolation.** `git commit` commits the **whole
+  index**, so if another agent has staged its own files — correctly, by explicit path —
+  your commit sweeps them in. This happened here: an agent's two spec files landed inside the
+  orchestrator's unrelated "record the finding" commit. Nothing was lost (content byte-identical,
+  tree clean), but that agent's rationale is now missing from its own commit message.
+  **The index is shared mutable state between everyone in the worktree.** Use a path-limited
+  commit — `git commit -- <path>`, which ignores the index — or give agents separate worktrees.
 - **Forbid `git add -u` and `git add -A` absolutely.** Agents sharing a working tree will
   stage each other's in-flight work. Require explicit paths. Have each agent commit its
   own work so review has clean boundaries.

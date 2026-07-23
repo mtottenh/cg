@@ -42,22 +42,29 @@ impl ResultClaimRepository for PgResultClaimRepository {
         row.map(row_to_domain).transpose()
     }
 
-    async fn find_pending_by_match(
+    async fn find_current_by_match(
         &self,
         match_id: TournamentMatchId,
     ) -> Result<Option<ResultClaim>, DomainError> {
+        // Authoritative claim for the match. A pending claim outranks a
+        // confirmed one because it is the claim awaiting action; once the
+        // series settles the confirmed claim IS the result, and it must stay
+        // reachable — a completed match has no pending claim, so a
+        // pending-only lookup made the per-map breakdown unreachable (P-1).
+        // disputed/superseded/cancelled claims are history, not the result:
+        // `list_by_match` serves those.
         let row = sqlx::query_as::<_, ResultClaimRow>(
             r"
             SELECT * FROM result_claims
-            WHERE match_id = $1 AND status = 'pending'
-            ORDER BY created_at DESC
+            WHERE match_id = $1 AND status IN ('pending', 'confirmed')
+            ORDER BY (status = 'pending') DESC, created_at DESC
             LIMIT 1
             ",
         )
         .bind(match_id.as_uuid())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(format!("Failed to find pending result claim: {e}")))?;
+        .map_err(|e| DomainError::Internal(format!("Failed to find current result claim: {e}")))?;
 
         row.map(row_to_domain).transpose()
     }

@@ -429,12 +429,15 @@ where
         Ok(confirmed)
     }
 
-    /// Get the pending claim for a match, if any.
-    pub async fn get_pending_claim(
+    /// Get the current (authoritative) claim for a match, if any.
+    ///
+    /// While the match is live that is the pending claim; once it has been
+    /// confirmed the confirmed claim remains the match's result.
+    pub async fn get_current_claim(
         &self,
         match_id: TournamentMatchId,
     ) -> Result<Option<ResultClaim>, DomainError> {
-        self.claim_repo.find_pending_by_match(match_id).await
+        self.claim_repo.find_current_by_match(match_id).await
     }
 
     /// Get a specific result claim by ID.

@@ -1507,3 +1507,159 @@ async fn test_resolved_claim_updates_conflict_at_repo_level() {
         .expect_err("disputing a resolved claim must be rejected");
     assert!(matches!(err, portal_core::DomainError::Conflict(_)));
 }
+
+// ============================================================================
+// CURRENT-CLAIM SEMANTICS (P-1)
+// ============================================================================
+
+/// `GET /v1/matches/{id}/result` must keep serving the match's result once it
+/// has been confirmed.
+///
+/// It used to look for a `pending` claim only. Confirming a claim both flips
+/// it to `confirmed` and completes the match, so from the instant a match
+/// finished the endpoint 404'd — and the per-map breakdown of the finished
+/// series, which is exactly what a completed match page wants to show, became
+/// unreachable (P-1). The pending path is asserted in the same test so the
+/// live flow cannot regress in exchange.
+#[tokio::test]
+async fn test_get_result_claim_serves_pending_then_confirmed_claim() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, p1_reg, _p2_reg, opponent_token, _bracket_id) =
+        create_rr_match_in_progress(&app, "rr-current-claim").await;
+
+    // Dev (participant 1's registrant) claims a 2-0 series win, carrying the
+    // per-map scorelines.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [
+                    {
+                        "game_number": 1,
+                        "map_id": "de_mirage",
+                        "participant1_score": 13,
+                        "participant2_score": 7,
+                        "evidence_ids": []
+                    },
+                    {
+                        "game_number": 2,
+                        "map_id": "de_inferno",
+                        "participant1_score": 13,
+                        "participant2_score": 11,
+                        "evidence_ids": []
+                    }
+                ],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Live match: the open claim is the current claim.
+    let response = app.get(&format!("/v1/matches/{match_id}/result")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"], claim_id.as_str());
+    assert_eq!(body["data"]["status"], "pending");
+
+    // The opponent confirms: the claim becomes `confirmed` and the match
+    // completes.
+    let response = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/result/{claim_id}/confirm"),
+            &opponent_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let (match_status,): (String,) =
+        sqlx::query_as("SELECT status::text FROM tournament_matches WHERE id = $1")
+            .bind(Uuid::parse_str(&match_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        match_status, "completed",
+        "the confirm must have completed the match"
+    );
+
+    // Completed match: the confirmed claim is now the current claim, with the
+    // per-map results intact.
+    let response = app.get(&format!("/v1/matches/{match_id}/result")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"], claim_id.as_str());
+    assert_eq!(body["data"]["status"], "confirmed");
+
+    let games = body["data"]["game_results"].as_array().unwrap();
+    assert_eq!(games.len(), 2, "both maps must survive confirmation");
+    assert_eq!(games[0]["game_number"], 1);
+    assert_eq!(games[0]["map_id"], "de_mirage");
+    assert_eq!(games[0]["participant1_score"], 13);
+    assert_eq!(games[0]["participant2_score"], 7);
+    assert_eq!(games[1]["game_number"], 2);
+    assert_eq!(games[1]["map_id"], "de_inferno");
+    assert_eq!(games[1]["participant1_score"], 13);
+    assert_eq!(games[1]["participant2_score"], 11);
+}
+
+/// A disputed claim is history, not a result: it must not be served as the
+/// match's current claim. Otherwise the match page would present a contested
+/// scoreline as settled.
+#[tokio::test]
+async fn test_get_result_claim_excludes_disputed_claim() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, p1_reg, _p2_reg, opponent_token, _bracket_id) =
+        create_rr_match_in_progress(&app, "rr-disputed-claim").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/result/{claim_id}/dispute"),
+            &json!({
+                "reason": "Those scores are not what we played.",
+                "evidence_ids": []
+            }),
+            &opponent_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // The claim is still reachable through the history endpoint, but it is no
+    // longer the match's result.
+    let response = app
+        .get(&format!("/v1/matches/{match_id}/result/history"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let history: serde_json::Value = response.json();
+    let claims = history["data"].as_array().unwrap();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0]["status"], "disputed");
+
+    let response = app.get(&format!("/v1/matches/{match_id}/result")).await;
+    response.assert_status(StatusCode::NOT_FOUND);
+}

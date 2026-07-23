@@ -1250,8 +1250,13 @@ pub trait ResultClaimRepository: Send + Sync {
     /// Find a result claim by ID.
     async fn find_by_id(&self, id: ResultClaimId) -> Result<Option<ResultClaim>, DomainError>;
 
-    /// Find the pending claim for a match.
-    async fn find_pending_by_match(
+    /// Find the authoritative claim for a match.
+    ///
+    /// The pending claim while one is open (it is awaiting confirmation or
+    /// dispute), otherwise the confirmed claim that settled the series.
+    /// `None` when the match has neither — e.g. it was never claimed, or the
+    /// only claims are disputed/superseded/cancelled.
+    async fn find_current_by_match(
         &self,
         match_id: TournamentMatchId,
     ) -> Result<Option<ResultClaim>, DomainError>;

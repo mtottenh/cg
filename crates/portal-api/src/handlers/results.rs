@@ -152,6 +152,11 @@ pub async fn submit_result(
 }
 
 /// Get the current result claim for a match.
+///
+/// Returns the claim that currently speaks for the match: the pending one
+/// while the series is live, and the confirmed one once it has settled. Only
+/// serving the pending claim made the result of a finished match unreachable
+/// here (P-1) — the per-map breakdown of a completed series could never load.
 #[utoipa::path(
     get,
     path = "/v1/matches/{match_id}/result",
@@ -159,8 +164,8 @@ pub async fn submit_result(
         ("match_id" = String, Path, description = "Match ID")
     ),
     responses(
-        (status = 200, description = "Current result claim", body = DataResponse<ResultClaimResponse>),
-        (status = 404, description = "No pending claim found", body = ApiError),
+        (status = 200, description = "Current result claim: the pending claim while one is open, otherwise the confirmed claim", body = DataResponse<ResultClaimResponse>),
+        (status = 404, description = "Match has no pending or confirmed claim", body = ApiError),
     ),
     tag = "results"
 )]
@@ -171,10 +176,11 @@ pub async fn get_result_claim(
 ) -> ApiResult<Json<DataResponse<ResultClaimResponse>>> {
     let request_id = get_request_id(&headers);
 
-    let claim = state.result_service.get_pending_claim(match_id).await?;
+    let claim = state.result_service.get_current_claim(match_id).await?;
 
-    let claim =
-        claim.ok_or_else(|| ApiError::not_found("No pending result claim for this match"))?;
+    let claim = claim.ok_or_else(|| {
+        ApiError::not_found("No pending or confirmed result claim for this match")
+    })?;
 
     Ok(Json(DataResponse::new(
         ResultClaimResponse::from(claim),

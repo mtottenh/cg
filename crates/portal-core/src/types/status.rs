@@ -113,7 +113,7 @@ impl MatchStatus {
 }
 
 /// Status of a tournament.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TournamentStatus {
     /// Tournament is a draft (not published).

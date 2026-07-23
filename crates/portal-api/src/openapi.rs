@@ -551,6 +551,7 @@ use utoipa_swagger_ui::SwaggerUi;
             AcceptScheduleProposalRequest,
             RejectScheduleProposalRequest,
             CancelScheduleProposalRequest,
+            portal_core::types::TournamentMatchStatus,
             CounterProposeRequest,
             AdminScheduleRequest,
             // Availability

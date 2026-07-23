@@ -226,7 +226,7 @@ impl FromStr for SchedulingMode {
 // ============================================================================
 
 /// Status of a tournament match.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TournamentMatchStatus {
     /// Waiting for participants to be determined.
@@ -1111,5 +1111,41 @@ mod tests {
         assert!(TournamentRegistrationStatus::CheckedIn.can_compete());
         assert!(TournamentRegistrationStatus::Active.can_compete());
         assert!(TournamentRegistrationStatus::Eliminated.is_terminal());
+    }
+}
+
+#[cfg(test)]
+mod schema_wire_compat_tests {
+    use super::*;
+
+    /// `Display` and `Serialize` MUST agree for every variant.
+    ///
+    /// The API historically sent these as `status.to_string()` (Display). P-31
+    /// retypes the DTO fields to the enum itself, which serialises via serde.
+    /// If the two ever diverge the wire format changes silently and every
+    /// client's status comparison breaks at once — exactly the class of bug
+    /// P-31 exists to make impossible.
+    #[test]
+    fn match_status_display_matches_serde() {
+        for v in [
+            TournamentMatchStatus::Pending,
+            TournamentMatchStatus::Ready,
+            TournamentMatchStatus::Scheduled,
+            TournamentMatchStatus::CheckingIn,
+            TournamentMatchStatus::PickBan,
+            TournamentMatchStatus::InProgress,
+            TournamentMatchStatus::AwaitingResult,
+            TournamentMatchStatus::Completed,
+            TournamentMatchStatus::Cancelled,
+            TournamentMatchStatus::Forfeit,
+            TournamentMatchStatus::Disputed,
+        ] {
+            let serde_value = serde_json::to_value(v).unwrap();
+            assert_eq!(
+                serde_json::Value::String(v.to_string()),
+                serde_value,
+                "Display and Serialize disagree for {v:?}"
+            );
+        }
     }
 }

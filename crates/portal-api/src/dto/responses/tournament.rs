@@ -5,6 +5,7 @@ use portal_domain::entities::tournament::{
     Tournament, TournamentBracket, TournamentMatch, TournamentMatchGame, TournamentRegistration,
     TournamentStage, TournamentStanding,
 };
+use portal_core::types::TournamentMatchStatus;
 use portal_domain::entities::{MatchStatusLog, ScheduleProposal};
 use portal_domain::services::tournament::MatchStatusDetails;
 use serde::Serialize;
@@ -468,7 +469,13 @@ pub struct TournamentMatchResponse {
     pub winner_registration_id: Option<String>,
 
     // Status
-    pub status: String,
+    //
+    // Typed as the enum rather than `String` so the OpenAPI schema carries the
+    // permitted values and `openapi-typescript` emits a union. A drifted status
+    // in a client is then a compile error, not a silent `default:` branch (P-31).
+    // Wire-compatible: `Display` and `Serialize` agree for every variant, which
+    // is asserted by `schema_wire_compat_tests` in portal-core.
+    pub status: TournamentMatchStatus,
     pub disputed: bool,
 
     // VOD/Stream
@@ -517,7 +524,7 @@ impl From<TournamentMatch> for TournamentMatchResponse {
             participant1_score: m.participant1_score,
             participant2_score: m.participant2_score,
             winner_registration_id: m.winner_registration_id.map(|id| id.to_string()),
-            status: m.status.to_string(),
+            status: m.status,
             disputed: m.disputed,
             stream_url: m.stream_url,
             vod_url: m.vod_url,

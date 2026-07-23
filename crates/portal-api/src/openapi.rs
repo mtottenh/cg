@@ -557,6 +557,12 @@ use utoipa_swagger_ui::SwaggerUi;
             portal_core::types::StageStatus,
             portal_core::types::BracketStatus,
             portal_core::types::ProposalStatus,
+            portal_core::types::SeasonStatus,
+            portal_core::types::RosterLockStatus,
+            portal_core::types::LeagueTeamStatus,
+            portal_core::types::LeagueTeamSeasonStatus,
+            portal_core::types::LeagueTeamMemberStatus,
+            portal_core::types::LeagueTeamInvitationStatus,
             CounterProposeRequest,
             AdminScheduleRequest,
             // Availability

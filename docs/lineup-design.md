@@ -1,8 +1,10 @@
 # Design: match lineups as a first-class concept
 
-**Status:** proposal, not yet implemented
-**Supersedes in part:** P-15, P-18 in `web/e2e/COVERAGE-PLAN.md` §9b
-**Date:** 2026-07-22
+**Status:** DESIGN COMPLETE — all §10 questions decided (see §0), ready to implement. Not yet built.
+**Supersedes in part:** P-15, P-18, P-23, P-25, P-26 in `web/e2e/COVERAGE-PLAN.md` §9b
+**Authoritative sections:** §0 + §0a carry the final decisions and schema; §5–§6 are retained
+for reasoning and are marked where superseded.
+**Dates:** designed 2026-07-22 · decisions locked 2026-07-23
 
 ---
 
@@ -52,8 +54,69 @@ consciously chosen loosening. If the league later tightens up, the appearance ca
 described in §5a) is the drop-in that restores it — the two are not mutually exclusive, the cap
 is simply not enabled now.
 
-5. **Q5, Q6** — resolved earlier (new `max_substitutes_per_match` column; tournament with no
-   policy inherits the season set).
+5. **Q5** — resolved earlier (new `max_substitutes_per_match` column).
+6. **Q6** — **DECIDED: a tournament with no substitute policy inherits the season's set
+   unchanged**; a standalone tournament with neither gets no substitute restrictions (fine for
+   a one-off).
+
+### 0a. Authoritative schema (supersedes §6)
+
+§6 below predates these decisions and is kept for its reasoning. **Where §6 and this conflict,
+this wins.** The revised tables:
+
+```sql
+CREATE TABLE match_lineups (
+    id                UUID PRIMARY KEY,
+    match_id          UUID NOT NULL REFERENCES tournament_matches(id) ON DELETE CASCADE,
+    registration_id   UUID NOT NULL REFERENCES tournament_registrations(id) ON DELETE CASCADE,
+    status            VARCHAR(16) NOT NULL DEFAULT 'draft',   -- draft | submitted | locked  (Q2)
+    declared_by       UUID REFERENCES users(id),
+    declared_at       TIMESTAMPTZ,
+    locked_at         TIMESTAMPTZ,                            -- stamped on PickBan/InProgress (Q2)
+    short_handed      BOOLEAN NOT NULL DEFAULT false,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (match_id, registration_id)
+);
+
+CREATE TABLE match_lineup_players (
+    id                    UUID PRIMARY KEY,
+    lineup_id             UUID NOT NULL REFERENCES match_lineups(id) ON DELETE CASCADE,
+    player_id             UUID NOT NULL REFERENCES players(id),
+    -- Per-map (Q4): NULL = applies to the whole match; a value overrides that map only.
+    -- This is what makes "sub in after map 1 of a Bo3" expressible, and it aligns with
+    -- demo attribution (P-25), which is inherently per-map.
+    game_number           INTEGER,
+    is_substitute         BOOLEAN NOT NULL DEFAULT false,
+    was_rostered          BOOLEAN NOT NULL,   -- snapshot at declaration (roster at time T is not reconstructable)
+    participation_status  VARCHAR(32) NOT NULL DEFAULT 'confirmed',
+        -- confirmed | no_show | left_early | substituted | removed  (Q4 makes substituted/left_early reachable)
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (lineup_id, player_id, game_number)   -- one entry per player per map (NULL = match-default)
+);
+```
+
+**Eligibility (Q4/§0.4) — validated at lineup submission, NOT stored as counts.** A substitute
+entry is legal iff ALL hold:
+1. the player has a site account (the ringer defence — an outsider has none);
+2. substitutes are a **strict minority** of the map's effective lineup — `subs * 2 < lineup_size`
+   (so 2 of 4 is NOT allowed; see the tie-break note below);
+3. the player satisfies the tournament/season `EligibilityRestrictions` (the elo / peak-elo caps —
+   §5a still applies, unchanged);
+4. the player is not on the **opposing** registration's lineup for this match (Q7 / P-26).
+
+**Dropped by decision:** the per-season / per-(team,player) **appearance cap** columns from §6
+and §5a (`max_sub_appearances_per_player`, `max_sub_appearances_per_team`). The **majority rule
+(2) replaces them** as the constraint that keeps the roster meaningful. They remain *described*
+in §5/§5a as the drop-in that restores strictness if the league later tightens up — do not add
+those columns now.
+
+**Visibility (Q3):** a lineup is exposed to the opponent only once `status = 'locked'`
+(stamped on the `PickBan`/`InProgress` transition), never while `draft`/`submitted`.
+
+**⚠️ One open tie-break for implementation** (not a blocker): the majority rule for an **even**
+lineup. `subs * 2 < lineup_size` treats 2-of-4 as illegal (subs must be a strict minority). This
+is the recommended default and what the schema comment above encodes; confirm when building.
 
 ---
 
@@ -201,6 +264,12 @@ therefore *not* the ringer defence and never should have been.
 
 ### What keeps the lock meaningful
 
+> ⚠️ **SUPERSEDED by §0.4.** This section proposes a per-season appearance cap as the
+> constraint. That was **dropped by decision** in favour of the per-lineup **majority rule**
+> (§0.4). The reasoning below is retained because the appearance cap is the drop-in that
+> restores strictness if the casual-league policy is ever tightened — but it is **not** what
+> gets built now. Build the majority rule (§0a).
+
 Without a further constraint, "anyone can sub" is the roster lock with extra steps: a
 team could field five different ringers every week and never touch its roster.
 
@@ -273,6 +342,11 @@ Restrictions are parsed from a `settings` JSONB `"eligibility"` key
 (`entities/eligibility.rs:59-66`), so a season can carry a **separate, stricter set for
 substitutes** than for registration — which is usually what you want: a sub who would be
 legal as a signed player may still be too strong as a one-off ringer.
+
+> ⚠️ **The appearance-cap counting rules below are SUPERSEDED by §0.4** (dropped in favour of
+> the majority rule). The *eligibility* half of §5a — the elo / rating restrictions reusing
+> `EligibilityService` — still stands and is part of the built model (§0a rule 3). Only the
+> counting/appearance-cap rules are retired.
 
 The counting rules are new and belong on `league_seasons`:
 
@@ -377,6 +451,13 @@ sake — a locked roster with no override is still wrong when a *signing*, not a
 is genuinely needed — but it drops from blocking to routine.
 
 ## 6. Schema sketch
+
+> ⚠️ **SUPERSEDED by §0a**, which carries the authoritative tables. This sketch predates the
+> Q2/Q3/Q4 decisions and lacks `match_lineups.status`/`locked_at` (Q2), the per-map
+> `match_lineup_players.game_number` (Q4), and it still lists the dropped appearance-cap
+> columns. Read §0a for what to build; this section is kept for its FK-style and
+> precedent rationale, which still holds.
+
 
 ```sql
 CREATE TABLE match_lineups (

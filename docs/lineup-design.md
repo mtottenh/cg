@@ -88,7 +88,12 @@ CREATE TABLE match_lineup_players (
     --   'demo'     — the AUTHORITATIVE lineup derived from the map demo after it is
     --                played. Per-map (game_number set). This is what counts for stats,
     --                awards, and eligibility enforcement.
-    source                VARCHAR(16) NOT NULL,   -- 'declared' | 'demo'
+    -- Provenance, best-to-worst automation (§0b). 'declared' is provisional; the
+    -- rest are authoritative:
+    --   'demo'     — parsed from the map demo (automatic).
+    --   'evidence' — from a submitted screenshot/other evidence, entered by an admin.
+    --   'admin'    — filled in manually by an admin with no artefact (last resort).
+    source                VARCHAR(16) NOT NULL,   -- 'declared' | 'demo' | 'evidence' | 'admin'
     -- Per-map. NULL for 'declared' rows (one provisional lineup per match); set for
     -- 'demo' rows from `demo_match_links.game_number`. Aligns with demo attribution
     -- (P-25), which is inherently per-map.
@@ -162,20 +167,41 @@ central. It is not: the demo-derived lineup is load-bearing, and the declaration
 on top. A consequence worth stating: **the system is correct even if nobody declares a lineup** —
 the demo is still authoritative. Declaration only buys pre-match visibility and an early warning.
 
-**Open questions this raises** (do not block starting the migration, but decide before the
-ingestion path is built):
-1. **No demo, or a demo that fails to parse.** Then there is no authoritative lineup for that
-   map. Options: fall back to the provisional lineup and mark the map *unverified*; or treat the
-   map as unverifiable and require manual entry. Recommend **fall back + `unverified` flag**,
-   reusing the existing demo-link confidence machinery — a casual league should not hard-block on
-   a missing upload.
-2. **Provisional required, or optional?** Since the demo is authoritative, declaration can be
-   optional. Recommend **optional but encouraged** — required only where a league wants the
-   opponent to see the lineup before pick/ban.
-3. **Timing of enforcement.** The eligibility verdict can only be computed after the demo is
-   parsed, which is already where `result_review` is raised. Confirm the sub-eligibility check
-   slots into that existing producer (`adapters/demo_validator.rs:88`, currently the stubbed
-   empty vec — P-23) rather than a new pass.
+**These were open; now DECIDED (2026-07-23):**
+
+1. ~~No demo / parse failure.~~ **DECIDED — an evidence hierarchy, not a hard block.** The
+   authoritative lineup has a source-of-truth ladder (the `source` column above): **demo**
+   (auto-parsed) → **evidence** (a screenshot or other artefact still required for the league,
+   read by an admin who fills the lineup) → **admin** (manual entry, last resort). So a missing
+   demo degrades to admin-entered-from-a-screenshot, not to "unverifiable". This reuses the
+   existing evidence system (`match_evidence`, `EvidenceType`) — a demo is just the richest kind
+   of evidence. A map with no evidence at all is `unverified` and falls back to the provisional
+   lineup.
+2. ~~Provisional required or optional?~~ **DECIDED — optional but encouraged.**
+3. ~~Timing of enforcement.~~ **DECIDED — at result review** (`adapters/demo_validator.rs:88`,
+   P-23's stubbed producer), not a new pass. The ethos is that teams know the rules and agree to
+   the match up front. See the waiver below.
+
+### 0c. Per-match rule waivers (the "we're all adults" escape hatch)
+
+**Decision (2026-07-23):** an admin resolving a review may **waive a specific eligibility rule
+for that one match** when both teams agreed — e.g. "we know this broke the elo cap, but both
+sides were fine with the extra sub, so wave it for this match." This is casual-league reality:
+sometimes you just want to get the game done.
+
+Requirements:
+- **Recorded, never silent.** A waiver is a review-resolution outcome carrying *which rule* was
+  waived and a reason — an audit trail, not a quiet pass. It is the match-time cousin of the P-18
+  admin override.
+- **Per-match, not per-season.** Waiving the elo cap for tonight's game does not change the
+  season policy; the next match re-enforces.
+- **Admin-only**, and ideally records that both captains assented.
+
+Implementation: the cheapest v1 is a `ResolutionType` value (e.g. `waived`) on the existing
+`result_review` resolution with mandatory notes naming the rule. A richer option is a small
+`match_rule_waivers (match_id, rule, reason, granted_by, both_captains_agreed, created_at)`
+table if per-rule structure is wanted for reporting. Start with the resolution type; add the
+table only if waivers become common enough to report on.
 
 ---
 

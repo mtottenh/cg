@@ -58,7 +58,7 @@ impl VetoDelegate {
 // =============================================================================
 
 /// The role that authorized the delegation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DelegatedByRole {
     /// Team captain delegated authority.

@@ -36,7 +36,7 @@ pub struct League {
 }
 
 /// League access type determines how users can join.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueAccessType {
     /// Anyone can join without approval.
@@ -75,7 +75,7 @@ impl std::fmt::Display for LeagueAccessType {
 }
 
 /// League status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueStatus {
     /// League is operational.
@@ -148,7 +148,7 @@ pub struct LeagueMemberWithUser {
 }
 
 /// League membership type/role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueMembershipType {
     /// Full control over the league.
@@ -224,7 +224,7 @@ pub struct LeagueInvitation {
 }
 
 /// Type of league invitation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueInvitationType {
     /// Admin invites a user.
@@ -259,7 +259,7 @@ impl std::fmt::Display for LeagueInvitationType {
 }
 
 /// Status of a league invitation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueInvitationStatus {
     /// Waiting for response.

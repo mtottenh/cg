@@ -555,7 +555,13 @@ pub struct LeagueSeasonParticipant {
 }
 
 /// Status of a participant in an individual format league.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// Without `rename_all`, serde emits PascalCase ("Registered") while `Display`,
+// `FromStr` and the DB CHECK constraint
+// (migrations/0026_restructure_league_teams.sql:354) all use lowercase. Every
+// variant disagreed. Latent only because the DTO round-trips through String --
+// caught by `wire_compat_tests` (P-34).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum LeagueSeasonParticipantStatus {
     Registered,
     Active,

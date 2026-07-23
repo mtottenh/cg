@@ -563,6 +563,11 @@ use utoipa_swagger_ui::SwaggerUi;
             portal_core::types::LeagueTeamSeasonStatus,
             portal_core::types::LeagueTeamMemberStatus,
             portal_core::types::LeagueTeamInvitationStatus,
+            portal_core::types::DemoStatus,
+            portal_domain::entities::result_claim::ClaimStatus,
+            portal_domain::entities::result_review::ResultReviewStatus,
+            portal_domain::entities::evidence::EvidenceStatus,
+            portal_domain::entities::dispute::DisputeStatus,
             CounterProposeRequest,
             AdminScheduleRequest,
             // Availability

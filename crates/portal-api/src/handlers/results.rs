@@ -13,7 +13,8 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{
-    DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId, UserId,
+    DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId,
+    UserId, types::TournamentMatchStatus,
 };
 use portal_domain::entities::dispute::DisputeReason;
 use portal_domain::entities::result_claim::GameResultInput;
@@ -321,7 +322,7 @@ pub async fn confirm_result(
             let output = result.output.as_ref();
             let response = ResultConfirmationResponse {
                 claim: ResultClaimResponse::from(claim),
-                match_status: "completed".to_string(),
+                match_status: TournamentMatchStatus::Completed,
                 bracket_advanced: false,
                 review_pending: Some(true),
                 review_id: output.and_then(|o| o.review_id.map(|id| id.to_string())),
@@ -336,7 +337,7 @@ pub async fn confirm_result(
                 .is_some_and(|o| o.winner_next_match_id.is_some());
             let response = ResultConfirmationResponse {
                 claim: ResultClaimResponse::from(claim),
-                match_status: "completed".to_string(),
+                match_status: TournamentMatchStatus::Completed,
                 bracket_advanced: advanced,
                 review_pending: None,
                 review_id: None,
@@ -358,7 +359,7 @@ pub async fn confirm_result(
             );
             let response = ResultConfirmationResponse {
                 claim: ResultClaimResponse::from(claim),
-                match_status: "completed".to_string(),
+                match_status: TournamentMatchStatus::Completed,
                 bracket_advanced: false,
                 review_pending: None,
                 review_id: None,
@@ -444,7 +445,7 @@ pub async fn dispute_result(
 
     let response = ResultDisputeResponse {
         claim: ResultClaimResponse::from(claim),
-        match_status: "disputed".to_string(),
+        match_status: TournamentMatchStatus::Disputed,
         requires_admin: true,
     };
 

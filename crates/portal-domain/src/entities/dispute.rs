@@ -95,7 +95,7 @@ impl Dispute {
 }
 
 /// Reason for the dispute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DisputeReason {
     /// Submitted score is incorrect.
@@ -146,7 +146,9 @@ impl std::str::FromStr for DisputeReason {
 }
 
 /// Status of a dispute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DisputeStatus {
     /// Awaiting admin review.
@@ -200,7 +202,9 @@ impl std::str::FromStr for DisputeStatus {
 }
 
 /// Priority of a dispute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DisputePriority {
     Low,
@@ -250,7 +254,7 @@ pub struct DisputeResolution {
 }
 
 /// Type of resolution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionType {
     /// Original result stands.
@@ -338,7 +342,7 @@ impl DisputeMessage {
 }
 
 /// Type of message author.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorType {
     /// Message from a match participant.

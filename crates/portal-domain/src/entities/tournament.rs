@@ -774,7 +774,9 @@ pub struct TournamentMatchGame {
 }
 
 /// Status of an individual game within a match.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum GameStatus {
     #[default]

@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use portal_domain::entities::result_review::ResultReview;
+use portal_domain::entities::result_review::ResultReviewStatus;
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -45,7 +46,9 @@ pub struct ResultReviewResponse {
     /// Unrecognized players from the demo.
     pub unrecognized_players: Vec<UnrecognizedPlayerResponse>,
     /// Current status.
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub status: ResultReviewStatus,
 
     /// Captain 1 registration ID.
     pub captain1_registration_id: String,
@@ -94,7 +97,7 @@ impl From<ResultReview> for ResultReviewResponse {
                     registration_side: p.registration_side,
                 })
                 .collect(),
-            status: review.status.as_str().to_string(),
+            status: review.status,
             captain1_registration_id: review.captain1_registration_id.to_string(),
             captain1_acknowledged: review.captain1_acknowledged,
             captain1_acknowledged_at: review.captain1_acknowledged_at,
@@ -117,7 +120,9 @@ pub struct ResultReviewSummaryResponse {
     /// Match ID.
     pub match_id: String,
     /// Status.
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub status: ResultReviewStatus,
     /// Whether there's a roster mismatch.
     pub roster_mismatch: bool,
     /// Whether there's a score mismatch.
@@ -133,7 +138,7 @@ impl From<ResultReview> for ResultReviewSummaryResponse {
         Self {
             id: review.id.to_string(),
             match_id: review.match_id.to_string(),
-            status: review.status.as_str().to_string(),
+            status: review.status,
             roster_mismatch: review.roster_mismatch,
             score_mismatch: review.score_mismatch,
             winner_mismatch: review.winner_mismatch,

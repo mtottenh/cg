@@ -121,7 +121,7 @@ pub struct UnrecognizedPlayer {
 }
 
 /// Which team side a player was on in a demo.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamSide {
     /// The first team (participant 1).

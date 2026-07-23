@@ -1,6 +1,7 @@
 //! Dispute response DTOs.
 
 use chrono::{DateTime, Utc};
+use portal_domain::entities::dispute::DisputeStatus;
 use portal_domain::entities::dispute::{
     Dispute, DisputeMessage, DisputeResolution, DisputeResolutionResult, DisputeWithThread,
 };
@@ -45,7 +46,9 @@ pub struct DisputeResponse {
     pub original_participant2_score: Option<i32>,
 
     /// Current status.
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub status: DisputeStatus,
     /// Priority level.
     pub priority: String,
 
@@ -85,7 +88,7 @@ impl From<Dispute> for DisputeResponse {
                 .map(|id| id.to_string()),
             original_participant1_score: d.original_participant1_score,
             original_participant2_score: d.original_participant2_score,
-            status: d.status.to_string(),
+            status: d.status,
             priority: d.priority.to_string(),
             resolved_at: d.resolved_at,
             resolved_by_user_id: d.resolved_by_user_id.map(|id| id.to_string()),

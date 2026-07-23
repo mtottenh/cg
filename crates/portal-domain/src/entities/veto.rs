@@ -139,7 +139,9 @@ impl VetoSession {
 }
 
 /// Status of a veto session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum VetoStatus {
     /// Session created, waiting to start
@@ -323,7 +325,7 @@ pub struct MapStatus {
 }
 
 /// Veto status for a single map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MapVetoStatus {
     Available,

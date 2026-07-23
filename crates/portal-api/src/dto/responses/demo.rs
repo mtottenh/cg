@@ -1,6 +1,7 @@
 //! Demo catalog response DTOs.
 
 use chrono::{DateTime, Utc};
+use portal_core::types::DemoStatus;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -40,7 +41,9 @@ pub struct DemoResponse {
     pub metadata: Option<DemoMetadataResponse>,
 
     /// Processing status.
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub status: DemoStatus,
     /// When stats were fetched.
     pub stats_fetched_at: Option<DateTime<Utc>>,
     /// Stats fetch error message.
@@ -79,7 +82,7 @@ impl From<Demo> for DemoResponse {
             league_id: demo.league_id.map(|id| id.as_uuid()),
             tournament_id: demo.tournament_id.map(|id| id.as_uuid()),
             metadata: demo.metadata.map(DemoMetadataResponse::from),
-            status: demo.status.to_string(),
+            status: demo.status,
             stats_fetched_at: demo.stats_fetched_at,
             stats_fetch_error: demo.stats_fetch_error,
             categorized_by_user_id: demo.categorized_by_user_id.map(|id| id.as_uuid()),

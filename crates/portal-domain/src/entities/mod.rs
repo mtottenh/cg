@@ -121,3 +121,6 @@ pub use veto_delegate::{
     CreateVetoDelegateCommand, DelegatedByRole, RevokeVetoDelegateCommand, VetoDelegate,
 };
 pub use veto_lobby_message::{VetoLobbyMessage, VetoMessageType};
+
+#[cfg(test)]
+mod wire_compat_tests;

@@ -1,6 +1,7 @@
 //! Evidence response DTOs.
 
 use chrono::{DateTime, Utc};
+use portal_domain::entities::evidence::EvidenceStatus;
 use serde::Serialize;
 use std::collections::HashMap;
 use utoipa::ToSchema;
@@ -29,7 +30,9 @@ pub struct EvidenceResponse {
     pub uploaded_by_user_id: Option<Uuid>,
     pub discovered_by_plugin: Option<String>,
     pub discovered_at: Option<DateTime<Utc>>,
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub status: EvidenceStatus,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
 }
@@ -53,7 +56,7 @@ impl From<Evidence> for EvidenceResponse {
             uploaded_by_user_id: e.uploaded_by_user_id.map(|id| id.as_uuid()),
             discovered_by_plugin: e.discovered_by_plugin,
             discovered_at: e.discovered_at,
-            status: e.status.to_string(),
+            status: e.status,
             created_at: e.created_at,
             expires_at: e.expires_at,
         }
@@ -188,7 +191,9 @@ pub struct EvidenceSummaryResponse {
     pub id: Uuid,
     pub evidence_type: String,
     pub name: String,
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub status: EvidenceStatus,
     pub validated: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -199,7 +204,7 @@ impl From<Evidence> for EvidenceSummaryResponse {
             id: e.id.as_uuid(),
             evidence_type: e.evidence_type.to_string(),
             name: e.name,
-            status: e.status.to_string(),
+            status: e.status,
             validated: e.validated,
             created_at: e.created_at,
         }

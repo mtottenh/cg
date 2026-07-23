@@ -15,7 +15,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 /// Scope an award aggregates over (`awards.scope_type`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, utoipa::ToSchema)]
 pub enum AwardScopeType {
     /// A single tournament.
     Tournament,
@@ -54,7 +54,7 @@ impl FromStr for AwardScopeType {
 
 /// How per-demo stat facts fold into a single ranked value
 /// (`awards.aggregation`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, utoipa::ToSchema)]
 pub enum StatAggregation {
     /// Sum of the stat across every counted demo.
     #[default]
@@ -97,7 +97,7 @@ impl FromStr for StatAggregation {
 }
 
 /// Ranking direction (`awards.direction`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, utoipa::ToSchema)]
 pub enum StatDirection {
     /// Highest value wins (most kills).
     #[default]
@@ -136,7 +136,7 @@ impl FromStr for StatDirection {
 }
 
 /// Kind of minimum-participation qualifier (`awards.min_qualifier_type`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, utoipa::ToSchema)]
 pub enum MinQualifierType {
     /// Minimum number of distinct demos counted.
     Matches,
@@ -185,7 +185,7 @@ pub struct MinQualifier {
 
 /// Who an award ranks (`awards.subject_type`). V1 is player-only; `team`
 /// is reserved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, utoipa::ToSchema)]
 pub enum AwardSubjectType {
     /// Individual players.
     #[default]
@@ -224,7 +224,7 @@ impl FromStr for AwardSubjectType {
 }
 
 /// Award lifecycle status (`awards.status`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, utoipa::ToSchema)]
 pub enum AwardStatus {
     /// Live: standings computed on read, editable by the organizer.
     #[default]

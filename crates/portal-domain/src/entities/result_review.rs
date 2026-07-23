@@ -17,7 +17,9 @@ use super::demo_validation::{DemoValidationResult, UnrecognizedPlayer};
 // =============================================================================
 
 /// Status of a result review.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultReviewStatus {
     /// Roster mismatch only, waiting for both captains to acknowledge.

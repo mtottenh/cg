@@ -129,7 +129,9 @@ impl ResultClaim {
 }
 
 /// Status of a result claim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaimStatus {
     /// Awaiting opponent confirmation

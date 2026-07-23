@@ -14,6 +14,7 @@ use portal_core::{
 };
 use tracing::{info, instrument, warn};
 
+use crate::entities::match_lifecycle::TransitionTrigger;
 use crate::entities::result_claim::{
     ClaimStatus, GameResult, GameResultInput, ResultClaim, ResultValidationError,
 };
@@ -24,6 +25,7 @@ use crate::repositories::tournament::{
     CreateResultClaim, ResultClaimRepository, TournamentMatchRepository,
     TournamentRegistrationRepository, VetoSessionRepository,
 };
+use crate::services::tournament::match_lifecycle::MatchStatusTransitioner;
 
 // =============================================================================
 // PROVIDER TRAITS
@@ -96,6 +98,7 @@ where
     demo_link_repo: Arc<DMLR>,
     veto_session_repo: Arc<VSR>,
     map_pool_provider: Option<Arc<dyn MapPoolProvider>>,
+    match_transitioner: Option<Arc<dyn MatchStatusTransitioner>>,
     auto_confirm_timeout_seconds: i64,
 }
 
@@ -122,6 +125,7 @@ where
             demo_link_repo,
             veto_session_repo,
             map_pool_provider: None,
+            match_transitioner: None,
             auto_confirm_timeout_seconds: 15 * 60, // 15 minutes
         }
     }
@@ -138,6 +142,19 @@ where
     #[must_use]
     pub fn with_map_pool_provider(mut self, provider: Arc<dyn MapPoolProvider>) -> Self {
         self.map_pool_provider = Some(provider);
+        self
+    }
+
+    /// Attach the transitioner used to move a match `in_progress ->
+    /// awaiting_result` when a claim is submitted. Without it the match stays
+    /// `in_progress`, the opponent never receives a confirm-result action
+    /// item, and the claim auto-confirms unseen (P-50).
+    #[must_use]
+    pub fn with_match_transitioner(
+        mut self,
+        transitioner: Arc<dyn MatchStatusTransitioner>,
+    ) -> Self {
+        self.match_transitioner = Some(transitioner);
         self
     }
 
@@ -251,6 +268,36 @@ where
             score = format!("{}-{}", participant1_score, participant2_score),
             "Result claim submitted"
         );
+
+        // Move the match into `awaiting_result` so the opponent gets a
+        // confirm-result action item and the auto-confirm deadline is
+        // enforced against a state that actually surfaces to them. The
+        // action-item query keys the confirm/dispute item off
+        // `awaiting_result` specifically; a match left `in_progress` never
+        // produced that item, so a submitted result auto-confirmed in 15
+        // minutes against an opponent who was never notified (P-50).
+        //
+        // Only the first submission needs the transition — a resubmission
+        // supersedes the prior claim while the match is already
+        // `awaiting_result`, and `awaiting_result -> awaiting_result` is not
+        // a legal edge. The transition is driven through
+        // `MatchStatusTransitioner` (the `MatchLifecycleService` path) so it
+        // is written to `match_status_log` like every other transition
+        // rather than as a silent raw UPDATE.
+        if match_.status == portal_core::types::TournamentMatchStatus::InProgress
+            && let Some(transitioner) = &self.match_transitioner
+        {
+            transitioner
+                .transition_status(
+                    match_id,
+                    portal_core::types::TournamentMatchStatus::AwaitingResult,
+                    TransitionTrigger::System {
+                        job_name: "result_submitted".to_string(),
+                    },
+                    Some("Result claim submitted; awaiting opponent confirmation".to_string()),
+                )
+                .await?;
+        }
 
         Ok(claim)
     }

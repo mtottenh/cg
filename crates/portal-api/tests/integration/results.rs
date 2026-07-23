@@ -1663,3 +1663,92 @@ async fn test_get_result_claim_excludes_disputed_claim() {
     let response = app.get(&format!("/v1/matches/{match_id}/result")).await;
     response.assert_status(StatusCode::NOT_FOUND);
 }
+
+/// P-50: submitting a result claim must move the match to `awaiting_result`
+/// AND surface a `confirm_result` action item to the opponent.
+///
+/// Before the fix `submit_claim` left the match `in_progress`. The
+/// action-item query keys the confirm/dispute item off `awaiting_result`
+/// specifically, so the opponent was NEVER told a result had been submitted —
+/// yet `auto_confirm_at` was set to now+15min and the background sweeper made
+/// the score official regardless. This test pins both halves: the audited
+/// state transition, and the action item the opponent depends on.
+#[tokio::test]
+async fn test_submit_claim_moves_to_awaiting_result_and_notifies_opponent() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, p1_reg, _p2_reg, opponent_token, _bracket_id) =
+        create_rr_match_in_progress(&app, "rr-p50-awaiting").await;
+
+    // Dev submits a 2-0 claim for participant 1.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [
+                    {
+                        "game_number": 1,
+                        "map_id": "de_mirage",
+                        "participant1_score": 13,
+                        "participant2_score": 7,
+                        "evidence_ids": []
+                    },
+                    {
+                        "game_number": 2,
+                        "map_id": "de_inferno",
+                        "participant1_score": 13,
+                        "participant2_score": 9,
+                        "evidence_ids": []
+                    }
+                ],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // 1. The match must have transitioned to `awaiting_result`...
+    let (match_status,): (String,) =
+        sqlx::query_as("SELECT status::text FROM tournament_matches WHERE id = $1")
+            .bind(Uuid::parse_str(&match_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        match_status, "awaiting_result",
+        "submitting a claim must move the match out of in_progress"
+    );
+
+    // ...and the transition must be audited in match_status_log (the
+    // MatchLifecycleService path), not applied as a silent raw UPDATE.
+    let (log_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM match_status_log \
+         WHERE match_id = $1 AND to_status = 'awaiting_result'",
+    )
+    .bind(Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        log_count, 1,
+        "the in_progress -> awaiting_result transition must be logged"
+    );
+
+    // 2. The opponent (the non-submitter) must now see a confirm_result
+    // action item for this match.
+    let response = app
+        .get_with_token("/v1/users/me/action-items", &opponent_token)
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let items = body["data"].as_array().unwrap();
+    let confirm_item = items
+        .iter()
+        .find(|i| i["action_type"] == "confirm_result" && i["match_id"] == match_id.as_str());
+    assert!(
+        confirm_item.is_some(),
+        "opponent must get a confirm_result action item after a claim is submitted; got {items:?}"
+    );
+}

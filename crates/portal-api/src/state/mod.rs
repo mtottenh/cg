@@ -599,7 +599,12 @@ impl AppState {
             Arc::clone(&tournament_repo),
             game_repo.clone(),
             Arc::clone(&plugin_manager),
-        )));
+        )))
+        // Move the match to `awaiting_result` on claim submission so the
+        // opponent gets a confirm-result action item before the 15-minute
+        // auto-confirm fires (P-50). Reuses the lifecycle service so the
+        // transition is audited in `match_status_log`.
+        .with_match_transitioner(Arc::new(match_lifecycle_service.clone()));
 
         // Create progression service for bracket advancement
         let progression_service = ProgressionService::new(

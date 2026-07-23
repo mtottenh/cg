@@ -57,7 +57,7 @@ pub use match_completion::{
     DemoValidationOutcome, MatchCompletionInput, MatchCompletionOutput, MatchCompletionSaga,
     MatchDemoValidator, MatchStatsUpdater, ReviewCreator,
 };
-pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails};
+pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails, MatchStatusTransitioner};
 pub use progression::{Advancement, LoserResult, ProgressionResult, ProgressionService};
 pub use registration::{RegistrationService, initial_registration_status};
 pub use result::{MapPoolProvider, ResultService};

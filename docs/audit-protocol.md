@@ -52,11 +52,21 @@ Consequences:
    well-written summary is indistinguishable from a correct one until you check. Re-run the
    gates yourself. Read the diff of anything load-bearing. Spot-check that new tests assert
    what they claim.
-5. **Install a mechanical ratchet.** A script that counts anti-patterns with a committed
+5. **Prove every gate can fail before you trust it.** Run a known-bad input through it and
+   confirm it reports the failure. This campaign used
+   `vue-tsc --noEmit -p tsconfig.json` as a verification gate for a whole phase, across
+   four workstreams, before discovering that `tsconfig.json` was a solution-style config
+   (`"files": []`, references only) — so it type-checked **zero files and always exited 0**.
+   Every "typecheck clean" in that phase was meaningless, and it had already masked a real
+   error. **A gate that cannot fail is worse than no gate: it launders unverified work as
+   verified.** Note this is the same defect as the vacuous tests the campaign existed to
+   remove — and it still got past the person auditing for it, because a green check reads
+   as evidence whether or not anything was checked.
+6. **Install a mechanical ratchet.** A script that counts anti-patterns with a committed
    baseline that may only decrease. Judgement does not survive fan-out across agents;
    a failing script does. Give it an explicit escape hatch (`// audit-exempt: <reason>`)
    so honest exceptions are visible rather than hidden.
-6. **Prove the fix, not the formatting.** If the bug is "matches in state X are hidden",
+7. **Prove the fix, not the formatting.** If the bug is "matches in state X are hidden",
    the test must show a match in state X *appearing*. A test that only checks the label
    would pass against the bug.
 

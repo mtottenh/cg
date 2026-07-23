@@ -17,7 +17,7 @@ fn audit_change_type_display_matches_serde() {
     for v in [Create, Update, Delete, Revert] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for ChangeType::{v:?}"
         );
     }
@@ -29,7 +29,7 @@ fn ban_ban_type_display_matches_serde() {
     for v in [Platform, Matchmaking, Chat, League, Tournament] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for BanType::{v:?}"
         );
     }
@@ -41,7 +41,7 @@ fn demo_validation_team_side_display_matches_serde() {
     for v in [Team1, Team2] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for TeamSide::{v:?}"
         );
     }
@@ -61,7 +61,7 @@ fn dispute_dispute_reason_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for DisputeReason::{v:?}"
         );
     }
@@ -73,7 +73,7 @@ fn dispute_dispute_status_display_matches_serde() {
     for v in [Pending, UnderReview, Resolved, Cancelled] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for DisputeStatus::{v:?}"
         );
     }
@@ -85,7 +85,7 @@ fn dispute_dispute_priority_display_matches_serde() {
     for v in [Low, Normal, High, Urgent] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for DisputePriority::{v:?}"
         );
     }
@@ -97,7 +97,7 @@ fn dispute_resolution_type_display_matches_serde() {
     for v in [Upheld, Overturned, Rematch, Adjusted, DoubleDq] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for ResolutionType::{v:?}"
         );
     }
@@ -109,7 +109,7 @@ fn dispute_author_type_display_matches_serde() {
     for v in [Participant, Admin, System] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for AuthorType::{v:?}"
         );
     }
@@ -121,7 +121,7 @@ fn evidence_evidence_source_display_matches_serde() {
     for v in [ManualUpload, PluginDiscovery, GameServer, ExternalApi] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for EvidenceSource::{v:?}"
         );
     }
@@ -133,7 +133,7 @@ fn evidence_evidence_status_display_matches_serde() {
     for v in [Pending, Active, Expired, Deleted, Quarantined] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for EvidenceStatus::{v:?}"
         );
     }
@@ -145,7 +145,7 @@ fn evidence_evidence_access_type_display_matches_serde() {
     for v in [View, Download, Share] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for EvidenceAccessType::{v:?}"
         );
     }
@@ -157,7 +157,7 @@ fn forfeit_forfeit_type_display_matches_serde() {
     for v in [NoShow, Withdrawal, Disqualification, TechnicalDefault] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for ForfeitType::{v:?}"
         );
     }
@@ -169,7 +169,7 @@ fn league_league_access_type_display_matches_serde() {
     for v in [Open, InviteOnly, Application] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueAccessType::{v:?}"
         );
     }
@@ -181,7 +181,7 @@ fn league_league_status_display_matches_serde() {
     for v in [Active, Archived, Suspended] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueStatus::{v:?}"
         );
     }
@@ -193,7 +193,7 @@ fn league_league_membership_type_display_matches_serde() {
     for v in [Admin, Moderator, Member] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueMembershipType::{v:?}"
         );
     }
@@ -205,7 +205,7 @@ fn league_league_invitation_type_display_matches_serde() {
     for v in [Invite, Application] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueInvitationType::{v:?}"
         );
     }
@@ -217,7 +217,7 @@ fn league_league_invitation_status_display_matches_serde() {
     for v in [Pending, Accepted, Rejected, Expired] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueInvitationStatus::{v:?}"
         );
     }
@@ -229,7 +229,7 @@ fn league_team_league_season_participant_status_display_matches_serde() {
     for v in [Registered, Active, Eliminated, Disqualified, Withdrawn] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueSeasonParticipantStatus::{v:?}"
         );
     }
@@ -241,7 +241,7 @@ fn result_claim_claim_status_display_matches_serde() {
     for v in [Pending, Confirmed, Disputed, Superseded, Cancelled] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for ClaimStatus::{v:?}"
         );
     }
@@ -259,7 +259,7 @@ fn result_review_result_review_status_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for ResultReviewStatus::{v:?}"
         );
     }
@@ -279,7 +279,7 @@ fn saga_saga_status_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for SagaStatus::{v:?}"
         );
     }
@@ -291,7 +291,7 @@ fn saga_step_status_display_matches_serde() {
     for v in [Pending, Running, Completed, Failed, Skipped, Compensated] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for StepStatus::{v:?}"
         );
     }
@@ -303,7 +303,7 @@ fn tournament_game_status_display_matches_serde() {
     for v in [Pending, MapVeto, InProgress, Completed, Cancelled] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for GameStatus::{v:?}"
         );
     }
@@ -315,7 +315,7 @@ fn veto_veto_status_display_matches_serde() {
     for v in [Pending, CoinFlip, InProgress, Completed, Cancelled] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for VetoStatus::{v:?}"
         );
     }
@@ -327,7 +327,7 @@ fn veto_map_veto_status_display_matches_serde() {
     for v in [Available, Banned, Picked, Decider] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for MapVetoStatus::{v:?}"
         );
     }
@@ -339,7 +339,7 @@ fn veto_delegate_delegated_by_role_display_matches_serde() {
     for v in [Captain, Owner, TournamentAdmin] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for DelegatedByRole::{v:?}"
         );
     }
@@ -351,7 +351,7 @@ fn veto_lobby_message_veto_message_type_display_matches_serde() {
     for v in [Team, All, Admin, System] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for VetoMessageType::{v:?}"
         );
     }

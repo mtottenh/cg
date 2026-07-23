@@ -17,7 +17,7 @@ fn demo_demo_category_display_matches_serde() {
     for v in [Uncategorized, Pug, League, Scrim, Ignored] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for DemoCategory::{v:?}"
         );
     }
@@ -29,7 +29,7 @@ fn demo_demo_status_display_matches_serde() {
     for v in [Pending, Processing, Ready, Failed, Archived] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for DemoStatus::{v:?}"
         );
     }
@@ -41,7 +41,7 @@ fn demo_demo_link_type_display_matches_serde() {
     for v in [Manual, AutoMatched, Evidence] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for DemoLinkType::{v:?}"
         );
     }
@@ -53,7 +53,7 @@ fn league_team_season_status_display_matches_serde() {
     for v in [Draft, Registration, Active, Playoffs, Completed, Cancelled] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for SeasonStatus::{v:?}"
         );
     }
@@ -65,7 +65,7 @@ fn league_team_roster_lock_status_display_matches_serde() {
     for v in [Open, SoftLock, HardLock] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for RosterLockStatus::{v:?}"
         );
     }
@@ -77,7 +77,7 @@ fn league_team_league_team_status_display_matches_serde() {
     for v in [Active, Inactive, Disbanded] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueTeamStatus::{v:?}"
         );
     }
@@ -97,7 +97,7 @@ fn league_team_league_team_season_status_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueTeamSeasonStatus::{v:?}"
         );
     }
@@ -109,7 +109,7 @@ fn league_team_league_team_role_display_matches_serde() {
     for v in [Captain, Player, Substitute] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueTeamRole::{v:?}"
         );
     }
@@ -121,7 +121,7 @@ fn league_team_league_team_member_status_display_matches_serde() {
     for v in [Active, Inactive, Left, Removed] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueTeamMemberStatus::{v:?}"
         );
     }
@@ -133,7 +133,7 @@ fn league_team_league_team_invitation_type_display_matches_serde() {
     for v in [Invite, Request] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueTeamInvitationType::{v:?}"
         );
     }
@@ -145,7 +145,7 @@ fn league_team_league_team_invitation_status_display_matches_serde() {
     for v in [Pending, Accepted, Declined, Expired, Cancelled] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for LeagueTeamInvitationStatus::{v:?}"
         );
     }
@@ -157,7 +157,7 @@ fn permission_scope_type_display_matches_serde() {
     for v in [Team, League, Tournament, Match] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for ScopeType::{v:?}"
         );
     }
@@ -169,7 +169,7 @@ fn status_entity_status_display_matches_serde() {
     for v in [Active, Inactive, Deleted] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for EntityStatus::{v:?}"
         );
     }
@@ -183,7 +183,7 @@ fn status_match_status_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for MatchStatus::{v:?}"
         );
     }
@@ -204,7 +204,7 @@ fn status_tournament_status_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for TournamentStatus::{v:?}"
         );
     }
@@ -222,7 +222,7 @@ fn tournament_tournament_format_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for TournamentFormat::{v:?}"
         );
     }
@@ -234,7 +234,7 @@ fn tournament_tournament_participant_type_display_matches_serde() {
     for v in [Team, Individual, AdHoc] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for TournamentParticipantType::{v:?}"
         );
     }
@@ -246,7 +246,7 @@ fn tournament_registration_type_display_matches_serde() {
     for v in [Open, InviteOnly, Qualification, Approval] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for RegistrationType::{v:?}"
         );
     }
@@ -258,7 +258,7 @@ fn tournament_scheduling_mode_display_matches_serde() {
     for v in [Live, SelfScheduled, Hybrid] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for SchedulingMode::{v:?}"
         );
     }
@@ -282,7 +282,7 @@ fn tournament_tournament_match_status_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for TournamentMatchStatus::{v:?}"
         );
     }
@@ -303,7 +303,7 @@ fn tournament_tournament_registration_status_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for TournamentRegistrationStatus::{v:?}"
         );
     }
@@ -315,7 +315,7 @@ fn tournament_withdrawal_policy_display_matches_serde() {
     for v in [Forfeit, Reseeding, WaitlistPromotion, AdminDecision] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for WithdrawalPolicy::{v:?}"
         );
     }
@@ -333,7 +333,7 @@ fn tournament_stage_format_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for StageFormat::{v:?}"
         );
     }
@@ -345,7 +345,7 @@ fn tournament_bracket_type_display_matches_serde() {
     for v in [Winners, Losers, SingleElim, RoundRobin, Swiss, GrandFinal] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for BracketType::{v:?}"
         );
     }
@@ -357,7 +357,7 @@ fn tournament_stage_status_display_matches_serde() {
     for v in [Pending, Active, Completed, Cancelled] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for StageStatus::{v:?}"
         );
     }
@@ -369,7 +369,7 @@ fn tournament_bracket_status_display_matches_serde() {
     for v in [Pending, Active, Completed, Cancelled] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for BracketStatus::{v:?}"
         );
     }
@@ -381,7 +381,7 @@ fn tournament_advancement_rule_display_matches_serde() {
     for v in [TopN, TopNPerGroup, Manual] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for AdvancementRule::{v:?}"
         );
     }
@@ -393,7 +393,7 @@ fn tournament_match_format_display_matches_serde() {
     for v in [Bo1, Bo3, Bo5, Bo7] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for MatchFormat::{v:?}"
         );
     }
@@ -405,7 +405,7 @@ fn tournament_seeding_algorithm_display_matches_serde() {
     for v in [Random, Rating, SeasonRank, Manual] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for SeedingAlgorithm::{v:?}"
         );
     }
@@ -424,7 +424,7 @@ fn tournament_proposal_status_display_matches_serde() {
     ] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for ProposalStatus::{v:?}"
         );
     }
@@ -436,7 +436,7 @@ fn tournament_exception_type_display_matches_serde() {
     for v in [Blocked, Override] {
         assert_eq!(
             serde_json::Value::String(v.to_string()),
-            serde_json::to_value(&v).unwrap(),
+            serde_json::to_value(v).unwrap(),
             "Display and Serialize disagree for ExceptionType::{v:?}"
         );
     }

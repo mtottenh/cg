@@ -789,3 +789,52 @@ pub fn openapi_routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
 pub fn swagger_routes() -> SwaggerUi {
     SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi())
 }
+
+#[cfg(test)]
+mod operation_id_uniqueness {
+    use super::*;
+    use std::collections::HashMap;
+    use utoipa::OpenApi;
+
+    /// Every `operationId` in the served spec must be unique.
+    ///
+    /// utoipa defaults `operationId` to the handler's function name, so two
+    /// handlers with the same name in different modules collide silently — the
+    /// spec still serves, but `openapi-typescript` emits a client that does not
+    /// compile (`TS2300: Duplicate identifier`). That is exactly what happened
+    /// with `leagues::list_invitations` vs `tournaments::list_invitations`: the
+    /// tournament invitation endpoints could not be typed at all until one was
+    /// renamed with an explicit `operation_id`. A spec that serves fine but
+    /// breaks every generated client is the kind of defect nothing else here
+    /// would catch.
+    #[test]
+    fn every_operation_id_is_unique() {
+        let doc = ApiDoc::openapi();
+        let mut seen: HashMap<String, Vec<String>> = HashMap::new();
+
+        for (path, item) in doc.paths.paths {
+            let ops = [
+                ("GET", item.get),
+                ("PUT", item.put),
+                ("POST", item.post),
+                ("DELETE", item.delete),
+                ("PATCH", item.patch),
+                ("HEAD", item.head),
+                ("OPTIONS", item.options),
+                ("TRACE", item.trace),
+            ];
+            for (method, op) in ops {
+                if let Some(id) = op.and_then(|o| o.operation_id) {
+                    seen.entry(id).or_default().push(format!("{method} {path}"));
+                }
+            }
+        }
+
+        let dupes: Vec<_> = seen.iter().filter(|(_, v)| v.len() > 1).collect();
+        assert!(
+            dupes.is_empty(),
+            "duplicate operationId(s) would produce an uncompilable generated client: {dupes:#?}\n\
+             Fix by adding `operation_id = \"...\"` to the #[utoipa::path] of one handler."
+        );
+    }
+}

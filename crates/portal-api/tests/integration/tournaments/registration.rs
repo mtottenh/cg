@@ -989,14 +989,98 @@ async fn test_invitation_requires_participants_manage() {
         .await;
     response.assert_status(StatusCode::FORBIDDEN);
 
-    // ...and the invite list is not readable by them either.
+    // P-51: the invite list now self-scopes rather than returning 403 to a
+    // non-organiser. This outsider cannot manage participants AND was invited
+    // to nothing, so they get 200 with an empty list — they can act on their
+    // own (absent) invitation but still learn nothing about who else was
+    // invited. (Reversed the prior 403 assertion deliberately; see the
+    // `list_invitations` handler doc and `test_invitation_list_self_scopes_to_invitee`.)
     let response = app
         .get_with_token(
             &format!("/v1/tournaments/{tournament_id}/invitations"),
             &outsider_token,
         )
         .await;
-    response.assert_status(StatusCode::FORBIDDEN);
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        0,
+        "a non-organiser with no invitation must see an empty list, not everyone's invites"
+    );
+}
+
+/// P-51: the invite-list endpoint self-scopes for non-organisers. An invited
+/// caller sees ONLY their own invitation (not everyone's); an uninvited caller
+/// sees none; the organiser still sees the full list. This is the
+/// invitee-readable signal the registration-card gate needs to become a hard
+/// block instead of the soft P-47 precondition.
+#[tokio::test]
+async fn test_invitation_list_self_scopes_to_invitee() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "invite-self-scope", "invite_only").await;
+    let (invitee_id, invitee_token) = create_user_with_token(&app, "invitee").await;
+    let (other_id, _other_token) = create_user_with_token(&app, "other-invitee").await;
+    let (_uninvited_id, uninvited_token) = create_user_with_token(&app, "uninvited").await;
+
+    // Organiser (default dev/admin token) invites two different users.
+    for target in [invitee_id, other_id] {
+        app.post_json(
+            &format!("/v1/tournaments/{tournament_id}/invitations"),
+            &json!({ "user_id": target.to_string() }),
+        )
+        .await
+        .assert_status(StatusCode::CREATED);
+    }
+
+    // The invitee sees exactly their own invitation — not the other person's.
+    let response = app
+        .get_with_token(
+            &format!("/v1/tournaments/{tournament_id}/invitations"),
+            &invitee_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let rows = body["data"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "invitee sees only their own invitation");
+    assert_eq!(
+        rows[0]["user_id"].as_str().unwrap(),
+        invitee_id.to_string(),
+        "the single visible row must be the caller's own invitation"
+    );
+
+    // An uninvited caller sees nothing.
+    let response = app
+        .get_with_token(
+            &format!("/v1/tournaments/{tournament_id}/invitations"),
+            &uninvited_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(
+        response.json::<serde_json::Value>()["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "an uninvited caller sees no invitations"
+    );
+
+    // The organiser still sees the full list (both invitations).
+    let response = app
+        .get_auth(&format!("/v1/tournaments/{tournament_id}/invitations"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(
+        response.json::<serde_json::Value>()["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "the organiser sees every invitation"
+    );
 }
 
 /// An invitation must name exactly one target, and it must match the

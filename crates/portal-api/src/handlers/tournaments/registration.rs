@@ -156,6 +156,16 @@ pub async fn create_invitation(
 }
 
 /// List a tournament's invitations.
+///
+/// P-51: this endpoint is self-scoping. An organiser (holder of
+/// `tournament.participants.manage`, or an `admin.tournaments.manage_any`
+/// override) receives the full invite list. Any other caller receives ONLY the
+/// invitations that target them — their own `user_id`, or a team-season they
+/// captain — rather than a 403. This is the invitee-readable signal the
+/// registration-card gate needs to turn the invite-only precondition from a soft
+/// prompt (P-47) into a hard block: a caller with no invitation gets an empty
+/// list and no register affordance. The full list is still not public — a
+/// non-invited, non-organiser caller learns nothing about who else was invited.
 #[utoipa::path(
     get,
     // `operationId` defaults to the handler name, and `leagues::list_invitations`
@@ -169,9 +179,8 @@ pub async fn create_invitation(
         ("tournament_id" = String, Path, description = "Tournament ID")
     ),
     responses(
-        (status = 200, description = "Invitations", body = DataResponse<Vec<TournamentInvitationResponse>>),
+        (status = 200, description = "Invitations (full list for organisers; own invitations only otherwise)", body = DataResponse<Vec<TournamentInvitationResponse>>),
         (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -186,21 +195,52 @@ pub async fn list_invitations(
 ) -> ApiResult<Json<DataResponse<Vec<TournamentInvitationResponse>>>> {
     let request_id = get_request_id(&headers);
 
-    // The invite list names who an organiser considered; it is not public.
-    perm_checker
-        .require_tournament_permission(
+    // The full invite list names who an organiser considered; it is not public.
+    // Anyone else may see only the invitations addressed to them.
+    let is_organiser = perm_checker
+        .has_scoped_permission(
             &auth,
-            tournament_id.as_uuid(),
             portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+            portal_core::ScopeType::Tournament,
+            tournament_id.as_uuid(),
         )
-        .await?;
+        .await
+        || perm_checker
+            .has_admin_override(&auth, portal_core::ScopeType::Tournament)
+            .await;
 
     let invitations = state
         .tournament_service
         .list_invitations(tournament_id)
         .await?;
 
-    let data: Vec<TournamentInvitationResponse> = invitations.into_iter().map(Into::into).collect();
+    let visible = if is_organiser {
+        invitations
+    } else {
+        // Self-scope: keep only invitations that target this caller — a user
+        // invite addressed to them, or a team invite for a team-season they
+        // captain (the same party the register-team path lets act for the team).
+        let mut own = Vec::new();
+        for invitation in invitations {
+            let mine = if invitation.user_id == Some(auth.user_id) {
+                true
+            } else if let Some(team_season_id) = invitation.team_season_id {
+                state
+                    .league_team_service
+                    .is_captain(team_season_id, auth.player_id)
+                    .await
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if mine {
+                own.push(invitation);
+            }
+        }
+        own
+    };
+
+    let data: Vec<TournamentInvitationResponse> = visible.into_iter().map(Into::into).collect();
 
     Ok(Json(DataResponse::new(data, request_id)))
 }

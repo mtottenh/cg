@@ -741,10 +741,16 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         &self,
         user_id: UserId,
     ) -> Result<Vec<LeagueInvitation>, DomainError> {
+        // P-48: this must return BOTH invites (admin -> user) and applications
+        // (user -> league). The old `AND invitation_type = 'invite'` filter hid a
+        // user's own pending application from `GET /v1/users/me/league-invitations`,
+        // so the frontend's `myApplications` derivation was permanently empty and the
+        // "application is pending" branch on LeagueDetailPage was dead. The response
+        // DTO carries `invitation_type`, so the client distinguishes the two.
         let invitations = sqlx::query_as::<_, LeagueInvitationRow>(
             r"
             SELECT * FROM league_invitations
-            WHERE user_id = $1 AND status = 'pending' AND invitation_type = 'invite'
+            WHERE user_id = $1 AND status = 'pending'
             ORDER BY created_at DESC
             ",
         )

@@ -653,6 +653,134 @@ async fn test_apply_to_team() {
     assert_eq!(body["data"]["status"], "pending");
 }
 
+/// P-49: the team-season invitations list mixes captain-sent invites and
+/// player-sent join requests; each row carries `invitation_type` so the UI can
+/// tell them apart (before this, TeamDetailPage rendered every row as a
+/// "Pending Invitation" the captain could only cancel, so a join request was
+/// mislabelled and the captain's only affordance rejected it). A captain
+/// accepting a `request` via the shared accept endpoint seats the applicant on
+/// the roster.
+#[tokio::test]
+async fn test_team_invitations_distinguish_request_from_invite_and_accept_request() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "reqinv-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "reqinv-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    // The dev user creates the team and is therefore its captain.
+    let (_team_id, team_season_id) = create_test_team(&app, season_id, "ReqInv Team", "RIT").await;
+
+    // Applicant (sends a join request) and invitee (receives a captain invite).
+    let applicant = UserBuilder::new()
+        .username("reqinv-applicant")
+        .email("reqinv-applicant@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let applicant_token = create_token_for_user(applicant.id);
+    let applicant_player_id: uuid::Uuid = sqlx::query("SELECT id FROM players WHERE user_id = $1")
+        .bind(applicant.id)
+        .fetch_one(app.pool())
+        .await
+        .unwrap()
+        .get("id");
+
+    let invitee = UserBuilder::new()
+        .username("reqinv-invitee")
+        .email("reqinv-invitee@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let invitee_player_id: uuid::Uuid = sqlx::query("SELECT id FROM players WHERE user_id = $1")
+        .bind(invitee.id)
+        .fetch_one(app.pool())
+        .await
+        .unwrap()
+        .get("id");
+
+    // Applicant sends a join REQUEST.
+    let apply = app
+        .post_json_with_token(
+            &format!("/v1/league-team-seasons/{team_season_id}/apply"),
+            &json!({ "role": "player", "message": "let me in" }),
+            &applicant_token,
+        )
+        .await;
+    apply.assert_status(StatusCode::CREATED);
+    let request_id = apply.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Captain sends an INVITE to the invitee.
+    let invite = app
+        .post_json(
+            &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+            &json!({ "player_id": invitee_player_id.to_string() }),
+        )
+        .await;
+    invite.assert_status(StatusCode::CREATED);
+
+    // The captain's list returns both, distinguishable by `invitation_type`.
+    let list = app
+        .get_auth(&format!(
+            "/v1/league-team-seasons/{team_season_id}/invitations"
+        ))
+        .await;
+    list.assert_status(StatusCode::OK);
+    let rows = list.json::<serde_json::Value>()["data"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(rows.len(), 2, "both the request and the invite are listed");
+
+    let request_row = rows
+        .iter()
+        .find(|r| r["invitation_type"] == "request")
+        .expect("a request row must be present");
+    let invite_row = rows
+        .iter()
+        .find(|r| r["invitation_type"] == "invite")
+        .expect("an invite row must be present");
+    assert_eq!(
+        request_row["player_id"].as_str().unwrap(),
+        applicant_player_id.to_string(),
+        "the request belongs to the applicant"
+    );
+    assert_eq!(
+        invite_row["player_id"].as_str().unwrap(),
+        invitee_player_id.to_string(),
+        "the invite belongs to the invitee"
+    );
+
+    // The captain accepts the REQUEST (default dev auth = captain) and the
+    // applicant is seated on the roster.
+    let accept = app
+        .post_json(
+            &format!("/v1/league-team-invitations/{request_id}/accept"),
+            &json!({}),
+        )
+        .await;
+    accept.assert_status(StatusCode::OK);
+
+    let members = app
+        .get(&format!("/v1/league-team-seasons/{team_season_id}/members"))
+        .await;
+    members.assert_status(StatusCode::OK);
+    let members_body: serde_json::Value = members.json();
+    let applicant_is_member = members_body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["player_id"].as_str() == Some(applicant_player_id.to_string().as_str()));
+    assert!(
+        applicant_is_member,
+        "the applicant becomes a team member after the captain accepts the request"
+    );
+}
+
 #[tokio::test]
 async fn test_decline_invitation() {
     let app = TestApp::new().await;

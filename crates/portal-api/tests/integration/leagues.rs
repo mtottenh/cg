@@ -572,6 +572,84 @@ async fn test_apply_to_league() {
     assert_eq!(body["data"]["status"], "pending");
 }
 
+/// P-48: a user's own pending APPLICATION must be visible to them via
+/// `GET /v1/users/me/league-invitations`. The repository's `list_pending_for_user`
+/// previously filtered `invitation_type = 'invite'`, so an applicant's own
+/// application was invisible — the frontend's `myApplications` was permanently
+/// empty and the "application pending" UI branch was dead. The application and
+/// any admin-sent invites now both come back, tagged by `invitation_type`.
+#[tokio::test]
+async fn test_my_league_invitations_includes_own_application() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let user2 = UserBuilder::new()
+        .username("self-applicant")
+        .email("self-applicant@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let token2 = create_token_for_user(&app, user2.id);
+
+    // Before applying, the applicant has no pending invitations.
+    let before = app
+        .get_with_token("/v1/users/me/league-invitations", &token2)
+        .await;
+    before.assert_status(StatusCode::OK);
+    assert_eq!(
+        before.json::<serde_json::Value>().as_array().unwrap().len(),
+        0,
+        "no pending invitations before applying"
+    );
+
+    // Create an application-based league and apply to it.
+    let create_response = app
+        .post_json(
+            "/v1/leagues",
+            &json!({
+                "game_id": game_id,
+                "name": "Self Application League",
+                "slug": "self-application-league",
+                "access_type": "application"
+            }),
+        )
+        .await;
+    create_response.assert_status(StatusCode::CREATED);
+    let league_id = create_response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let apply = app
+        .post_json_with_token(
+            &format!("/v1/leagues/{league_id}/apply"),
+            &json!({ "message": "let me in" }),
+            &token2,
+        )
+        .await;
+    apply.assert_status(StatusCode::CREATED);
+    let application_id = apply.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The applicant now sees their own pending application in the me-list.
+    let after = app
+        .get_with_token("/v1/users/me/league-invitations", &token2)
+        .await;
+    after.assert_status(StatusCode::OK);
+    let list: serde_json::Value = after.json();
+    let rows = list.as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the applicant sees exactly their application"
+    );
+    assert_eq!(rows[0]["id"].as_str().unwrap(), application_id);
+    assert_eq!(rows[0]["invitation_type"], "application");
+    assert_eq!(rows[0]["league_id"].as_str().unwrap(), league_id);
+    assert_eq!(rows[0]["status"], "pending");
+}
+
 #[tokio::test]
 async fn test_approve_application() {
     let app = TestApp::new().await;

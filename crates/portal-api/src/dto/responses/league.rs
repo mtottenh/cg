@@ -54,9 +54,26 @@ pub struct LeagueMemberResponse {
     pub league_id: String,
     pub user_id: String,
     pub username: String,
-    pub email: String,
+    /// Member email. **Only populated for callers holding
+    /// `league.members.manage` on this league.** It was previously always
+    /// present on an endpoint that required no authentication at all, so any
+    /// anonymous caller could enumerate member email addresses (P-37).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     pub membership_type: String,
     pub joined_at: DateTime<Utc>,
+}
+
+impl LeagueMemberResponse {
+    /// Build a member row, including the email only when the caller is
+    /// authorised to see it. See the `email` field docs (P-37).
+    #[must_use]
+    pub fn from_member(member: LeagueMemberWithUser, include_email: bool) -> Self {
+        let email = member.email.clone();
+        let mut this = Self::from(member);
+        this.email = include_email.then_some(email);
+        this
+    }
 }
 
 impl From<LeagueMemberWithUser> for LeagueMemberResponse {
@@ -66,7 +83,8 @@ impl From<LeagueMemberWithUser> for LeagueMemberResponse {
             league_id: member.league_id.to_string(),
             user_id: member.user_id.to_string(),
             username: member.username,
-            email: member.email,
+            // Omitted by default -- opt in via `from_member` (P-37).
+            email: None,
             membership_type: member.membership_type.as_str().to_string(),
             joined_at: member.joined_at,
         }

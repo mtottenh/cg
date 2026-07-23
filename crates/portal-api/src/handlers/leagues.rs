@@ -306,9 +306,27 @@ pub async fn update_league(
 )]
 pub async fn list_members(
     State(state): State<LeaguesState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     Path(league_id): Path<LeagueId>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<Vec<LeagueMemberResponse>>> {
+    // This endpoint previously took NO auth extractor at all and returned every
+    // member's email address, so anonymous callers could enumerate accounts
+    // (P-37). Membership is not secret -- a league roster is reasonably visible
+    // to signed-in users -- but the email addresses are, so they are now emitted
+    // only for callers who manage the league.
+    let include_email = perm_checker
+        .has_scoped_permission(
+            &auth,
+            permissions::league::MEMBERS_MANAGE,
+            ScopeType::League,
+            league_id.as_uuid(),
+        )
+        .await
+        || perm_checker
+            .has_admin_override(&auth, ScopeType::League)
+            .await;
     let offset = i64::from((params.page.max(1) - 1) * params.per_page);
     let limit = i64::from(params.per_page.clamp(1, 100));
 
@@ -319,7 +337,7 @@ pub async fn list_members(
 
     let response: Vec<LeagueMemberResponse> = members
         .into_iter()
-        .map(LeagueMemberResponse::from)
+        .map(|m| LeagueMemberResponse::from_member(m, include_email))
         .collect();
 
     Ok(Json(response))

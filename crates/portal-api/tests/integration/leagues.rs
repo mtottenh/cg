@@ -1,6 +1,7 @@
 //! League API integration tests.
 
 use crate::common::TestApp;
+use crate::tournaments::create_test_player;
 use axum::http::StatusCode;
 use portal_test::prelude::*;
 use serde_json::json;
@@ -1089,4 +1090,66 @@ fn create_token_for_user(_app: &TestApp, user_id: uuid::Uuid) -> String {
     // User and player have the same ID per UserBuilder
     generate_access_token(user_id, user_id, "testuser", "test-jwt-secret")
         .expect("Failed to create token")
+}
+
+/// P-37: the member list must not be readable anonymously, and must never
+/// expose email addresses to callers who do not manage the league.
+///
+/// This endpoint previously took no auth extractor at all and always included
+/// `email`, so anyone could enumerate member email addresses with a bare GET.
+#[tokio::test]
+async fn test_league_members_requires_auth_and_hides_email_from_unprivileged_callers() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    let response = app
+        .post_json(
+            "/v1/leagues",
+            &json!({
+                "game_id": game_id,
+                "name": "P37 Members League",
+                "slug": "p37-members-league",
+                "access_type": "open"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let league_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let url = format!("/v1/leagues/{league_id}/members");
+
+    // 1. Anonymous is rejected outright.
+    app.get(&url).await.assert_status(StatusCode::UNAUTHORIZED);
+
+    // 2. An authenticated non-manager may see the roster but NOT the emails.
+    let (outsider_user, outsider_player) = create_test_player(&app, "p37_outsider").await;
+    let outsider_token = create_test_token(
+        outsider_user,
+        outsider_player,
+        "p37_outsider",
+        TEST_JWT_SECRET,
+    );
+    let response = app.get_with_token(&url, &outsider_token).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body.as_array()
+            .expect("member list")
+            .iter()
+            .all(|m| m.get("email").is_none()),
+        "email must be omitted for callers without league.members.manage, got: {body}"
+    );
+
+    // 3. The managing admin still gets it -- the admin members modal needs it.
+    let response = app.get_auth(&url).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body.as_array()
+            .expect("member list")
+            .iter()
+            .any(|m| m.get("email").is_some()),
+        "a league manager must still receive member emails, got: {body}"
+    );
 }

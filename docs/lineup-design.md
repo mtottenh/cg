@@ -6,6 +6,57 @@
 
 ---
 
+## 0. DECISIONS LOCKED IN (2026-07-23)
+
+All seven open questions (§10) are resolved. **Two of these answers change the model in §5–§6,
+not just fill a gap — they are called out as ⚠️ CHANGES below. The superseded reasoning is left
+in place as the road not taken.**
+
+1. **Q2 — lineups are editable after submit, until the match/map starts.** Status
+   `draft → submitted → locked`; `locked_at` stamped on the transition to `PickBan`/`InProgress`.
+2. **Q3 — the opponent sees a lineup once it locks.** Public at lock time, not at submit time.
+3. **⚠️ Q4 — lineups are PER-MAP, and mid-series substitution is a first-class case.** This is a
+   casual league: getting a sub in after map 1 of a Bo3 is normal, not an exception. So a lineup
+   is declared per game (`game_number`), defaulting to the match-level lineup and overridable per
+   map. `participation_status`'s `substituted`/`left_early` become reachable.
+   **Schema impact:** `match_lineup_players` gains a nullable `game_number` — NULL = applies to
+   the whole match, a value = that map overrides. This also aligns with demo attribution (P-25),
+   which is inherently per-map.
+4. **⚠️ Q4/eligibility — the per-season APPEARANCE CAP is DROPPED. The load-bearing rule is now a
+   per-lineup MAJORITY rule.** The stated threat model is narrow and explicit: *"a 'ringer' is
+   someone who isn't part of our league/system."* So a substitute is legal iff:
+   - **they are a registered player on the site** (this is the whole ringer defence — an outsider
+     has no account), AND
+   - **subs are a minority of the lineup** (*"we don't have the majority of the team made of
+     subs"* — >50% of every lineup must be rostered players), AND
+   - **they satisfy the eligibility restrictions** (§5a — the elo/peak-elo caps still apply), AND
+   - **they are not rostered on the opposing team** in this match (Q7 / P-26).
+
+   Q7 — subbing for a rival team elsewhere in the league is **fine**, as long as it is not
+   against their own team and does not breach the elo cap.
+
+### What this changes, stated plainly
+
+The design in §5 argued the **per-(team,player) appearance cap** was *"the load-bearing rule of
+this whole design"* — the thing stopping "any registered player may sub" from becoming a
+roster-lock bypass. **That rule is now gone by decision.** In its place, the roster lock is kept
+meaningful by the **majority rule**: because >50% of every lineup must be rostered, a team cannot
+field a lineup that is mostly borrowed players, so the roster still defines the real team even
+though individual subs are unlimited in frequency.
+
+**What this protects against:** outsiders (no account), elo-inflated ringers (the cap), and a
+team quietly becoming a different team (the majority rule). **What it deliberately does NOT
+protect against:** the *same* registered sub playing every week without ever being rostered —
+which under an appearance cap would force a signing. For a casual league that is an acceptable,
+consciously chosen loosening. If the league later tightens up, the appearance cap (still
+described in §5a) is the drop-in that restores it — the two are not mutually exclusive, the cap
+is simply not enabled now.
+
+5. **Q5, Q6** — resolved earlier (new `max_substitutes_per_match` column; tournament with no
+   policy inherits the season set).
+
+---
+
 ## 1. The problem in one sentence
 
 `league_team_members` is being asked to answer two different questions, and it can
@@ -505,15 +556,12 @@ land in its own migration, after lineups are proven on one season.
    there. Worth confirming during implementation that a *short-handed but submitted*
    lineup (§5 case 1) is treated as checked in, not as a no-show — those must not collapse
    together.
-2. **Can a lineup be edited after submission but before match start?** Real leagues
-   generally allow it up to the deadline. Suggests `status: draft → submitted → locked`,
-   with `locked_at` stamped on the transition to `PickBan`/`InProgress`.
-3. **Does the opponent get to see the lineup before the match?** Affects whether
-   declaration is public at submit time or only at lock time.
-4. **Should a mid-match substitution be representable?** `participation_status` has
-   `substituted` and `left_early`, implying yes, but nothing would write them without a
-   post-match amendment path. Recommend deferring — record the intent in the enum,
-   build the flow later.
+2. ~~Can a lineup be edited after submission?~~ **DECIDED: yes**, until the match/map starts;
+   `status: draft → submitted → locked`, `locked_at` on the `PickBan`/`InProgress` transition. (§0)
+3. ~~Does the opponent see the lineup before the match?~~ **DECIDED: yes, at lock time.** (§0)
+4. ~~Mid-match substitution representable?~~ **DECIDED: yes, and it is a PRIMARY case** — subs
+   after map 1 of a Bo3 are normal here. Lineups are per-map (§0.3). This also RETIRED the
+   appearance cap in favour of a majority rule (§0.4).
 5. ~~What happens to `max_substitutes` when its meaning changes?~~ **RESOLVED** — §6 adds
    `max_substitutes_per_match` as a new column. The old `max_substitutes` default of 2 is
    coincidentally plausible under both readings, which makes silent reinterpretation
@@ -525,9 +573,8 @@ land in its own migration, after lineups are proven on one season.
    league that has already thought about ratings gets sane sub rules for free, and a
    standalone tournament with no season and no policy gets no substitute restrictions,
    which is the right default for a one-off event.
-7. **May a player sub for a team in a league where they are rostered on a rival?** §5a
-   requires at minimum that they cannot face their own team (P-26). Whether they may sub
-   for a rival at all is a season flag with no obviously correct default.
+7. ~~May a player sub for a rival team in the same league?~~ **DECIDED: yes**, provided it is
+   not against their own team and does not breach the elo cap. (§0.4)
 
 ## 11. Recommendation
 

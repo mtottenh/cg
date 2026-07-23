@@ -17,13 +17,12 @@ in place as the road not taken.**
 1. **Q2 — lineups are editable after submit, until the match/map starts.** Status
    `draft → submitted → locked`; `locked_at` stamped on the transition to `PickBan`/`InProgress`.
 2. **Q3 — the opponent sees a lineup once it locks.** Public at lock time, not at submit time.
-3. **⚠️ Q4 — lineups are PER-MAP, and mid-series substitution is a first-class case.** This is a
-   casual league: getting a sub in after map 1 of a Bo3 is normal, not an exception. So a lineup
-   is declared per game (`game_number`), defaulting to the match-level lineup and overridable per
-   map. `participation_status`'s `substituted`/`left_early` become reachable.
-   **Schema impact:** `match_lineup_players` gains a nullable `game_number` — NULL = applies to
-   the whole match, a value = that map overrides. This also aligns with demo attribution (P-25),
-   which is inherently per-map.
+3. **⚠️ Q4 — mid-series substitution is a first-class case, captured PER-MAP FROM THE DEMO
+   rather than re-declared by hand** (refined in §0b). Getting a sub in after map 1 of a Bo3 is
+   normal here — but players will not open the site between maps, so the per-map lineup is
+   derived from each map's demo, not typed in. The human declaration is a single provisional
+   match-level lineup (§0b). `participation_status`'s `substituted`/`left_early` become reachable
+   through the demo path.
 4. **⚠️ Q4/eligibility — the per-season APPEARANCE CAP is DROPPED. The load-bearing rule is now a
    per-lineup MAJORITY rule.** The stated threat model is narrow and explicit: *"a 'ringer' is
    someone who isn't part of our league/system."* So a substitute is legal iff:
@@ -83,16 +82,23 @@ CREATE TABLE match_lineup_players (
     id                    UUID PRIMARY KEY,
     lineup_id             UUID NOT NULL REFERENCES match_lineups(id) ON DELETE CASCADE,
     player_id             UUID NOT NULL REFERENCES players(id),
-    -- Per-map (Q4): NULL = applies to the whole match; a value overrides that map only.
-    -- This is what makes "sub in after map 1 of a Bo3" expressible, and it aligns with
-    -- demo attribution (P-25), which is inherently per-map.
+    -- Where this row came from (§0b). This is the load-bearing distinction:
+    --   'declared' — the PROVISIONAL lineup a human entered at pick/ban. Match-level
+    --                (game_number NULL). A promise, not proof.
+    --   'demo'     — the AUTHORITATIVE lineup derived from the map demo after it is
+    --                played. Per-map (game_number set). This is what counts for stats,
+    --                awards, and eligibility enforcement.
+    source                VARCHAR(16) NOT NULL,   -- 'declared' | 'demo'
+    -- Per-map. NULL for 'declared' rows (one provisional lineup per match); set for
+    -- 'demo' rows from `demo_match_links.game_number`. Aligns with demo attribution
+    -- (P-25), which is inherently per-map.
     game_number           INTEGER,
-    is_substitute         BOOLEAN NOT NULL DEFAULT false,
-    was_rostered          BOOLEAN NOT NULL,   -- snapshot at declaration (roster at time T is not reconstructable)
+    is_substitute         BOOLEAN NOT NULL DEFAULT false,   -- for 'demo' rows: auto-set when the player is not on the roster
+    was_rostered          BOOLEAN NOT NULL,   -- snapshot at ingestion (roster at time T is not reconstructable)
     participation_status  VARCHAR(32) NOT NULL DEFAULT 'confirmed',
-        -- confirmed | no_show | left_early | substituted | removed  (Q4 makes substituted/left_early reachable)
+        -- confirmed | no_show | left_early | substituted | removed
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (lineup_id, player_id, game_number)   -- one entry per player per map (NULL = match-default)
+    UNIQUE (lineup_id, player_id, game_number, source)
 );
 ```
 
@@ -117,6 +123,59 @@ those columns now.
 **⚠️ One open tie-break for implementation** (not a blocker): the majority rule for an **even**
 lineup. `subs * 2 < lineup_size` treats 2-of-4 as illegal (subs must be a strict minority). This
 is the recommended default and what the schema comment above encodes; confirm when building.
+
+### 0b. Two-phase lineup: PROVISIONAL declared, AUTHORITATIVE from the demo
+
+**Decision (2026-07-23):** players will not open the site between maps of a Bo3, so a
+human-declared per-map lineup is unrealistic. The model is therefore two-phase, and the
+**authoritative source of "who actually played" is the demo, not the declaration.**
+
+| | Provisional lineup | Authoritative lineup |
+|---|---|---|
+| `source` | `declared` | `demo` |
+| Who writes it | a captain, once, at check-in / pick-ban | the demo-ingestion path, per map, after the map is played |
+| Granularity | match-level (`game_number` NULL) | per-map (`game_number` set) |
+| Purpose | opponent sees expected players (Q3); advisory eligibility pre-check | **stats (P-25), awards, eligibility ENFORCEMENT, roster-mismatch review (P-23)** |
+| Trust | a promise | the record — can't be faked |
+
+**How the authoritative lineup is built** (this is the P-25 attribution fix, now doing double
+duty): when a map's demo is ingested, each Steam ID is resolved to a registered player. Then,
+diffing that set against the team's roster:
+- **on the roster** → `is_substitute = false`;
+- **a registered player, not on the roster** → **auto-tagged `is_substitute = true`** (this is
+  the ordinary casual-league sub — exactly the "get someone in after map 1" case, captured with
+  zero site interaction);
+- **not a registered player at all** → the **ringer** case. This is P-23's `roster_mismatch` /
+  `unrecognized_players`: it raises the existing result-review flow for an admin, rather than
+  being silently attributed.
+
+**Where the §0.4 eligibility rules run — now split by phase:**
+- On the **provisional** lineup: **advisory only.** "This lineup would break the sub-majority
+  rule / elo cap" — a warning at declaration, not a block, because it is just a promise.
+- On the **authoritative** (demo-derived) lineup: **enforcement.** The majority rule, the elo
+  cap, and not-facing-own-team are checked against who *actually* played. A violation raises the
+  review (reusing P-23's machinery) for an admin to void/uphold — it does **not** auto-void, and
+  it does **not** silently accept.
+
+**This inverts the emphasis of §1–§9.** Those sections treat the human-declared lineup as
+central. It is not: the demo-derived lineup is load-bearing, and the declaration is a UX layer
+on top. A consequence worth stating: **the system is correct even if nobody declares a lineup** —
+the demo is still authoritative. Declaration only buys pre-match visibility and an early warning.
+
+**Open questions this raises** (do not block starting the migration, but decide before the
+ingestion path is built):
+1. **No demo, or a demo that fails to parse.** Then there is no authoritative lineup for that
+   map. Options: fall back to the provisional lineup and mark the map *unverified*; or treat the
+   map as unverifiable and require manual entry. Recommend **fall back + `unverified` flag**,
+   reusing the existing demo-link confidence machinery — a casual league should not hard-block on
+   a missing upload.
+2. **Provisional required, or optional?** Since the demo is authoritative, declaration can be
+   optional. Recommend **optional but encouraged** — required only where a league wants the
+   opponent to see the lineup before pick/ban.
+3. **Timing of enforcement.** The eligibility verdict can only be computed after the demo is
+   parsed, which is already where `result_review` is raised. Confirm the sub-eligibility check
+   slots into that existing producer (`adapters/demo_validator.rs:88`, currently the stubbed
+   empty vec — P-23) rather than a new pass.
 
 ---
 

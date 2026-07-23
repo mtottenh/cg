@@ -5,7 +5,9 @@ use portal_core::types::{
     MatchFormat, RegistrationType, SchedulingMode, StageFormat, TournamentFormat,
     TournamentParticipantType, WithdrawalPolicy,
 };
-use portal_core::{GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentId};
+use portal_core::{
+    GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentId, UserId,
+};
 use portal_domain::entities::tournament::{
     CreateTournamentCommand, CreateTournamentStageCommand, UpdateTournamentCommand,
 };
@@ -590,6 +592,49 @@ impl RegisterPlayerRequest {
     /// Parse player ID from the authenticated user.
     pub fn into_command(self, player_id: PlayerId) -> (PlayerId, String) {
         (player_id, self.participant_name)
+    }
+}
+
+/// Request to invite a user or team to an invite-only tournament.
+///
+/// Exactly one target must be supplied: `user_id` for individual
+/// tournaments, `team_season_id` for team tournaments. Sending both, or
+/// neither, is a 400.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct CreateTournamentInvitationRequest {
+    /// User to invite (individual tournaments).
+    #[serde(default)]
+    pub user_id: Option<String>,
+
+    /// Team-season to invite (team tournaments).
+    #[serde(default)]
+    pub team_season_id: Option<String>,
+
+    /// Optional note shown to the invitee.
+    #[validate(length(max = 500))]
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+impl CreateTournamentInvitationRequest {
+    /// Parse the invite target IDs.
+    pub fn parse_target(
+        &self,
+    ) -> Result<(Option<UserId>, Option<LeagueTeamSeasonId>), crate::error::ApiError> {
+        let user_id = self
+            .user_id
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| crate::error::ApiError::bad_request("Invalid user ID format"))?;
+        let team_season_id = self
+            .team_season_id
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| crate::error::ApiError::bad_request("Invalid team season ID format"))?;
+
+        Ok((user_id, team_season_id))
     }
 }
 

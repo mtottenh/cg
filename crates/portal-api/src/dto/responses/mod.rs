@@ -92,9 +92,9 @@ pub use role::{
 pub use tournament::{
     CheckInStatusResponse, MatchStatusDetailsResponse, MatchStatusLogResponse,
     ScheduleProposalResponse, SeededParticipantResponse, TournamentBracketResponse,
-    TournamentMapPoolResponse, TournamentMatchGameResponse, TournamentMatchResponse,
-    TournamentRegistrationResponse, TournamentResponse, TournamentStageResponse,
-    TournamentStandingResponse, TournamentSummaryResponse,
+    TournamentInvitationResponse, TournamentMapPoolResponse, TournamentMatchGameResponse,
+    TournamentMatchResponse, TournamentRegistrationResponse, TournamentResponse,
+    TournamentStageResponse, TournamentStandingResponse, TournamentSummaryResponse,
 };
 pub use user::UserResponse;
 pub use veto::{

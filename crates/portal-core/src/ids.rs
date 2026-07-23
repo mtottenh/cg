@@ -274,6 +274,11 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for a tournament invitation (invite-only entry list).
+    TournamentInvitationId
+);
+
+define_id!(
     /// Unique identifier for a match within a tournament bracket.
     TournamentMatchId
 );

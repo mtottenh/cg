@@ -37,10 +37,11 @@ use portal_db::{
     PgRefreshTokenRepository, PgResultClaimRepository, PgResultReviewRepository,
     PgSagaExecutionRepository, PgScheduleProposalRepository, PgSteamTrackingRepository,
     PgSuggestedTimeRepository, PgSystemSettingsRepository, PgTournamentBracketRepository,
-    PgTournamentMapPoolRepository, PgTournamentMatchRepository, PgTournamentRegistrationRepository,
-    PgTournamentRepository, PgTournamentStageRepository, PgTournamentStandingsRepository,
-    PgUserRepository, PgVetoActionRepository, PgVetoDelegateRepository,
-    PgVetoLobbyMessageRepository, PgVetoSessionRepository, RoleRepository, StatsRepository,
+    PgTournamentInvitationRepository, PgTournamentMapPoolRepository, PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
+    PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
+    PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
+    RoleRepository, StatsRepository,
 };
 use portal_domain::services::{
     AwardService, BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
@@ -99,6 +100,7 @@ pub type AppTournamentService = TournamentService<
     PgTournamentMatchRepository,
     PgTournamentStandingsRepository,
     PgTournamentMapPoolRepository,
+    PgTournamentInvitationRepository,
 >;
 pub type AppRegistrationService =
     RegistrationService<PgTournamentRepository, PgTournamentRegistrationRepository>;
@@ -501,6 +503,11 @@ impl AppState {
         let tournament_map_pool_repo =
             Arc::new(PgTournamentMapPoolRepository::new(db_pool.clone()));
 
+        // Invitation repository — backs `registration_type = invite_only`
+        // (audit P-27); the tournament service consults it on registration.
+        let tournament_invitation_repo =
+            Arc::new(PgTournamentInvitationRepository::new(db_pool.clone()));
+
         // Create tournament service
         let tournament_service = TournamentService::new(
             Arc::clone(&tournament_repo),
@@ -510,6 +517,7 @@ impl AppState {
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_standings_repo),
             Arc::clone(&tournament_map_pool_repo),
+            Arc::clone(&tournament_invitation_repo),
         );
 
         // Create Phase 2 tournament services

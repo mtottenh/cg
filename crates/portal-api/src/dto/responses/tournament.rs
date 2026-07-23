@@ -2,12 +2,12 @@
 
 use chrono::{DateTime, Utc};
 use portal_core::types::{
-    BracketStatus, ProposalStatus, StageStatus, TournamentMatchStatus,
+    BracketStatus, ProposalStatus, StageStatus, TournamentInvitationStatus, TournamentMatchStatus,
     TournamentRegistrationStatus, TournamentStatus,
 };
 use portal_domain::entities::tournament::{
-    Tournament, TournamentBracket, TournamentMatch, TournamentMatchGame, TournamentRegistration,
-    TournamentStage, TournamentStanding,
+    Tournament, TournamentBracket, TournamentInvitation, TournamentMatch, TournamentMatchGame,
+    TournamentRegistration, TournamentStage, TournamentStanding,
 };
 use portal_domain::entities::{MatchStatusLog, ScheduleProposal};
 use portal_domain::services::tournament::MatchStatusDetails;
@@ -427,6 +427,53 @@ impl From<TournamentRegistration> for TournamentRegistrationResponse {
             created_at: r.created_at,
             updated_at: r.updated_at,
             withdrawn_at: r.withdrawn_at,
+        }
+    }
+}
+
+// =============================================================================
+// TOURNAMENT INVITATION RESPONSES
+// =============================================================================
+
+/// Response DTO for a tournament invitation.
+///
+/// The invite list behind `registration_type = "invite_only"` (audit P-27).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentInvitationResponse {
+    pub id: String,
+    pub tournament_id: String,
+
+    /// Invited user — set for individual tournaments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// Invited team-season — set for team tournaments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_season_id: Option<String>,
+
+    pub status: TournamentInvitationStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub invited_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<TournamentInvitation> for TournamentInvitationResponse {
+    fn from(i: TournamentInvitation) -> Self {
+        Self {
+            id: i.id.to_string(),
+            tournament_id: i.tournament_id.to_string(),
+            user_id: i.user_id.map(|id| id.to_string()),
+            team_season_id: i.team_season_id.map(|id| id.to_string()),
+            status: i.status,
+            message: i.message,
+            invited_by: i.invited_by.to_string(),
+            accepted_at: i.accepted_at,
+            revoked_at: i.revoked_at,
+            created_at: i.created_at,
         }
     }
 }

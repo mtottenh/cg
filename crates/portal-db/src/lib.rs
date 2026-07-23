@@ -46,11 +46,12 @@ pub use adapters::{
     PgProgressionLogRepository, PgRefreshTokenRepository, PgResultClaimRepository,
     PgResultReviewRepository, PgSagaExecutionRepository, PgScheduleProposalRepository,
     PgSteamTrackingRepository, PgSuggestedTimeRepository, PgSystemSettingsRepository,
-    PgTournamentBracketRepository, PgTournamentMapPoolRepository, PgTournamentMatchGameRepository,
-    PgTournamentMatchRepository, PgTournamentRegistrationRepository, PgTournamentRepository,
-    PgTournamentStageRepository, PgTournamentStandingsRepository, PgUserRepository,
-    PgVetoActionRepository, PgVetoDelegateRepository, PgVetoLobbyMessageRepository,
-    PgVetoSessionRepository, complete_match_in_transaction,
+    PgTournamentBracketRepository, PgTournamentInvitationRepository, PgTournamentMapPoolRepository,
+    PgTournamentMatchGameRepository, PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
+    PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
+    PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
+    complete_match_in_transaction,
 };
 pub use entities::NewUserRole;
 pub use error::RepositoryError;

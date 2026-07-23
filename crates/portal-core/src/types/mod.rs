@@ -30,7 +30,7 @@ pub use status::{EntityStatus, MatchStatus, TournamentStatus};
 pub use tournament::{
     AdvancementRule, BracketStatus, BracketType, ExceptionType, MatchFormat,
     MatchParticipantSource, ProposalStatus, RegistrationType, SchedulingMode, SeedingAlgorithm,
-    StageFormat, StageStatus, TournamentFormat, TournamentMatchStatus, TournamentParticipantType,
-    TournamentRegistrationStatus, WithdrawalPolicy,
+    StageFormat, StageStatus, TournamentFormat, TournamentInvitationStatus, TournamentMatchStatus,
+    TournamentParticipantType, TournamentRegistrationStatus, WithdrawalPolicy,
 };
 pub use veto::{SideSelectionMode, VetoActionType, VetoFormatActionConfig, VetoFormatConfig};

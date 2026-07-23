@@ -179,6 +179,9 @@ impl From<DomainError> for ApiError {
             DomainError::TournamentRegistrationNotFound(id) => {
                 Self::not_found(format!("Tournament registration not found: {id}"))
             }
+            DomainError::TournamentInvitationNotFound(id) => {
+                Self::not_found(format!("Tournament invitation not found: {id}"))
+            }
             DomainError::DisputeNotFound(id) => Self::not_found(format!("Dispute not found: {id}")),
             DomainError::ForfeitRecordNotFound(id) => {
                 Self::not_found(format!("Forfeit record not found: {id}"))
@@ -287,6 +290,14 @@ impl From<DomainError> for ApiError {
                 Self::bad_request("Tournament has already started")
             }
             DomainError::TournamentFull => Self::bad_request("Tournament is at maximum capacity"),
+            // 403, not 400 (leagues use 400 for the equivalent
+            // `LeagueInviteOnly`): the request is well-formed and the
+            // tournament is open — the caller is simply not permitted to
+            // enter it. That is an authorization refusal, and CLAUDE.md
+            // maps refusals to 403.
+            DomainError::TournamentInviteOnly => {
+                Self::forbidden("Tournament is invite-only and you have no invitation")
+            }
             DomainError::EligibilityViolation(msg) => Self::bad_request(msg),
             DomainError::NotRegisteredForTournament => {
                 Self::bad_request("Not registered for this tournament")

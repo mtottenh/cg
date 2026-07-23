@@ -74,9 +74,9 @@ pub use steam_tracking::SteamTrackingRow;
 pub use tournament::{
     MatchStatusLogRow, NewMatchStatusLog, NewResultClaim, NewTournament, NewTournamentBracket,
     NewTournamentMatch, NewTournamentMatchGame, NewTournamentRegistration, NewTournamentStage,
-    NewVetoAction, NewVetoSession, ResultClaimRow, TournamentBracketRow, TournamentMapPoolRow,
-    TournamentMatchGameRow, TournamentMatchRow, TournamentRegistrationRow, TournamentRow,
-    TournamentStageRow, TournamentStandingRow, UpdateResultClaim, UpdateVetoAction,
+    NewVetoAction, NewVetoSession, ResultClaimRow, TournamentBracketRow, TournamentInvitationRow,
+    TournamentMapPoolRow, TournamentMatchGameRow, TournamentMatchRow, TournamentRegistrationRow,
+    TournamentRow, TournamentStageRow, TournamentStandingRow, UpdateResultClaim, UpdateVetoAction,
     UpdateVetoSession, VetoActionRow, VetoSessionRow,
 };
 pub use user::{NewUser, UpdateUser, UserRow, UserStatus};

@@ -15,9 +15,12 @@
 use super::{check_eligibility_for_players, get_request_id, require_registration_actor};
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{
-    DisqualifyRequest, RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
+    CreateTournamentInvitationRequest, DisqualifyRequest, RegisterPlayerRequest,
+    RegisterTeamRequest, RejectRegistrationRequest,
 };
-use crate::dto::responses::{CheckInStatusResponse, TournamentRegistrationResponse};
+use crate::dto::responses::{
+    CheckInStatusResponse, TournamentInvitationResponse, TournamentRegistrationResponse,
+};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::TournamentState;
@@ -80,6 +83,177 @@ async fn require_registration_manage(
         .await?;
 
     Ok(())
+}
+
+/// Path parameters for invitation operations.
+#[derive(Debug, serde::Deserialize)]
+pub struct InvitationPath {
+    tournament_id: String,
+    invitation_id: String,
+}
+
+/// Invite a user or team to an invite-only tournament.
+///
+/// The invite list is what makes `registration_type = "invite_only"` mean
+/// anything: before audit P-27 no invite concept existed and an invite-only
+/// tournament accepted registrations from anybody.
+#[utoipa::path(
+    post,
+    path = "/v1/tournaments/{tournament_id}/invitations",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    request_body = CreateTournamentInvitationRequest,
+    responses(
+        (status = 201, description = "Invitation created", body = DataResponse<TournamentInvitationResponse>),
+        (status = 400, description = "Invalid invite target", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+        (status = 409, description = "Target already invited", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn create_invitation(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(tournament_id): Path<TournamentId>,
+    ValidatedJson(req): ValidatedJson<CreateTournamentInvitationRequest>,
+) -> ApiResult<(StatusCode, Json<DataResponse<TournamentInvitationResponse>>)> {
+    let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+        )
+        .await?;
+
+    let (user_id, team_season_id) = req.parse_target()?;
+
+    let invitation = state
+        .tournament_service
+        .invite_to_tournament(
+            tournament_id,
+            user_id,
+            team_season_id,
+            req.message,
+            auth.user_id,
+        )
+        .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            TournamentInvitationResponse::from(invitation),
+            request_id,
+        )),
+    ))
+}
+
+/// List a tournament's invitations.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/invitations",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    responses(
+        (status = 200, description = "Invitations", body = DataResponse<Vec<TournamentInvitationResponse>>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn list_invitations(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(tournament_id): Path<TournamentId>,
+) -> ApiResult<Json<DataResponse<Vec<TournamentInvitationResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    // The invite list names who an organiser considered; it is not public.
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+        )
+        .await?;
+
+    let invitations = state
+        .tournament_service
+        .list_invitations(tournament_id)
+        .await?;
+
+    let data: Vec<TournamentInvitationResponse> = invitations.into_iter().map(Into::into).collect();
+
+    Ok(Json(DataResponse::new(data, request_id)))
+}
+
+/// Revoke a tournament invitation.
+#[utoipa::path(
+    delete,
+    path = "/v1/tournaments/{tournament_id}/invitations/{invitation_id}",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("invitation_id" = String, Path, description = "Invitation ID"),
+    ),
+    responses(
+        (status = 200, description = "Invitation revoked", body = DataResponse<TournamentInvitationResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
+        (status = 404, description = "Invitation not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn revoke_invitation(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(path): Path<InvitationPath>,
+) -> ApiResult<Json<DataResponse<TournamentInvitationResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let tournament_id: TournamentId = path
+        .tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+    let invitation_id: portal_core::TournamentInvitationId = path
+        .invitation_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+        )
+        .await?;
+
+    // The service re-checks that the invitation belongs to this tournament,
+    // so the permission above cannot be satisfied against tournament A to
+    // revoke an invitation owned by tournament B.
+    let invitation = state
+        .tournament_service
+        .revoke_invitation(tournament_id, invitation_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentInvitationResponse::from(invitation),
+        request_id,
+    )))
 }
 
 /// Register a team for a tournament.

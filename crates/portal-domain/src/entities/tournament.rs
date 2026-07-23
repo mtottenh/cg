@@ -15,13 +15,13 @@ use chrono::{DateTime, Utc};
 use portal_core::types::{
     AdvancementRule, BracketStatus, BracketType, MatchFormat, MatchParticipantSource,
     RegistrationType, SchedulingMode, StageFormat, StageStatus, TournamentFormat,
-    TournamentMatchStatus, TournamentParticipantType, TournamentRegistrationStatus,
-    TournamentStatus, WithdrawalPolicy,
+    TournamentInvitationStatus, TournamentMatchStatus, TournamentParticipantType,
+    TournamentRegistrationStatus, TournamentStatus, WithdrawalPolicy,
 };
 use portal_core::{
     GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentBracketId,
-    TournamentId, TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId,
-    TournamentRegistrationId, TournamentStageId, UserId,
+    TournamentId, TournamentInvitationId, TournamentMapPoolId, TournamentMatchGameId,
+    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -429,6 +429,44 @@ pub struct CreateTournamentBracketCommand {
     pub bracket_type: BracketType,
     pub total_rounds: i32,
     pub group_number: Option<i32>,
+}
+
+// =============================================================================
+// TOURNAMENT INVITATION
+// =============================================================================
+
+/// An entry on an invite-only tournament's invite list.
+///
+/// Targets either a user (individual tournaments) or a team-season (team
+/// tournaments) — exactly one, enforced by a DB check constraint.
+///
+/// Registering consumes the invitation (`Pending` -> `Accepted`); it is not a
+/// separate accept step, so a participant's first and only action is still
+/// "register". Revoked invitations are retained so an organiser can see what
+/// was withdrawn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TournamentInvitation {
+    pub id: TournamentInvitationId,
+    pub tournament_id: TournamentId,
+
+    // Invite target (exactly one is set)
+    pub user_id: Option<UserId>,
+    pub team_season_id: Option<LeagueTeamSeasonId>,
+
+    pub status: TournamentInvitationStatus,
+    pub message: Option<String>,
+    pub invited_by: UserId,
+    pub accepted_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl TournamentInvitation {
+    /// Whether this invitation still admits its target to the tournament.
+    #[must_use]
+    pub const fn permits_registration(&self) -> bool {
+        self.status.permits_registration()
+    }
 }
 
 // =============================================================================

@@ -108,8 +108,8 @@ pub use tournament::{
     CreateTournamentStageCommand, GameStatus, GeneratedMatch, HeadToHead, HeadToHeadRecord,
     RegisterPlayerCommand, RegisterTeamCommand, ScheduleMatchCommand, SeededParticipant,
     SubmitGameResultCommand, SubmitMatchResultCommand, Tournament, TournamentBracket,
-    TournamentMapPool, TournamentMatch, TournamentMatchGame, TournamentRegistration,
-    TournamentStage, TournamentStanding, UpdateTournamentCommand,
+    TournamentInvitation, TournamentMapPool, TournamentMatch, TournamentMatchGame,
+    TournamentRegistration, TournamentStage, TournamentStanding, UpdateTournamentCommand,
 };
 pub use user::{User, UserWithCredentials};
 pub use veto::{

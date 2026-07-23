@@ -210,6 +210,28 @@ pub struct NewTournamentBracket {
 }
 
 // =============================================================================
+// TOURNAMENT INVITATION
+// =============================================================================
+
+/// Database row for the `tournament_invitations` table.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct TournamentInvitationRow {
+    pub id: Uuid,
+    pub tournament_id: Uuid,
+
+    // Invite target — exactly one is non-null (DB check constraint).
+    pub user_id: Option<Uuid>,
+    pub team_season_id: Option<Uuid>,
+
+    pub status: String,
+    pub message: Option<String>,
+    pub invited_by: Uuid,
+    pub accepted_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+// =============================================================================
 // TOURNAMENT REGISTRATION
 // =============================================================================
 

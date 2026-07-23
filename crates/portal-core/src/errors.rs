@@ -14,8 +14,8 @@ use thiserror::Error;
 use crate::ids::{
     BanId, DemoId, DemoMatchLinkId, DisputeId, EvidenceId, ForfeitRecordId, GameId, LeagueId,
     LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LobbyId, MatchId, PlayerId,
-    ResultClaimId, ResultReviewId, TournamentBracketId, TournamentId, TournamentMatchId,
-    TournamentRegistrationId, TournamentStageId, UserId, VetoSessionId,
+    ResultClaimId, ResultReviewId, TournamentBracketId, TournamentId, TournamentInvitationId,
+    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId, VetoSessionId,
 };
 
 /// A single validation error for a specific field.
@@ -234,6 +234,10 @@ pub enum DomainError {
     #[error("tournament registration not found: {0}")]
     TournamentRegistrationNotFound(TournamentRegistrationId),
 
+    /// The requested tournament invitation was not found.
+    #[error("tournament invitation not found: {0}")]
+    TournamentInvitationNotFound(TournamentInvitationId),
+
     /// The requested dispute was not found.
     #[error("dispute not found: {0}")]
     DisputeNotFound(DisputeId),
@@ -307,6 +311,11 @@ pub enum DomainError {
     /// Tournament is at maximum capacity.
     #[error("tournament is at maximum capacity")]
     TournamentFull,
+
+    /// Tournament registration is invite-only and the participant has no
+    /// outstanding invitation.
+    #[error("tournament is invite-only")]
+    TournamentInviteOnly,
 
     /// Registration violates eligibility restrictions.
     #[error("eligibility violation: {0}")]
@@ -566,6 +575,7 @@ impl DomainError {
                 | Self::TournamentBracketNotFound(_)
                 | Self::TournamentMatchNotFound(_)
                 | Self::TournamentRegistrationNotFound(_)
+                | Self::TournamentInvitationNotFound(_)
                 | Self::DisputeNotFound(_)
                 | Self::ForfeitRecordNotFound(_)
                 | Self::EvidenceNotFound(_)

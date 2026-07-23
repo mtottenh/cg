@@ -190,6 +190,70 @@ impl RegistrationType {
             Self::InviteOnly | Self::Qualification | Self::Approval
         )
     }
+
+    /// Check if registration requires an outstanding invitation.
+    ///
+    /// Backs the invite-list enforcement in
+    /// `TournamentService::register_team` / `register_player`. Before audit
+    /// P-27 this concept had no implementation at all and `InviteOnly`
+    /// behaved exactly like `Approval`.
+    #[must_use]
+    pub const fn requires_invitation(&self) -> bool {
+        matches!(self, Self::InviteOnly)
+    }
+}
+
+// ============================================================================
+// Tournament Invitation Status
+// ============================================================================
+
+/// Lifecycle of a tournament invitation (the invite list behind
+/// `RegistrationType::InviteOnly`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TournamentInvitationStatus {
+    /// Outstanding — the invitee may register.
+    #[default]
+    Pending,
+    /// Consumed by a registration.
+    Accepted,
+    /// Withdrawn by an organiser; no longer permits registration.
+    Revoked,
+}
+
+impl fmt::Display for TournamentInvitationStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Accepted => write!(f, "accepted"),
+            Self::Revoked => write!(f, "revoked"),
+        }
+    }
+}
+
+impl FromStr for TournamentInvitationStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "pending" => Ok(Self::Pending),
+            "accepted" => Ok(Self::Accepted),
+            "revoked" => Ok(Self::Revoked),
+            _ => Err(format!("invalid tournament invitation status: {s}")),
+        }
+    }
+}
+
+impl TournamentInvitationStatus {
+    /// Whether an invitation in this state still admits its target to the
+    /// tournament. `Accepted` counts: re-registering after a withdrawal must
+    /// not require the organiser to issue a second invitation.
+    #[must_use]
+    pub const fn permits_registration(&self) -> bool {
+        matches!(self, Self::Pending | Self::Accepted)
+    }
 }
 
 // ============================================================================

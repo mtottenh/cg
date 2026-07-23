@@ -82,12 +82,13 @@ pub use role::{
 pub use tournament::{
     AcceptScheduleProposalRequest, AdminMatchTransitionRequest, AdminScheduleRequest,
     AutoSeedRequest, CancelScheduleProposalRequest, CheckInRequest, CounterProposeRequest,
-    CreateTournamentRequest, CreateTournamentStageRequest, DisputeMatchRequest, DisqualifyRequest,
-    EligibilityRestrictionsInput, ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest,
-    MatchCheckInRequest, ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest,
-    RejectRegistrationRequest, RejectScheduleProposalRequest, ResolveDisputeRequest,
-    ScheduleMatchRequest, SeedAssignment, SetTournamentMapPoolRequest, SubmitMatchResultRequest,
-    UpdateTournamentRequest, WithdrawRequest,
+    CreateTournamentInvitationRequest, CreateTournamentRequest, CreateTournamentStageRequest,
+    DisputeMatchRequest, DisqualifyRequest, EligibilityRestrictionsInput, ForfeitMatchRequest,
+    ListTournamentsQuery, ManualSeedRequest, MatchCheckInRequest, ProposeScheduleRequest,
+    RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
+    RejectScheduleProposalRequest, ResolveDisputeRequest, ScheduleMatchRequest, SeedAssignment,
+    SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
+    WithdrawRequest,
 };
 pub use veto::{
     CreateVetoSessionRequest, GetVetoStateQuery, PerformVetoActionRequest, RecordCoinFlipRequest,

@@ -9,8 +9,9 @@
 //!   - `TournamentMatchGameRepository`: Individual games in a match series
 
 use crate::entities::tournament::{
-    GameStatus, Tournament, TournamentBracket, TournamentMapPool, TournamentMatch,
-    TournamentMatchGame, TournamentRegistration, TournamentStage, TournamentStanding,
+    GameStatus, Tournament, TournamentBracket, TournamentInvitation, TournamentMapPool,
+    TournamentMatch, TournamentMatchGame, TournamentRegistration, TournamentStage,
+    TournamentStanding,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -22,8 +23,8 @@ use portal_core::types::{
 };
 use portal_core::{
     DemoMatchLinkId, DomainError, GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId,
-    TournamentBracketId, TournamentId, TournamentMapPoolId, TournamentMatchGameId,
-    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
+    TournamentBracketId, TournamentId, TournamentInvitationId, TournamentMapPoolId,
+    TournamentMatchGameId, TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
 };
 
 // =============================================================================
@@ -514,6 +515,74 @@ pub trait TournamentRegistrationRepository: Send + Sync {
 
     /// Delete a registration.
     async fn delete(&self, id: TournamentRegistrationId) -> Result<(), DomainError>;
+}
+
+// =============================================================================
+// TOURNAMENT INVITATION REPOSITORY
+// =============================================================================
+
+/// Repository trait for the invite list behind
+/// [`RegistrationType::InviteOnly`](portal_core::types::RegistrationType::InviteOnly).
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait TournamentInvitationRepository: Send + Sync {
+    /// Find an invitation by ID.
+    async fn find_by_id(
+        &self,
+        id: TournamentInvitationId,
+    ) -> Result<Option<TournamentInvitation>, DomainError>;
+
+    /// Find the live (non-revoked) invitation for a user, if any.
+    async fn find_for_user(
+        &self,
+        tournament_id: TournamentId,
+        user_id: UserId,
+    ) -> Result<Option<TournamentInvitation>, DomainError>;
+
+    /// Find the live (non-revoked) invitation for a team-season, if any.
+    async fn find_for_team_season(
+        &self,
+        tournament_id: TournamentId,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<Option<TournamentInvitation>, DomainError>;
+
+    /// List every invitation for a tournament, newest first.
+    async fn list_by_tournament(
+        &self,
+        tournament_id: TournamentId,
+    ) -> Result<Vec<TournamentInvitation>, DomainError>;
+
+    /// Create an invitation.
+    ///
+    /// Returns [`DomainError::Conflict`] if a live invitation for the same
+    /// target already exists (enforced by a partial unique index).
+    async fn create(
+        &self,
+        invitation: CreateTournamentInvitation,
+    ) -> Result<TournamentInvitation, DomainError>;
+
+    /// Mark an invitation accepted (consumed by a registration).
+    async fn mark_accepted(
+        &self,
+        id: TournamentInvitationId,
+    ) -> Result<TournamentInvitation, DomainError>;
+
+    /// Revoke an invitation.
+    async fn revoke(&self, id: TournamentInvitationId)
+    -> Result<TournamentInvitation, DomainError>;
+}
+
+/// Data for creating a tournament invitation.
+///
+/// Exactly one of `user_id` / `team_season_id` must be set; the DB enforces
+/// this with a `num_nonnulls(...) = 1` check constraint.
+#[derive(Debug, Clone)]
+pub struct CreateTournamentInvitation {
+    pub tournament_id: TournamentId,
+    pub user_id: Option<UserId>,
+    pub team_season_id: Option<LeagueTeamSeasonId>,
+    pub message: Option<String>,
+    pub invited_by: UserId,
 }
 
 /// Data for creating a tournament registration.

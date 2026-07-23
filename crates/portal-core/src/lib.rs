@@ -24,9 +24,9 @@ pub use ids::{
     LeagueTeamSeasonId, LobbyId, MatchId, MatchStatusLogId, PlayerGameProfileId, PlayerId,
     PlayerMatchHistoryId, PlayerMmStatsId, PlayerRatingHistoryId, ProgressionLogId, ResultClaimId,
     ResultReviewId, SagaId, ScheduleProposalId, SteamTrackingId, SuggestedTimeId,
-    TournamentBracketId, TournamentId, TournamentMapPoolId, TournamentMatchGameId,
-    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId, VetoActionId,
-    VetoDelegateId, VetoLobbyMessageId, VetoSessionId,
+    TournamentBracketId, TournamentId, TournamentInvitationId, TournamentMapPoolId,
+    TournamentMatchGameId, TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
+    VetoActionId, VetoDelegateId, VetoLobbyMessageId, VetoSessionId,
 };
 pub use types::{
     DemoCategory, DemoLinkType, DemoStatus, EvidenceStorage, EvidenceType, MatchFormat,

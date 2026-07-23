@@ -281,9 +281,16 @@ async fn test_open_tournament_auto_approves_player_registration() {
 
 /// Every non-`open` registration type still requires a decision, so the
 /// registration must stay `pending` and remain approvable.
+///
+/// `invite_only` is covered separately by
+/// `test_invite_only_admits_invited_player` rather than here: since P-27 an
+/// uninvited caller cannot create the registration at all, so it cannot be
+/// driven through this loop's "register, then approve" shape. The
+/// pending-then-approvable guarantee itself is unchanged and is asserted
+/// there.
 #[tokio::test]
 async fn test_non_open_tournaments_still_require_approval() {
-    for registration_type in ["approval", "invite_only", "qualification"] {
+    for registration_type in ["approval", "qualification"] {
         let app = TestApp::new().await;
         let tournament_id = create_tournament_with_registration_type(
             &app,
@@ -693,4 +700,377 @@ async fn test_approve_still_rejects_a_withdrawn_registration() {
         ))
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+// ============================================================================
+// P-27: invite_only IS ENFORCED
+//
+// `register_team` / `register_player` checked only `is_registration_open()`,
+// so `invite_only` behaved exactly like `approval` — anyone could register
+// and the organiser had to reject the ones they had not invited. The setting
+// is now backed by `tournament_invitations` (migration 0078).
+// ============================================================================
+
+/// Create a user with a player record plus a JWT for them.
+async fn create_user_with_token(app: &TestApp, tag: &str) -> (Uuid, String) {
+    let user = UserBuilder::new()
+        .username(format!("invitee_{tag}"))
+        .build_persisted(app.pool())
+        .await;
+    let token = create_test_token(user.id, user.id, &format!("invitee_{tag}"), TEST_JWT_SECRET);
+    (user.id, token)
+}
+
+/// An uninvited user is refused: 403, and no registration row is written.
+#[tokio::test]
+async fn test_invite_only_refuses_uninvited_player() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "invite-only-refuses", "invite_only").await;
+    let (_user_id, token) = create_user_with_token(&app, "refused").await;
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
+            &json!({ "participant_name": "Gatecrasher" }),
+            &token,
+        )
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Refused, not merely flagged for an organiser: nothing was persisted.
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM tournament_registrations WHERE tournament_id = $1",
+    )
+    .bind(tournament_id.parse::<Uuid>().unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 0, "an uninvited registration must not be stored");
+}
+
+/// An invited user gets in — and still lands `pending`, because an
+/// invitation is permission to enter, not the organiser's approval.
+#[tokio::test]
+async fn test_invite_only_admits_invited_player() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "invite-only-admits", "invite_only").await;
+    let (user_id, token) = create_user_with_token(&app, "admitted").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/invitations"),
+            &json!({ "user_id": user_id.to_string(), "message": "you're in" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let invitation_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
+            &json!({ "participant_name": "Invited" }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["status"], "pending",
+        "an invitation is not an approval"
+    );
+
+    // Registering consumed the invitation.
+    let stored: String =
+        sqlx::query_scalar("SELECT status FROM tournament_invitations WHERE id = $1")
+            .bind(invitation_id.parse::<Uuid>().unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored, "accepted");
+
+    // Still approvable by the organiser, exactly like `approval`.
+    let registration_id = body["data"]["id"].as_str().unwrap();
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(
+        response.json::<serde_json::Value>()["data"]["status"],
+        "approved"
+    );
+}
+
+/// Revoking closes the door again.
+#[tokio::test]
+async fn test_invite_only_refuses_after_invitation_revoked() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "invite-only-revoked", "invite_only").await;
+    let (user_id, token) = create_user_with_token(&app, "revoked").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/invitations"),
+            &json!({ "user_id": user_id.to_string() }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let invitation_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    app.delete_auth(&format!(
+        "/v1/tournaments/{tournament_id}/invitations/{invitation_id}"
+    ))
+    .await
+    .assert_status(StatusCode::OK);
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
+            &json!({ "participant_name": "Uninvited Again" }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+/// The invite list is per-target: inviting one user does not admit another.
+#[tokio::test]
+async fn test_invite_only_invitation_is_not_transferable() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "invite-only-per-user", "invite_only").await;
+    let (invited_id, _invited_token) = create_user_with_token(&app, "holder").await;
+    let (_other_id, other_token) = create_user_with_token(&app, "other").await;
+
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/invitations"),
+        &json!({ "user_id": invited_id.to_string() }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/registrations/player"),
+            &json!({ "participant_name": "Borrowed Invite" }),
+            &other_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+/// Team tournaments gate on the team-season, not the captain's account.
+#[tokio::test]
+async fn test_invite_only_team_registration_requires_invitation() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": "Invite Only Team Cup",
+                "slug": "invite-only-team-cup",
+                "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
+                "participant_type": "team",
+                "min_participants": 2,
+                "max_participants": 8,
+                "registration_type": "invite_only",
+                "scheduling_mode": "live",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let tournament_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
+        .await
+        .assert_status(StatusCode::OK);
+    app.post_auth(&format!(
+        "/v1/tournaments/{tournament_id}/open-registration"
+    ))
+    .await
+    .assert_status(StatusCode::OK);
+
+    let (team_season_id, captain_token) = create_team_with_captain(&app, "iotc").await;
+    let body = json!({
+        "team_season_id": team_season_id,
+        "participant_name": "Uninvited Squad"
+    });
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/registrations/team"),
+            &body,
+            &captain_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Invite the team-season, and the same request now succeeds.
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/invitations"),
+        &json!({ "team_season_id": team_season_id }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/registrations/team"),
+            &body,
+            &captain_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    assert_eq!(
+        response.json::<serde_json::Value>()["data"]["participant_name"],
+        "Uninvited Squad"
+    );
+}
+
+/// The other registration types are unaffected — the invite list gates
+/// `invite_only` only.
+#[tokio::test]
+async fn test_non_invite_only_tournaments_need_no_invitation() {
+    for registration_type in ["open", "approval", "qualification"] {
+        let app = TestApp::new().await;
+        let tournament_id = create_tournament_with_registration_type(
+            &app,
+            &format!("no-invite-needed-{}", registration_type.replace('_', "-")),
+            registration_type,
+        )
+        .await;
+        let (_user_id, token) = create_user_with_token(&app, registration_type).await;
+
+        let response = app
+            .post_json_with_token(
+                &format!("/v1/tournaments/{tournament_id}/registrations/player"),
+                &json!({ "participant_name": "NoInviteNeeded" }),
+                &token,
+            )
+            .await;
+        response.assert_status(StatusCode::CREATED);
+    }
+}
+
+/// Only someone who can manage participants may hand out invitations.
+#[tokio::test]
+async fn test_invitation_requires_participants_manage() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "invite-perm", "invite_only").await;
+    let (target_id, _target_token) = create_user_with_token(&app, "target").await;
+    let (_outsider_id, outsider_token) = create_user_with_token(&app, "outsider").await;
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/invitations"),
+            &json!({ "user_id": target_id.to_string() }),
+            &outsider_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // ...and the invite list is not readable by them either.
+    let response = app
+        .get_with_token(
+            &format!("/v1/tournaments/{tournament_id}/invitations"),
+            &outsider_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+/// An invitation must name exactly one target, and it must match the
+/// tournament's participant type.
+#[tokio::test]
+async fn test_invitation_target_validation() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        create_tournament_with_registration_type(&app, "invite-target-validation", "invite_only")
+            .await;
+    let (user_id, _token) = create_user_with_token(&app, "validation").await;
+    let (team_season_id, _captain_token) = create_team_with_captain(&app, "itv").await;
+
+    // Neither target.
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/invitations"),
+        &json!({}),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    // Both targets.
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/invitations"),
+        &json!({ "user_id": user_id.to_string(), "team_season_id": team_season_id }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    // Team target on an individual tournament.
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/invitations"),
+        &json!({ "team_season_id": team_season_id }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// An invitation belongs to its tournament: it cannot be revoked through a
+/// different tournament the caller happens to administer.
+#[tokio::test]
+async fn test_invitation_revoke_is_scoped_to_its_tournament() {
+    let app = TestApp::new().await;
+    let tournament_a =
+        create_tournament_with_registration_type(&app, "invite-scope-a", "invite_only").await;
+    let tournament_b =
+        create_tournament_with_registration_type(&app, "invite-scope-b", "invite_only").await;
+    let (user_id, token) = create_user_with_token(&app, "scoped").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_a}/invitations"),
+            &json!({ "user_id": user_id.to_string() }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let invitation_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    app.delete_auth(&format!(
+        "/v1/tournaments/{tournament_b}/invitations/{invitation_id}"
+    ))
+    .await
+    .assert_status(StatusCode::NOT_FOUND);
+
+    // The invitation is untouched — it still admits its holder to A.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_a}/registrations/player"),
+            &json!({ "participant_name": "Still Invited" }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
 }

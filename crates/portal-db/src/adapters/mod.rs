@@ -63,7 +63,8 @@ pub use system_settings::PgSystemSettingsRepository;
 pub use tournament::{
     MatchCompletionTxInput, MatchCompletionTxOutput, PgMatchStatusLogRepository,
     PgResultClaimRepository, PgScheduleProposalRepository, PgTournamentBracketRepository,
-    PgTournamentMapPoolRepository, PgTournamentMatchGameRepository, PgTournamentMatchRepository,
+    PgTournamentInvitationRepository, PgTournamentMapPoolRepository,
+    PgTournamentMatchGameRepository, PgTournamentMatchRepository,
     PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
     PgTournamentStandingsRepository, PgVetoActionRepository, PgVetoSessionRepository,
     complete_match_in_transaction,

@@ -7,6 +7,7 @@
 //! - `PgTournamentStageRepository`: Multi-stage tournament stages
 //! - `PgTournamentBracketRepository`: Bracket structures
 //! - `PgTournamentRegistrationRepository`: Participant registrations
+//! - `PgTournamentInvitationRepository`: Invite list for invite-only tournaments
 //! - `PgTournamentMatchRepository`: Matches within brackets
 //! - `PgTournamentMatchGameRepository`: Individual games in a match series
 //! - `PgTournamentStandingsRepository`: Round robin/swiss standings
@@ -18,6 +19,7 @@
 
 mod bracket;
 mod conversions;
+mod invitation;
 mod map_pool;
 mod match_;
 mod match_completion_tx;
@@ -32,6 +34,7 @@ mod tournament;
 mod veto;
 
 pub use bracket::PgTournamentBracketRepository;
+pub use invitation::PgTournamentInvitationRepository;
 pub use map_pool::PgTournamentMapPoolRepository;
 pub use match_::PgTournamentMatchRepository;
 pub use match_completion_tx::{

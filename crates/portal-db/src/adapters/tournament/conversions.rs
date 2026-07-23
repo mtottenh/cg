@@ -1,18 +1,46 @@
 //! Type conversions from database rows to domain entities.
 
 use crate::entities::tournament::{
-    TournamentBracketRow, TournamentMapPoolRow, TournamentMatchGameRow, TournamentMatchRow,
-    TournamentRegistrationRow, TournamentRow, TournamentStageRow, TournamentStandingRow,
+    TournamentBracketRow, TournamentInvitationRow, TournamentMapPoolRow, TournamentMatchGameRow,
+    TournamentMatchRow, TournamentRegistrationRow, TournamentRow, TournamentStageRow,
+    TournamentStandingRow,
 };
 use portal_core::{
     GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentBracketId,
-    TournamentId, TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId,
-    TournamentRegistrationId, TournamentStageId, UserId,
+    TournamentId, TournamentInvitationId, TournamentMapPoolId, TournamentMatchGameId,
+    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
 };
 use portal_domain::entities::tournament::{
-    GameStatus, Tournament, TournamentBracket, TournamentMapPool, TournamentMatch,
-    TournamentMatchGame, TournamentRegistration, TournamentStage, TournamentStanding,
+    GameStatus, Tournament, TournamentBracket, TournamentInvitation, TournamentMapPool,
+    TournamentMatch, TournamentMatchGame, TournamentRegistration, TournamentStage,
+    TournamentStanding,
 };
+
+impl From<TournamentInvitationRow> for TournamentInvitation {
+    fn from(row: TournamentInvitationRow) -> Self {
+        Self {
+            id: TournamentInvitationId::from_uuid(row.id),
+            tournament_id: TournamentId::from_uuid(row.tournament_id),
+            user_id: row.user_id.map(UserId::from_uuid),
+            team_season_id: row.team_season_id.map(LeagueTeamSeasonId::from_uuid),
+            // Fail closed: an unrecognised status must NOT read as an
+            // outstanding invitation, since that is what admits a
+            // participant to an invite-only tournament. The DB check
+            // constraint makes this unreachable; the fallback is here so a
+            // future status added in SQL but not in Rust denies rather than
+            // admits.
+            status: row
+                .status
+                .parse()
+                .unwrap_or(portal_core::types::TournamentInvitationStatus::Revoked),
+            message: row.message,
+            invited_by: UserId::from_uuid(row.invited_by),
+            accepted_at: row.accepted_at,
+            revoked_at: row.revoked_at,
+            created_at: row.created_at,
+        }
+    }
+}
 
 impl From<TournamentRow> for Tournament {
     fn from(row: TournamentRow) -> Self {

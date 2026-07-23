@@ -81,16 +81,16 @@ pub use result_review::{CreateResultReview, ResultReviewRepository};
 pub use schedule_proposal::ScheduleProposalRepository;
 pub use steam_tracking::{CreateSteamTracking, SteamTrackingRepository};
 pub use tournament::{
-    CreateResultClaim, CreateTournament, CreateTournamentBracket, CreateTournamentMatch,
-    CreateTournamentMatchGame, CreateTournamentRegistration, CreateTournamentStage,
-    CreateTournamentStanding, CreateVetoAction, CreateVetoSession, ParticipantSlot,
-    ResultClaimRepository, TournamentBracketRepository, TournamentFilters,
-    TournamentMapPoolRepository, TournamentMatchGameRepository, TournamentMatchRepository,
-    TournamentRegistrationRepository, TournamentRepository, TournamentStageRepository,
-    TournamentStandingsRepository, UpdateResultClaim, UpdateTournament, UpdateTournamentBracket,
-    UpdateTournamentMatch, UpdateTournamentMatchGame, UpdateTournamentRegistration,
-    UpdateTournamentStage, UpdateVetoSession, UpsertTournamentMapPool, VetoActionRepository,
-    VetoSessionRepository,
+    CreateResultClaim, CreateTournament, CreateTournamentBracket, CreateTournamentInvitation,
+    CreateTournamentMatch, CreateTournamentMatchGame, CreateTournamentRegistration,
+    CreateTournamentStage, CreateTournamentStanding, CreateVetoAction, CreateVetoSession,
+    ParticipantSlot, ResultClaimRepository, TournamentBracketRepository, TournamentFilters,
+    TournamentInvitationRepository, TournamentMapPoolRepository, TournamentMatchGameRepository,
+    TournamentMatchRepository, TournamentRegistrationRepository, TournamentRepository,
+    TournamentStageRepository, TournamentStandingsRepository, UpdateResultClaim, UpdateTournament,
+    UpdateTournamentBracket, UpdateTournamentMatch, UpdateTournamentMatchGame,
+    UpdateTournamentRegistration, UpdateTournamentStage, UpdateVetoSession,
+    UpsertTournamentMapPool, VetoActionRepository, VetoSessionRepository,
 };
 pub use user::{
     CreatePlayer, CreateUser, PlayerRepository, PlayerSearchFilters, UpdatePlayer, UserRepository,

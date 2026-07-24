@@ -466,3 +466,92 @@ async fn test_attribution_gated_to_lineup() {
         "the stat row remains, only its attribution is stripped"
     );
 }
+
+/// P-58: team-match participation is credited from the authoritative
+/// (demo-derived) lineup — who actually played — not the whole roster. A player
+/// in the lineup is credited; a registered player NOT in any map's lineup is
+/// not; and the lineup overrides the registration's own player.
+#[tokio::test]
+async fn test_participation_credited_from_lineup() {
+    use portal_domain::services::tournament::MatchStatsUpdater;
+    use std::sync::Arc;
+
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, reg1, reg2) =
+        create_tournament_with_matches(&app, "lineup-p58").await;
+
+    // Players who played (A, B) and one who did not (C).
+    let (_ua, player_a) = create_test_player(&app, "p58_a").await;
+    let (_ub, player_b) = create_test_player(&app, "p58_b").await;
+    let (_uc, player_c) = create_test_player(&app, "p58_c").await;
+
+    let pool = app.pool().clone();
+    let lineup_service = portal_domain::services::tournament::LineupService::new(
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgLeagueTeamMemberRepository::new(pool.clone())),
+    );
+    let match_tid: portal_core::TournamentMatchId = match_id.parse().unwrap();
+    let reg1_tid: portal_core::TournamentRegistrationId = reg1.parse().unwrap();
+    let a_pid: portal_core::PlayerId = player_a.to_string().parse().unwrap();
+    let b_pid: portal_core::PlayerId = player_b.to_string().parse().unwrap();
+
+    // Winner (reg1) lineup: A and B played on map 1. (dev is reg1's registrant
+    // but did NOT play — the lineup must override the registration.)
+    lineup_service
+        .materialize_demo_lineup(match_tid, reg1_tid, Some(1), vec![a_pid, b_pid])
+        .await
+        .expect("materialize demo lineup");
+
+    // Drive the real stats updater as the completion saga does.
+    let adapter = portal_api::adapters::StatsUpdaterAdapter::new(
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgDemoMatchLinkRepository::new(pool.clone())),
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        portal_db::GameRepository::new(pool.clone()),
+        portal_domain::services::PlayerGameProfileService::new(Arc::new(
+            portal_db::PgPlayerGameProfileRepository::new(pool.clone()),
+        )),
+        Arc::new(portal_plugins::PluginManager::new()),
+    );
+    let reg2_tid: portal_core::TournamentRegistrationId = reg2.parse().unwrap();
+    adapter
+        .update_player_stats(match_tid, reg1_tid, reg2_tid, false)
+        .await
+        .expect("update player stats");
+
+    let credited = |pid: uuid::Uuid| {
+        let pool = app.pool().clone();
+        let mid = match_tid.as_uuid();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM player_match_stats_applied WHERE player_id=$1 AND match_id=$2",
+            )
+            .bind(pid)
+            .bind(mid)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let dev_player = uuid::Uuid::parse_str(DEV_PLAYER_ID).unwrap();
+    assert_eq!(credited(player_a).await, 1, "lineup player A is credited");
+    assert_eq!(credited(player_b).await, 1, "lineup player B is credited");
+    assert_eq!(
+        credited(player_c).await,
+        0,
+        "a registered player not in any lineup is not credited"
+    );
+    assert_eq!(
+        credited(dev_player).await,
+        0,
+        "the lineup overrides the registration's own player"
+    );
+}

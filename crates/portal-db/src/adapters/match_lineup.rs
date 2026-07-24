@@ -319,6 +319,27 @@ impl MatchLineupRepository for PgMatchLineupRepository {
         Ok(MatchLineup::from(lineup))
     }
 
+    async fn distinct_participants(
+        &self,
+        match_id: TournamentMatchId,
+        registration_id: TournamentRegistrationId,
+    ) -> Result<Vec<PlayerId>, DomainError> {
+        let ids = sqlx::query_scalar::<_, uuid::Uuid>(
+            r"
+            SELECT DISTINCT mlp.player_id
+            FROM match_lineup_players mlp
+            JOIN match_lineups ml ON ml.id = mlp.lineup_id
+            WHERE ml.match_id = $1 AND ml.registration_id = $2 AND mlp.source = 'demo'
+            ",
+        )
+        .bind(match_id.as_uuid())
+        .bind(registration_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        Ok(ids.into_iter().map(PlayerId::from).collect())
+    }
+
     async fn is_lineup_required_for_match(
         &self,
         match_id: TournamentMatchId,

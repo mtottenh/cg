@@ -193,6 +193,7 @@ pub type AppStatsUpdaterAdapter = StatsUpdaterAdapter<
     PgTournamentRepository,
     PgTournamentRegistrationRepository,
     PgDemoMatchLinkRepository,
+    PgMatchLineupRepository,
 >;
 pub type AppMatchCompletionSaga = MatchCompletionSaga<
     PgTournamentMatchRepository,
@@ -756,6 +757,7 @@ impl AppState {
             Arc::clone(&tournament_repo),
             Arc::clone(&tournament_registration_repo),
             Arc::clone(&demo_match_link_repo),
+            Arc::clone(&match_lineup_repo),
             game_repo.clone(),
             player_game_profile_service.clone(),
             Arc::clone(&plugin_manager),

@@ -64,6 +64,16 @@ pub trait MatchLineupRepository: Send + Sync {
         source: LineupSource,
     ) -> Result<Vec<crate::entities::match_lineup::MatchLineupPlayer>, DomainError>;
 
+    /// Distinct players who actually played for `registration_id` in `match_id`,
+    /// per the authoritative (demo-source) lineup — across all maps. Used to
+    /// credit team-match participation from who played, not the whole roster
+    /// (P-58). Empty when no demo lineup exists (caller falls back).
+    async fn distinct_participants(
+        &self,
+        match_id: TournamentMatchId,
+        registration_id: TournamentRegistrationId,
+    ) -> Result<Vec<portal_core::PlayerId>, DomainError>;
+
     /// Whether the match's season opted into lineups
     /// (`league_seasons.lineup_required`). `false` for a match with no season
     /// (standalone tournament) — the pre-cutover default (§9).

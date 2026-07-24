@@ -725,6 +725,60 @@ async fn test_evidence_mutations_by_nonparticipant_rejected() {
     );
 }
 
+/// P-108: `link-discovered` and `link-demo` took only `AuthenticatedUser`, so ANY
+/// logged-in user could attach demo evidence to ANY match. Evidence feeds result
+/// review and dispute resolution, so this is an integrity surface. Their sibling
+/// `validate_demo` on the same surface already called
+/// `require_match_participant_or_admin` — the gate existed and was never applied
+/// here. Same shape as P-24 and P-59.
+///
+/// The assertion is on FORBIDDEN specifically, not "any non-2xx". Both endpoints
+/// fail for unrelated reasons deeper in (CS2 discovery returns nothing; no
+/// demo-stats service in the test env), so a laxer assertion would pass with no
+/// gate at all — exactly the vacuous-guard failure this suite exists to prevent.
+/// Verified to fail with NOT_FOUND before the fix.
+#[tokio::test]
+async fn test_demo_link_endpoints_by_nonparticipant_rejected() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _reg1, _reg2, _player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "demo-link-authz")
+            .await;
+
+    let outsider = UserBuilder::new()
+        .username("demo_link_outsider")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = evidence_outsider_token(outsider.id, "demo_link_outsider");
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/link-discovered"),
+            &json!({ "external_id": "catalog:00000000-0000-0000-0000-000000000000" }),
+            &outsider_token,
+        )
+        .await;
+    assert_eq!(
+        response.status,
+        StatusCode::FORBIDDEN,
+        "Outsider link-discovered must be rejected by the participant gate, got {}",
+        response.status
+    );
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/link-demo"),
+            &json!({ "demo_name": "someone-elses-match.dem" }),
+            &outsider_token,
+        )
+        .await;
+    assert_eq!(
+        response.status,
+        StatusCode::FORBIDDEN,
+        "Outsider link-demo must be rejected by the participant gate, got {}",
+        response.status
+    );
+}
+
 /// Participants can attach link evidence; only the uploader (or a match
 /// participant / admin) can delete it — an outsider cannot.
 #[tokio::test]

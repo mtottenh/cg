@@ -594,6 +594,7 @@ pub async fn discover_evidence(
 pub async fn link_discovered_evidence(
     State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<LinkDiscoveredEvidenceRequest>,
@@ -602,6 +603,14 @@ pub async fn link_discovered_evidence(
     use portal_domain::services::tournament::EvidencePluginClient;
 
     let request_id = get_request_id(&headers);
+
+    // P-108: this took only `AuthenticatedUser`, so ANY logged-in user could attach
+    // demo evidence to ANY match — including matches they have nothing to do with.
+    // Evidence feeds result review and dispute resolution, so it is an integrity
+    // surface, not a cosmetic one. The gate already existed and is applied by
+    // `validate_demo` on this very surface; it was simply never applied here.
+    // Same shape as P-24 and P-59.
+    require_match_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
     // Check if this is a catalog-based discovery (external_id starts with "catalog:")
     if let Some(demo_id_str) = req.external_id.strip_prefix("catalog:") {
@@ -1175,6 +1184,7 @@ pub async fn get_demo_stats(
 pub async fn link_demo(
     State(state): State<EvidenceState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<LinkDemoRequest>,
@@ -1182,6 +1192,9 @@ pub async fn link_demo(
     use portal_domain::entities::evidence::{DiscoveredEvidence, EvidenceStorage, EvidenceType};
 
     let request_id = get_request_id(&headers);
+
+    // P-108: same gap as `link_discovered_evidence` above — no participant check.
+    require_match_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
     let cs2_plugin = create_cs2_plugin(&state);
 

@@ -702,7 +702,11 @@ impl AppState {
             Arc::clone(&demo_match_link_repo),
             Arc::clone(&demo_player_repo),
             Arc::clone(&tournament_match_repo),
-        );
+        )
+        // Phase C: linking a demo to a match materializes the authoritative
+        // lineup and gates stat attribution to it (no-op unless the season
+        // opted into `lineup_required`).
+        .with_lineup_materializer(Arc::new(lineup_service.clone()));
 
         // Create demo stat-fact repository + award service
         let demo_stats_repo = Arc::new(PgDemoPlayerStatsRepository::new(db_pool.clone()));

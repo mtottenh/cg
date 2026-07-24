@@ -20,7 +20,10 @@ pub mod user;
 pub use audit::{AuditService, ChangeContext, ChangeDetector, FieldChange};
 pub use award::{AwardService, CreateCustomAwardCommand, competition_ranks};
 pub use ban::BanService;
-pub use demo::{CatalogResult, DemoPlayerInput, DemoService, ProcessUnlinkedResult};
+pub use demo::{
+    CatalogResult, DemoLineupMaterializer, DemoPlayerInput, DemoResolvedPlayer, DemoService,
+    ProcessUnlinkedResult,
+};
 pub use discovered_match::DiscoveredMatchService;
 pub use eligibility_service::EligibilityService;
 pub use league::LeagueService;

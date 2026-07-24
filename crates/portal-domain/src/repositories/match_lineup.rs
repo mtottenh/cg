@@ -63,4 +63,12 @@ pub trait MatchLineupRepository: Send + Sync {
         match_id: TournamentMatchId,
         source: LineupSource,
     ) -> Result<Vec<crate::entities::match_lineup::MatchLineupPlayer>, DomainError>;
+
+    /// Whether the match's season opted into lineups
+    /// (`league_seasons.lineup_required`). `false` for a match with no season
+    /// (standalone tournament) — the pre-cutover default (§9).
+    async fn is_lineup_required_for_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<bool, DomainError>;
 }

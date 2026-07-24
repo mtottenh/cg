@@ -223,6 +223,19 @@ pub trait DemoPlayerRepository: Send + Sync {
     /// Returns the number of rows that were linked.
     async fn resolve_player_links(&self, demo_id: DemoId) -> Result<u64, DomainError>;
 
+    /// Restrict this demo's stat attribution (P-25) to the match's authoritative
+    /// (demo-source) lineup: NULL out `player_id` on `demo_players` and
+    /// `demo_player_stats` for any player who is not in `match_id`'s lineup.
+    ///
+    /// Self-gating: if no demo-source lineup exists for the match (e.g. the
+    /// season did not opt in), nothing is changed — the pre-cutover global
+    /// attribution stands. Returns the total rows de-attributed.
+    async fn restrict_attribution_to_lineup(
+        &self,
+        demo_id: DemoId,
+        match_id: TournamentMatchId,
+    ) -> Result<u64, DomainError>;
+
     /// Delete all player entries for a demo.
     async fn delete_by_demo(&self, demo_id: DemoId) -> Result<(), DomainError>;
 }

@@ -319,6 +319,27 @@ impl MatchLineupRepository for PgMatchLineupRepository {
         Ok(MatchLineup::from(lineup))
     }
 
+    async fn is_lineup_required_for_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<bool, DomainError> {
+        let required = sqlx::query_scalar::<_, bool>(
+            r"
+            SELECT COALESCE(ls.lineup_required, false)
+            FROM tournament_matches tm
+            JOIN tournaments t ON t.id = tm.tournament_id
+            LEFT JOIN league_seasons ls ON ls.id = t.season_id
+            WHERE tm.id = $1
+            ",
+        )
+        .bind(match_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .unwrap_or(false);
+        Ok(required)
+    }
+
     async fn list_players_by_source(
         &self,
         match_id: TournamentMatchId,

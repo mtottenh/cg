@@ -24,6 +24,39 @@ use crate::repositories::demo::{
 };
 use crate::repositories::tournament::{MatchLinkCandidate, TournamentMatchRepository};
 
+/// A demo player that resolved to a registered account, tagged with the demo's
+/// team name so the materializer can assign it to the right registration side.
+#[derive(Debug, Clone)]
+pub struct DemoResolvedPlayer {
+    /// The resolved registered player.
+    pub player_id: PlayerId,
+    /// The demo's team name for this player (used for side inference).
+    pub demo_team_name: Option<String>,
+}
+
+/// Materializes the authoritative, demo-derived lineup for a match (Phase C).
+///
+/// Implemented by `LineupService` and injected into `DemoService` so that when a
+/// demo is linked to a match, the per-map lineup is built from who actually
+/// played. Decoupled as a trait to avoid threading `LineupService`'s generics
+/// through `DemoService`. A no-op unless the season opted in
+/// (`league_seasons.lineup_required`), which keeps the pre-cutover path
+/// unchanged (§9).
+#[async_trait::async_trait]
+pub trait DemoLineupMaterializer: Send + Sync {
+    /// Build the demo lineup for `match_id` / `game_number` from the resolved
+    /// players. `demo_team1_name`/`demo_team2_name` are the demo's team names,
+    /// used to assign non-rostered (substitute) players to a side.
+    async fn materialize_from_demo(
+        &self,
+        match_id: TournamentMatchId,
+        game_number: Option<i32>,
+        demo_team1_name: Option<String>,
+        demo_team2_name: Option<String>,
+        players: Vec<DemoResolvedPlayer>,
+    ) -> Result<(), DomainError>;
+}
+
 /// Minimum steam-ID-overlap confidence required to auto-link a demo.
 const AUTO_LINK_MIN_CONFIDENCE: f32 = 0.6;
 /// Time window (hours) around the demo's match date for candidate matches.
@@ -44,6 +77,10 @@ where
     link_repo: Arc<DMLR>,
     player_repo: Arc<DPR>,
     match_repo: Arc<TMR>,
+    /// Optional lineup materializer (Phase C). When present and the season opted
+    /// in, linking a demo to a match materializes the authoritative lineup and
+    /// gates stat attribution to it. `None` => pre-cutover behaviour.
+    lineup_materializer: Option<Arc<dyn DemoLineupMaterializer>>,
 }
 
 impl<DR, DMLR, DPR, TMR> DemoService<DR, DMLR, DPR, TMR>
@@ -65,6 +102,74 @@ where
             link_repo,
             player_repo,
             match_repo,
+            lineup_materializer: None,
+        }
+    }
+
+    /// Attach a lineup materializer (Phase C wiring). Builder-style so existing
+    /// `new()` call sites (tests) keep working.
+    #[must_use]
+    pub fn with_lineup_materializer(
+        mut self,
+        materializer: Arc<dyn DemoLineupMaterializer>,
+    ) -> Self {
+        self.lineup_materializer = Some(materializer);
+        self
+    }
+
+    /// Materialize the demo lineup for a freshly-created link and gate stat
+    /// attribution to it. Best-effort: failures are logged, never fatal to the
+    /// link. Both steps self-gate — the materializer no-ops unless the season
+    /// requires lineups, and the attribution restriction no-ops when no demo
+    /// lineup exists — so the pre-cutover path is untouched.
+    async fn materialize_and_gate(
+        &self,
+        demo: &Demo,
+        match_id: TournamentMatchId,
+        game_number: Option<i32>,
+    ) {
+        let Some(materializer) = self.lineup_materializer.as_ref() else {
+            return;
+        };
+
+        let players = match self.player_repo.find_by_demo(demo.id).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(demo_id = %demo.id, error = %e, "Lineup materialize: failed to load demo players");
+                return;
+            }
+        };
+        let resolved: Vec<DemoResolvedPlayer> = players
+            .into_iter()
+            .filter_map(|p| {
+                p.player_id.map(|player_id| DemoResolvedPlayer {
+                    player_id,
+                    demo_team_name: p.team_name,
+                })
+            })
+            .collect();
+
+        let (t1, t2) = demo.metadata.as_ref().map_or((None, None), |m| {
+            (Some(m.team1_name.clone()), Some(m.team2_name.clone()))
+        });
+
+        if let Err(e) = materializer
+            .materialize_from_demo(match_id, game_number, t1, t2, resolved)
+            .await
+        {
+            warn!(demo_id = %demo.id, match_id = %match_id, error = %e, "Lineup materialization failed");
+            return;
+        }
+
+        // Gate the bare Steam-ID attribution (P-25): a demo player counts for
+        // this match only if it is in the match's authoritative lineup. Self-
+        // gating: no demo lineup => no restriction (pre-cutover fallback).
+        if let Err(e) = self
+            .player_repo
+            .restrict_attribution_to_lineup(demo.id, match_id)
+            .await
+        {
+            warn!(demo_id = %demo.id, match_id = %match_id, error = %e, "Lineup attribution gating failed");
         }
     }
 
@@ -315,6 +420,12 @@ where
             }
         }
 
+        // Phase C: build the authoritative lineup from this demo and gate stat
+        // attribution to it (no-op unless the season opted in).
+        let demo = self.get_demo(demo_id).await?;
+        self.materialize_and_gate(&demo, match_id, game_number)
+            .await;
+
         info!(demo_id = %demo_id, match_id = %match_id, "Linked demo to match");
         Ok(link)
     }
@@ -510,6 +621,11 @@ where
             .demo_repo
             .associate(demo.id, league_id, Some(candidate.tournament_id))
             .await?;
+
+        // Phase C: materialize the authoritative lineup + gate attribution.
+        // Auto-links carry no game number (per-map linking is manual/admin).
+        self.materialize_and_gate(&updated, candidate.match_id, None)
+            .await;
 
         info!(
             demo_id = %demo.id,

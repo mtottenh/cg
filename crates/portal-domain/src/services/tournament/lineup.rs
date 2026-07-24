@@ -257,6 +257,119 @@ where
     }
 }
 
+#[async_trait::async_trait]
+impl<LR, MR, RR, MMR> crate::services::demo::DemoLineupMaterializer
+    for LineupService<LR, MR, RR, MMR>
+where
+    LR: MatchLineupRepository,
+    MR: TournamentMatchRepository,
+    RR: TournamentRegistrationRepository,
+    MMR: LeagueTeamMemberRepository,
+{
+    async fn materialize_from_demo(
+        &self,
+        match_id: TournamentMatchId,
+        game_number: Option<i32>,
+        demo_team1_name: Option<String>,
+        demo_team2_name: Option<String>,
+        players: Vec<crate::services::demo::DemoResolvedPlayer>,
+    ) -> Result<(), DomainError> {
+        // Opt-in gate (§9): do nothing unless the season requires lineups. This
+        // keeps the pre-cutover path (and the global attribution) unchanged.
+        if !self
+            .lineup_repo
+            .is_lineup_required_for_match(match_id)
+            .await?
+        {
+            return Ok(());
+        }
+
+        let match_ = self
+            .match_repo
+            .find_by_id(match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
+        let Some(reg1) = match_.participant1_registration_id else {
+            return Ok(());
+        };
+        let Some(reg2) = match_.participant2_registration_id else {
+            return Ok(());
+        };
+
+        // Resolve each registration's team-season (None for individual/adhoc).
+        let ts1 = self
+            .registration_repo
+            .find_by_id(reg1)
+            .await?
+            .and_then(|r| r.team_season_id);
+        let ts2 = self
+            .registration_repo
+            .find_by_id(reg2)
+            .await?
+            .and_then(|r| r.team_season_id);
+
+        // Assign each resolved player to a side. Roster membership is
+        // authoritative; fall back to the demo's team-name for subs. A player we
+        // cannot place is dropped (attribution then de-scopes it — P-25).
+        let mut side1 = Vec::new();
+        let mut side2 = Vec::new();
+        for p in players {
+            let on_ts1 = match ts1 {
+                Some(ts) => self.member_repo.is_member(ts, p.player_id).await?,
+                None => false,
+            };
+            let on_ts2 = match ts2 {
+                Some(ts) => self.member_repo.is_member(ts, p.player_id).await?,
+                None => false,
+            };
+
+            let side = if on_ts1 && !on_ts2 {
+                Some(1)
+            } else if on_ts2 && !on_ts1 {
+                Some(2)
+            } else {
+                // Not rostered on exactly one side: infer from the demo team name.
+                infer_side(&p.demo_team_name, &demo_team1_name, &demo_team2_name)
+            };
+
+            match side {
+                Some(1) => side1.push(p.player_id),
+                Some(2) => side2.push(p.player_id),
+                _ => {}
+            }
+        }
+
+        if !side1.is_empty() {
+            self.materialize_demo_lineup(match_id, reg1, game_number, side1)
+                .await?;
+        }
+        if !side2.is_empty() {
+            self.materialize_demo_lineup(match_id, reg2, game_number, side2)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+/// Infer a registration side (1 or 2) from the demo's team name for a player.
+///
+/// Returns `None` when neither team name matches — the caller drops the player
+/// rather than guessing a side (attribution then de-scopes them).
+fn infer_side(
+    player_team: &Option<String>,
+    demo_team1: &Option<String>,
+    demo_team2: &Option<String>,
+) -> Option<i32> {
+    let name = player_team.as_deref()?;
+    if demo_team1.as_deref() == Some(name) {
+        Some(1)
+    } else if demo_team2.as_deref() == Some(name) {
+        Some(2)
+    } else {
+        None
+    }
+}
+
 /// Whether a provisional lineup may be declared while the match is in `status`.
 ///
 /// Open before the match starts; closed once veto/play begins (the lock point).

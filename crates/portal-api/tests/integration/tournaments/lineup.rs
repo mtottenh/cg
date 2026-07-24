@@ -348,3 +348,121 @@ async fn test_materialize_demo_lineup_tags_substitute() {
     );
     assert_eq!(sub_row["was_rostered"], false);
 }
+
+/// P-25 attribution gate (Phase C): a demo player's stats attribute to a match
+/// only if that player is in the match's authoritative (demo-source) lineup. A
+/// registered player present in the demo but NOT in the lineup is de-attributed;
+/// a player in the lineup keeps their attribution.
+#[tokio::test]
+async fn test_attribution_gated_to_lineup() {
+    use portal_domain::repositories::demo::DemoPlayerRepository;
+    use portal_test::prelude::{DemoBuilder, DemoMatchLinkBuilder};
+    use std::sync::Arc;
+
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, reg1, _reg2) =
+        create_tournament_with_matches(&app, "lineup-attr-gate").await;
+    let (_ub, player_b) = create_test_player(&app, "attr_gate_b").await;
+    let game_id = get_game_id(app.pool(), "cs2").await;
+    let match_uuid: uuid::Uuid = match_id.parse().unwrap();
+    let dev_player = uuid::Uuid::parse_str(DEV_PLAYER_ID).unwrap();
+
+    // A demo linked to the match, with two players both globally attributed
+    // (resolved) — player A (dev, rostered on reg1) and player B (registered,
+    // not in the lineup).
+    let demo = DemoBuilder::new()
+        .game_id(game_id)
+        .file_name("attr_gate.dem")
+        .build_persisted(app.pool())
+        .await;
+    DemoMatchLinkBuilder::new()
+        .demo_id(demo.id)
+        .match_id(match_uuid)
+        .game_number(1)
+        .manual()
+        .build_persisted(app.pool())
+        .await;
+    for (steam, pid) in [("111", dev_player), ("222", player_b)] {
+        sqlx::query(
+            "INSERT INTO demo_players (demo_id, steam_id, player_name, player_id) VALUES ($1,$2,$3,$4)",
+        )
+        .bind(demo.id)
+        .bind(steam)
+        .bind(format!("p{steam}"))
+        .bind(pid)
+        .execute(app.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO demo_player_stats (demo_id, steam_id, stat_key, value, player_id) VALUES ($1,$2,'kills',10,$3)",
+        )
+        .bind(demo.id)
+        .bind(steam)
+        .bind(pid)
+        .execute(app.pool())
+        .await
+        .unwrap();
+    }
+
+    // Materialize a demo lineup for reg1 containing ONLY player A.
+    let pool = app.pool().clone();
+    let service = portal_domain::services::tournament::LineupService::new(
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgLeagueTeamMemberRepository::new(pool.clone())),
+    );
+    let match_tid: portal_core::TournamentMatchId = match_id.parse().unwrap();
+    let reg_tid: portal_core::TournamentRegistrationId = reg1.parse().unwrap();
+    let dev_pid: portal_core::PlayerId = DEV_PLAYER_ID.parse().unwrap();
+    service
+        .materialize_demo_lineup(match_tid, reg_tid, Some(1), vec![dev_pid])
+        .await
+        .expect("materialize demo lineup");
+
+    // Gate attribution to the lineup.
+    let demo_repo = portal_db::PgDemoPlayerRepository::new(pool.clone());
+    demo_repo
+        .restrict_attribution_to_lineup(portal_core::DemoId::from(demo.id), match_tid)
+        .await
+        .expect("restrict attribution");
+
+    let attributed = |pid: uuid::Uuid| {
+        let pool = app.pool().clone();
+        let demo_id = demo.id;
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM demo_player_stats WHERE demo_id=$1 AND player_id=$2",
+            )
+            .bind(demo_id)
+            .bind(pid)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        attributed(dev_player).await,
+        1,
+        "the player in the lineup keeps attribution"
+    );
+    assert_eq!(
+        attributed(player_b).await,
+        0,
+        "a registered player NOT in the lineup is de-attributed"
+    );
+    // B's stat row still exists, just de-attributed (player_id NULL).
+    let b_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM demo_player_stats WHERE demo_id=$1 AND steam_id='222' AND player_id IS NULL",
+    )
+    .bind(demo.id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        b_rows, 1,
+        "the stat row remains, only its attribution is stripped"
+    );
+}

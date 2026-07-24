@@ -154,6 +154,18 @@ diffing that set against the team's roster:
   `unrecognized_players`: it raises the existing result-review flow for an admin, rather than
   being silently attributed.
 
+> ⚠️ **ATTRIBUTION FOLLOWS REGISTRATION — it is NOT gated on the lineup (correction 2026-07-24).**
+> A registered player who appears in a map's demo **is attributed for that map, full stop.** The
+> only players who are *not* attributed are those with no site account (they never resolve to a
+> `player_id`, so their stat rows stay `NULL` and never reach a leaderboard — the base Steam-ID
+> join already does this). **Attribution must never be stripped from a registered player**, and a
+> registered player whose side cannot be inferred (no roster match, no demo-team-name match) is
+> **still attributed** — their side is flagged for admin resolution via the review, not dropped.
+> The demo lineup, the `is_substitute` tag, and the §0.4 eligibility rules are for the review and
+> the majority/eligibility math — they are **review-raisers an admin can waive (§0c)**, never a
+> silent stat-strip. The first implementation wrongly hard-gated attribution on lineup membership
+> and dropped un-sideable registered players; that is the bug this correction fixes.
+
 **Where the §0.4 eligibility rules run — now split by phase:**
 - On the **provisional** lineup: **advisory only.** "This lineup would break the sub-majority
   rule / elo cap" — a warning at declaration, not a block, because it is just a promise.

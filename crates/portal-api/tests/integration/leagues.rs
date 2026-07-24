@@ -345,11 +345,15 @@ async fn test_join_invite_only_league_fails() {
     let created: serde_json::Value = create_response.json();
     let league_id = created["data"]["id"].as_str().unwrap();
 
-    // User2 tries to join - should fail (league is invite-only)
+    // User2 tries to join - should fail (league is invite-only).
+    // P-46: this is 403, not 400 — the request is well-formed, the caller is
+    // simply not permitted to enter without an invitation. Previously leagues
+    // returned 400 while tournaments returned 403 for the same conceptual
+    // refusal; the two are now aligned on 403 (spec change, not a weakening).
     let response = app
         .post_with_token(&format!("/v1/leagues/{league_id}/join"), &token2)
         .await;
-    response.assert_status(StatusCode::BAD_REQUEST);
+    response.assert_status(StatusCode::FORBIDDEN);
 }
 
 // ============================================================================
@@ -1236,4 +1240,327 @@ async fn test_league_members_requires_auth_and_hides_email_from_unprivileged_cal
             .any(|m| m.get("email").is_some()),
         "a league manager must still receive member emails, got: {body}"
     );
+}
+
+// ============================================================================
+// P-38 / P-39 / P-54 REGRESSION TESTS (league invitations & members paging)
+// ============================================================================
+
+/// P-38: every league-invitation response must carry `league_name`, so two
+/// pending invitations are distinguishable on the invitations page. The DTO
+/// previously exposed only `league_id`, so the UI rendered a hardcoded
+/// "League Invitation" and accept/decline was a blind choice.
+#[tokio::test]
+async fn test_league_invitation_response_carries_league_name() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    grant_league_admin_permission(&app).await;
+
+    let user2 = UserBuilder::new()
+        .username("named-invitee")
+        .email("named-invitee@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let token2 = create_token_for_user(&app, user2.id);
+
+    // Two leagues with distinct names, both inviting the same user.
+    let mut league_ids = Vec::new();
+    for (name, slug) in [
+        ("Alpha Named League", "alpha-named-league"),
+        ("Beta Named League", "beta-named-league"),
+    ] {
+        let create = app
+            .post_json(
+                "/v1/leagues",
+                &json!({
+                    "game_id": game_id,
+                    "name": name,
+                    "slug": slug,
+                    "access_type": "invite_only"
+                }),
+            )
+            .await;
+        create.assert_status(StatusCode::CREATED);
+        let league_id = create.json::<serde_json::Value>()["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // The create-invitation response itself must carry the name.
+        let invite = app
+            .post_json(
+                &format!("/v1/leagues/{league_id}/invitations"),
+                &json!({ "user_id": user2.id.to_string() }),
+            )
+            .await;
+        invite.assert_status(StatusCode::CREATED);
+        assert_eq!(
+            invite.json::<serde_json::Value>()["data"]["league_name"],
+            name,
+            "invitation response must name its league"
+        );
+        league_ids.push((league_id, name));
+    }
+
+    // The invitee's own list distinguishes the two by name.
+    let response = app
+        .get_with_token("/v1/users/me/league-invitations", &token2)
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let rows = body.as_array().expect("invitation list");
+    assert_eq!(rows.len(), 2, "both invitations visible: {body}");
+    for (league_id, name) in &league_ids {
+        let row = rows
+            .iter()
+            .find(|r| r["league_id"] == league_id.as_str())
+            .unwrap_or_else(|| panic!("invitation for {name} present: {body}"));
+        assert_eq!(row["league_name"], *name, "row must carry the league name");
+    }
+
+    // The admin listing carries it too.
+    let (league_id, name) = &league_ids[0];
+    let admin_list = app
+        .get_auth(&format!("/v1/leagues/{league_id}/invitations"))
+        .await;
+    admin_list.assert_status(StatusCode::OK);
+    let admin_body: serde_json::Value = admin_list.json();
+    assert_eq!(
+        admin_body.as_array().expect("admin list")[0]["league_name"],
+        *name
+    );
+}
+
+/// P-39: answered (terminal) invitations must remain listable by an admin.
+/// The listing previously called `get_pending_by_league_authorized`, so a
+/// declined invitation vanished and no endpoint reported its terminal status
+/// — an admin could not tell "they declined" from "never invited". The
+/// default stays pending-only (backward compatible); `?status=` reaches the
+/// rest.
+#[tokio::test]
+async fn test_admin_lists_answered_invitations_with_status_filter() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    grant_league_admin_permission(&app).await;
+
+    let user2 = UserBuilder::new()
+        .username("status-decliner")
+        .email("status-decliner@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let token2 = create_token_for_user(&app, user2.id);
+
+    let create = app
+        .post_json(
+            "/v1/leagues",
+            &json!({
+                "game_id": game_id,
+                "name": "Status Filter League",
+                "slug": "status-filter-league",
+                "access_type": "invite_only"
+            }),
+        )
+        .await;
+    create.assert_status(StatusCode::CREATED);
+    let league_id = create.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let invite = app
+        .post_json(
+            &format!("/v1/leagues/{league_id}/invitations"),
+            &json!({ "user_id": user2.id.to_string() }),
+        )
+        .await;
+    invite.assert_status(StatusCode::CREATED);
+    let invitation_id = invite.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The invitee declines.
+    app.post_with_token(
+        &format!("/v1/league-invitations/{invitation_id}/decline"),
+        &token2,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+
+    // Default view stays pending-only (backward compatible): declined row gone.
+    let pending = app
+        .get_auth(&format!("/v1/leagues/{league_id}/invitations"))
+        .await;
+    pending.assert_status(StatusCode::OK);
+    assert_eq!(
+        pending
+            .json::<serde_json::Value>()
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "declined invitation must not appear in the pending-only default"
+    );
+
+    // ?status=all reaches the answered row, with its terminal status.
+    let all = app
+        .get_auth(&format!("/v1/leagues/{league_id}/invitations?status=all"))
+        .await;
+    all.assert_status(StatusCode::OK);
+    let all_body: serde_json::Value = all.json();
+    let rows = all_body.as_array().expect("invitation list");
+    assert_eq!(rows.len(), 1, "answered invitation listable: {all_body}");
+    assert_eq!(rows[0]["id"], invitation_id.as_str());
+    assert_eq!(rows[0]["status"], "rejected", "terminal status reported");
+
+    // ?status=rejected narrows to exactly that state...
+    let rejected = app
+        .get_auth(&format!(
+            "/v1/leagues/{league_id}/invitations?status=rejected"
+        ))
+        .await;
+    rejected.assert_status(StatusCode::OK);
+    assert_eq!(
+        rejected
+            .json::<serde_json::Value>()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // ...while ?status=accepted correctly finds nothing.
+    let accepted = app
+        .get_auth(&format!(
+            "/v1/leagues/{league_id}/invitations?status=accepted"
+        ))
+        .await;
+    accepted.assert_status(StatusCode::OK);
+    assert_eq!(
+        accepted
+            .json::<serde_json::Value>()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    // Nonsense filter is a 400, not a silent empty list.
+    app.get_auth(&format!("/v1/leagues/{league_id}/invitations?status=bogus"))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// P-54: `GET /v1/leagues/{id}/members` always honoured `page`/`per_page`,
+/// but the OpenAPI spec did not declare them, so generated clients typed the
+/// query as `never` and a roster past the default 20 rows was unreachable by
+/// construction. The spec must declare the params, and a member past row 20
+/// must be reachable through them.
+#[tokio::test]
+#[allow(clippy::literal_string_with_formatting_args)] // "{league_id}" is an OpenAPI path template, not a format arg
+async fn test_list_members_pagination_declared_and_reaches_past_default_page() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    // 1. The spec declares the pagination params (this is the actual P-54
+    // defect — the behavior below always worked).
+    let spec = app.get("/api-docs/openapi.json").await;
+    spec.assert_status(StatusCode::OK);
+    let spec_body: serde_json::Value = spec.json();
+    let params = &spec_body["paths"]["/v1/leagues/{league_id}/members"]["get"]["parameters"];
+    let declared: Vec<&str> = params
+        .as_array()
+        .expect("members GET must declare parameters")
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    assert!(
+        declared.contains(&"page") && declared.contains(&"per_page"),
+        "spec must declare page/per_page on the members listing, got {declared:?}"
+    );
+
+    // 2. A member past row 20 is reachable via the declared params.
+    let create = app
+        .post_json(
+            "/v1/leagues",
+            &json!({
+                "game_id": game_id,
+                "name": "Paging League",
+                "slug": "paging-league",
+                "access_type": "open"
+            }),
+        )
+        .await;
+    create.assert_status(StatusCode::CREATED);
+    let league_id = create.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let league_uuid = uuid::Uuid::parse_str(&league_id).unwrap();
+
+    // Seed 24 members directly (25 total with the creator) — past the
+    // default page of 20.
+    for i in 0..24 {
+        let user = UserBuilder::new()
+            .username(format!("pager-{i:02}"))
+            .email(format!("pager-{i:02}@example.com"))
+            .build_persisted(app.pool())
+            .await;
+        sqlx::query(
+            "INSERT INTO league_members (league_id, user_id, membership_type) VALUES ($1, $2, 'member')",
+        )
+        .bind(league_uuid)
+        .bind(user.id)
+        .execute(app.pool())
+        .await
+        .expect("seed league member");
+    }
+
+    // Default request: capped at 20 — the last members are invisible.
+    let default_page = app
+        .get_auth(&format!("/v1/leagues/{league_id}/members"))
+        .await;
+    default_page.assert_status(StatusCode::OK);
+    let default_rows = default_page.json::<serde_json::Value>();
+    assert_eq!(
+        default_rows.as_array().unwrap().len(),
+        20,
+        "default page size is 20"
+    );
+
+    // per_page=100 reaches all 25.
+    let big_page = app
+        .get_auth(&format!("/v1/leagues/{league_id}/members?per_page=100"))
+        .await;
+    big_page.assert_status(StatusCode::OK);
+    let big_rows = big_page.json::<serde_json::Value>();
+    assert_eq!(big_rows.as_array().unwrap().len(), 25);
+
+    // page=2 with per_page=20 reaches the tail past the default window.
+    let page2 = app
+        .get_auth(&format!(
+            "/v1/leagues/{league_id}/members?page=2&per_page=20"
+        ))
+        .await;
+    page2.assert_status(StatusCode::OK);
+    let page2_body = page2.json::<serde_json::Value>();
+    let page2_rows = page2_body.as_array().unwrap();
+    assert_eq!(page2_rows.len(), 5, "5 members past the first page");
+
+    // A member on page 2 is one the default window could not show.
+    let default_names: Vec<&str> = default_rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["username"].as_str())
+        .collect();
+    for row in page2_rows {
+        let name = row["username"].as_str().unwrap();
+        assert!(
+            !default_names.contains(&name),
+            "{name} must not also be on page 1"
+        );
+    }
 }

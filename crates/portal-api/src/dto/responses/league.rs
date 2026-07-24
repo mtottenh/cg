@@ -145,6 +145,11 @@ impl From<UserLeagueMembership> for UserLeagueMembershipResponse {
 pub struct LeagueInvitationResponse {
     pub id: String,
     pub league_id: String,
+    /// Name of the league the invitation is for. Without it, two pending
+    /// invitations are indistinguishable on the invitations page and
+    /// accept/decline is a blind choice (P-38) — team invitations already
+    /// carry `team_name`/`league_name`, so the asymmetry was unintended.
+    pub league_name: String,
     pub user_id: String,
     pub invitation_type: String,
     pub status: String,
@@ -161,11 +166,19 @@ pub struct LeagueInvitationResponse {
     pub created_at: DateTime<Utc>,
 }
 
-impl From<LeagueInvitation> for LeagueInvitationResponse {
-    fn from(inv: LeagueInvitation) -> Self {
+impl LeagueInvitationResponse {
+    /// Build the response from a domain invitation plus the league's name.
+    ///
+    /// Deliberately not a `From<LeagueInvitation>` impl: the domain entity
+    /// does not carry the league name, and forcing every call site to supply
+    /// it keeps the P-38 fix compile-checked (a new endpoint cannot silently
+    /// ship a nameless invitation).
+    #[must_use]
+    pub fn from_invitation(inv: LeagueInvitation, league_name: String) -> Self {
         Self {
             id: inv.id.to_string(),
             league_id: inv.league_id.to_string(),
+            league_name,
             user_id: inv.user_id.to_string(),
             invitation_type: inv.invitation_type.as_str().to_string(),
             status: inv.status.as_str().to_string(),

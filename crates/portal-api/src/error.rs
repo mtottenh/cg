@@ -276,7 +276,14 @@ impl From<DomainError> for ApiError {
                 Self::bad_request(format!("Requirements not met: {msg}"))
             }
             DomainError::NotLeagueMember => Self::bad_request("Not a league member"),
-            DomainError::LeagueInviteOnly => Self::bad_request("League is invite-only"),
+            // 403, aligned with `TournamentInviteOnly` below (P-46): the
+            // request is well-formed — the caller is simply not permitted to
+            // enter without an invitation. It previously returned 400,
+            // meaning the same conceptual refusal produced two different
+            // status codes depending on which entity refused.
+            DomainError::LeagueInviteOnly => {
+                Self::forbidden("League is invite-only and you have no invitation")
+            }
             DomainError::InvalidState(msg) => Self::bad_request(format!("Invalid state: {msg}")),
 
             // Tournament-specific errors
@@ -290,11 +297,10 @@ impl From<DomainError> for ApiError {
                 Self::bad_request("Tournament has already started")
             }
             DomainError::TournamentFull => Self::bad_request("Tournament is at maximum capacity"),
-            // 403, not 400 (leagues use 400 for the equivalent
-            // `LeagueInviteOnly`): the request is well-formed and the
-            // tournament is open — the caller is simply not permitted to
-            // enter it. That is an authorization refusal, and CLAUDE.md
-            // maps refusals to 403.
+            // 403 (matching `LeagueInviteOnly` above since P-46): the
+            // request is well-formed and the tournament is open — the
+            // caller is simply not permitted to enter it. That is an
+            // authorization refusal, and CLAUDE.md maps refusals to 403.
             DomainError::TournamentInviteOnly => {
                 Self::forbidden("Tournament is invite-only and you have no invitation")
             }

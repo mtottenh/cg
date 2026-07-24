@@ -196,6 +196,18 @@ pub trait LeagueInvitationRepository: Send + Sync {
         league_id: LeagueId,
     ) -> Result<Vec<LeagueInvitation>, DomainError>;
 
+    /// List invitations/applications for a league, optionally filtered by
+    /// status. `None` returns every row regardless of status.
+    ///
+    /// P-39: the pending-only listing made accepted/declined rows vanish from
+    /// the admin view, so an admin could not tell "they declined" from "never
+    /// invited". Terminal statuses must remain listable.
+    async fn list_by_league(
+        &self,
+        league_id: LeagueId,
+        status: Option<LeagueInvitationStatus>,
+    ) -> Result<Vec<LeagueInvitation>, DomainError>;
+
     /// List pending invitations/applications for a user.
     async fn list_pending_for_user(
         &self,

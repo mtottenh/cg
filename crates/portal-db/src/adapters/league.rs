@@ -737,6 +737,33 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
             .collect())
     }
 
+    async fn list_by_league(
+        &self,
+        league_id: LeagueId,
+        status: Option<LeagueInvitationStatus>,
+    ) -> Result<Vec<LeagueInvitation>, DomainError> {
+        // P-39: unlike `list_pending_by_league`, this keeps terminal rows
+        // (accepted / rejected / expired) visible so the admin surface can
+        // distinguish "they declined" from "never invited".
+        let invitations = sqlx::query_as::<_, LeagueInvitationRow>(
+            r"
+            SELECT * FROM league_invitations
+            WHERE league_id = $1 AND ($2::text IS NULL OR status = $2)
+            ORDER BY created_at DESC
+            ",
+        )
+        .bind(league_id.as_uuid())
+        .bind(status.map(|s| s.as_str()))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(invitations
+            .into_iter()
+            .map(LeagueInvitation::from)
+            .collect())
+    }
+
     async fn list_pending_for_user(
         &self,
         user_id: UserId,

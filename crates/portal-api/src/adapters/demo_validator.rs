@@ -3,15 +3,21 @@
 //! Wraps the DemoService to implement the MatchDemoValidator trait.
 
 use async_trait::async_trait;
-use portal_core::{DomainError, ResultClaimId, TournamentMatchId};
+use portal_core::types::{LineupSource, substitutes_are_minority};
+use portal_core::{DomainError, ResultClaimId, TournamentMatchId, TournamentRegistrationId};
+use portal_db::{PgMatchLineupRepository, PgTournamentMatchRepository, PgTournamentRepository};
 use portal_domain::entities::demo::DemoPlayer;
 use portal_domain::entities::demo_validation::{
     DemoValidationResult, TeamSide, UnrecognizedPlayer,
 };
+use portal_domain::repositories::match_lineup::MatchLineupRepository;
+use portal_domain::repositories::tournament::{TournamentMatchRepository, TournamentRepository};
 use portal_domain::services::tournament::{DemoValidationOutcome, MatchDemoValidator};
+use std::sync::Arc;
 use tracing::debug;
 
 use crate::state::AppDemoService;
+use crate::state::AppEligibilityService;
 use crate::state::AppResultService;
 
 /// Adapter that wraps DemoService + ResultService to implement MatchDemoValidator.
@@ -19,15 +25,179 @@ use crate::state::AppResultService;
 pub struct DemoValidatorAdapter {
     demo_service: AppDemoService,
     result_service: AppResultService,
+    /// Phase D enforcement of the §0.4 lineup rules on the demo-derived lineup.
+    enforcer: LineupEnforcer,
 }
 
 impl DemoValidatorAdapter {
     /// Create a new adapter.
-    pub fn new(demo_service: AppDemoService, result_service: AppResultService) -> Self {
+    pub fn new(
+        demo_service: AppDemoService,
+        result_service: AppResultService,
+        lineup_repo: Arc<PgMatchLineupRepository>,
+        match_repo: Arc<PgTournamentMatchRepository>,
+        tournament_repo: Arc<PgTournamentRepository>,
+        eligibility_service: AppEligibilityService,
+    ) -> Self {
         Self {
             demo_service,
             result_service,
+            enforcer: LineupEnforcer::new(
+                lineup_repo,
+                match_repo,
+                tournament_repo,
+                eligibility_service,
+            ),
         }
+    }
+}
+
+/// Enforces the §0.4 lineup rules on the authoritative demo-derived lineup.
+///
+/// Covers the majority rule and the elo/eligibility caps. Extracted from the
+/// adapter so it can be exercised without constructing the demo/result services.
+#[derive(Clone)]
+pub struct LineupEnforcer {
+    lineup_repo: Arc<PgMatchLineupRepository>,
+    match_repo: Arc<PgTournamentMatchRepository>,
+    tournament_repo: Arc<PgTournamentRepository>,
+    eligibility_service: AppEligibilityService,
+}
+
+impl LineupEnforcer {
+    /// Create a new enforcer.
+    pub fn new(
+        lineup_repo: Arc<PgMatchLineupRepository>,
+        match_repo: Arc<PgTournamentMatchRepository>,
+        tournament_repo: Arc<PgTournamentRepository>,
+        eligibility_service: AppEligibilityService,
+    ) -> Self {
+        Self {
+            lineup_repo,
+            match_repo,
+            tournament_repo,
+            eligibility_service,
+        }
+    }
+
+    /// Enforce the §0.4 lineup rules on the authoritative (demo-derived) lineup:
+    /// the majority rule (`substitutes_are_minority`) and the elo/eligibility
+    /// caps (via `EligibilityService`). A violation is surfaced as an
+    /// [`UnrecognizedPlayer`] so it RAISES the existing two-captain
+    /// `roster_mismatch` review — it does NOT auto-void.
+    ///
+    /// Self-gating: with no demo-source lineup (season did not opt in), there
+    /// are no players to check and nothing is raised.
+    pub async fn lineup_violations(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<UnrecognizedPlayer>, DomainError> {
+        let Some(match_) = self.match_repo.find_by_id(match_id).await? else {
+            return Ok(Vec::new());
+        };
+        let Some(tournament) = self
+            .tournament_repo
+            .find_by_id(match_.tournament_id)
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
+        let game_id = tournament.game_id;
+        let settings = tournament.settings;
+
+        let mut violations = Vec::new();
+        for (side, reg) in [
+            (1_i32, match_.participant1_registration_id),
+            (2_i32, match_.participant2_registration_id),
+        ] {
+            let Some(reg) = reg else { continue };
+            self.check_registration_lineup(
+                match_id,
+                reg,
+                side,
+                game_id,
+                &settings,
+                &mut violations,
+            )
+            .await?;
+        }
+        Ok(violations)
+    }
+
+    async fn check_registration_lineup(
+        &self,
+        match_id: TournamentMatchId,
+        registration_id: TournamentRegistrationId,
+        side: i32,
+        game_id: portal_core::GameId,
+        settings: &serde_json::Value,
+        out: &mut Vec<UnrecognizedPlayer>,
+    ) -> Result<(), DomainError> {
+        let Some(lineup) = self
+            .lineup_repo
+            .find_by_match_registration(match_id, registration_id)
+            .await?
+        else {
+            return Ok(());
+        };
+        let Some(with_players) = self.lineup_repo.get_with_players(lineup.id).await? else {
+            return Ok(());
+        };
+
+        // Consider the authoritative demo rows, de-duplicated per player (a
+        // player appearing across maps counts once for the per-lineup rule).
+        let mut seen = std::collections::HashSet::new();
+        let mut player_ids = Vec::new();
+        let mut sub_count = 0usize;
+        for p in with_players
+            .players
+            .iter()
+            .filter(|p| p.source == LineupSource::Demo)
+        {
+            if seen.insert(p.player_id) {
+                player_ids.push(p.player_id);
+                if p.is_substitute {
+                    sub_count += 1;
+                }
+            }
+        }
+        if player_ids.is_empty() {
+            return Ok(());
+        }
+
+        let team_side = if side == 2 {
+            TeamSide::Team2
+        } else {
+            TeamSide::Team1
+        };
+
+        // Majority rule (§0.4): substitutes must be a strict minority.
+        if !substitutes_are_minority(sub_count, player_ids.len()) {
+            out.push(UnrecognizedPlayer {
+                steam_id: String::new(),
+                player_name: format!(
+                    "LINEUP RULE: substitutes are not a minority ({sub_count} of {} played)",
+                    player_ids.len()
+                ),
+                team_side,
+                registration_side: side,
+            });
+        }
+
+        // Elo / eligibility caps (§5a) on who actually played.
+        let elo_violations = self
+            .eligibility_service
+            .check_players_from_settings(settings, game_id, &player_ids)
+            .await?;
+        for v in elo_violations {
+            out.push(UnrecognizedPlayer {
+                steam_id: String::new(),
+                player_name: format!("LINEUP RULE ({}): {}", v.restriction, v.message),
+                team_side,
+                registration_side: side,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -174,6 +344,23 @@ impl MatchDemoValidator for DemoValidatorAdapter {
                     link_id: link.id,
                     validation,
                     unrecognized_players: unrecognized,
+                });
+            }
+        }
+
+        // Phase D enforcement: check the §0.4 lineup rules (majority + elo caps)
+        // on the authoritative demo-derived lineup. Violations RAISE the review
+        // (never auto-void). Attach to an existing outcome if any, else create a
+        // synthetic one anchored to the first demo link so the review can fire.
+        let lineup_violations = self.enforcer.lineup_violations(match_id).await?;
+        if !lineup_violations.is_empty() {
+            if let Some(first) = outcomes.first_mut() {
+                first.unrecognized_players.extend(lineup_violations);
+            } else if let Some(link) = demo_links.first() {
+                outcomes.push(DemoValidationOutcome {
+                    link_id: link.link.id,
+                    validation: DemoValidationResult::default(),
+                    unrecognized_players: lineup_violations,
                 });
             }
         }

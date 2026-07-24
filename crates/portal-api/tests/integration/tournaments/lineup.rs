@@ -555,3 +555,156 @@ async fn test_participation_credited_from_lineup() {
         "the lineup overrides the registration's own player"
     );
 }
+
+// =============================================================================
+// Phase D — §0.4 enforcement on the authoritative demo lineup (raises review)
+// =============================================================================
+
+fn make_enforcer(app: &TestApp) -> portal_api::adapters::LineupEnforcer {
+    use std::sync::Arc;
+    let pool = app.pool().clone();
+    let eligibility = portal_domain::services::EligibilityService::new(
+        portal_domain::services::PlayerGameProfileService::new(Arc::new(
+            portal_db::PgPlayerGameProfileRepository::new(pool.clone()),
+        )),
+        Arc::new(portal_db::PgPlayerRatingHistoryRepository::new(
+            pool.clone(),
+        )),
+    );
+    portal_api::adapters::LineupEnforcer::new(
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRepository::new(pool)),
+        eligibility,
+    )
+}
+
+async fn materialize(
+    app: &TestApp,
+    match_id: &str,
+    reg: &str,
+    players: Vec<portal_core::PlayerId>,
+) {
+    use std::sync::Arc;
+    let pool = app.pool().clone();
+    let svc = portal_domain::services::tournament::LineupService::new(
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgLeagueTeamMemberRepository::new(pool.clone())),
+    );
+    svc.materialize_demo_lineup(
+        match_id.parse().unwrap(),
+        reg.parse().unwrap(),
+        Some(1),
+        players,
+    )
+    .await
+    .expect("materialize");
+}
+
+#[tokio::test]
+async fn test_majority_rule_violation_raises_review() {
+    let app = TestApp::new().await;
+    let (_t, match_id, reg1, _reg2) = create_tournament_with_matches(&app, "lineup-majority").await;
+    let (_a, sub_a) = create_test_player(&app, "maj_sub_a").await;
+    let (_b, sub_b) = create_test_player(&app, "maj_sub_b").await;
+
+    let dev: portal_core::PlayerId = DEV_PLAYER_ID.parse().unwrap();
+    // 1 rostered (dev) + 2 subs of 3 -> subs are NOT a strict minority.
+    materialize(
+        &app,
+        &match_id,
+        &reg1,
+        vec![
+            dev,
+            sub_a.to_string().parse().unwrap(),
+            sub_b.to_string().parse().unwrap(),
+        ],
+    )
+    .await;
+
+    let violations = make_enforcer(&app)
+        .lineup_violations(match_id.parse().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.player_name.contains("not a minority")),
+        "a sub-majority lineup must raise a review, got {violations:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_elo_cap_violation_raises_review() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, reg1, _reg2) =
+        create_tournament_with_matches(&app, "lineup-elo").await;
+    let game_id = get_game_id(app.pool(), "cs2").await;
+    let dev_uuid = uuid::Uuid::parse_str(DEV_PLAYER_ID).unwrap();
+
+    // Give the rostered player a rating well over the cap.
+    sqlx::query(
+        "INSERT INTO player_game_profiles
+            (player_id, game_id, rating, rating_deviation, volatility, peak_rating,
+             matches_played, wins, losses, draws, win_streak, best_win_streak,
+             total_playtime_minutes)
+         VALUES ($1,$2,3000,50,0.06,3000,0,0,0,0,0,0,0)
+         ON CONFLICT (player_id, game_id) DO UPDATE SET rating = 3000, peak_rating = 3000",
+    )
+    .bind(dev_uuid)
+    .bind(game_id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    // Tournament caps sub rating at 1000.
+    sqlx::query("UPDATE tournaments SET settings = $2 WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&tournament_id).unwrap())
+        .bind(serde_json::json!({ "eligibility": { "max_rating_per_player": 1000 } }))
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    // A single rostered player (0 subs -> majority rule fine) who is over the cap.
+    let dev: portal_core::PlayerId = DEV_PLAYER_ID.parse().unwrap();
+    materialize(&app, &match_id, &reg1, vec![dev]).await;
+
+    let violations = make_enforcer(&app)
+        .lineup_violations(match_id.parse().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.player_name.contains("max_rating_per_player")),
+        "an over-elo-cap player must raise a review, got {violations:?}"
+    );
+    assert!(
+        !violations
+            .iter()
+            .any(|v| v.player_name.contains("not a minority")),
+        "a full-rostered lineup must not trip the majority rule"
+    );
+}
+
+#[tokio::test]
+async fn test_legal_lineup_no_violation() {
+    let app = TestApp::new().await;
+    let (_t, match_id, reg1, _reg2) = create_tournament_with_matches(&app, "lineup-legal").await;
+    // Only the rostered player, no elo cap set -> no violation.
+    let dev: portal_core::PlayerId = DEV_PLAYER_ID.parse().unwrap();
+    materialize(&app, &match_id, &reg1, vec![dev]).await;
+
+    let violations = make_enforcer(&app)
+        .lineup_violations(match_id.parse().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        violations.is_empty(),
+        "a legal lineup must not raise a review, got {violations:?}"
+    );
+}

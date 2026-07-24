@@ -749,6 +749,10 @@ impl AppState {
         let demo_validator_adapter = Arc::new(DemoValidatorAdapter::new(
             demo_service.clone(),
             result_service.clone(),
+            Arc::clone(&match_lineup_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_repo),
+            eligibility_service.clone(),
         ));
         let review_creator_adapter =
             Arc::new(ReviewCreatorAdapter::new(result_review_service.clone()));

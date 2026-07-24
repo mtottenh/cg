@@ -126,7 +126,14 @@ where
             veto_session_repo,
             map_pool_provider: None,
             match_transitioner: None,
-            auto_confirm_timeout_seconds: 15 * 60, // 15 minutes
+            // P-57: 24 hours, raised from 15 minutes. Auto-confirm makes a score
+            // OFFICIAL, and the countdown starts at submission — not when the
+            // opponent first sees it — so 15 minutes meant a submit at a bad hour
+            // became final unseen, across time zones and sleep. Now that P-50
+            // actually notifies the opponent, a day is enough to act and short
+            // enough that an ignored claim still cannot stall a bracket (the
+            // dispute/review path covers genuinely wrong results either way).
+            auto_confirm_timeout_seconds: 24 * 60 * 60, // 24 hours
         }
     }
 

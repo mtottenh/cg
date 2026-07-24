@@ -4,7 +4,10 @@
 
 use async_trait::async_trait;
 use portal_core::{DomainError, ResultClaimId, TournamentMatchId};
-use portal_domain::entities::demo_validation::DemoValidationResult;
+use portal_domain::entities::demo::DemoPlayer;
+use portal_domain::entities::demo_validation::{
+    DemoValidationResult, TeamSide, UnrecognizedPlayer,
+};
 use portal_domain::services::tournament::{DemoValidationOutcome, MatchDemoValidator};
 use tracing::debug;
 
@@ -101,9 +104,16 @@ impl MatchDemoValidator for DemoValidatorAdapter {
 
             // Build validation result
             let mut validation = DemoValidationResult::default();
-            let unrecognized = Vec::new();
 
+            // P-23 revival (Phase D): a demo player who did NOT resolve to a
+            // registered account is a "ringer" (§0.4 rule 1 — an outsider has no
+            // account). Diff the demo's players against recognised accounts:
+            // `player_id == None` after resolution means "no account on the
+            // site". These become `unrecognized_players`, which raises the
+            // existing two-captain `roster_mismatch` review rather than being
+            // silently attributed.
             let demo = &link_data.demo;
+            let unrecognized = collect_unrecognized_players(&link_data.players, demo);
             if let Some(ref metadata) = demo.metadata {
                 // Extract claimed score for this game
                 let claimed_score = game_result.map_or(
@@ -153,8 +163,13 @@ impl MatchDemoValidator for DemoValidatorAdapter {
                 );
             }
 
-            // Only include outcomes with issues
-            if !validation.errors.is_empty() || !validation.warnings.is_empty() {
+            // Include outcomes with score/map issues OR an unrecognized (ringer)
+            // player — the latter must raise the roster-mismatch review even when
+            // the score matches perfectly.
+            if !validation.errors.is_empty()
+                || !validation.warnings.is_empty()
+                || !unrecognized.is_empty()
+            {
                 outcomes.push(DemoValidationOutcome {
                     link_id: link.id,
                     validation,
@@ -164,5 +179,108 @@ impl MatchDemoValidator for DemoValidatorAdapter {
         }
 
         Ok(outcomes)
+    }
+}
+
+/// Diff a demo's players against recognised (registered) accounts.
+///
+/// A `DemoPlayer` whose `player_id` is `None` did not resolve to any
+/// `players.steam_id_64` — i.e. it has no site account. Under §0.4 rule 1 that
+/// is the ringer case: an outsider has no account. Each such player becomes an
+/// [`UnrecognizedPlayer`], which the review flow turns into a `roster_mismatch`.
+///
+/// The team side is inferred from the demo's own team names (`team1`/`team2` in
+/// the parsed metadata). When metadata is absent or the name doesn't match,
+/// the player is attributed to team 1 — the review is raised regardless, and an
+/// admin resolves the exact side.
+fn collect_unrecognized_players(
+    players: &[DemoPlayer],
+    demo: &portal_domain::entities::demo::Demo,
+) -> Vec<UnrecognizedPlayer> {
+    let team_names = demo
+        .metadata
+        .as_ref()
+        .map(|m| (m.team1_name.clone(), m.team2_name.clone()));
+    unrecognized_from_players(players, team_names.as_ref())
+}
+
+/// Core of [`collect_unrecognized_players`], decoupled from the `Demo` shell so
+/// it can be unit-tested. `team_names` are the demo's `(team1, team2)` names.
+fn unrecognized_from_players(
+    players: &[DemoPlayer],
+    team_names: Option<&(String, String)>,
+) -> Vec<UnrecognizedPlayer> {
+    let (team1_name, team2_name) = team_names.cloned().unwrap_or_default();
+
+    players
+        .iter()
+        .filter(|p| p.player_id.is_none())
+        .map(|p| {
+            // Infer the side from the demo's team name; default to team 1.
+            let (team_side, registration_side) = match p.team_name.as_deref() {
+                Some(name) if !team2_name.is_empty() && name == team2_name => (TeamSide::Team2, 2),
+                Some(name) if !team1_name.is_empty() && name == team1_name => (TeamSide::Team1, 1),
+                _ => (TeamSide::Team1, 1),
+            };
+            UnrecognizedPlayer {
+                steam_id: p.steam_id.clone(),
+                player_name: p.player_name.clone(),
+                team_side,
+                registration_side,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use portal_core::{DemoId, DemoPlayerId, PlayerId};
+    use portal_domain::entities::demo::DemoPlayerStats;
+
+    fn demo_player(steam_id: &str, team: &str, player_id: Option<PlayerId>) -> DemoPlayer {
+        DemoPlayer {
+            id: DemoPlayerId::new(),
+            demo_id: DemoId::new(),
+            steam_id: steam_id.to_string(),
+            player_name: format!("name_{steam_id}"),
+            team_name: Some(team.to_string()),
+            player_id,
+            stats: DemoPlayerStats::default(),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn only_unregistered_players_are_flagged_as_ringers() {
+        let names = ("Alpha".to_string(), "Bravo".to_string());
+        let players = vec![
+            // Registered (has an account) -> recognised, not a ringer.
+            demo_player("111", "Alpha", Some(PlayerId::new())),
+            // Unregistered on team1 -> ringer, side 1.
+            demo_player("222", "Alpha", None),
+            // Unregistered on team2 -> ringer, side 2.
+            demo_player("333", "Bravo", None),
+        ];
+
+        let out = unrecognized_from_players(&players, Some(&names));
+        assert_eq!(out.len(), 2, "only the two accountless players are ringers");
+
+        let s2 = out.iter().find(|u| u.steam_id == "222").unwrap();
+        assert_eq!(s2.registration_side, 1);
+        assert_eq!(s2.team_side, TeamSide::Team1);
+
+        let s3 = out.iter().find(|u| u.steam_id == "333").unwrap();
+        assert_eq!(s3.registration_side, 2);
+        assert_eq!(s3.team_side, TeamSide::Team2);
+    }
+
+    #[test]
+    fn all_recognised_players_yield_no_ringers() {
+        let players = vec![
+            demo_player("1", "Alpha", Some(PlayerId::new())),
+            demo_player("2", "Bravo", Some(PlayerId::new())),
+        ];
+        assert!(unrecognized_from_players(&players, None).is_empty());
     }
 }

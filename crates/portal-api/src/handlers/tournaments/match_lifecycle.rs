@@ -201,6 +201,7 @@ async fn lock_lineups_if_started(
         (status = 200, description = "Match scheduled", body = DataResponse<TournamentMatchResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Requires admin.tournaments.manage_any — participants use the schedule/propose flow", body = ApiError),
         (status = 404, description = "Match not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -209,11 +210,27 @@ async fn lock_lineups_if_started(
 pub async fn schedule_match(
     State(state): State<TournamentState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<ScheduleMatchRequest>,
 ) -> ApiResult<Json<DataResponse<TournamentMatchResponse>>> {
     let request_id = get_request_id(&headers);
+
+    // Staff-only (P-59 / P-24 family). This endpoint DIRECT-SETS a match's
+    // scheduled time; it previously required nothing beyond a login, so any
+    // authenticated user could reschedule any match — and `scheduled_at`
+    // drives the check-in window and the no-show forfeit sweep, so a stranger
+    // could manufacture forfeits. Participants negotiate times through the
+    // schedule/propose|accept|counter flow, which carries its own proposer/
+    // opponent binding; direct-set is for staff, gated like
+    // `admin_match_transition` below.
+    perm_checker
+        .require_permission(
+            &auth,
+            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+        )
+        .await?;
 
     let match_id: TournamentMatchId = match_id
         .parse()

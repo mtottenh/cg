@@ -418,3 +418,60 @@ async fn test_match_forfeit_requires_authority_over_registration() {
     let row = read_match_check_in(&app, &match_id).await;
     assert_eq!(row.status, "forfeit");
 }
+
+/// P-59: direct-set scheduling is staff-only.
+///
+/// `POST .../matches/{id}/schedule` DIRECT-SETS `scheduled_at` — which drives
+/// the check-in window and the no-show forfeit sweep — and previously required
+/// nothing beyond a login, so any authenticated user could reschedule any
+/// match and manufacture forfeits. Participants negotiate through
+/// `schedule/propose|accept|…` (own binding, untouched); admins have the
+/// separately-gated `/v1/admin/.../schedule`. This endpoint is now gated on
+/// `admin.tournaments.manage_any`, like `admin_match_transition`.
+#[tokio::test]
+async fn test_direct_schedule_is_staff_only() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "p59-schedule-gate").await;
+
+    let url = format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule");
+    let when = (chrono::Utc::now() + chrono::Duration::hours(6)).to_rfc3339();
+    let payload = serde_json::json!({ "scheduled_at": when });
+
+    // A random authenticated user — previously a 200 that rewrote the match
+    // time — is now refused before any state is touched.
+    let (outsider_user, outsider_player) = create_test_player(&app, "p59_outsider").await;
+    let outsider_token =
+        create_test_token(outsider_user, outsider_player, "p59_outsider", TEST_JWT_SECRET);
+    let response = app
+        .post_json_with_token(&url, &payload, &outsider_token)
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // The match is untouched: scheduled_at still NULL.
+    let scheduled: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT scheduled_at FROM tournament_matches WHERE id = $1",
+    )
+    .bind(match_id.parse::<Uuid>().unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert!(scheduled.is_none(), "denied call must not write scheduled_at");
+
+    // Anonymous is 401.
+    app.post_json_no_auth(&url, &payload)
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+
+    // Staff (the dev user holds admin perms) still can — the feature works.
+    let response = app.post_json(&url, &payload).await;
+    response.assert_status(StatusCode::OK);
+    let scheduled: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT scheduled_at FROM tournament_matches WHERE id = $1",
+    )
+    .bind(match_id.parse::<Uuid>().unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert!(scheduled.is_some(), "staff scheduling must persist");
+}

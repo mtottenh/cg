@@ -16,6 +16,7 @@ mod evidence;
 mod forfeit;
 mod league;
 mod league_team;
+mod match_lineup;
 mod permission;
 mod player_game_profile;
 mod player_match_history;
@@ -50,6 +51,7 @@ pub use league_team::{
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
     PgLeagueTeamSeasonRepository,
 };
+pub use match_lineup::PgMatchLineupRepository;
 pub use permission::PgPermissionRepository;
 pub use player_game_profile::PgPlayerGameProfileRepository;
 pub use player_match_history::PgPlayerMatchHistoryRepository;

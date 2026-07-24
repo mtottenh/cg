@@ -145,6 +145,10 @@ pub async fn match_check_in(
         .check_in(match_id, registration_id, auth.user_id)
         .await?;
 
+    // The match starting locks the provisional lineups (§0 Q2/Q3): once
+    // PickBan/InProgress they become read-only and opponent-visible.
+    lock_lineups_if_started(&state, match_id, match_.status).await;
+
     // Auto-create veto session when match transitions to PickBan
     if match_.status == TournamentMatchStatus::PickBan
         && match_.veto_required
@@ -161,6 +165,27 @@ pub async fn match_check_in(
         TournamentMatchResponse::from(match_),
         request_id,
     )))
+}
+
+/// Lock the match's lineups when it has transitioned to a started state.
+///
+/// Best-effort: a lock failure must not fail the check-in/transition itself.
+async fn lock_lineups_if_started(
+    state: &TournamentState,
+    match_id: TournamentMatchId,
+    status: TournamentMatchStatus,
+) {
+    if matches!(
+        status,
+        TournamentMatchStatus::PickBan | TournamentMatchStatus::InProgress
+    ) && let Err(e) = state.lineup_service.lock_lineups(match_id).await
+    {
+        tracing::warn!(
+            match_id = %match_id,
+            error = ?e,
+            "Failed to lock lineups on match start"
+        );
+    }
 }
 
 /// Schedule a match.
@@ -309,6 +334,9 @@ pub async fn admin_match_transition(
         .match_lifecycle_service
         .admin_transition(match_id, to_status, auth.user_id, req.override_reason)
         .await?;
+
+    // Lock lineups if the admin moved the match into a started state.
+    lock_lineups_if_started(&state, match_id, match_.status).await;
 
     // Auto-create veto session when admin transitions to PickBan
     if match_.status == TournamentMatchStatus::PickBan

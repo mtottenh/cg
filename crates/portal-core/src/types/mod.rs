@@ -3,6 +3,7 @@
 mod demo;
 pub mod evidence;
 mod league_team;
+mod lineup;
 mod pagination;
 mod permission;
 mod rating;
@@ -23,6 +24,7 @@ pub use league_team::{
     LeagueTeamInvitationStatus, LeagueTeamInvitationType, LeagueTeamMemberStatus, LeagueTeamRole,
     LeagueTeamSeasonStatus, LeagueTeamStatus, RosterLockStatus, SeasonStatus,
 };
+pub use lineup::{LineupSource, LineupStatus, ParticipationStatus, substitutes_are_minority};
 pub use pagination::{Page, PageRequest, Pagination};
 pub use permission::{ParseScopeTypeError, PermissionScope, ScopeType};
 pub use rating::{Glicko2Rating, RatingChange};

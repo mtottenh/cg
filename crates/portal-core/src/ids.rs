@@ -294,6 +294,16 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for a match lineup (who played a match, per registration).
+    MatchLineupId
+);
+
+define_id!(
+    /// Unique identifier for a single player row within a match lineup.
+    MatchLineupPlayerId
+);
+
+define_id!(
     /// Unique identifier for a league.
     LeagueId
 );

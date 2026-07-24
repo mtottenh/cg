@@ -13,6 +13,7 @@ pub mod forfeit;
 pub mod game;
 pub mod league;
 pub mod league_team;
+pub mod lineup;
 pub mod player;
 pub mod player_game_profile;
 pub mod progression;
@@ -70,6 +71,7 @@ pub use league_team::{
     LeagueTeamMemberWithPlayerResponse, LeagueTeamResponse, LeagueTeamSeasonResponse,
     LeagueTeamSummaryResponse, LeagueTeamWithSeasonResponse, PlayerLeagueTeamMembershipResponse,
 };
+pub use lineup::{MatchLineupPlayerResponse, MatchLineupResponse};
 pub use player::{PlayerResponse, PlayerSearchResponse, SocialLinksResponse};
 pub use player_game_profile::{
     DisplayStatResponse, MatchHistoryEntryResponse, PlayerGameProfileResponse,

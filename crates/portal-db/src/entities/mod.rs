@@ -18,6 +18,7 @@ mod forfeit;
 mod game;
 mod league;
 pub mod league_team;
+mod match_lineup;
 mod player;
 pub mod player_match_history;
 pub mod player_mm_stats;
@@ -60,6 +61,7 @@ pub use league_team::{
     UpdateLeagueSeasonParticipant, UpdateLeagueTeam, UpdateLeagueTeamInvitation,
     UpdateLeagueTeamMember, UpdateLeagueTeamSeason,
 };
+pub use match_lineup::{MatchLineupPlayerRow, MatchLineupRow};
 pub use player::{
     NewPlayer, NewPlayerGameProfile, PlayerGameProfileRow, PlayerRow, UpdatePlayer,
     UpdatePlayerRating,

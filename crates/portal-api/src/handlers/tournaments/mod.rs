@@ -23,6 +23,7 @@
 
 pub mod brackets;
 pub mod lifecycle;
+pub mod lineup;
 pub mod map_pool;
 pub mod match_lifecycle;
 pub mod registration;
@@ -37,6 +38,7 @@ pub mod stages;
 // that same module path (utoipa's `paths(...)` resolves against it).
 pub use brackets::*;
 pub use lifecycle::*;
+pub use lineup::*;
 pub use map_pool::*;
 pub use match_lifecycle::*;
 pub use registration::*;

@@ -26,6 +26,7 @@ mod dispute;
 mod evidence;
 mod forfeit;
 pub(crate) mod helpers;
+mod lineup;
 mod match_completion;
 mod match_lifecycle;
 mod progression;
@@ -53,6 +54,7 @@ pub use evidence::{
     EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig,
 };
 pub use forfeit::ForfeitService;
+pub use lineup::LineupService;
 pub use match_completion::{
     DemoValidationOutcome, MatchCompletionInput, MatchCompletionOutput, MatchCompletionSaga,
     MatchDemoValidator, MatchStatsUpdater, ReviewCreator,

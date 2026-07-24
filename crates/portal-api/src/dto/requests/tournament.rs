@@ -813,6 +813,27 @@ pub struct ForfeitMatchRequest {
     pub registration_id: String,
 }
 
+/// Request to declare a provisional lineup for a match.
+///
+/// The lineup is a captain's *promise* of who will play, for opponent
+/// visibility and an advisory eligibility pre-check. It is optional; the
+/// authoritative lineup is derived from the demo after the match is played.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct DeclareLineupRequest {
+    /// Registration ID this lineup is for (must be a participant in the match).
+    pub registration_id: String,
+    /// Player IDs expected to play (up to 20).
+    #[validate(length(max = 20))]
+    pub player_ids: Vec<String>,
+    /// If true the lineup is marked `submitted`; otherwise left `draft`.
+    #[serde(default)]
+    pub submit: bool,
+    /// Optional captain note.
+    #[validate(length(max = 1000))]
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
 // =============================================================================
 // SCHEDULE PROPOSAL REQUESTS
 // =============================================================================

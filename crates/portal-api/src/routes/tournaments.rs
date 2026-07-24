@@ -148,6 +148,15 @@ pub fn routes() -> Router<AppState> {
             "/{tournament_id}/matches/{match_id}/check-in",
             post(tournaments::match_check_in),
         )
+        // Provisional lineup declaration + read (§0b)
+        .route(
+            "/{tournament_id}/matches/{match_id}/lineup",
+            post(tournaments::declare_lineup),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/lineups",
+            get(tournaments::get_match_lineups),
+        )
         .route(
             "/{tournament_id}/matches/{match_id}/schedule",
             post(tournaments::schedule_match),

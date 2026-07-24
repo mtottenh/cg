@@ -441,3 +441,39 @@ fn tournament_exception_type_display_matches_serde() {
         );
     }
 }
+
+#[test]
+fn lineup_lineup_status_display_matches_serde() {
+    use crate::types::lineup::LineupStatus::*;
+    for v in [Draft, Submitted, Locked] {
+        assert_eq!(
+            serde_json::Value::String(v.to_string()),
+            serde_json::to_value(v).unwrap(),
+            "Display and Serialize disagree for LineupStatus::{v:?}"
+        );
+    }
+}
+
+#[test]
+fn lineup_lineup_source_display_matches_serde() {
+    use crate::types::lineup::LineupSource::*;
+    for v in [Declared, Demo, Evidence, Admin] {
+        assert_eq!(
+            serde_json::Value::String(v.to_string()),
+            serde_json::to_value(v).unwrap(),
+            "Display and Serialize disagree for LineupSource::{v:?}"
+        );
+    }
+}
+
+#[test]
+fn lineup_participation_status_display_matches_serde() {
+    use crate::types::lineup::ParticipationStatus::*;
+    for v in [Confirmed, NoShow, LeftEarly, Substituted, Removed] {
+        assert_eq!(
+            serde_json::Value::String(v.to_string()),
+            serde_json::to_value(v).unwrap(),
+            "Display and Serialize disagree for ParticipationStatus::{v:?}"
+        );
+    }
+}

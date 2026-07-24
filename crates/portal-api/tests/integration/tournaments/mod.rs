@@ -4,6 +4,7 @@ mod auth;
 mod brackets;
 mod crud;
 mod lifecycle;
+mod lineup;
 mod map_pool;
 mod matches;
 mod registration;

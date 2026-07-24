@@ -47,12 +47,12 @@ use super::{
     AppAvailabilityService, AppAwardService, AppBanService, AppCheckInService, AppDemoService,
     AppDiscoveredMatchService, AppDisputeService, AppEligibilityService, AppEvidenceService,
     AppForfeitService, AppLeagueSeasonParticipantService, AppLeagueSeasonService, AppLeagueService,
-    AppLeagueTeamInvitationService, AppLeagueTeamService, AppMatchLifecycleService,
-    AppPermissionService, AppPlayerGameProfileService, AppPlayerService, AppProgressionService,
-    AppRegistrationService, AppResultReviewService, AppResultService, AppSchedulingService,
-    AppSeedingService, AppStandingsService, AppState, AppSteamTrackingService,
-    AppSystemSettingsService, AppTournamentService, AppUserService, AppVetoAuthorizationService,
-    AppVetoLobbyChatService, AppVetoService, TokenConfig,
+    AppLeagueTeamInvitationService, AppLeagueTeamService, AppLineupService,
+    AppMatchLifecycleService, AppPermissionService, AppPlayerGameProfileService, AppPlayerService,
+    AppProgressionService, AppRegistrationService, AppResultReviewService, AppResultService,
+    AppSchedulingService, AppSeedingService, AppStandingsService, AppState,
+    AppSteamTrackingService, AppSystemSettingsService, AppTournamentService, AppUserService,
+    AppVetoAuthorizationService, AppVetoLobbyChatService, AppVetoService, TokenConfig,
 };
 use crate::steam_openid::{SteamAuthConfig, SteamOpenIdVerifier};
 use crate::websocket::VetoLobbyManager;
@@ -398,6 +398,8 @@ pub struct TournamentState {
     /// Match lifecycle service (status / check-in / schedule / forfeit
     /// / admin transition).
     pub match_lifecycle_service: AppMatchLifecycleService,
+    /// Match lineup service (provisional declaration + locking).
+    pub lineup_service: AppLineupService,
     /// Match scheduling service (proposal workflow).
     pub scheduling_service: AppSchedulingService,
     /// Standings service (RR / Swiss).
@@ -441,6 +443,7 @@ impl FromRef<AppState> for TournamentState {
             checkin_service: s.checkin_service.clone(),
             seeding_service: s.seeding_service.clone(),
             match_lifecycle_service: s.match_lifecycle_service.clone(),
+            lineup_service: s.lineup_service.clone(),
             scheduling_service: s.scheduling_service.clone(),
             standings_service: s.standings_service.clone(),
             league_service: s.league_service.clone(),

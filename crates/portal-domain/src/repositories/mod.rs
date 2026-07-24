@@ -17,6 +17,7 @@ pub mod forfeit;
 pub mod league;
 pub mod league_team;
 pub mod match_lifecycle;
+pub mod match_lineup;
 pub mod permission;
 pub mod player_game_profile;
 pub mod player_match_history;
@@ -69,6 +70,7 @@ pub use league_team::{
     LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueSeason, UpdateLeagueTeam,
 };
 pub use match_lifecycle::{CreateMatchStatusLog, MatchStatusLogRepository};
+pub use match_lineup::{MatchLineupRepository, MaterializeDemoLineup};
 pub use permission::PermissionRepository;
 pub use player_game_profile::PlayerGameProfileRepository;
 pub use player_match_history::{CreatePlayerMatchHistory, PlayerMatchHistoryRepository};

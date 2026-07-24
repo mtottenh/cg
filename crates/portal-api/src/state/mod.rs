@@ -31,17 +31,17 @@ use portal_db::{
     PgForfeitRecordRepository, PgLeagueInvitationRepository, PgLeagueMemberRepository,
     PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
-    PgLeagueTeamSeasonRepository, PgMatchStatusLogRepository, PgPermissionRepository,
-    PgPlayerGameProfileRepository, PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository,
-    PgPlayerRatingHistoryRepository, PgPlayerRepository, PgProgressionLogRepository,
-    PgRefreshTokenRepository, PgResultClaimRepository, PgResultReviewRepository,
-    PgSagaExecutionRepository, PgScheduleProposalRepository, PgSteamTrackingRepository,
-    PgSuggestedTimeRepository, PgSystemSettingsRepository, PgTournamentBracketRepository,
-    PgTournamentInvitationRepository, PgTournamentMapPoolRepository, PgTournamentMatchRepository,
-    PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
-    PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
-    PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
-    RoleRepository, StatsRepository,
+    PgLeagueTeamSeasonRepository, PgMatchLineupRepository, PgMatchStatusLogRepository,
+    PgPermissionRepository, PgPlayerGameProfileRepository, PgPlayerMatchHistoryRepository,
+    PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository, PgPlayerRepository,
+    PgProgressionLogRepository, PgRefreshTokenRepository, PgResultClaimRepository,
+    PgResultReviewRepository, PgSagaExecutionRepository, PgScheduleProposalRepository,
+    PgSteamTrackingRepository, PgSuggestedTimeRepository, PgSystemSettingsRepository,
+    PgTournamentBracketRepository, PgTournamentInvitationRepository, PgTournamentMapPoolRepository,
+    PgTournamentMatchRepository, PgTournamentRegistrationRepository, PgTournamentRepository,
+    PgTournamentStageRepository, PgTournamentStandingsRepository, PgUserRepository,
+    PgVetoActionRepository, PgVetoDelegateRepository, PgVetoLobbyMessageRepository,
+    PgVetoSessionRepository, RoleRepository, StatsRepository,
 };
 use portal_domain::services::{
     AwardService, BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
@@ -50,10 +50,10 @@ use portal_domain::services::{
     SystemSettingsService, TournamentService, UserService,
     tournament::{
         AvailabilityService, CheckInService, DisputeService, EvidenceService,
-        EvidenceServiceConfig, ForfeitService, MatchCompletionSaga, MatchLifecycleService,
-        ProgressionService, RegistrationService, ResultReviewService, ResultService,
-        SchedulingService, SeedingService, StandingsService, VetoAuthorizationService,
-        VetoLobbyChatService, VetoService,
+        EvidenceServiceConfig, ForfeitService, LineupService, MatchCompletionSaga,
+        MatchLifecycleService, ProgressionService, RegistrationService, ResultReviewService,
+        ResultService, SchedulingService, SeedingService, StandingsService,
+        VetoAuthorizationService, VetoLobbyChatService, VetoService,
     },
 };
 use portal_plugins::PluginManager;
@@ -112,6 +112,12 @@ pub type AppMatchLifecycleService = MatchLifecycleService<
     PgTournamentMatchRepository,
     PgTournamentRegistrationRepository,
     PgMatchStatusLogRepository,
+>;
+pub type AppLineupService = LineupService<
+    PgMatchLineupRepository,
+    PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository,
+    PgLeagueTeamMemberRepository,
 >;
 pub type AppSchedulingService = SchedulingService<
     PgScheduleProposalRepository,
@@ -237,6 +243,8 @@ pub struct AppState {
     pub seeding_service: AppSeedingService,
     /// Match lifecycle service.
     pub match_lifecycle_service: AppMatchLifecycleService,
+    /// Match lineup service (provisional declaration + locking).
+    pub lineup_service: AppLineupService,
     /// Match scheduling service.
     pub scheduling_service: AppSchedulingService,
     /// Availability service for player/participant availability.
@@ -542,6 +550,14 @@ impl AppState {
             Arc::clone(&match_status_log_repo),
         );
 
+        let match_lineup_repo = Arc::new(PgMatchLineupRepository::new(db_pool.clone()));
+        let lineup_service = LineupService::new(
+            Arc::clone(&match_lineup_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&league_team_member_repo),
+        );
+
         let schedule_proposal_repo = Arc::new(PgScheduleProposalRepository::new(db_pool.clone()));
         let scheduling_service = SchedulingService::new(
             Arc::clone(&schedule_proposal_repo),
@@ -770,6 +786,7 @@ impl AppState {
             checkin_service,
             seeding_service,
             match_lifecycle_service,
+            lineup_service,
             scheduling_service,
             availability_service,
             veto_service,

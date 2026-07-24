@@ -441,22 +441,28 @@ async fn test_direct_schedule_is_staff_only() {
     // A random authenticated user — previously a 200 that rewrote the match
     // time — is now refused before any state is touched.
     let (outsider_user, outsider_player) = create_test_player(&app, "p59_outsider").await;
-    let outsider_token =
-        create_test_token(outsider_user, outsider_player, "p59_outsider", TEST_JWT_SECRET);
+    let outsider_token = create_test_token(
+        outsider_user,
+        outsider_player,
+        "p59_outsider",
+        TEST_JWT_SECRET,
+    );
     let response = app
         .post_json_with_token(&url, &payload, &outsider_token)
         .await;
     response.assert_status(StatusCode::FORBIDDEN);
 
     // The match is untouched: scheduled_at still NULL.
-    let scheduled: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
-        "SELECT scheduled_at FROM tournament_matches WHERE id = $1",
-    )
-    .bind(match_id.parse::<Uuid>().unwrap())
-    .fetch_one(app.pool())
-    .await
-    .unwrap();
-    assert!(scheduled.is_none(), "denied call must not write scheduled_at");
+    let scheduled: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT scheduled_at FROM tournament_matches WHERE id = $1")
+            .bind(match_id.parse::<Uuid>().unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert!(
+        scheduled.is_none(),
+        "denied call must not write scheduled_at"
+    );
 
     // Anonymous is 401.
     app.post_json_no_auth(&url, &payload)
@@ -466,12 +472,11 @@ async fn test_direct_schedule_is_staff_only() {
     // Staff (the dev user holds admin perms) still can — the feature works.
     let response = app.post_json(&url, &payload).await;
     response.assert_status(StatusCode::OK);
-    let scheduled: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
-        "SELECT scheduled_at FROM tournament_matches WHERE id = $1",
-    )
-    .bind(match_id.parse::<Uuid>().unwrap())
-    .fetch_one(app.pool())
-    .await
-    .unwrap();
+    let scheduled: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT scheduled_at FROM tournament_matches WHERE id = $1")
+            .bind(match_id.parse::<Uuid>().unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
     assert!(scheduled.is_some(), "staff scheduling must persist");
 }

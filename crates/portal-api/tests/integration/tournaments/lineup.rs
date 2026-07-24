@@ -349,46 +349,75 @@ async fn test_materialize_demo_lineup_tags_substitute() {
     assert_eq!(sub_row["was_rostered"], false);
 }
 
-/// P-25 attribution gate (Phase C): a demo player's stats attribute to a match
-/// only if that player is in the match's authoritative (demo-source) lineup. A
-/// registered player present in the demo but NOT in the lineup is de-attributed;
-/// a player in the lineup keeps their attribution.
+/// Attach a `lineup_required = true` season to a tournament (opt-in gate §9).
+async fn attach_lineup_required_season(app: &TestApp, tournament_id: &str) {
+    use portal_test::prelude::LeagueSeasonBuilder;
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let season = LeagueSeasonBuilder::new()
+        .active()
+        .slug(format!("lineup-req-{}", &unique[..8]))
+        .name(format!("Lineup Req {}", &unique[..8]))
+        .build_persisted(app.pool())
+        .await;
+    sqlx::query("UPDATE league_seasons SET lineup_required = true WHERE id = $1")
+        .bind(season.id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tournaments SET season_id = $2 WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(tournament_id).unwrap())
+        .bind(season.id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+}
+
+/// ⚠️ SPEC CHANGED (design correction 2026-07-24, §0b): this test previously
+/// asserted the OPPOSITE — that a registered player not in the lineup was
+/// de-attributed (`player_id` NULLed). That assertion encoded the bug the
+/// correction fixes. **Attribution follows registration**: a registered player
+/// who appears in a map's demo is attributed for that map, full stop — even
+/// when their side cannot be inferred. Only players with no site account stay
+/// unattributed (the base Steam-ID join already leaves them NULL). The lineup
+/// and the §0.4 rules are review-raisers, never stat-strippers.
+///
+/// Drives the REAL ingestion path (`DemoService::link_to_match` with the
+/// lineup materializer, on a `lineup_required` season).
 #[tokio::test]
-async fn test_attribution_gated_to_lineup() {
-    use portal_domain::repositories::demo::DemoPlayerRepository;
-    use portal_test::prelude::{DemoBuilder, DemoMatchLinkBuilder};
+async fn test_registered_players_keep_attribution() {
+    use portal_test::prelude::DemoBuilder;
     use std::sync::Arc;
 
     let app = TestApp::new().await;
-    let (_tournament_id, match_id, reg1, _reg2) =
-        create_tournament_with_matches(&app, "lineup-attr-gate").await;
-    let (_ub, player_b) = create_test_player(&app, "attr_gate_b").await;
+    let (tournament_id, match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "lineup-attr-keep").await;
+    attach_lineup_required_season(&app, &tournament_id).await;
+
+    let (_ub, player_b) = create_test_player(&app, "attr_keep_b").await;
     let game_id = get_game_id(app.pool(), "cs2").await;
-    let match_uuid: uuid::Uuid = match_id.parse().unwrap();
     let dev_player = uuid::Uuid::parse_str(DEV_PLAYER_ID).unwrap();
 
-    // A demo linked to the match, with two players both globally attributed
-    // (resolved) — player A (dev, rostered on reg1) and player B (registered,
-    // not in the lineup).
+    // Demo metadata names the two sides; player A (dev, reg1's registrant) is
+    // on "TeamA" (sideable); player B is registered but has a team name that
+    // matches neither side (un-sideable); player C has NO account (ringer).
     let demo = DemoBuilder::new()
         .game_id(game_id)
-        .file_name("attr_gate.dem")
+        .file_name("attr_keep.dem")
+        .cs2_metadata("de_dust2", "TeamA", "TeamB", 13, 7)
         .build_persisted(app.pool())
         .await;
-    DemoMatchLinkBuilder::new()
-        .demo_id(demo.id)
-        .match_id(match_uuid)
-        .game_number(1)
-        .manual()
-        .build_persisted(app.pool())
-        .await;
-    for (steam, pid) in [("111", dev_player), ("222", player_b)] {
+    for (steam, team, pid) in [
+        ("111", "TeamA", Some(dev_player)),
+        ("222", "Mixup", Some(player_b)),
+        ("333", "TeamB", None),
+    ] {
         sqlx::query(
-            "INSERT INTO demo_players (demo_id, steam_id, player_name, player_id) VALUES ($1,$2,$3,$4)",
+            "INSERT INTO demo_players (demo_id, steam_id, player_name, team_name, player_id) VALUES ($1,$2,$3,$4,$5)",
         )
         .bind(demo.id)
         .bind(steam)
         .bind(format!("p{steam}"))
+        .bind(team)
         .bind(pid)
         .execute(app.pool())
         .await
@@ -404,9 +433,9 @@ async fn test_attribution_gated_to_lineup() {
         .unwrap();
     }
 
-    // Materialize a demo lineup for reg1 containing ONLY player A.
+    // Link through the real DemoService (materializer wired, as in AppState).
     let pool = app.pool().clone();
-    let service = portal_domain::services::tournament::LineupService::new(
+    let lineup_service = portal_domain::services::tournament::LineupService::new(
         Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
         Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
         Arc::new(portal_db::PgTournamentRegistrationRepository::new(
@@ -414,63 +443,79 @@ async fn test_attribution_gated_to_lineup() {
         )),
         Arc::new(portal_db::PgLeagueTeamMemberRepository::new(pool.clone())),
     );
+    let demo_service = portal_domain::services::DemoService::new(
+        Arc::new(portal_db::PgDemoRepository::new(pool.clone())),
+        Arc::new(portal_db::PgDemoMatchLinkRepository::new(pool.clone())),
+        Arc::new(portal_db::PgDemoPlayerRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+    )
+    .with_lineup_materializer(Arc::new(lineup_service));
+
     let match_tid: portal_core::TournamentMatchId = match_id.parse().unwrap();
-    let reg_tid: portal_core::TournamentRegistrationId = reg1.parse().unwrap();
-    let dev_pid: portal_core::PlayerId = DEV_PLAYER_ID.parse().unwrap();
-    service
-        .materialize_demo_lineup(match_tid, reg_tid, Some(1), vec![dev_pid])
+    demo_service
+        .link_to_match(
+            portal_core::DemoId::from(demo.id),
+            match_tid,
+            Some(1),
+            portal_core::DemoLinkType::Manual,
+            None,
+        )
         .await
-        .expect("materialize demo lineup");
+        .expect("link demo to match");
 
-    // Gate attribution to the lineup.
-    let demo_repo = portal_db::PgDemoPlayerRepository::new(pool.clone());
-    demo_repo
-        .restrict_attribution_to_lineup(portal_core::DemoId::from(demo.id), match_tid)
-        .await
-        .expect("restrict attribution");
-
-    let attributed = |pid: uuid::Uuid| {
+    let attributed = |steam: &'static str| {
         let pool = app.pool().clone();
         let demo_id = demo.id;
         async move {
-            sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM demo_player_stats WHERE demo_id=$1 AND player_id=$2",
+            sqlx::query_scalar::<_, Option<uuid::Uuid>>(
+                "SELECT player_id FROM demo_player_stats WHERE demo_id=$1 AND steam_id=$2",
             )
             .bind(demo_id)
-            .bind(pid)
+            .bind(steam)
             .fetch_one(&pool)
             .await
             .unwrap()
         }
     };
+
+    // A: sided, in the lineup, attributed.
     assert_eq!(
-        attributed(dev_player).await,
-        1,
-        "the player in the lineup keeps attribution"
+        attributed("111").await,
+        Some(dev_player),
+        "a registered lineup player keeps attribution"
     );
+    // B: registered but un-sideable — STAYS ATTRIBUTED (the correction). The
+    // old behaviour stripped this to NULL; that was the bug.
     assert_eq!(
-        attributed(player_b).await,
-        0,
-        "a registered player NOT in the lineup is de-attributed"
+        attributed("222").await,
+        Some(player_b),
+        "a registered player whose side cannot be inferred must keep attribution"
     );
-    // B's stat row still exists, just de-attributed (player_id NULL).
-    let b_rows: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM demo_player_stats WHERE demo_id=$1 AND steam_id='222' AND player_id IS NULL",
+    // C: no account — never attributed (the base Steam-ID join leaves it NULL).
+    assert_eq!(
+        attributed("333").await,
+        None,
+        "an unregistered demo player is not attributed"
+    );
+
+    // The lineup itself: A is on reg1's side; un-sideable B has no lineup row
+    // (their side is admin-resolved via the review, not guessed).
+    let lineup_players: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT mlp.player_id FROM match_lineup_players mlp
+         JOIN match_lineups ml ON ml.id = mlp.lineup_id
+         WHERE ml.match_id = $1 AND mlp.source = 'demo'",
     )
-    .bind(demo.id)
-    .fetch_one(app.pool())
+    .bind(match_tid.as_uuid())
+    .fetch_all(app.pool())
     .await
     .unwrap();
-    assert_eq!(
-        b_rows, 1,
-        "the stat row remains, only its attribution is stripped"
+    assert!(lineup_players.contains(&dev_player), "A is in the lineup");
+    assert!(
+        !lineup_players.contains(&player_b),
+        "un-sideable B gets no lineup row (side is admin-resolved)"
     );
 }
 
-/// P-58: team-match participation is credited from the authoritative
-/// (demo-derived) lineup — who actually played — not the whole roster. A player
-/// in the lineup is credited; a registered player NOT in any map's lineup is
-/// not; and the lineup overrides the registration's own player.
 #[tokio::test]
 async fn test_participation_credited_from_lineup() {
     use portal_domain::services::tournament::MatchStatsUpdater;
@@ -574,7 +619,11 @@ fn make_enforcer(app: &TestApp) -> portal_api::adapters::LineupEnforcer {
     portal_api::adapters::LineupEnforcer::new(
         Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
         Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
-        Arc::new(portal_db::PgTournamentRepository::new(pool)),
+        Arc::new(portal_db::PgTournamentRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgLeagueTeamMemberRepository::new(pool)),
         eligibility,
     )
 }
@@ -707,4 +756,152 @@ async fn test_legal_lineup_no_violation() {
         violations.is_empty(),
         "a legal lineup must not raise a review, got {violations:?}"
     );
+}
+
+/// §0b correction: a registered demo player whose side could not be inferred
+/// (present in the demo, absent from both sides' demo lineups) is flagged for
+/// admin side-resolution via the review — while KEEPING attribution (asserted
+/// in `test_registered_players_keep_attribution`).
+#[tokio::test]
+async fn test_sideless_registered_player_flagged_for_review() {
+    use portal_domain::repositories::demo::DemoPlayerRepository;
+    use portal_test::prelude::DemoBuilder;
+
+    let app = TestApp::new().await;
+    let (_t, match_id, reg1, _reg2) = create_tournament_with_matches(&app, "lineup-sideless").await;
+    let (_ub, player_b) = create_test_player(&app, "sideless_b").await;
+    let game_id = get_game_id(app.pool(), "cs2").await;
+    let dev_player = uuid::Uuid::parse_str(DEV_PLAYER_ID).unwrap();
+
+    let demo = DemoBuilder::new()
+        .game_id(game_id)
+        .file_name("sideless.dem")
+        .cs2_metadata("de_dust2", "TeamA", "TeamB", 13, 7)
+        .build_persisted(app.pool())
+        .await;
+    for (steam, team, pid) in [
+        ("111", "TeamA", Some(dev_player)),
+        ("222", "Mixup", Some(player_b)), // registered, un-sideable
+    ] {
+        sqlx::query(
+            "INSERT INTO demo_players (demo_id, steam_id, player_name, team_name, player_id) VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(demo.id)
+        .bind(steam)
+        .bind(format!("p{steam}"))
+        .bind(team)
+        .bind(pid)
+        .execute(app.pool())
+        .await
+        .unwrap();
+    }
+
+    // The demo lineup for reg1 contains only the sided player A.
+    let dev_pid: portal_core::PlayerId = DEV_PLAYER_ID.parse().unwrap();
+    materialize(&app, &match_id, &reg1, vec![dev_pid]).await;
+
+    let pool = app.pool().clone();
+    let demo_players = portal_db::PgDemoPlayerRepository::new(pool)
+        .find_by_demo(portal_core::DemoId::from(demo.id))
+        .await
+        .unwrap();
+
+    let flags = make_enforcer(&app)
+        .sideless_registered(match_id.parse().unwrap(), &demo_players)
+        .await
+        .unwrap();
+    assert_eq!(flags.len(), 1, "exactly the un-sideable player is flagged");
+    assert!(
+        flags[0].player_name.contains("SIDE UNASSIGNED"),
+        "the flag names the ambiguity: {flags:?}"
+    );
+    assert_eq!(flags[0].steam_id, "222");
+}
+
+/// P-26 (§0.4 rule 4): a player who is rostered on the OPPOSING team and
+/// appears in this side's demo lineup RAISES a review — attribution untouched.
+#[tokio::test]
+async fn test_p26_opposing_roster_player_raises_review() {
+    use portal_test::prelude::LeagueTeamSeasonBuilder;
+
+    let app = TestApp::new().await;
+    let (_t, match_id, reg1, reg2) = create_tournament_with_matches(&app, "lineup-p26").await;
+    let (_ux, player_x) = create_test_player(&app, "p26_x").await;
+    let dev: portal_core::PlayerId = DEV_PLAYER_ID.parse().unwrap();
+
+    // Make reg2 a TEAM registration whose roster contains player X.
+    // Build the season + team with unique slugs (the builders' auto-created
+    // defaults collide on (league_id, slug)).
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let season = portal_test::prelude::LeagueSeasonBuilder::new()
+        .active()
+        .slug(format!("p26-{}", &unique[..8]))
+        .name(format!("P26 {}", &unique[..8]))
+        .build_persisted(app.pool())
+        .await;
+    let team = portal_test::prelude::LeagueTeamBuilder::new()
+        .league_id(season.league_id)
+        .owner(player_x)
+        .name(format!("P26 Team {}", &unique[..8]))
+        .tag(format!("P{}", &unique[..3]))
+        .active()
+        .build_persisted(app.pool())
+        .await;
+    let ts = LeagueTeamSeasonBuilder::new()
+        .team_id(team.id)
+        .season_id(season.id)
+        .active()
+        .build_persisted(app.pool())
+        .await;
+    portal_test::prelude::LeagueTeamMemberBuilder::new()
+        .team_season_id(ts.id)
+        .player_id(player_x)
+        .player()
+        .active()
+        .build_persisted(app.pool())
+        .await;
+    sqlx::query(
+        "UPDATE tournament_registrations SET team_season_id = $2, player_id = NULL WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&reg2).unwrap())
+    .bind(ts.id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    // X plays FOR reg1 — against their own team (reg2).
+    materialize(
+        &app,
+        &match_id,
+        &reg1,
+        vec![dev, player_x.to_string().parse().unwrap()],
+    )
+    .await;
+
+    let violations = make_enforcer(&app)
+        .lineup_violations(match_id.parse().unwrap())
+        .await
+        .unwrap();
+    // The violation names X. (Which registration_side it reports depends on
+    // random seeding — reg1 may be participant 1 or 2 — so don't pin the side.)
+    assert!(
+        violations.iter().any(
+            |v| v.player_name.contains("P-26") && v.player_name.contains(&player_x.to_string())
+        ),
+        "an opposing-roster player must raise a P-26 review, got {violations:?}"
+    );
+
+    // Enforcement never touches lineup rows or attribution: X is still in the
+    // lineup after the check.
+    let still_in_lineup: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM match_lineup_players mlp
+         JOIN match_lineups ml ON ml.id = mlp.lineup_id
+         WHERE ml.match_id = $1 AND mlp.player_id = $2",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .bind(player_x)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(still_in_lineup, 1, "enforcement must not remove the player");
 }

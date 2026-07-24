@@ -752,6 +752,8 @@ impl AppState {
             Arc::clone(&match_lineup_repo),
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&league_team_member_repo),
             eligibility_service.clone(),
         ));
         let review_creator_adapter =

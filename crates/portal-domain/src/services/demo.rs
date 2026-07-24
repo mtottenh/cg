@@ -78,8 +78,9 @@ where
     player_repo: Arc<DPR>,
     match_repo: Arc<TMR>,
     /// Optional lineup materializer (Phase C). When present and the season opted
-    /// in, linking a demo to a match materializes the authoritative lineup and
-    /// gates stat attribution to it. `None` => pre-cutover behaviour.
+    /// in, linking a demo to a match materializes the authoritative lineup
+    /// (review/eligibility input only — attribution is never gated on it).
+    /// `None` => pre-cutover behaviour.
     lineup_materializer: Option<Arc<dyn DemoLineupMaterializer>>,
 }
 
@@ -117,12 +118,17 @@ where
         self
     }
 
-    /// Materialize the demo lineup for a freshly-created link and gate stat
-    /// attribution to it. Best-effort: failures are logged, never fatal to the
-    /// link. Both steps self-gate — the materializer no-ops unless the season
-    /// requires lineups, and the attribution restriction no-ops when no demo
-    /// lineup exists — so the pre-cutover path is untouched.
-    async fn materialize_and_gate(
+    /// Materialize the demo lineup for a freshly-created link. Best-effort:
+    /// failures are logged, never fatal to the link. Self-gating: the
+    /// materializer no-ops unless the season requires lineups, so the
+    /// pre-cutover path is untouched.
+    ///
+    /// ⚠️ Attribution is deliberately NOT touched here (§0b correction
+    /// 2026-07-24): attribution follows registration — a registered player in
+    /// the demo is attributed via the base Steam-ID join, full stop. The lineup
+    /// and its `is_substitute` tags feed the review + majority/eligibility
+    /// math, which are review-raisers an admin can waive, never stat-strippers.
+    async fn materialize_lineup(
         &self,
         demo: &Demo,
         match_id: TournamentMatchId,
@@ -158,18 +164,6 @@ where
             .await
         {
             warn!(demo_id = %demo.id, match_id = %match_id, error = %e, "Lineup materialization failed");
-            return;
-        }
-
-        // Gate the bare Steam-ID attribution (P-25): a demo player counts for
-        // this match only if it is in the match's authoritative lineup. Self-
-        // gating: no demo lineup => no restriction (pre-cutover fallback).
-        if let Err(e) = self
-            .player_repo
-            .restrict_attribution_to_lineup(demo.id, match_id)
-            .await
-        {
-            warn!(demo_id = %demo.id, match_id = %match_id, error = %e, "Lineup attribution gating failed");
         }
     }
 
@@ -420,11 +414,11 @@ where
             }
         }
 
-        // Phase C: build the authoritative lineup from this demo and gate stat
-        // attribution to it (no-op unless the season opted in).
+        // Phase C: build the authoritative lineup from this demo (no-op unless
+        // the season opted in). Attribution is not touched — it follows
+        // registration (§0b correction).
         let demo = self.get_demo(demo_id).await?;
-        self.materialize_and_gate(&demo, match_id, game_number)
-            .await;
+        self.materialize_lineup(&demo, match_id, game_number).await;
 
         info!(demo_id = %demo_id, match_id = %match_id, "Linked demo to match");
         Ok(link)
@@ -622,9 +616,9 @@ where
             .associate(demo.id, league_id, Some(candidate.tournament_id))
             .await?;
 
-        // Phase C: materialize the authoritative lineup + gate attribution.
+        // Phase C: materialize the authoritative lineup (attribution untouched).
         // Auto-links carry no game number (per-map linking is manual/admin).
-        self.materialize_and_gate(&updated, candidate.match_id, None)
+        self.materialize_lineup(&updated, candidate.match_id, None)
             .await;
 
         info!(

@@ -5,13 +5,19 @@
 use async_trait::async_trait;
 use portal_core::types::{LineupSource, substitutes_are_minority};
 use portal_core::{DomainError, ResultClaimId, TournamentMatchId, TournamentRegistrationId};
-use portal_db::{PgMatchLineupRepository, PgTournamentMatchRepository, PgTournamentRepository};
+use portal_db::{
+    PgLeagueTeamMemberRepository, PgMatchLineupRepository, PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository, PgTournamentRepository,
+};
 use portal_domain::entities::demo::DemoPlayer;
 use portal_domain::entities::demo_validation::{
     DemoValidationResult, TeamSide, UnrecognizedPlayer,
 };
+use portal_domain::repositories::league_team::LeagueTeamMemberRepository;
 use portal_domain::repositories::match_lineup::MatchLineupRepository;
-use portal_domain::repositories::tournament::{TournamentMatchRepository, TournamentRepository};
+use portal_domain::repositories::tournament::{
+    TournamentMatchRepository, TournamentRegistrationRepository, TournamentRepository,
+};
 use portal_domain::services::tournament::{DemoValidationOutcome, MatchDemoValidator};
 use std::sync::Arc;
 use tracing::debug;
@@ -31,12 +37,15 @@ pub struct DemoValidatorAdapter {
 
 impl DemoValidatorAdapter {
     /// Create a new adapter.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         demo_service: AppDemoService,
         result_service: AppResultService,
         lineup_repo: Arc<PgMatchLineupRepository>,
         match_repo: Arc<PgTournamentMatchRepository>,
         tournament_repo: Arc<PgTournamentRepository>,
+        registration_repo: Arc<PgTournamentRegistrationRepository>,
+        member_repo: Arc<PgLeagueTeamMemberRepository>,
         eligibility_service: AppEligibilityService,
     ) -> Self {
         Self {
@@ -46,6 +55,8 @@ impl DemoValidatorAdapter {
                 lineup_repo,
                 match_repo,
                 tournament_repo,
+                registration_repo,
+                member_repo,
                 eligibility_service,
             ),
         }
@@ -61,6 +72,8 @@ pub struct LineupEnforcer {
     lineup_repo: Arc<PgMatchLineupRepository>,
     match_repo: Arc<PgTournamentMatchRepository>,
     tournament_repo: Arc<PgTournamentRepository>,
+    registration_repo: Arc<PgTournamentRegistrationRepository>,
+    member_repo: Arc<PgLeagueTeamMemberRepository>,
     eligibility_service: AppEligibilityService,
 }
 
@@ -70,14 +83,60 @@ impl LineupEnforcer {
         lineup_repo: Arc<PgMatchLineupRepository>,
         match_repo: Arc<PgTournamentMatchRepository>,
         tournament_repo: Arc<PgTournamentRepository>,
+        registration_repo: Arc<PgTournamentRegistrationRepository>,
+        member_repo: Arc<PgLeagueTeamMemberRepository>,
         eligibility_service: AppEligibilityService,
     ) -> Self {
         Self {
             lineup_repo,
             match_repo,
             tournament_repo,
+            registration_repo,
+            member_repo,
             eligibility_service,
         }
+    }
+
+    /// Registered demo players whose side could not be inferred (§0b
+    /// correction): resolved to an account but present in neither side's
+    /// demo-derived lineup. They KEEP attribution — this only flags the
+    /// ambiguous side for an admin to resolve via the review.
+    ///
+    /// Self-gating: with no demo-source lineup for the match (season did not
+    /// opt in), nothing is flagged.
+    pub async fn sideless_registered(
+        &self,
+        match_id: TournamentMatchId,
+        demo_players: &[DemoPlayer],
+    ) -> Result<Vec<UnrecognizedPlayer>, DomainError> {
+        let lineup_players = self
+            .lineup_repo
+            .list_players_by_source(match_id, LineupSource::Demo)
+            .await?;
+        if lineup_players.is_empty() {
+            return Ok(Vec::new());
+        }
+        let in_lineup: std::collections::HashSet<_> =
+            lineup_players.iter().map(|p| p.player_id).collect();
+
+        Ok(demo_players
+            .iter()
+            .filter(|p| {
+                p.player_id
+                    .is_some_and(|pid| !in_lineup.contains(&pid))
+            })
+            .map(|p| UnrecognizedPlayer {
+                steam_id: p.steam_id.clone(),
+                player_name: format!(
+                    "SIDE UNASSIGNED: registered player '{}' could not be assigned to a side — admin must resolve (attribution kept)",
+                    p.player_name
+                ),
+                // The side is precisely what is unknown; default to team 1 for
+                // the review payload, the admin resolves the real side.
+                team_side: TeamSide::Team1,
+                registration_side: 1,
+            })
+            .collect())
     }
 
     /// Enforce the §0.4 lineup rules on the authoritative (demo-derived) lineup:
@@ -105,10 +164,29 @@ impl LineupEnforcer {
         let game_id = tournament.game_id;
         let settings = tournament.settings;
 
+        // Resolve each side's team-season for the P-26 check (None for
+        // individual/adhoc registrations — no roster to face).
+        let mut team_seasons = [None, None];
+        for (i, reg) in [
+            match_.participant1_registration_id,
+            match_.participant2_registration_id,
+        ]
+        .iter()
+        .enumerate()
+        {
+            if let Some(reg) = reg {
+                team_seasons[i] = self
+                    .registration_repo
+                    .find_by_id(*reg)
+                    .await?
+                    .and_then(|r| r.team_season_id);
+            }
+        }
+
         let mut violations = Vec::new();
-        for (side, reg) in [
-            (1_i32, match_.participant1_registration_id),
-            (2_i32, match_.participant2_registration_id),
+        for (side, reg, opposing_ts) in [
+            (1_i32, match_.participant1_registration_id, team_seasons[1]),
+            (2_i32, match_.participant2_registration_id, team_seasons[0]),
         ] {
             let Some(reg) = reg else { continue };
             self.check_registration_lineup(
@@ -117,6 +195,7 @@ impl LineupEnforcer {
                 side,
                 game_id,
                 &settings,
+                opposing_ts,
                 &mut violations,
             )
             .await?;
@@ -124,6 +203,7 @@ impl LineupEnforcer {
         Ok(violations)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn check_registration_lineup(
         &self,
         match_id: TournamentMatchId,
@@ -131,6 +211,7 @@ impl LineupEnforcer {
         side: i32,
         game_id: portal_core::GameId,
         settings: &serde_json::Value,
+        opposing_team_season: Option<portal_core::LeagueTeamSeasonId>,
         out: &mut Vec<UnrecognizedPlayer>,
     ) -> Result<(), DomainError> {
         let Some(lineup) = self
@@ -196,6 +277,23 @@ impl LineupEnforcer {
                 team_side,
                 registration_side: side,
             });
+        }
+
+        // P-26 (§0.4 rule 4): a player may not play AGAINST a team they are
+        // rostered on. Review-raiser only — attribution is never touched.
+        if let Some(opposing_ts) = opposing_team_season {
+            for pid in &player_ids {
+                if self.member_repo.is_member(opposing_ts, *pid).await? {
+                    out.push(UnrecognizedPlayer {
+                        steam_id: String::new(),
+                        player_name: format!(
+                            "LINEUP RULE (P-26): player {pid} is rostered on the OPPOSING team and played against it"
+                        ),
+                        team_side,
+                        registration_side: side,
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -283,7 +381,16 @@ impl MatchDemoValidator for DemoValidatorAdapter {
             // existing two-captain `roster_mismatch` review rather than being
             // silently attributed.
             let demo = &link_data.demo;
-            let unrecognized = collect_unrecognized_players(&link_data.players, demo);
+            let mut unrecognized = collect_unrecognized_players(&link_data.players, demo);
+
+            // §0b correction: a registered player whose side could not be
+            // inferred (in neither side's demo lineup) keeps attribution but is
+            // flagged here so an admin resolves the side via the review.
+            unrecognized.extend(
+                self.enforcer
+                    .sideless_registered(match_id, &link_data.players)
+                    .await?,
+            );
             if let Some(ref metadata) = demo.metadata {
                 // Extract claimed score for this game
                 let claimed_score = game_result.map_or(

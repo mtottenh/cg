@@ -267,3 +267,84 @@ async fn test_cannot_declare_after_lock() {
         "declaration must be refused once the match has started"
     );
 }
+
+// =============================================================================
+// Phase C — authoritative demo-derived lineup materialization
+// =============================================================================
+
+/// Materialize a demo-derived lineup through the real `LineupService` and assert
+/// the authoritative rows: `source = demo`, per-map `game_number`, and
+/// `is_substitute`/`was_rostered` auto-resolved from the roster. A registered
+/// player who is not on the (individual) registration's roster is auto-tagged a
+/// substitute (§0b).
+#[tokio::test]
+async fn test_materialize_demo_lineup_tags_substitute() {
+    use std::sync::Arc;
+
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, reg1, _reg2) =
+        create_tournament_with_matches(&app, "lineup-demo-mat").await;
+
+    // A registered player who did NOT register for this match -> a substitute.
+    let (_u, sub_player) = create_test_player(&app, "demo_sub_player").await;
+
+    let pool = app.pool().clone();
+    let service = portal_domain::services::tournament::LineupService::new(
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgLeagueTeamMemberRepository::new(pool.clone())),
+    );
+
+    let match_uuid: portal_core::TournamentMatchId = match_id.parse().unwrap();
+    let reg_uuid: portal_core::TournamentRegistrationId = reg1.parse().unwrap();
+    let dev_player: portal_core::PlayerId = DEV_PLAYER_ID.parse().unwrap();
+    let sub: portal_core::PlayerId = sub_player.to_string().parse().unwrap();
+
+    service
+        .materialize_demo_lineup(match_uuid, reg_uuid, Some(1), vec![dev_player, sub])
+        .await
+        .expect("materialize demo lineup");
+
+    // Read it back via the API — a demo lineup is created locked (the match was
+    // played), so its players are visible.
+    let body: serde_json::Value = app
+        .get_auth(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/lineups"
+        ))
+        .await
+        .json();
+    let lineup = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["registration_id"] == reg1)
+        .expect("reg1 demo lineup listed");
+
+    assert_eq!(lineup["status"], "locked");
+    assert_eq!(lineup["players_visible"], true);
+    let players = lineup["players"].as_array().unwrap();
+    assert_eq!(players.len(), 2);
+
+    let dev_row = players
+        .iter()
+        .find(|p| p["player_id"] == DEV_PLAYER_ID)
+        .expect("rostered demo row");
+    assert_eq!(dev_row["source"], "demo");
+    assert_eq!(dev_row["game_number"], 1);
+    assert_eq!(dev_row["was_rostered"], true);
+    assert_eq!(dev_row["is_substitute"], false);
+
+    let sub_row = players
+        .iter()
+        .find(|p| p["player_id"] == sub_player.to_string())
+        .expect("substitute demo row");
+    assert_eq!(sub_row["source"], "demo");
+    assert_eq!(
+        sub_row["is_substitute"], true,
+        "a registered player not on the roster is auto-tagged a substitute"
+    );
+    assert_eq!(sub_row["was_rostered"], false);
+}

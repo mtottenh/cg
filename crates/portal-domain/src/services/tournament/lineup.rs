@@ -15,10 +15,10 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::entities::match_lineup::{
-    DeclareLineupCommand, LineupPlayerInput, MatchLineupWithPlayers,
+    DeclareLineupCommand, LineupPlayerInput, MatchLineup, MatchLineupWithPlayers,
 };
 use crate::repositories::league_team::LeagueTeamMemberRepository;
-use crate::repositories::match_lineup::MatchLineupRepository;
+use crate::repositories::match_lineup::{MatchLineupRepository, MaterializeDemoLineup};
 use crate::repositories::tournament::{
     TournamentMatchRepository, TournamentRegistrationRepository,
 };
@@ -156,6 +156,70 @@ where
             .get_with_players(lineup.id)
             .await?
             .ok_or_else(|| DomainError::Internal("Lineup vanished after declare".to_string()))
+    }
+
+    /// Materialize the authoritative, demo-derived lineup for one registration
+    /// and map (Phase C, the P-25 fix).
+    ///
+    /// `player_ids` are the demo's players that resolved to registered accounts
+    /// AND played on this registration's side (the caller assigns the side from
+    /// the demo's team structure). For each, `was_rostered` is snapshotted from
+    /// the registration's roster; the repository auto-sets `is_substitute` when
+    /// the player is not rostered (a registered non-rostered player is the
+    /// ordinary casual-league substitute, §0b). Unregistered demo players are
+    /// NOT materialized here — they are the ringer case raised through the
+    /// result-review flow (Phase D).
+    ///
+    /// The demo is authoritative, so this runs regardless of whether a
+    /// provisional lineup was declared — the system is correct even if nobody
+    /// declared (§0b).
+    pub async fn materialize_demo_lineup(
+        &self,
+        match_id: TournamentMatchId,
+        registration_id: TournamentRegistrationId,
+        game_number: Option<i32>,
+        player_ids: Vec<PlayerId>,
+    ) -> Result<MatchLineup, DomainError> {
+        let registration = self
+            .registration_repo
+            .find_by_id(registration_id)
+            .await?
+            .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
+
+        let mut players = Vec::with_capacity(player_ids.len());
+        for player_id in player_ids {
+            let was_rostered = if let Some(team_season_id) = registration.team_season_id {
+                self.member_repo
+                    .is_member(team_season_id, player_id)
+                    .await?
+            } else {
+                registration.player_id == Some(player_id)
+            };
+            players.push(LineupPlayerInput {
+                player_id,
+                was_rostered,
+                game_number,
+                participation_status: ParticipationStatus::Confirmed,
+            });
+        }
+
+        let lineup = self
+            .lineup_repo
+            .materialize_demo(MaterializeDemoLineup {
+                match_id,
+                registration_id,
+                game_number,
+                players,
+            })
+            .await?;
+
+        info!(
+            match_id = %match_id,
+            registration_id = %registration_id,
+            game_number = ?game_number,
+            "Materialized demo-derived lineup"
+        );
+        Ok(lineup)
     }
 
     /// List all lineups for a match with their player rows.

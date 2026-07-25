@@ -216,6 +216,10 @@ pub mod admin {
     /// matches, delete.
     pub const DEMOS_MANAGE: &str = "admin.demos.manage";
 
+    /// Manage game servers - register, edit, enroll, revoke, remove,
+    /// and manage bookings.
+    pub const SERVERS_MANAGE: &str = "admin.servers.manage";
+
     /// All admin permissions for iteration.
     pub const ALL: &[&str] = &[
         USERS_VIEW,
@@ -227,6 +231,7 @@ pub mod admin {
         AUDIT_VIEW,
         SYSTEM_MANAGE,
         DEMOS_MANAGE,
+        SERVERS_MANAGE,
     ];
 }
 

@@ -56,6 +56,8 @@ use super::{
 };
 use crate::steam_openid::{SteamAuthConfig, SteamOpenIdVerifier};
 use crate::websocket::VetoLobbyManager;
+use crate::websocket::agent_manager::AgentConnectionManager;
+use portal_domain::services::game_server::CertificateAuthority;
 use portal_plugins::PluginManager;
 
 // ============================================================================
@@ -285,6 +287,31 @@ impl FromRef<AppState> for SteamTrackingState {
             steam_tracking_service: s.steam_tracking_service.clone(),
             game_repo: s.game_repo.clone(),
             player_service: s.player_service.clone(),
+        }
+    }
+}
+
+/// State slice for game-server integration handlers (admin registry,
+/// agent enrollment, and the agent WebSocket channel).
+#[derive(Clone)]
+pub struct GameServerState {
+    /// Registry service (CRUD, enrollment, heartbeats, bookings).
+    pub registry: super::AppGameServerRegistryService,
+    /// Connected-agent manager.
+    pub agent_manager: Arc<AgentConnectionManager>,
+    /// Portal CA (None = enrollment disabled).
+    pub agent_ca: Option<Arc<CertificateAuthority>>,
+    /// Accept `X-Dev-Server-Id` auth (tests/dev only).
+    pub insecure_dev_auth: bool,
+}
+
+impl FromRef<AppState> for GameServerState {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            registry: s.game_server_registry.clone(),
+            agent_manager: Arc::clone(&s.agent_manager),
+            agent_ca: s.agent_ca.clone(),
+            insecure_dev_auth: s.agent_insecure_dev_auth,
         }
     }
 }

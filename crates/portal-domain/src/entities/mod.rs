@@ -10,6 +10,7 @@ pub mod ban;
 pub mod demo;
 pub mod demo_validation;
 pub mod discovered_match;
+pub mod game_server;
 pub mod dispute;
 pub mod eligibility;
 pub mod evidence;
@@ -64,6 +65,9 @@ pub use dispute::{
     ResolveDisputeCommand,
 };
 pub use eligibility::{EligibilityRestrictions, EligibilityViolation};
+pub use game_server::{
+    AgentCertificate, GameServer, HeartbeatUpdate, ServerBooking,
+};
 pub use evidence::{
     AddLinkEvidenceCommand, DemoMetadata, DiscoveredEvidence, Evidence, EvidenceAccessLog,
     EvidenceAccessType, EvidenceAccessUrl, EvidenceSource, EvidenceStatus, EvidenceStorage,

@@ -10,6 +10,7 @@
 //! - `connection`: Represents a single WebSocket connection with role/permissions
 //! - `messages`: Client/server message types and broadcast payloads
 
+pub mod agent_manager;
 pub mod connection;
 pub mod lobby;
 pub mod lobby_manager;

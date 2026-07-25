@@ -130,6 +130,8 @@ pub struct LifecyclePassSummary {
     pub evidence_expired: u32,
     /// Stale pending evidence records cleaned.
     pub evidence_stale_cleaned: u32,
+    /// Game servers marked offline for missing agent heartbeats.
+    pub game_servers_marked_offline: u32,
     /// Errors encountered (each already logged; the pass continues).
     pub errors: u32,
 }
@@ -241,6 +243,20 @@ pub async fn run_lifecycle_pass(
                 error!(error = %e, "lifecycle: stale-pending evidence sweep failed");
                 summary.errors += 1;
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 7: game servers with stale agent heartbeats → offline (§6.7)
+    // ------------------------------------------------------------------
+    match state.game_server_registry.sweep_stale(now).await {
+        Ok(transitioned) => {
+            summary.game_servers_marked_offline =
+                u32::try_from(transitioned.len()).unwrap_or(u32::MAX);
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: game-server staleness sweep failed");
+            summary.errors += 1;
         }
     }
 

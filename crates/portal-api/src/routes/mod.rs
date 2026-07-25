@@ -5,6 +5,7 @@ pub mod auth;
 pub mod availability;
 pub mod demos;
 pub mod disputes;
+pub mod game_servers;
 pub mod games;
 pub mod internal;
 pub mod league_teams;
@@ -24,6 +25,8 @@ pub fn api_routes() -> Router<AppState> {
     Router::new()
         .nest("/admin", admin::routes())
         .nest("/auth", auth::routes())
+        .nest("/admin/game-servers", game_servers::admin_routes())
+        .nest("/gameserver", game_servers::agent_routes())
         .nest("/users", users::routes())
         .nest("/players", players::routes())
         .nest("/games", games::routes())

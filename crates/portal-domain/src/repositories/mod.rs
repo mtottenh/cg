@@ -11,6 +11,7 @@ pub mod ban;
 pub mod demo;
 pub mod demo_stats;
 pub mod discovered_match;
+pub mod game_server;
 pub mod dispute;
 pub mod evidence;
 pub mod forfeit;
@@ -51,6 +52,10 @@ pub use demo_stats::{
     LeaderboardQuery, LeaderboardScope, PlayerStatsEntry, PlayerStatsQuery, PlayerStatsSort,
 };
 pub use discovered_match::{CreateDiscoveredMatch, DiscoveredMatchRepository};
+pub use game_server::{
+    AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateServerBooking,
+    GameServerRepository, RecordHeartbeat, ServerBookingRepository, UpdateGameServer,
+};
 pub use dispute::{
     CreateDispute, CreateDisputeMessage, DisputeMessageRepository, DisputeRepository, UpdateDispute,
 };

@@ -2,6 +2,7 @@
 
 mod demo;
 pub mod evidence;
+mod game_server;
 mod league_team;
 mod lineup;
 mod pagination;
@@ -14,6 +15,9 @@ pub mod veto;
 mod wire_compat_tests;
 
 pub use demo::{DemoCategory, DemoLinkType, DemoStatus};
+pub use game_server::{
+    AgentGamestate, GameServerStatus, ReservationStatus, SubstitutionStatus,
+};
 pub use evidence::{
     DemoFileMetadata, DiscoveredEvidenceData, EvidenceStorage, EvidenceType,
     EvidenceValidationResult, ExtractedMatchResult, GameMatchResult, MatchEvidenceContext,

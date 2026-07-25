@@ -7,6 +7,7 @@ pub mod demo;
 pub mod discovered_match;
 pub mod eligibility;
 pub mod eligibility_service;
+pub mod game_server;
 pub mod league;
 pub mod league_team;
 pub mod permission;

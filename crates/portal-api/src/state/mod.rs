@@ -10,9 +10,10 @@ pub mod substates;
 
 pub use substates::{
     AdminState, AuthState, AvailabilityState, AwardsState, BanState, DemoState, DisputeState,
-    EvidenceState, ForfeitState, GamesState, InternalState, LeagueTeamState, LeaguesState,
-    PlayerState, ProgressionState, ResultReviewState, ResultState, RolesState, SteamTrackingState,
-    TournamentState, UploadsState, UsersState, VetoDelegatesState, VetoState, VetoWsState,
+    EvidenceState, ForfeitState, GameServerState, GamesState, InternalState, LeagueTeamState,
+    LeaguesState, PlayerState, ProgressionState, ResultReviewState, ResultState, RolesState,
+    SteamTrackingState, TournamentState, UploadsState, UsersState, VetoDelegatesState, VetoState,
+    VetoWsState,
 };
 
 use crate::adapters::{
@@ -22,13 +23,15 @@ use crate::adapters::{
 use crate::adapters::{EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceStorageAdapter};
 use crate::steam_openid::{HttpSteamOpenIdVerifier, SteamAuthConfig, SteamOpenIdVerifier};
 use crate::websocket::VetoLobbyManager;
+use crate::websocket::agent_manager::AgentConnectionManager;
 use portal_db::{
     ActionItemRepository, DbPool, GameRepository, PermissionRepository, PgApiKeyRepository,
     PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgAwardRepository,
     PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
     PgDemoPlayerStatsRepository, PgDemoRepository, PgDiscoveredMatchRepository,
     PgDisputeMessageRepository, PgDisputeRepository, PgEvidenceRepository,
-    PgForfeitRecordRepository, PgLeagueInvitationRepository, PgLeagueMemberRepository,
+    PgAgentCertRepository, PgForfeitRecordRepository, PgGameServerRepository,
+    PgLeagueInvitationRepository, PgLeagueMemberRepository,
     PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
     PgLeagueTeamSeasonRepository, PgMatchLineupRepository, PgMatchStatusLogRepository,
@@ -41,10 +44,11 @@ use portal_db::{
     PgTournamentMatchRepository, PgTournamentRegistrationRepository, PgTournamentRepository,
     PgTournamentStageRepository, PgTournamentStandingsRepository, PgUserRepository,
     PgVetoActionRepository, PgVetoDelegateRepository, PgVetoLobbyMessageRepository,
-    PgVetoSessionRepository, RoleRepository, StatsRepository,
+    PgServerBookingRepository, PgVetoSessionRepository, RoleRepository, StatsRepository,
 };
 use portal_domain::services::{
     AwardService, BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
+    game_server::{CertificateAuthority, GameServerRegistryService},
     LeagueSeasonService, LeagueService, LeagueTeamInvitationService, LeagueTeamService,
     PermissionService, PlayerGameProfileService, PlayerService, SteamTrackingService,
     SystemSettingsService, TournamentService, UserService,
@@ -64,6 +68,11 @@ use std::sync::Arc;
 pub type AppSteamTrackingService =
     SteamTrackingService<PgSteamTrackingRepository, PgPlayerRepository>;
 pub type AppSystemSettingsService = SystemSettingsService<PgSystemSettingsRepository>;
+pub type AppGameServerRegistryService = GameServerRegistryService<
+    PgGameServerRepository,
+    PgAgentCertRepository,
+    PgServerBookingRepository,
+>;
 pub type AppDiscoveredMatchService = DiscoveredMatchService<PgDiscoveredMatchRepository>;
 pub type AppUserService = UserService<PgUserRepository, PgPlayerRepository>;
 pub type AppPlayerService = PlayerService<PgPlayerRepository, PgLeagueTeamMemberRepository>;
@@ -276,6 +285,15 @@ pub struct AppState {
     pub veto_authorization_service: AppVetoAuthorizationService,
     /// Veto lobby manager for WebSocket connections.
     pub veto_lobby_manager: Arc<VetoLobbyManager>,
+    /// Game-server registry service (MatchZy integration).
+    pub game_server_registry: AppGameServerRegistryService,
+    /// Connected server-agent manager (outbound mTLS WSS channel).
+    pub agent_manager: Arc<AgentConnectionManager>,
+    /// Portal CA for signing agent certificates. `None` when
+    /// `PORTAL_AGENT_CA_DIR` is unset (integration disabled).
+    pub agent_ca: Option<Arc<CertificateAuthority>>,
+    /// Accept `X-Dev-Server-Id` agent auth (tests/dev only).
+    pub agent_insecure_dev_auth: bool,
     /// Standings service for round robin/swiss standings.
     pub standings_service: AppStandingsService,
     /// Tournament match repository for direct match access.
@@ -770,6 +788,32 @@ impl AppState {
         // Create veto lobby manager for WebSocket connections
         let veto_lobby_manager = Arc::new(VetoLobbyManager::new());
 
+        // Game-server integration (MatchZy). The CA is optional: unset
+        // PORTAL_AGENT_CA_DIR disables enrollment (503) while the registry
+        // CRUD still works. An unreadable/invalid CA dir hard-fails startup,
+        // mirroring the CS2_DEMO_SERVICE_URL policy above.
+        let game_server_repo = Arc::new(PgGameServerRepository::new(db_pool.clone()));
+        let agent_cert_repo = Arc::new(PgAgentCertRepository::new(db_pool.clone()));
+        let server_booking_repo = Arc::new(PgServerBookingRepository::new(db_pool.clone()));
+        let game_server_registry = GameServerRegistryService::new(
+            game_server_repo,
+            agent_cert_repo,
+            server_booking_repo,
+        );
+        let agent_manager = Arc::new(AgentConnectionManager::new());
+        let agent_ca = std::env::var("PORTAL_AGENT_CA_DIR").ok().map(|dir| {
+            let cert_pem = std::fs::read_to_string(format!("{dir}/ca.pem"))
+                .expect("PORTAL_AGENT_CA_DIR set but ca.pem is unreadable");
+            let key_pem = std::fs::read_to_string(format!("{dir}/ca.key"))
+                .expect("PORTAL_AGENT_CA_DIR set but ca.key is unreadable");
+            Arc::new(
+                CertificateAuthority::from_pem(&cert_pem, &key_pem)
+                    .expect("PORTAL_AGENT_CA_DIR contains invalid CA material"),
+            )
+        });
+        let agent_insecure_dev_auth = std::env::var("PORTAL_AGENT_INSECURE")
+            .is_ok_and(|v| matches!(v.as_str(), "true" | "1" | "yes"));
+
         // Create match completion saga with adapters
         let saga_execution_repo = Arc::new(PgSagaExecutionRepository::new(db_pool.clone()));
         let progression_log_repo = Arc::new(PgProgressionLogRepository::new(db_pool.clone()));
@@ -841,6 +885,10 @@ impl AppState {
             veto_lobby_chat_service,
             veto_authorization_service,
             veto_lobby_manager,
+            game_server_registry,
+            agent_manager,
+            agent_ca,
+            agent_insecure_dev_auth,
             standings_service,
             tournament_match_repo,
             tournament_map_pool_repo,

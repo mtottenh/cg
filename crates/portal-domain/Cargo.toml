@@ -45,6 +45,10 @@ rand = "0.9"
 sha2 = { workspace = true }
 hex = { workspace = true }
 
+# Agent-certificate CA (game-server integration)
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+time = "0.3"
+
 [dev-dependencies]
 mockall = { workspace = true }
 

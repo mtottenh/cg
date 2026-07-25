@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ids::{
-    BanId, DemoId, DemoMatchLinkId, DisputeId, EvidenceId, ForfeitRecordId, GameId, LeagueId,
-    LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LobbyId, MatchId, PlayerId,
-    ResultClaimId, ResultReviewId, TournamentBracketId, TournamentId, TournamentInvitationId,
-    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId, VetoSessionId,
+    BanId, DemoId, DemoMatchLinkId, DisputeId, EvidenceId, ForfeitRecordId, GameId, GameServerId,
+    LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LobbyId, MatchId, PlayerId,
+    ResultClaimId, ResultReviewId, ServerBookingId, TournamentBracketId, TournamentId,
+    TournamentInvitationId, TournamentMatchId, TournamentRegistrationId, TournamentStageId,
+    UserId, VetoSessionId,
 };
 
 /// A single validation error for a specific field.
@@ -197,6 +198,14 @@ pub enum DomainError {
     /// The requested league was not found.
     #[error("league not found: {0}")]
     LeagueNotFound(LeagueId),
+
+    /// The requested game server was not found.
+    #[error("game server not found: {0}")]
+    GameServerNotFound(GameServerId),
+
+    /// The requested server booking was not found.
+    #[error("server booking not found: {0}")]
+    ServerBookingNotFound(ServerBookingId),
 
     /// The requested lobby was not found.
     #[error("lobby not found: {0}")]

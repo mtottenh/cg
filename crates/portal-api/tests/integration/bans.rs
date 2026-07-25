@@ -1151,3 +1151,162 @@ async fn test_refresh_rejected_for_banned_user_and_chain_revoked() {
         .await;
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
+
+// ============================================================================
+// P-123 REGRESSION TESTS (a ban row must name a human)
+// ============================================================================
+
+/// P-123: every ban response must carry the banned user's human identity, not
+/// just their `user_id`.
+///
+/// `AdminBansPage.vue` had nothing else to render, so its User column showed
+/// `item.user_id.substring(0, 8)` — and, worse, its lift-ban CONFIRM DIALOG
+/// asked "Are you sure you want to lift this ban for user 019f993f...?".
+/// Ids are UUID v7, whose leading characters encode the creation timestamp,
+/// so two bans created minutes apart share their prefix: the operator was
+/// being asked to confirm a destructive moderation action against a target
+/// that is ambiguous by construction, not merely cryptic.
+///
+/// Same fix as P-115 took for league invitations: `display_name` comes from
+/// `players` (the name every search surface shows, including the one an admin
+/// types into to issue the ban), `username` from `users` (always present).
+/// They are seeded DIFFERENT here so a DTO filling one from the other could
+/// not pass.
+///
+/// Every ban-producing endpoint is covered, because the confirm dialog is fed
+/// by the LIST and the detail modal by the single GET — a fix that only
+/// touched one of them would leave the dialog nameless.
+#[tokio::test]
+async fn test_ban_rows_identify_the_user_by_name() {
+    let app = TestApp::new().await;
+    grant_admin_permission(&app).await;
+
+    let target_id = create_test_user(&app, "named_ban_target").await;
+
+    // `register_user` seeds display_name = username; force them apart so the
+    // two fields cannot be confused for one another.
+    sqlx::query("UPDATE players SET display_name = $2 WHERE user_id = $1")
+        .bind(Uuid::parse_str(&target_id).unwrap())
+        .bind("Named Ban Target")
+        .execute(app.pool())
+        .await
+        .expect("set distinct display name");
+
+    // --- Create response ---------------------------------------------------
+    let response = app
+        .post_json(
+            "/v1/admin/bans",
+            &json!({
+                "user_id": target_id,
+                "ban_type": "chat",
+                "reason": "P-123 identity probe"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    assert_eq!(
+        created["data"]["username"], "named_ban_target",
+        "create response must name the banned user: {created}"
+    );
+    assert_eq!(
+        created["data"]["display_name"], "Named Ban Target",
+        "create response must carry the display name: {created}"
+    );
+    let ban_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    // --- List (what the admin table AND the lift confirm dialog read) ------
+    let response = app
+        .get_auth(&format!("/v1/admin/bans?user_id={target_id}"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let list: serde_json::Value = response.json();
+    let items = list["data"]["items"].as_array().expect("ban list items");
+    assert_eq!(items.len(), 1, "one ban seeded: {list}");
+    assert_eq!(
+        items[0]["username"], "named_ban_target",
+        "the ban LIST must name the user — it is what the lift confirm dialog quotes: {list}"
+    );
+    assert_eq!(items[0]["display_name"], "Named Ban Target");
+
+    // --- Single GET (the detail modal) ------------------------------------
+    let response = app.get_auth(&format!("/v1/admin/bans/{ban_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let detail: serde_json::Value = response.json();
+    assert_eq!(detail["data"]["username"], "named_ban_target");
+    assert_eq!(detail["data"]["display_name"], "Named Ban Target");
+
+    // --- User ban history (the modal's history panel) ---------------------
+    let response = app
+        .get_auth(&format!("/v1/admin/users/{target_id}/bans"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let history: serde_json::Value = response.json();
+    let rows = history["data"].as_array().expect("ban history");
+    assert_eq!(rows.len(), 1, "one ban in history: {history}");
+    assert_eq!(rows[0]["username"], "named_ban_target");
+    assert_eq!(rows[0]["display_name"], "Named Ban Target");
+
+    // --- Lift response ----------------------------------------------------
+    let response = app
+        .post_json(
+            &format!("/v1/admin/bans/{ban_id}/lift"),
+            &json!({ "reason": "identity probe complete" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let lifted: serde_json::Value = response.json();
+    assert_eq!(
+        lifted["data"]["username"], "named_ban_target",
+        "lift response must still name the user: {lifted}"
+    );
+    assert_eq!(lifted["data"]["display_name"], "Named Ban Target");
+}
+
+/// P-123, the other half: a user with no `players` row still has to be
+/// identifiable. `username` is `NOT NULL` on `users`, so it is always
+/// available; `display_name` lives on `players` and is therefore optional.
+/// The join must be a LEFT one — an INNER join would silently drop the ban
+/// from every admin listing rather than merely omitting a name, which on a
+/// moderation surface means an active ban that no operator can see or lift.
+#[tokio::test]
+async fn test_ban_row_names_a_user_without_a_player_profile() {
+    let app = TestApp::new().await;
+    grant_admin_permission(&app).await;
+
+    let target_id = create_test_user(&app, "playerless_ban_target").await;
+    sqlx::query("DELETE FROM players WHERE user_id = $1")
+        .bind(Uuid::parse_str(&target_id).unwrap())
+        .execute(app.pool())
+        .await
+        .expect("remove player profile");
+
+    let response = app
+        .post_json(
+            "/v1/admin/bans",
+            &json!({
+                "user_id": target_id,
+                "ban_type": "chat",
+                "reason": "P-123 left-join probe"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let response = app
+        .get_auth(&format!("/v1/admin/bans?user_id={target_id}"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let list: serde_json::Value = response.json();
+    let items = list["data"]["items"].as_array().expect("ban list items");
+    assert_eq!(
+        items.len(),
+        1,
+        "a ban must not vanish because the user has no player profile: {list}"
+    );
+    assert_eq!(items[0]["username"], "playerless_ban_target");
+    assert!(
+        items[0]["display_name"].is_null() || items[0].get("display_name").is_none(),
+        "no player profile means no display name: {list}"
+    );
+}

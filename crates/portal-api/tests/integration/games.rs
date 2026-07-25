@@ -999,6 +999,154 @@ async fn test_update_team_size_requires_admin() {
 }
 
 // ============================================================================
+// P-88 — THE ADMIN CATALOG MUST BE ABLE TO SEE A DISABLED GAME
+// ============================================================================
+
+/// P-88: a disabled game vanished from every list the product has, taking the
+/// only control that could re-enable it with it.
+///
+/// `GET /v1/games` was unconditionally `list_active()` (`WHERE status =
+/// 'active'`), and the admin games table is its only consumer with an Enable
+/// button — a button that lives *inside a row*. Disable a game and the row is
+/// gone on the next fetch, permanently, with no admin remedy short of SQL.
+///
+/// The assertion that matters is the third one: not "the parameter is accepted"
+/// but "the disabled game is actually in the payload, still marked
+/// `maintenance`", because that is the row whose Enable button the admin needs.
+#[tokio::test]
+async fn test_list_games_include_inactive_returns_disabled_games() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Precondition: aoe4 is seeded active and visible on the default list.
+    let listed = app.get("/v1/games").await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    assert!(
+        listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["slug"] == "aoe4"),
+    );
+
+    let response = app.post_auth("/v1/games/aoe4/disable").await;
+    response.assert_status(StatusCode::OK);
+
+    // The default list still hides it — the public catalog is unchanged.
+    let listed = app.get("/v1/games").await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    assert!(
+        !listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["slug"] == "aoe4"),
+        "the default catalog must stay active-only"
+    );
+
+    // ...and the admin can still find it, with the status that explains why it
+    // is missing from the default list.
+    let listed = app.get_auth("/v1/games?include_inactive=true").await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    let aoe4 = listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["slug"] == "aoe4")
+        .expect("P-88: a disabled game must be reachable from the admin catalog");
+    assert_eq!(aoe4["status"], "maintenance");
+
+    // And it can be re-enabled from there, which is the whole point.
+    let response = app.post_auth("/v1/games/aoe4/enable").await;
+    response.assert_status(StatusCode::OK);
+    let listed = app.get("/v1/games").await;
+    let listed: serde_json::Value = listed.json();
+    assert!(
+        listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["slug"] == "aoe4"),
+    );
+}
+
+/// The unfiltered catalog is admin-only, and a caller that cannot have it is
+/// **refused** rather than quietly handed the active list — otherwise a client
+/// could believe it holds the whole catalog when it holds a filtered one.
+#[tokio::test]
+async fn test_list_games_include_inactive_requires_admin() {
+    let app = TestApp::new().await;
+
+    // Anonymous.
+    let response = app.get("/v1/games?include_inactive=true").await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Authenticated, but the dev identity carries no roles by default.
+    let response = app.get_auth("/v1/games?include_inactive=true").await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // The default list stays public and unauthenticated.
+    let response = app.get("/v1/games").await;
+    response.assert_status(StatusCode::OK);
+
+    // ...and `include_inactive=false` is the default list, so it must not 403.
+    let response = app.get("/v1/games?include_inactive=false").await;
+    response.assert_status(StatusCode::OK);
+}
+
+// ============================================================================
+// P-90 — SORT ORDER IS READABLE, AND SETTABLE TO ZERO
+// ============================================================================
+
+/// P-90: `sort_order` was writable through `PATCH /v1/games/{id}` but appeared
+/// in no response, so the admin edit modal could not seed its "Sort Order"
+/// field and hardcoded `0` — a number that was never the truth (cs2 is 1, aoe4
+/// is 2). To avoid writing that fabricated `0` over the real value the modal
+/// then only sent the field when it was non-zero, which made `0` unsettable for
+/// every game.
+///
+/// Both halves are asserted here: the seeded values are visible on the list and
+/// the detail, and a round trip to `0` sticks.
+#[tokio::test]
+async fn test_game_responses_expose_sort_order_and_zero_is_settable() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // The migration seeds cs2 = 1, aoe4 = 2 (0003_create_games.sql:68-70).
+    let listed = app.get("/v1/games").await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    let games = listed["data"].as_array().unwrap();
+    let cs2 = games.iter().find(|g| g["slug"] == "cs2").unwrap();
+    let aoe4 = games.iter().find(|g| g["slug"] == "aoe4").unwrap();
+    assert_eq!(cs2["sort_order"], 1);
+    assert_eq!(aoe4["sort_order"], 2);
+
+    let detail = app.get("/v1/games/aoe4").await;
+    detail.assert_status(StatusCode::OK);
+    let detail: serde_json::Value = detail.json();
+    assert_eq!(detail["data"]["sort_order"], 2);
+
+    // Zero is a legal sort order and must round-trip.
+    let response = app
+        .patch_json("/v1/games/aoe4", &json!({ "sort_order": 0 }))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["sort_order"], 0,
+        "P-90: sort_order 0 must be settable"
+    );
+
+    let detail = app.get("/v1/games/aoe4").await;
+    let detail: serde_json::Value = detail.json();
+    assert_eq!(detail["data"]["sort_order"], 0, "and it must persist");
+}
+
+// ============================================================================
 // HEALTH PROBES (here rather than a dedicated file — two small tests)
 // ============================================================================
 

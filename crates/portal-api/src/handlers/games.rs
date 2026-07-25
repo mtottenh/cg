@@ -9,12 +9,14 @@ use crate::dto::responses::{
     GameDetailResponse, GameSummaryResponse, MapInfoResponse, RankTierResponse, TeamSizeConfig,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, OptionalAuthenticatedUser, ValidatedJson};
 use crate::state::GamesState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_db::entities::{GameRow, UpdateGame};
+use serde::Deserialize;
+use utoipa::IntoParams;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -28,25 +30,66 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 // PUBLIC ENDPOINTS
 // ============================================================================
 
-/// List all active games.
+/// Extra query parameters for [`list_games`], alongside [`PaginationParams`].
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+pub struct ListGamesParams {
+    /// Include games whose status is not `active` (i.e. `maintenance`,
+    /// `deprecated`). Requires the `admin.games.manage` permission.
+    ///
+    /// P-88: this list is the *only* game catalog the product has, and the admin
+    /// games table reads it. Because it was unconditionally `list_active()`, a
+    /// game that an admin disabled left the table on the very next fetch — and
+    /// the Enable control exists only *inside* a row, so disabling a game deleted
+    /// the button that re-enables it. The game became unreachable from the portal
+    /// permanently, with no admin remedy short of SQL.
+    ///
+    /// Non-admin callers that ask for it are **refused**, not silently downgraded
+    /// to the active list: a client must never be able to believe it is holding
+    /// the full catalog when it is holding a filtered one.
+    #[serde(default)]
+    #[param(default = false)]
+    pub include_inactive: bool,
+}
+
+/// List games — active only by default; the whole catalog for an admin that asks.
 #[utoipa::path(
     get,
     path = "/v1/games",
-    params(PaginationParams),
+    params(PaginationParams, ListGamesParams),
     responses(
-        (status = 200, description = "List of active games", body = PaginatedResponse<GameSummaryResponse>),
+        (status = 200, description = "List of games", body = PaginatedResponse<GameSummaryResponse>),
+        (status = 403, description = "Forbidden - `include_inactive` requires admin", body = ApiError),
     ),
     tag = "games"
 )]
 pub async fn list_games(
     State(state): State<GamesState>,
+    auth: OptionalAuthenticatedUser,
     headers: HeaderMap,
     Query(params): Query<PaginationParams>,
+    Query(list_params): Query<ListGamesParams>,
 ) -> ApiResult<Json<PaginatedResponse<GameSummaryResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // Fetch active games from database
-    let games = state.game_repo.list_active().await?;
+    // Fetch games from the database. The unfiltered catalog is admin-only.
+    let games = if list_params.include_inactive {
+        let is_admin = match &auth.0 {
+            Some(user) => state
+                .permission_repo
+                .user_has_permission(user.user_id, "admin.games.manage")
+                .await
+                .unwrap_or(false),
+            None => false,
+        };
+        if !is_admin {
+            return Err(ApiError::forbidden(
+                "Admin permission required to list inactive games",
+            ));
+        }
+        state.game_repo.list().await?
+    } else {
+        state.game_repo.list_active().await?
+    };
 
     // Convert to response DTOs
     let game_responses: Vec<GameSummaryResponse> = games
@@ -61,6 +104,7 @@ pub async fn list_games(
             team_size_default: g.team_size_default,
             status: g.status,
             is_featured: g.is_featured,
+            sort_order: g.sort_order,
         })
         .collect();
 
@@ -180,6 +224,7 @@ pub async fn get_game(
         map_pool,
         status: game.status,
         is_featured: game.is_featured,
+        sort_order: game.sort_order,
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
@@ -418,6 +463,7 @@ pub async fn update_game(
         map_pool,
         status: game.status,
         is_featured: game.is_featured,
+        sort_order: game.sort_order,
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
@@ -568,6 +614,7 @@ pub async fn enable_game(
         team_size_default: game.team_size_default,
         status: game.status,
         is_featured: game.is_featured,
+        sort_order: game.sort_order,
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
@@ -626,6 +673,7 @@ pub async fn disable_game(
         team_size_default: game.team_size_default,
         status: game.status,
         is_featured: game.is_featured,
+        sort_order: game.sort_order,
     };
 
     Ok(Json(DataResponse::new(response, request_id)))

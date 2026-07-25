@@ -41,6 +41,19 @@ pub struct GameSummaryResponse {
     /// Whether the game is featured on homepage.
     #[schema(example = true)]
     pub is_featured: bool,
+
+    /// Display order (lower = shown first).
+    ///
+    /// P-90: this column has always existed (`migrations/0003_create_games.sql:42`,
+    /// seeded `cs2 = 1` / `aoe4 = 2`) and `PATCH /v1/games/{game_id}` has always
+    /// accepted it, but no *response* carried it. The admin edit modal therefore
+    /// had nothing to seed its "Sort Order" field from and hardcoded `0` — showing
+    /// every game a value that was not the truth — and, to avoid writing that
+    /// fabricated `0` over the real order, only sent the field when it was
+    /// non-zero, which made `0` unsettable. Returning the stored value fixes both
+    /// halves.
+    #[schema(example = 1)]
+    pub sort_order: i32,
 }
 
 /// Team size configuration.
@@ -119,6 +132,10 @@ pub struct GameDetailResponse {
 
     /// Whether the game is featured.
     pub is_featured: bool,
+
+    /// Display order (lower = shown first). See `GameSummaryResponse::sort_order`.
+    #[schema(example = 1)]
+    pub sort_order: i32,
 }
 
 /// Map information.

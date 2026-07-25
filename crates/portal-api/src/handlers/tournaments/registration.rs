@@ -19,7 +19,8 @@ use crate::dto::requests::{
     RegisterTeamRequest, RejectRegistrationRequest,
 };
 use crate::dto::responses::{
-    CheckInStatusResponse, MatchParticipantsResponse, TournamentInvitationResponse,
+    CheckInStatusResponse, MatchParticipantsResponse, MyTournamentRegistrationsResponse,
+    TournamentInvitationResponse, TournamentRegistrationCountsResponse,
     TournamentRegistrationResponse,
 };
 use crate::error::{ApiError, ApiResult};
@@ -30,6 +31,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{PlayerId, TournamentId};
 use portal_domain::repositories::tournament::TournamentMatchRepository;
+use portal_domain::services::tournament::RegistrationActor;
 
 /// Query parameter for filtering registrations by status.
 #[derive(Debug, serde::Deserialize)]
@@ -475,6 +477,106 @@ pub async fn get_registrations(
     )))
 }
 
+/// The caller's own registrations in this tournament.
+///
+/// # Why this endpoint exists (P-167)
+///
+/// `TournamentDetailPage` decided whether the viewer was registered by
+/// fetching `GET /v1/tournaments/{id}/registrations` — with **no `per_page`,
+/// so the default 20** — and scanning the returned page for them. Past row 20
+/// every participant was told they were not registered: the page rendered the
+/// "Join This Tournament" call to action, with no Registered chip, no
+/// withdraw control and no check-in, on the page every entrant lands on
+/// first. The organiser's derived numbers (`hasEligibleTeams`, the pending
+/// count) were computed from the same 20-row sample.
+///
+/// Raising `per_page` would only move the ceiling — this codebase has now hit
+/// exactly this defect at 20 and at 100 — so identity is resolved directly.
+/// Cost is bounded by the caller's own team memberships, not by the size of
+/// the tournament.
+///
+/// "Mine" is [`RegistrationService::speaks_for`], the same rule that
+/// authorizes result submission, confirmation and disputes (P-168): the
+/// registered player, or an active member of the registered team-season. A
+/// client can therefore trust that what this returns is what the write
+/// endpoints will accept.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/registrations/me",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+    ),
+    responses(
+        (status = 200, description = "The caller's registrations in this tournament", body = DataResponse<MyTournamentRegistrationsResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn get_my_registrations(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(tournament_id): Path<TournamentId>,
+) -> ApiResult<Json<DataResponse<MyTournamentRegistrationsResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let registrations = state
+        .registration_service
+        .list_for_actor(
+            tournament_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
+        )
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        MyTournamentRegistrationsResponse {
+            tournament_id: tournament_id.to_string(),
+            registrations: registrations
+                .into_iter()
+                .map(TournamentRegistrationResponse::from)
+                .collect(),
+        },
+        request_id,
+    )))
+}
+
+/// Real per-status registration counts for a tournament.
+///
+/// # Why this endpoint exists (P-167)
+///
+/// "27 participants" and "12 pending approvals" were `page.length` of a
+/// 20-row page of the registrations list. A 64-slot tournament with 40
+/// entrants rendered "20 / 64" — advertising 44 free slots that do not
+/// exist — and an organiser with 40 people waiting on approval saw "20
+/// pending". Public: the participant count is on the public tournament page.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/registrations/counts",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+    ),
+    responses(
+        (status = 200, description = "Registration counts by status", body = DataResponse<TournamentRegistrationCountsResponse>),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    tag = "tournaments"
+)]
+pub async fn get_registration_counts(
+    State(state): State<TournamentState>,
+    headers: HeaderMap,
+    Path(tournament_id): Path<TournamentId>,
+) -> ApiResult<Json<DataResponse<TournamentRegistrationCountsResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let counts = state.registration_service.counts(tournament_id).await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentRegistrationCountsResponse::new(tournament_id.to_string(), counts),
+        request_id,
+    )))
+}
+
 /// Resolve the two registrations facing each other in one match, and which of
 /// them belongs to the caller.
 ///
@@ -495,10 +597,13 @@ pub async fn get_registrations(
 /// the match row removes it: the match already names both registrations, so
 /// this is two lookups by id regardless of how large the tournament is.
 ///
-/// `my_registration_id` uses the same "belongs to" test as the dispute thread
-/// (`is_dispute_participant`): the registered player themself, or an active
-/// member of the registration's team-season. Staff and spectators get `null`,
-/// which is exactly what the participant-only panels should key off.
+/// `my_registration_id` uses `RegistrationService::speaks_for`, the single
+/// definition of "acts for this participant" (P-168): the registered player
+/// themself, or an active member of the registration's team-season. Staff and
+/// spectators get `null`, which is exactly what the participant-only panels
+/// should key off — and, since submission and confirmation are authorized
+/// under the same rule, a panel is never offered to someone the backend will
+/// refuse.
 #[utoipa::path(
     get,
     path = "/v1/tournaments/{tournament_id}/matches/{match_id}/participants",
@@ -545,17 +650,14 @@ pub async fn get_match_participants(
         let Some(reg_id) = reg_id else { continue };
         let registration = state.registration_service.get_registration(reg_id).await?;
 
-        let is_mine = registration.player_id == Some(auth.player_id)
-            || match registration.team_season_id {
-                Some(ts_id) => {
-                    state
-                        .league_team_service
-                        .is_member(ts_id, auth.player_id)
-                        .await?
-                }
-                None => false,
-            };
-        if is_mine {
+        if state
+            .registration_service
+            .speaks_for(
+                &registration,
+                RegistrationActor::new(auth.user_id, auth.player_id),
+            )
+            .await?
+        {
             my_registration_id = Some(reg_id.to_string());
         }
 

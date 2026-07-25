@@ -524,6 +524,36 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
         Ok(count.0)
     }
 
+    async fn count_all_by_status(
+        &self,
+        tournament_id: TournamentId,
+    ) -> Result<Vec<(TournamentRegistrationStatus, i64)>, DomainError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            r"
+            SELECT status, COUNT(*) FROM tournament_registrations
+            WHERE tournament_id = $1
+            GROUP BY status
+            ",
+        )
+        .bind(tournament_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        rows.into_iter()
+            .map(|(status, count)| {
+                status
+                    .parse::<TournamentRegistrationStatus>()
+                    .map(|s| (s, count))
+                    .map_err(|e| {
+                        DomainError::Internal(format!(
+                            "Unknown registration status {status:?}: {e}"
+                        ))
+                    })
+            })
+            .collect()
+    }
+
     async fn bulk_update_seeds(
         &self,
         seeds: Vec<(TournamentRegistrationId, i32)>,

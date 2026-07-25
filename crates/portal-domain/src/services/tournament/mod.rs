@@ -5,6 +5,9 @@
 //! - `TournamentService`: Core tournament management
 //! - `BracketGenerator`: Bracket generation for various formats
 //! - `RegistrationService`: Registration management (withdraw, approve, reject)
+//! - `registration_actor`: the single definition of "who speaks for a
+//!   registration", shared by result submission/confirmation, disputes,
+//!   evidence, scheduling and withdrawal (P-168)
 //! - `CheckInService`: Check-in operations
 //! - `SeedingService`: Participant seeding algorithms
 //! - `MatchLifecycleService`: Match state machine and lifecycle management
@@ -31,6 +34,7 @@ mod match_completion;
 mod match_lifecycle;
 mod progression;
 mod registration;
+mod registration_actor;
 mod result;
 mod result_review;
 mod saga;
@@ -61,7 +65,8 @@ pub use match_completion::{
 };
 pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails, MatchStatusTransitioner};
 pub use progression::{Advancement, LoserResult, ProgressionResult, ProgressionService};
-pub use registration::{RegistrationService, initial_registration_status};
+pub use registration::{RegistrationCounts, RegistrationService, initial_registration_status};
+pub use registration_actor::{RegistrationActor, find_actor_registration, speaks_for_registration};
 pub use result::{
     MATCH_RESULT_OVERRIDE_ENTITY, MATCH_RESULT_OVERRIDE_FIELD, MapPoolProvider, ResultService,
 };

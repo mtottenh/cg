@@ -14,7 +14,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use portal_core::{ResultReviewId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::repositories::tournament::TournamentMatchRepository;
-use portal_domain::services::tournament::MatchCompletionInput;
+use portal_domain::services::tournament::{MatchCompletionInput, RegistrationActor};
 use tracing::warn;
 
 /// Extract request ID from headers.
@@ -118,17 +118,14 @@ pub async fn acknowledge_result_review(
             .get_registration(registration_id)
             .await?;
 
-        let is_registered_player = registration.player_id == Some(auth.player_id);
-        let is_team_member = if let Some(ts_id) = registration.team_season_id {
-            state
-                .league_team_service
-                .is_member(ts_id, auth.player_id)
-                .await?
-        } else {
-            false
-        };
-
-        if !is_registered_player && !is_team_member {
+        if !state
+            .registration_service
+            .speaks_for(
+                &registration,
+                RegistrationActor::new(auth.user_id, auth.player_id),
+            )
+            .await?
+        {
             return Err(ApiError::forbidden(
                 "Not authorized to acknowledge for this registration",
             ));

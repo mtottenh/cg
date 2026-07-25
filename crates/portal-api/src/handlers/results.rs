@@ -23,6 +23,7 @@ use portal_domain::entities::result_claim::GameResultInput;
 use portal_domain::repositories::tournament::TournamentMatchRepository;
 use portal_domain::services::tournament::{
     MATCH_RESULT_OVERRIDE_ENTITY, MATCH_RESULT_OVERRIDE_FIELD, MatchCompletionInput,
+    RegistrationActor,
 };
 use std::collections::HashMap;
 use tracing::warn;
@@ -137,7 +138,7 @@ pub async fn submit_result(
             evidence_ids,
             demo_link_ids,
             req.notes,
-            auth.user_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
         )
         .await?;
 
@@ -275,7 +276,10 @@ pub async fn confirm_result(
     // Confirm the claim (marks match completed with scores)
     let claim = state
         .result_service
-        .confirm_claim(claim_id, auth.user_id)
+        .confirm_claim(
+            claim_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
+        )
         .await?;
 
     // Determine loser registration ID from match participants
@@ -432,7 +436,10 @@ pub async fn dispute_result(
     // the admin queue.
     let (claim, disputer_registration) = state
         .result_service
-        .authorize_claim_dispute(claim_id, auth.user_id)
+        .authorize_claim_dispute(
+            claim_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
+        )
         .await?;
 
     dispute_state

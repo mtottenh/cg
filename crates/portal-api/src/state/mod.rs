@@ -102,8 +102,11 @@ pub type AppTournamentService = TournamentService<
     PgTournamentMapPoolRepository,
     PgTournamentInvitationRepository,
 >;
-pub type AppRegistrationService =
-    RegistrationService<PgTournamentRepository, PgTournamentRegistrationRepository>;
+pub type AppRegistrationService = RegistrationService<
+    PgTournamentRepository,
+    PgTournamentRegistrationRepository,
+    PgLeagueTeamMemberRepository,
+>;
 pub type AppCheckInService =
     CheckInService<PgTournamentRepository, PgTournamentRegistrationRepository>;
 pub type AppSeedingService =
@@ -123,6 +126,7 @@ pub type AppSchedulingService = SchedulingService<
     PgScheduleProposalRepository,
     PgTournamentMatchRepository,
     PgTournamentRegistrationRepository,
+    PgLeagueTeamMemberRepository,
 >;
 pub type AppAvailabilityService = AvailabilityService<
     PgAvailabilityWindowRepository,
@@ -139,6 +143,7 @@ pub type AppResultService = ResultService<
     PgTournamentRegistrationRepository,
     PgDemoMatchLinkRepository,
     PgVetoSessionRepository,
+    PgLeagueTeamMemberRepository,
 >;
 pub type AppProgressionService = ProgressionService<
     PgTournamentMatchRepository,
@@ -152,6 +157,7 @@ pub type AppEvidenceService = EvidenceService<
     PgTournamentMatchRepository,
     PgTournamentRegistrationRepository,
     EvidenceStorageBackend,
+    PgLeagueTeamMemberRepository,
 >;
 pub type AppForfeitService = ForfeitService<
     PgForfeitRecordRepository,
@@ -569,6 +575,7 @@ impl AppState {
         let registration_service = RegistrationService::new(
             Arc::clone(&tournament_repo),
             Arc::clone(&tournament_registration_repo),
+            Arc::clone(&league_team_member_repo),
         );
         let checkin_service = CheckInService::new(
             Arc::clone(&tournament_repo),
@@ -600,6 +607,7 @@ impl AppState {
             Arc::clone(&schedule_proposal_repo),
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_registration_repo),
+            Arc::clone(&league_team_member_repo),
         )
         // P-84: admin scheduling is audited through the lifecycle service.
         .with_match_transitioner(Arc::new(match_lifecycle_service.clone()));
@@ -648,6 +656,7 @@ impl AppState {
             Arc::clone(&tournament_registration_repo),
             Arc::clone(&demo_match_link_repo),
             Arc::clone(&veto_session_repo),
+            Arc::clone(&league_team_member_repo),
         )
         .with_map_pool_provider(Arc::new(crate::adapters::DbMapPoolProvider::new(
             Arc::clone(&tournament_map_pool_repo),
@@ -714,6 +723,7 @@ impl AppState {
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_registration_repo),
             Arc::new(evidence_storage),
+            Arc::clone(&league_team_member_repo),
             evidence_config,
         );
 
@@ -930,6 +940,7 @@ impl AppState {
             match_repo,
             reg_repo,
             Arc::new(storage),
+            Arc::new(PgLeagueTeamMemberRepository::new(self.db_pool.clone())),
             config,
         );
         self

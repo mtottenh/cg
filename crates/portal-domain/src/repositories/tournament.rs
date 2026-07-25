@@ -504,6 +504,19 @@ pub trait TournamentRegistrationRepository: Send + Sync {
         status: TournamentRegistrationStatus,
     ) -> Result<i64, DomainError>;
 
+    /// Count registrations for every status present, in one query.
+    ///
+    /// Backs the tournament page's participant and pending-approval counts.
+    /// Those were previously `page.length` of a 20-row page of the
+    /// registrations list, so a 128-player event reported 20 participants and
+    /// (with everyone awaiting approval) exactly 20 pending — numbers that
+    /// were wrong in a way nobody could see (P-167). Statuses with no rows are
+    /// simply absent from the result.
+    async fn count_all_by_status(
+        &self,
+        tournament_id: TournamentId,
+    ) -> Result<Vec<(TournamentRegistrationStatus, i64)>, DomainError>;
+
     /// Bulk update seeds.
     async fn bulk_update_seeds(
         &self,

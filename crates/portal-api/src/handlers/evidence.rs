@@ -22,6 +22,7 @@ use portal_core::{EvidenceId, ScopeType, TournamentMatchId};
 use portal_domain::entities::evidence::{MatchEvidenceContext, ParticipantContext};
 use portal_domain::entities::result_claim::GameResult as DomainGameResult;
 use portal_domain::repositories::TournamentMatchRepository;
+use portal_domain::services::tournament::RegistrationActor;
 use std::sync::Arc;
 
 /// Extract request ID from headers.
@@ -139,7 +140,7 @@ pub async fn initiate_upload(
             req.file_name,
             req.file_size_bytes,
             req.mime_type,
-            auth.user_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
             acting_as_admin,
         )
         .await?;
@@ -262,7 +263,7 @@ pub async fn add_link_evidence(
             req.url,
             req.name,
             req.description,
-            auth.user_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
             acting_as_admin,
         )
         .await?;
@@ -435,7 +436,7 @@ pub async fn get_access_url(
         .evidence_service
         .get_access_url(
             evidence_id,
-            auth.user_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
             acting_as_admin,
             ip_address,
             user_agent,
@@ -486,7 +487,11 @@ pub async fn delete_evidence(
     // Authorize before any side effects (the demo unlink below mutates state).
     state
         .evidence_service
-        .delete_evidence(evidence_id, auth.user_id, acting_as_admin)
+        .delete_evidence(
+            evidence_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
+            acting_as_admin,
+        )
         .await?;
 
     if let Some(demo_id_str) = evidence
@@ -672,7 +677,7 @@ pub async fn link_discovered_evidence(
                 match_id,
                 discovered,
                 req.game_number,
-                auth.user_id,
+                RegistrationActor::new(auth.user_id, auth.player_id),
                 EvidenceSource::ManualUpload,
             )
             .await?;
@@ -714,7 +719,7 @@ pub async fn link_discovered_evidence(
             match_id,
             discovered,
             req.game_number,
-            auth.user_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
             EvidenceSource::ManualUpload,
         )
         .await?;
@@ -1545,7 +1550,7 @@ pub async fn link_demo(
             match_id,
             discovered,
             req.game_number,
-            auth.user_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
             EvidenceSource::ManualUpload,
         )
         .await?;

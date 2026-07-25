@@ -68,6 +68,18 @@ pub fn routes() -> Router<AppState> {
             "/{tournament_id}/registrations",
             get(tournaments::get_registrations),
         )
+        // P-167: the caller's own registrations, and real per-status counts.
+        // Both replace client-side arithmetic over ONE PAGE of the list above,
+        // which told everyone past row 20 that they were not registered and
+        // reported a 64-slot tournament as "20 / 64".
+        .route(
+            "/{tournament_id}/registrations/me",
+            get(tournaments::get_my_registrations),
+        )
+        .route(
+            "/{tournament_id}/registrations/counts",
+            get(tournaments::get_registration_counts),
+        )
         .route(
             "/{tournament_id}/registrations/team",
             post(tournaments::register_team),

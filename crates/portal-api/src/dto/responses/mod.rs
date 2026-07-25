@@ -98,11 +98,12 @@ pub use role::{
 };
 pub use tournament::{
     CheckInStatusResponse, MatchParticipantsResponse, MatchResultOverrideResponse,
-    MatchStatusDetailsResponse, MatchStatusLogResponse, ScheduleProposalResponse,
-    SeededParticipantResponse, TournamentBracketResponse, TournamentInvitationResponse,
-    TournamentMapPoolResponse, TournamentMatchGameResponse, TournamentMatchResponse,
-    TournamentRegistrationResponse, TournamentResponse, TournamentStageResponse,
-    TournamentStandingResponse, TournamentSummaryResponse,
+    MatchStatusDetailsResponse, MatchStatusLogResponse, MyTournamentRegistrationsResponse,
+    ScheduleProposalResponse, SeededParticipantResponse, TournamentBracketResponse,
+    TournamentInvitationResponse, TournamentMapPoolResponse, TournamentMatchGameResponse,
+    TournamentMatchResponse, TournamentRegistrationCountsResponse, TournamentRegistrationResponse,
+    TournamentResponse, TournamentStageResponse, TournamentStandingResponse,
+    TournamentSummaryResponse,
 };
 pub use user::UserResponse;
 pub use veto::{

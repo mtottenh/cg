@@ -21,11 +21,13 @@ use crate::entities::result_claim::{
 use crate::entities::tournament::TournamentMatch;
 use crate::entities::veto::VetoStatus;
 use crate::repositories::demo::DemoMatchLinkRepository;
+use crate::repositories::league_team::LeagueTeamMemberRepository;
 use crate::repositories::tournament::{
     CreateResultClaim, ResultClaimRepository, TournamentMatchRepository,
     TournamentRegistrationRepository, VetoSessionRepository,
 };
 use crate::services::tournament::match_lifecycle::MatchStatusTransitioner;
+use crate::services::tournament::registration_actor::{RegistrationActor, find_actor_registration};
 
 // =============================================================================
 // PROVIDER TRAITS
@@ -94,31 +96,38 @@ fn check_map_ids(
 
 /// Service for managing match result submissions.
 #[derive(Clone)]
-pub struct ResultService<RCR, TMR, TRR, DMLR, VSR>
+pub struct ResultService<RCR, TMR, TRR, DMLR, VSR, LTMR>
 where
     RCR: ResultClaimRepository,
     TMR: TournamentMatchRepository,
     TRR: TournamentRegistrationRepository,
     DMLR: DemoMatchLinkRepository,
     VSR: VetoSessionRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     claim_repo: Arc<RCR>,
     match_repo: Arc<TMR>,
     registration_repo: Arc<TRR>,
     demo_link_repo: Arc<DMLR>,
     veto_session_repo: Arc<VSR>,
+    /// Roster lookups behind [`speaks_for_registration`] — the single
+    /// definition of who may act for a participant (P-168). Mandatory rather
+    /// than an `Option` builder: a service missing it would silently fall back
+    /// to "only the person who clicked register", which is the defect.
+    member_repo: Arc<LTMR>,
     map_pool_provider: Option<Arc<dyn MapPoolProvider>>,
     match_transitioner: Option<Arc<dyn MatchStatusTransitioner>>,
     auto_confirm_timeout_seconds: i64,
 }
 
-impl<RCR, TMR, TRR, DMLR, VSR> ResultService<RCR, TMR, TRR, DMLR, VSR>
+impl<RCR, TMR, TRR, DMLR, VSR, LTMR> ResultService<RCR, TMR, TRR, DMLR, VSR, LTMR>
 where
     RCR: ResultClaimRepository,
     TMR: TournamentMatchRepository,
     TRR: TournamentRegistrationRepository,
     DMLR: DemoMatchLinkRepository,
     VSR: VetoSessionRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     /// Create a new result service with default 15-minute auto-confirm timeout.
     pub fn new(
@@ -127,6 +136,7 @@ where
         registration_repo: Arc<TRR>,
         demo_link_repo: Arc<DMLR>,
         veto_session_repo: Arc<VSR>,
+        member_repo: Arc<LTMR>,
     ) -> Self {
         Self {
             claim_repo,
@@ -134,6 +144,7 @@ where
             registration_repo,
             demo_link_repo,
             veto_session_repo,
+            member_repo,
             map_pool_provider: None,
             match_transitioner: None,
             // P-57: 24 hours, raised from 15 minutes. Auto-confirm makes a score
@@ -187,7 +198,7 @@ where
         evidence_ids: Vec<EvidenceId>,
         demo_link_ids: Vec<DemoMatchLinkId>,
         notes: Option<String>,
-        submitted_by_user: UserId,
+        submitted_by: RegistrationActor,
     ) -> Result<ResultClaim, DomainError> {
         // Get the match
         let match_ = self.get_match(match_id).await?;
@@ -200,10 +211,10 @@ where
             )));
         }
 
-        // Determine which participant the submitter is acting for
-        let submitter_registration = self
-            .find_user_registration(&match_, submitted_by_user)
-            .await?;
+        // Determine which participant the submitter is acting for. Any active
+        // member of the registered team's roster speaks for it (P-168) — not
+        // just whoever happened to click "register".
+        let submitter_registration = self.find_actor_registration(&match_, submitted_by).await?;
 
         // Validate the claim
         self.validate_claim(
@@ -266,7 +277,7 @@ where
             .create_and_supersede_pending(CreateResultClaim {
                 match_id,
                 submitted_by_registration_id: submitter_registration,
-                submitted_by_user_id: submitted_by_user,
+                submitted_by_user_id: submitted_by.user_id,
                 claimed_winner_registration_id: claimed_winner,
                 participant1_score,
                 participant2_score,
@@ -324,7 +335,7 @@ where
     pub async fn confirm_claim(
         &self,
         claim_id: ResultClaimId,
-        confirmed_by_user: UserId,
+        confirmed_by: RegistrationActor,
     ) -> Result<ResultClaim, DomainError> {
         let claim = self.get_claim(claim_id).await?;
 
@@ -338,10 +349,9 @@ where
         // Get the match
         let match_ = self.get_match(claim.match_id).await?;
 
-        // Determine which participant the confirmer is acting for
-        let confirmer_registration = self
-            .find_user_registration(&match_, confirmed_by_user)
-            .await?;
+        // Determine which participant the confirmer is acting for (P-168:
+        // roster membership, not "who registered the team").
+        let confirmer_registration = self.find_actor_registration(&match_, confirmed_by).await?;
 
         // Verify confirmer is not the submitter
         if confirmer_registration == claim.submitted_by_registration_id {
@@ -367,7 +377,7 @@ where
             .confirm_and_apply_to_match(
                 claim_id,
                 confirmer_registration,
-                confirmed_by_user,
+                confirmed_by.user_id,
                 false,
                 match_.id,
                 claim.claimed_winner_registration_id,
@@ -380,7 +390,7 @@ where
         info!(
             claim_id = %claim_id,
             match_id = %claim.match_id,
-            confirmed_by = %confirmed_by_user,
+            confirmed_by = %confirmed_by.user_id,
             "Result claim confirmed"
         );
 
@@ -508,7 +518,7 @@ where
     pub async fn authorize_claim_dispute(
         &self,
         claim_id: ResultClaimId,
-        disputed_by_user: UserId,
+        disputed_by: RegistrationActor,
     ) -> Result<(ResultClaim, TournamentRegistrationId), DomainError> {
         let claim = self.get_claim(claim_id).await?;
 
@@ -522,10 +532,9 @@ where
         // Get the match
         let match_ = self.get_match(claim.match_id).await?;
 
-        // Determine which participant the disputer is acting for
-        let disputer_registration = self
-            .find_user_registration(&match_, disputed_by_user)
-            .await?;
+        // Determine which participant the disputer is acting for — the same
+        // rule the submission it disputes was authorized under (P-168).
+        let disputer_registration = self.find_actor_registration(&match_, disputed_by).await?;
 
         // Verify disputer is not the submitter
         if disputer_registration == claim.submitted_by_registration_id {
@@ -641,34 +650,26 @@ where
             .ok_or(DomainError::ResultClaimNotFound(id))
     }
 
-    async fn find_user_registration(
+    /// Which of this match's registrations the actor speaks for.
+    ///
+    /// Delegates to [`find_actor_registration`], the single definition shared
+    /// with disputes, evidence, scheduling and withdrawal. The version this
+    /// replaced tested `registration.registered_by == user_id`, so exactly one
+    /// human per team could submit or confirm a result — while the frontend,
+    /// which gates on roster membership, offered the panel to all of them
+    /// (P-168).
+    async fn find_actor_registration(
         &self,
         match_: &TournamentMatch,
-        user_id: UserId,
+        actor: RegistrationActor,
     ) -> Result<TournamentRegistrationId, DomainError> {
-        // Check participant 1
-        if let Some(reg_id) = match_.participant1_registration_id {
-            let reg = self.registration_repo.find_by_id(reg_id).await?;
-            if let Some(r) = reg
-                && r.registered_by == user_id
-            {
-                return Ok(reg_id);
-            }
-        }
-
-        // Check participant 2
-        if let Some(reg_id) = match_.participant2_registration_id {
-            let reg = self.registration_repo.find_by_id(reg_id).await?;
-            if let Some(r) = reg
-                && r.registered_by == user_id
-            {
-                return Ok(reg_id);
-            }
-        }
-
-        Err(DomainError::NotAuthorized(
-            "User is not authorized to act for any participant in this match".to_string(),
-        ))
+        find_actor_registration(
+            self.registration_repo.as_ref(),
+            self.member_repo.as_ref(),
+            match_,
+            actor,
+        )
+        .await
     }
 
     async fn validate_claim(
@@ -997,6 +998,7 @@ mod tests {
     use crate::entities::tournament::TournamentMatch;
     use crate::entities::veto::VetoSession;
     use crate::repositories::demo::MockDemoMatchLinkRepository;
+    use crate::repositories::league_team::MockLeagueTeamMemberRepository;
     use crate::repositories::tournament::{
         MockResultClaimRepository, MockTournamentMatchRepository,
         MockTournamentRegistrationRepository, MockVetoSessionRepository,
@@ -1012,6 +1014,7 @@ mod tests {
         MockTournamentRegistrationRepository,
         MockDemoMatchLinkRepository,
         MockVetoSessionRepository,
+        MockLeagueTeamMemberRepository,
     >;
 
     fn make_service(veto_repo: MockVetoSessionRepository) -> TestService {
@@ -1021,6 +1024,7 @@ mod tests {
             Arc::new(MockTournamentRegistrationRepository::new()),
             Arc::new(MockDemoMatchLinkRepository::new()),
             Arc::new(veto_repo),
+            Arc::new(MockLeagueTeamMemberRepository::new()),
         )
     }
 

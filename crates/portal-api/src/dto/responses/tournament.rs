@@ -10,7 +10,7 @@ use portal_domain::entities::tournament::{
     TournamentRegistration, TournamentStage, TournamentStanding,
 };
 use portal_domain::entities::{MatchStatusLog, ScheduleProposal};
-use portal_domain::services::tournament::MatchStatusDetails;
+use portal_domain::services::tournament::{MatchStatusDetails, RegistrationCounts};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -957,6 +957,95 @@ pub struct MatchParticipantsResponse {
     /// team-season. `null` for spectators and staff.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub my_registration_id: Option<String>,
+}
+
+// =============================================================================
+// SELF-SCOPED REGISTRATION LOOKUP + REAL COUNTS (P-167)
+// =============================================================================
+
+/// Every registration in one tournament that the caller speaks for.
+///
+/// # Why this exists
+///
+/// The tournament page decided "am I registered?" by fetching
+/// `GET /v1/tournaments/{id}/registrations` **at the default `per_page` of
+/// 20** and scanning the page for the viewer. Past row 20 every participant
+/// was shown the "Join This Tournament" call to action instead of their own
+/// registration: no Registered chip, no withdraw control, no check-in — the
+/// product told them, on the page they land on first, that they were not in a
+/// tournament they were in.
+///
+/// Widening the page only moves the ceiling (the same defect was already
+/// fixed once at 100), so the question is answered directly: at most one
+/// lookup by player plus one per team-season the caller belongs to,
+/// regardless of how large the tournament is.
+///
+/// Usually zero or one row. It is a list because a player can legitimately
+/// hold both an individual row and a team row (different tournaments allow
+/// different things), and because silently picking one of several would be
+/// the same class of lie this replaces.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MyTournamentRegistrationsResponse {
+    /// Tournament the rows belong to.
+    pub tournament_id: String,
+    /// The caller's registrations, including terminal ones (`withdrawn`,
+    /// `disqualified`) so the client can tell "withdrew" from "never entered".
+    pub registrations: Vec<TournamentRegistrationResponse>,
+}
+
+/// Real per-status registration counts for a tournament.
+///
+/// The participant count and the pending-approvals badge used to be the
+/// `.length` of a **page** of the registrations list, so a 64-slot event with
+/// 40 entrants displayed "20 / 64" — telling every viewer there were 44 free
+/// slots — and an organiser with 40 people waiting saw "20 pending approvals"
+/// (P-167).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentRegistrationCountsResponse {
+    /// Tournament these counts describe.
+    pub tournament_id: String,
+    /// Every registration row, whatever its status.
+    pub total: i64,
+    /// Rows that still represent someone taking part — everything except
+    /// `withdrawn` and `disqualified`. This is the number to show against
+    /// `max_participants`.
+    pub participating: i64,
+    /// Awaiting organiser approval.
+    pub pending: i64,
+    /// Approved, awaiting check-in.
+    pub approved: i64,
+    /// Checked in.
+    pub checked_in: i64,
+    /// Currently competing.
+    pub active: i64,
+    /// Eliminated.
+    pub eliminated: i64,
+    /// Removed for a rule violation.
+    pub disqualified: i64,
+    /// Voluntarily withdrawn.
+    pub withdrawn: i64,
+    /// Failed to check in.
+    pub no_show: i64,
+}
+
+impl TournamentRegistrationCountsResponse {
+    /// Build from the domain counts.
+    #[must_use]
+    pub fn new(tournament_id: String, counts: RegistrationCounts) -> Self {
+        Self {
+            tournament_id,
+            total: counts.total,
+            participating: counts.participating,
+            pending: counts.pending,
+            approved: counts.approved,
+            checked_in: counts.checked_in,
+            active: counts.active,
+            eliminated: counts.eliminated,
+            disqualified: counts.disqualified,
+            withdrawn: counts.withdrawn,
+            no_show: counts.no_show,
+        }
+    }
 }
 
 // =============================================================================

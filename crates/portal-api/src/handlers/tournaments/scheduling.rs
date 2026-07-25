@@ -30,6 +30,7 @@ use portal_core::{ScheduleProposalId, TournamentId, TournamentMatchId};
 use portal_domain::entities::schedule_proposal::{
     AcceptProposalCommand, CancelProposalCommand, CounterProposeCommand, RejectProposalCommand,
 };
+use portal_domain::services::tournament::RegistrationActor;
 
 /// Propose schedule times for a match.
 #[utoipa::path(
@@ -65,7 +66,12 @@ pub async fn propose_schedule(
 
     let proposal = state
         .scheduling_service
-        .propose_schedule(match_id, req.proposed_times, auth.user_id, req.notes)
+        .propose_schedule(
+            match_id,
+            req.proposed_times,
+            RegistrationActor::new(auth.user_id, auth.player_id),
+            req.notes,
+        )
         .await?;
 
     Ok((
@@ -112,7 +118,7 @@ pub async fn accept_schedule_proposal(
     let command = AcceptProposalCommand {
         proposal_id,
         selected_time: req.selected_time,
-        accepted_by_user_id: auth.user_id,
+        accepted_by: RegistrationActor::new(auth.user_id, auth.player_id),
     };
 
     let (_proposal, match_) = state.scheduling_service.accept_proposal(command).await?;
@@ -157,7 +163,7 @@ pub async fn reject_schedule_proposal(
 
     let command = RejectProposalCommand {
         proposal_id,
-        rejected_by_user_id: auth.user_id,
+        rejected_by: RegistrationActor::new(auth.user_id, auth.player_id),
         reason: req.reason,
     };
 
@@ -293,7 +299,7 @@ pub async fn counter_propose(
         original_proposal_id,
         match_id,
         proposed_by_registration_id: registration_id,
-        proposed_by_user_id: auth.user_id,
+        proposed_by: RegistrationActor::new(auth.user_id, auth.player_id),
         proposed_times: req.proposed_times,
         expires_at: chrono::Utc::now() + chrono::Duration::hours(48),
         notes: req.notes,

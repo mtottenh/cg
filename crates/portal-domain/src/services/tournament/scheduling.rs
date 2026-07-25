@@ -12,24 +12,28 @@ use crate::entities::{
     CreateScheduleProposalCommand, RejectProposalCommand, ScheduleProposal, TournamentMatch,
 };
 use crate::repositories::{
-    ScheduleProposalRepository, TournamentMatchRepository, TournamentRegistrationRepository,
-    UpdateTournamentMatch,
+    LeagueTeamMemberRepository, ScheduleProposalRepository, TournamentMatchRepository,
+    TournamentRegistrationRepository, UpdateTournamentMatch,
 };
+use crate::services::tournament::registration_actor::{RegistrationActor, find_actor_registration};
 
 /// Default time-to-live for schedule proposals (48 hours).
 const DEFAULT_PROPOSAL_TTL_HOURS: i64 = 48;
 
 /// Service for managing match scheduling through proposals.
 #[derive(Clone)]
-pub struct SchedulingService<SPR, TMR, TRR>
+pub struct SchedulingService<SPR, TMR, TRR, LTMR>
 where
     SPR: ScheduleProposalRepository,
     TMR: TournamentMatchRepository,
     TRR: TournamentRegistrationRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     proposal_repo: Arc<SPR>,
     match_repo: Arc<TMR>,
     registration_repo: Arc<TRR>,
+    /// Roster lookups for `speaks_for_registration` (P-168).
+    member_repo: Arc<LTMR>,
     proposal_ttl: Duration,
     /// P-84: optional so construction order stays simple, mirroring
     /// `ResultService::with_match_transitioner`. When present, `admin_schedule`
@@ -39,18 +43,25 @@ where
     match_transitioner: Option<Arc<dyn crate::services::tournament::MatchStatusTransitioner>>,
 }
 
-impl<SPR, TMR, TRR> SchedulingService<SPR, TMR, TRR>
+impl<SPR, TMR, TRR, LTMR> SchedulingService<SPR, TMR, TRR, LTMR>
 where
     SPR: ScheduleProposalRepository,
     TMR: TournamentMatchRepository,
     TRR: TournamentRegistrationRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     /// Create a new scheduling service.
-    pub fn new(proposal_repo: Arc<SPR>, match_repo: Arc<TMR>, registration_repo: Arc<TRR>) -> Self {
+    pub fn new(
+        proposal_repo: Arc<SPR>,
+        match_repo: Arc<TMR>,
+        registration_repo: Arc<TRR>,
+        member_repo: Arc<LTMR>,
+    ) -> Self {
         Self {
             proposal_repo,
             match_repo,
             registration_repo,
+            member_repo,
             match_transitioner: None,
             proposal_ttl: Duration::hours(DEFAULT_PROPOSAL_TTL_HOURS),
         }
@@ -73,7 +84,7 @@ where
         &self,
         match_id: TournamentMatchId,
         proposed_times: Vec<DateTime<Utc>>,
-        proposed_by: UserId,
+        proposed_by: RegistrationActor,
         notes: Option<String>,
     ) -> Result<ScheduleProposal, DomainError> {
         // Validate match exists and can be scheduled
@@ -118,15 +129,16 @@ where
             )));
         }
 
-        // Find the registration for this user in this match
+        // Which registration is the proposer acting for? Roster membership,
+        // not "who clicked register" (P-168).
         let registration_id = self
-            .find_user_registration_in_match(proposed_by, &tournament_match)
+            .find_actor_registration(proposed_by, &tournament_match)
             .await?;
 
         let command = CreateScheduleProposalCommand {
             match_id,
             proposed_by_registration_id: registration_id,
-            proposed_by_user_id: proposed_by,
+            proposed_by_user_id: proposed_by.user_id,
             proposed_times,
             expires_at: now + self.proposal_ttl,
             notes,
@@ -176,18 +188,14 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(proposal.match_id))?;
 
-        self.validate_responder_is_opponent(
-            command.accepted_by_user_id,
-            &proposal,
-            &tournament_match,
-        )
-        .await?;
+        self.validate_responder_is_opponent(command.accepted_by, &proposal, &tournament_match)
+            .await?;
 
         // Update proposal
         proposal.status = ProposalStatus::Accepted;
         proposal.selected_time = Some(command.selected_time);
         proposal.responded_at = Some(Utc::now());
-        proposal.responded_by_user_id = Some(command.accepted_by_user_id);
+        proposal.responded_by_user_id = Some(command.accepted_by.user_id);
 
         let updated_proposal = self.proposal_repo.update(&proposal).await?;
 
@@ -235,16 +243,12 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(proposal.match_id))?;
 
-        self.validate_responder_is_opponent(
-            command.rejected_by_user_id,
-            &proposal,
-            &tournament_match,
-        )
-        .await?;
+        self.validate_responder_is_opponent(command.rejected_by, &proposal, &tournament_match)
+            .await?;
 
         proposal.status = ProposalStatus::Rejected;
         proposal.responded_at = Some(Utc::now());
-        proposal.responded_by_user_id = Some(command.rejected_by_user_id);
+        proposal.responded_by_user_id = Some(command.rejected_by.user_id);
         proposal.rejection_reason = command.reason;
 
         self.proposal_repo.update(&proposal).await
@@ -353,7 +357,7 @@ where
             .ok_or(DomainError::TournamentMatchNotFound(command.match_id))?;
 
         self.validate_responder_is_opponent(
-            command.proposed_by_user_id,
+            command.proposed_by,
             &original_proposal,
             &tournament_match,
         )
@@ -365,7 +369,7 @@ where
             .create(CreateScheduleProposalCommand {
                 match_id: command.match_id,
                 proposed_by_registration_id: command.proposed_by_registration_id,
-                proposed_by_user_id: command.proposed_by_user_id,
+                proposed_by_user_id: command.proposed_by.user_id,
                 proposed_times: command.proposed_times,
                 expires_at: command.expires_at,
                 notes: command.notes,
@@ -376,7 +380,7 @@ where
         original_proposal.status = ProposalStatus::CounterProposed;
         original_proposal.counter_proposal_id = Some(new_proposal.id);
         original_proposal.responded_at = Some(Utc::now());
-        original_proposal.responded_by_user_id = Some(command.proposed_by_user_id);
+        original_proposal.responded_by_user_id = Some(command.proposed_by.user_id);
         self.proposal_repo.update(&original_proposal).await?;
 
         Ok(new_proposal)
@@ -509,51 +513,52 @@ where
         self.match_repo.find_by_id(match_id).await
     }
 
-    /// Find the user's registration in a match.
-    async fn find_user_registration_in_match(
+    /// Which of the match's registrations the actor speaks for.
+    ///
+    /// Was a hand-copy of `registered_by == user_id`, so for a team
+    /// registration only the person who clicked "register" could propose or
+    /// answer a schedule — while the match page offered the scheduling panel
+    /// to every roster member and left the rest with a silent 403 (P-168).
+    async fn find_actor_registration(
         &self,
-        user_id: UserId,
+        actor: RegistrationActor,
         tournament_match: &TournamentMatch,
     ) -> Result<portal_core::ids::TournamentRegistrationId, DomainError> {
-        // Check participant 1
-        if let Some(reg_id) = tournament_match.participant1_registration_id
-            && let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
-            && reg.registered_by == user_id
-        {
-            return Ok(reg_id);
-        }
-
-        // Check participant 2
-        if let Some(reg_id) = tournament_match.participant2_registration_id
-            && let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
-            && reg.registered_by == user_id
-        {
-            return Ok(reg_id);
-        }
-
-        Err(DomainError::NotAuthorized(format!(
-            "User {} is not a participant in match {}",
-            user_id, tournament_match.id
-        )))
+        find_actor_registration(
+            self.registration_repo.as_ref(),
+            self.member_repo.as_ref(),
+            tournament_match,
+            actor,
+        )
+        .await
     }
 
     /// Validate that the responder is the opponent (not the proposer).
     async fn validate_responder_is_opponent(
         &self,
-        responder_id: UserId,
+        responder: RegistrationActor,
         proposal: &ScheduleProposal,
         tournament_match: &TournamentMatch,
     ) -> Result<(), DomainError> {
         // Responder cannot be the proposer
-        if responder_id == proposal.proposed_by_user_id {
+        if responder.user_id == proposal.proposed_by_user_id {
             return Err(DomainError::NotAuthorized(
                 "Cannot respond to your own proposal".to_string(),
             ));
         }
 
-        // Responder must be a participant
-        self.find_user_registration_in_match(responder_id, tournament_match)
+        // Responder must speak for one of the two registrations. NOTE: this
+        // still lets a team-mate of the proposer answer their own team's
+        // proposal; the guard above is per-user by design (P-84's "only the
+        // proposer may withdraw" rule) and is unchanged here.
+        let responder_registration = self
+            .find_actor_registration(responder, tournament_match)
             .await?;
+        if responder_registration == proposal.proposed_by_registration_id {
+            return Err(DomainError::NotAuthorized(
+                "Cannot respond to your own team's proposal".to_string(),
+            ));
+        }
 
         Ok(())
     }

@@ -564,7 +564,9 @@ impl AppState {
             Arc::clone(&schedule_proposal_repo),
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_registration_repo),
-        );
+        )
+        // P-84: admin scheduling is audited through the lifecycle service.
+        .with_match_transitioner(Arc::new(match_lifecycle_service.clone()));
 
         // Create availability repositories and service
         let availability_window_repo =

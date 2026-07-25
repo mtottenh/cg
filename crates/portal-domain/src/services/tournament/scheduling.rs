@@ -31,6 +31,12 @@ where
     match_repo: Arc<TMR>,
     registration_repo: Arc<TRR>,
     proposal_ttl: Duration,
+    /// P-84: optional so construction order stays simple, mirroring
+    /// `ResultService::with_match_transitioner`. When present, `admin_schedule`
+    /// routes its status change through the lifecycle service so the transition
+    /// is LOGGED with the acting admin and their reason. Without it the change
+    /// went straight to the repo and left no `match_status_log` row at all.
+    match_transitioner: Option<Arc<dyn crate::services::tournament::MatchStatusTransitioner>>,
 }
 
 impl<SPR, TMR, TRR> SchedulingService<SPR, TMR, TRR>
@@ -45,6 +51,7 @@ where
             proposal_repo,
             match_repo,
             registration_repo,
+            match_transitioner: None,
             proposal_ttl: Duration::hours(DEFAULT_PROPOSAL_TTL_HOURS),
         }
     }
@@ -378,11 +385,35 @@ where
     /// Admin directly schedules a match.
     ///
     /// Bypasses the proposal workflow entirely.
+    /// P-84: attach the lifecycle service so admin scheduling is auditable.
+    #[must_use]
+    pub fn with_match_transitioner(
+        mut self,
+        transitioner: Arc<dyn crate::services::tournament::MatchStatusTransitioner>,
+    ) -> Self {
+        self.match_transitioner = Some(transitioner);
+        self
+    }
+
+    /// Directly set a match's scheduled time as an admin.
+    ///
+    /// P-84: `notes` used to be collected by the UI, forwarded by the store,
+    /// accepted by `AdminScheduleRequest` — and then dropped here, because this
+    /// function did not take it. The rationale an admin typed for overriding a
+    /// schedule was written nowhere. It is now carried into the transition log
+    /// as the override reason.
+    ///
+    /// The status change also used to go straight to `match_repo.update_status`,
+    /// bypassing the lifecycle service, so an admin-forced schedule left no
+    /// `match_status_log` row either. Since scheduling drives check-in windows
+    /// and no-show forfeits — the P-59 attack surface — an admin override of it
+    /// is precisely the event that should be audited.
     pub async fn admin_schedule(
         &self,
         match_id: TournamentMatchId,
         scheduled_at: DateTime<Utc>,
-        _admin_id: UserId,
+        admin_id: UserId,
+        notes: Option<String>,
     ) -> Result<TournamentMatch, DomainError> {
         let tournament_match = self
             .match_repo
@@ -415,10 +446,27 @@ where
         };
         self.match_repo.update(match_id, update).await?;
 
-        // Then update status
-        self.match_repo
-            .update_status(match_id, TournamentMatchStatus::Scheduled)
-            .await
+        // Then update status — through the lifecycle service when it is wired,
+        // so the transition is recorded with the acting admin and their reason.
+        if let Some(transitioner) = &self.match_transitioner {
+            transitioner
+                .transition_status(
+                    match_id,
+                    TournamentMatchStatus::Scheduled,
+                    crate::entities::match_lifecycle::TransitionTrigger::Admin {
+                        user_id: admin_id,
+                        override_reason: notes
+                            .clone()
+                            .unwrap_or_else(|| "Admin set the match time directly".to_string()),
+                    },
+                    notes,
+                )
+                .await
+        } else {
+            self.match_repo
+                .update_status(match_id, TournamentMatchStatus::Scheduled)
+                .await
+        }
     }
 
     /// Expire pending proposals that have passed their deadline.

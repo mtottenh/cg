@@ -129,6 +129,8 @@ pub fn routes() -> Router<AppState> {
         .route("/demos/{id}/categorize", post(demos::categorize_demo))
         .route("/demos/{id}/visibility", post(demos::set_demo_visibility))
         .route("/demos/{id}/associate", post(demos::associate_demo))
+        // P-74: requeue a failed demo (the "Retry Processing" control)
+        .route("/demos/{id}/requeue", post(demos::requeue_demo))
         .route("/demos/{id}/link", post(demos::link_demo_to_match))
         .route(
             "/demos/process-unlinked",

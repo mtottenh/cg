@@ -343,6 +343,43 @@ pub async fn set_demo_visibility(
     )))
 }
 
+/// P-74: requeue a failed demo for processing.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/demos/{id}/requeue",
+    params(
+        ("id" = String, Path, description = "Demo ID"),
+    ),
+    responses(
+        (status = 200, description = "Demo requeued", body = DataResponse<DemoResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Demo not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn requeue_demo(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(demo_id): Path<DemoId>,
+) -> ApiResult<Json<DataResponse<DemoResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    require_demos_manage(&state, &auth).await?;
+
+    let demo = state
+        .demo_service
+        .requeue_demo(demo_id, auth.user_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        DemoResponse::from(demo),
+        request_id,
+    )))
+}
+
 /// Associate a demo with a league/tournament.
 #[utoipa::path(
     post,

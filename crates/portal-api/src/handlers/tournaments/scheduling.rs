@@ -423,7 +423,7 @@ pub async fn admin_schedule_match(
 
     let match_ = state
         .scheduling_service
-        .admin_schedule(match_id, req.scheduled_at, auth.user_id)
+        .admin_schedule(match_id, req.scheduled_at, auth.user_id, req.notes)
         .await?;
 
     Ok(Json(DataResponse::new(

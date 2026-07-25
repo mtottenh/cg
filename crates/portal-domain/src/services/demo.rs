@@ -343,6 +343,25 @@ where
         Ok(demo)
     }
 
+    /// P-74: put a failed demo back in the processing queue.
+    ///
+    /// The admin UI had a "Retry Processing" button that called no API at all —
+    /// it popped a success snackbar and returned, so an operator was told a
+    /// demo had been requeued when nothing had happened. Nothing could be wired
+    /// to, either: `submit_stats` takes a parsed-stats body (it is the
+    /// scanner's endpoint, not a trigger) and no requeue path existed.
+    ///
+    /// Resetting the status to `Pending` is the whole mechanism — the scanner
+    /// picks work up via `find_pending_processing`.
+    pub async fn requeue_demo(&self, id: DemoId, by_user_id: UserId) -> Result<Demo, DomainError> {
+        let demo = self
+            .demo_repo
+            .update_status(id, portal_core::types::DemoStatus::Pending)
+            .await?;
+        info!(demo_id = %id, by_user = %by_user_id, "Requeued demo for processing");
+        Ok(demo)
+    }
+
     /// Associate a demo with a league or tournament.
     #[instrument(skip(self))]
     pub async fn associate_demo(

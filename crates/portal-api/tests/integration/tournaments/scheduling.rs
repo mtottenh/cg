@@ -918,3 +918,57 @@ async fn test_cancel_proposal_rejects_foreign_match_id() {
         .await;
     response.assert_status(StatusCode::NOT_FOUND);
 }
+
+/// P-84: an admin who sets a match time directly must leave an audit trail, and
+/// the reason they typed must be part of it.
+///
+/// `notes` was collected by MatchAdminActionsTab, forwarded by the store, and
+/// accepted by `AdminScheduleRequest` — then dropped, because `admin_schedule`
+/// did not take it. The status change also went straight to the repository,
+/// bypassing the lifecycle service, so the override left NO `match_status_log`
+/// row at all. Scheduling drives check-in windows and no-show forfeits (the
+/// P-59 attack surface), so an admin override of it is exactly the event that
+/// should be auditable.
+#[tokio::test]
+async fn test_admin_schedule_records_an_audit_row_with_the_admin_notes() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _reg1, _reg2, _player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "p84-audit").await;
+
+    let scheduled_at = chrono::Utc::now() + chrono::Duration::hours(3);
+    let notes = "Both captains agreed on a new slot in Discord.";
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &json!({ "scheduled_at": scheduled_at.to_rfc3339(), "notes": notes }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let row: Option<(String, Option<String>, Option<uuid::Uuid>)> = sqlx::query_as(
+        "SELECT to_status, transition_reason, triggered_by_user_id
+         FROM match_status_log
+         WHERE match_id = $1
+         ORDER BY transitioned_at DESC
+         LIMIT 1",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .fetch_optional(app.pool())
+    .await
+    .expect("query the status log");
+
+    let (to_status, reason, actor) =
+        row.expect("P-84: an admin schedule must write a match_status_log row");
+
+    assert_eq!(to_status, "scheduled");
+    assert_eq!(
+        reason.as_deref(),
+        Some(notes),
+        "P-84: the admin's typed rationale must reach the audit trail, not be discarded"
+    );
+    assert!(
+        actor.is_some(),
+        "P-84: the audit row must name the admin who forced the schedule"
+    );
+}

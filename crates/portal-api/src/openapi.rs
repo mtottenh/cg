@@ -362,6 +362,7 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::categorize_demo,
         demos::set_demo_visibility,
         demos::associate_demo,
+        demos::requeue_demo,
         demos::link_demo_to_match,
         demos::get_demo_status_counts,
         demos::get_pending_demos,

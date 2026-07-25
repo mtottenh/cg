@@ -21,13 +21,13 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::error::{PluginError, RatingError, StatsError};
+use crate::error::{PluginError, StatsError};
 use crate::traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier, SideOption, TournamentPlugin};
 use crate::types::{
     DemoMetadata, DiscoveredEvidence, DisplayStat, EvidenceStorage, EvidenceType,
     EvidenceValidation, ExtractedResult, GameResult, MapPickBanFormat, MapVetoAction, MatchContext,
-    MatchData, MatchFormat, MatchmakingCriteria, PlayerStatsContext, RankedParticipant,
-    RatingChange, TournamentFormatId, VetoActionType,
+    MatchData, MatchFormat, MatchmakingCriteria, PlayerStatsContext, TournamentFormatId,
+    VetoActionType,
 };
 use chrono::Utc;
 use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
@@ -582,97 +582,6 @@ impl GamePlugin for Cs2Plugin {
             winner_team_id,
             game_specific_data: demo.raw_stats.clone(),
         })
-    }
-
-    // ========================================================================
-    // Rating
-    // ========================================================================
-
-    fn calculate_rating_change(
-        &self,
-        participants: &[RankedParticipant],
-    ) -> Result<Vec<RatingChange>, RatingError> {
-        if participants.is_empty() {
-            return Err(RatingError::InsufficientParticipants);
-        }
-
-        // Simple Elo-like calculation (can be replaced with Glicko-2 later)
-        // K-factor varies by rating - scaled for CS2 Premier (0-35,000+)
-        // Higher K for lower ratings means faster progression at lower ranks
-        let get_k_factor = |rating: i32| -> f64 {
-            if rating < 10000 {
-                // Grey and Light Blue: faster progression
-                200.0
-            } else if rating < 20000 {
-                // Blue and Purple: moderate progression
-                150.0
-            } else {
-                // Pink, Red, Gold: slower, more stable ratings
-                100.0
-            }
-        };
-
-        // Group by team
-        let team1: Vec<_> = participants.iter().filter(|p| p.team_id == 1).collect();
-        let team2: Vec<_> = participants.iter().filter(|p| p.team_id == 2).collect();
-
-        if team1.is_empty() || team2.is_empty() {
-            return Err(RatingError::InsufficientParticipants);
-        }
-
-        // Calculate average ratings
-        let avg_rating_1: f64 =
-            team1.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team1.len() as f64;
-        let avg_rating_2: f64 =
-            team2.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team2.len() as f64;
-
-        // Expected scores (Elo formula)
-        // Using 2000 as divisor instead of 400 due to the larger CS2 Premier scale (0-35,000+)
-        let expected_1 = 1.0 / (1.0 + 10.0_f64.powf((avg_rating_2 - avg_rating_1) / 2000.0));
-        let expected_2 = 1.0 - expected_1;
-
-        // Determine actual scores
-        let team1_won = team1.first().is_some_and(|p| p.is_winner);
-        let actual_1 = if team1_won { 1.0 } else { 0.0 };
-        let actual_2 = if team1_won { 0.0 } else { 1.0 };
-
-        let mut changes = Vec::new();
-
-        // Calculate changes for team 1
-        for p in &team1 {
-            let k = get_k_factor(p.rating);
-            let change = (k * (actual_1 - expected_1)).round() as i32;
-            let new_rating = (p.rating + change).max(0);
-
-            changes.push(RatingChange {
-                player_id: p.player_id,
-                old_rating: p.rating,
-                new_rating,
-                old_deviation: p.rating_deviation,
-                new_deviation: p.rating_deviation, // Keep same for simple Elo
-                old_volatility: p.volatility,
-                new_volatility: p.volatility,
-            });
-        }
-
-        // Calculate changes for team 2
-        for p in &team2 {
-            let k = get_k_factor(p.rating);
-            let change = (k * (actual_2 - expected_2)).round() as i32;
-            let new_rating = (p.rating + change).max(0);
-
-            changes.push(RatingChange {
-                player_id: p.player_id,
-                old_rating: p.rating,
-                new_rating,
-                old_deviation: p.rating_deviation,
-                new_deviation: p.rating_deviation,
-                old_volatility: p.volatility,
-                new_volatility: p.volatility,
-            });
-        }
-
-        Ok(changes)
     }
 
     // ========================================================================
@@ -1250,13 +1159,6 @@ impl GamePlugin for Cs2PluginWithEvidence {
         self.inner.rank_tiers()
     }
 
-    fn calculate_rating_change(
-        &self,
-        participants: &[RankedParticipant],
-    ) -> Result<Vec<RatingChange>, RatingError> {
-        self.inner.calculate_rating_change(participants)
-    }
-
     fn matchmaking_criteria(&self) -> MatchmakingCriteria {
         self.inner.matchmaking_criteria()
     }
@@ -1543,48 +1445,6 @@ mod tests {
         assert!(formats.contains(&TournamentFormatId::SingleElimination));
         assert!(formats.contains(&TournamentFormatId::DoubleElimination));
         assert!(formats.contains(&TournamentFormatId::Swiss));
-    }
-
-    #[test]
-    fn test_rating_calculation() {
-        let plugin = Cs2Plugin::new();
-
-        // Using CS2 Premier scale ratings (0-35,000+)
-        // Both players at 15,000 (Purple tier)
-        let participants = vec![
-            RankedParticipant {
-                player_id: Uuid::new_v4(),
-                team_id: 1,
-                rating: 15000,
-                rating_deviation: 50.0,
-                volatility: 0.06,
-                is_winner: true,
-            },
-            RankedParticipant {
-                player_id: Uuid::new_v4(),
-                team_id: 2,
-                rating: 15000,
-                rating_deviation: 50.0,
-                volatility: 0.06,
-                is_winner: false,
-            },
-        ];
-
-        let changes = plugin.calculate_rating_change(&participants).unwrap();
-        assert_eq!(changes.len(), 2);
-
-        // Winner should gain rating
-        let winner_change = changes.iter().find(|c| c.new_rating > c.old_rating);
-        assert!(winner_change.is_some());
-
-        // Loser should lose rating
-        let loser_change = changes.iter().find(|c| c.new_rating < c.old_rating);
-        assert!(loser_change.is_some());
-
-        // With equal ratings, expected score is 0.5, so winner gains ~K/2 and loser loses ~K/2
-        // At Purple tier (15,000), K=150, so change should be ~75
-        let winner = winner_change.unwrap();
-        assert!(winner.new_rating - winner.old_rating > 50); // Should gain meaningful rating
     }
 
     #[test]

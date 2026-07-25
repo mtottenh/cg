@@ -6,7 +6,6 @@ mod league_team;
 mod lineup;
 mod pagination;
 mod permission;
-mod rating;
 mod status;
 mod tournament;
 pub mod veto;
@@ -27,7 +26,6 @@ pub use league_team::{
 pub use lineup::{LineupSource, LineupStatus, ParticipationStatus, substitutes_are_minority};
 pub use pagination::{Page, PageRequest, Pagination};
 pub use permission::{ParseScopeTypeError, PermissionScope, ScopeType};
-pub use rating::{Glicko2Rating, RatingChange};
 pub use status::{EntityStatus, MatchStatus, TournamentStatus};
 pub use tournament::{
     AdvancementRule, BracketStatus, BracketType, ExceptionType, MatchFormat,

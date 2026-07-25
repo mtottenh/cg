@@ -61,19 +61,3 @@ pub enum StatsError {
     #[error("Serialization error: {0}")]
     SerializationError(#[from] serde_json::Error),
 }
-
-/// Errors that can occur during rating calculation.
-#[derive(Debug, Error)]
-pub enum RatingError {
-    /// Not enough participants.
-    #[error("Not enough participants for rating calculation")]
-    InsufficientParticipants,
-
-    /// Invalid match result.
-    #[error("Invalid match result: {0}")]
-    InvalidResult(String),
-
-    /// Rating calculation overflow.
-    #[error("Rating calculation overflow")]
-    Overflow,
-}

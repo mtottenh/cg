@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::{RatingError, StatsError};
+use crate::error::StatsError;
 use crate::stats::{StatDefinition, StatFact};
 use portal_core::MatchFormat;
 use portal_core::types::evidence::{
@@ -16,7 +16,7 @@ use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
 use crate::types::{
     DemoData, DemoPlayerData, DisplayStat, LobbyStateMachine, MapPickBanFormat, MatchConfig,
     MatchData, MatchPlayerData, MatchTeamData, MatchmakingCriteria, PlayerInfo, PlayerStatsContext,
-    RankedParticipant, RatingChange, TournamentFormatId,
+    TournamentFormatId,
 };
 
 // ============================================================================
@@ -204,15 +204,6 @@ pub trait GamePlugin: Send + Sync {
 
     /// Get rank tier definitions.
     fn rank_tiers(&self) -> Vec<RankTier>;
-
-    /// Calculate rating changes for match participants.
-    ///
-    /// Takes the match result and all participants with their current ratings,
-    /// returns the rating changes to apply.
-    fn calculate_rating_change(
-        &self,
-        participants: &[RankedParticipant],
-    ) -> Result<Vec<RatingChange>, RatingError>;
 
     /// Get the rank tier for a given rating.
     fn rating_to_rank_tier(&self, rating: i32) -> Option<RankTier> {

@@ -18,7 +18,7 @@ pub mod traits;
 pub mod types;
 
 // Re-export main types for convenience
-pub use error::{PluginError, RatingError, StatsError};
+pub use error::{PluginError, StatsError};
 pub use games::{
     Cs2DemoClient, Cs2DemoStats, Cs2EvidenceValidator, Cs2Plugin, Cs2PluginWithEvidence,
     validate_demo_service_url,
@@ -31,8 +31,8 @@ pub use types::{
     DemoMetadata, DiscoveredEvidence, DisplayStat, EvidenceStorage, EvidenceType,
     EvidenceValidation, ExtractedResult, GameResult, LobbyStateMachine, MapPickBanFormat,
     MapVetoAction, MatchConfig, MatchContext, MatchData, MatchFormat, MatchPlayerData,
-    MatchTeamData, MatchmakingCriteria, ParticipantContext, PlayerInfo, RankedParticipant,
-    RatingChange, TournamentFormatId, VetoActionType,
+    MatchTeamData, MatchmakingCriteria, ParticipantContext, PlayerInfo, TournamentFormatId,
+    VetoActionType,
 };
 
 /// Create and initialize the default plugin manager with built-in plugins.

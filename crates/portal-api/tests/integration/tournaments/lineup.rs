@@ -908,3 +908,199 @@ async fn test_p26_opposing_roster_player_raises_review() {
     .unwrap();
     assert_eq!(still_in_lineup, 1, "enforcement must not remove the player");
 }
+
+/// P-58 (residual): a team that played WITHOUT a parsed demo credited nobody.
+///
+/// The original P-58 fix queried `source = 'demo'` alone. A team registration's
+/// `player_id` is `None`, so when no demo lineup existed the caller's fallback
+/// had nothing to fall back to and the whole team's participation was dropped —
+/// announced by a `warn!` line and nothing else. Every match a league played
+/// without demo coverage silently produced no stats for either side.
+///
+/// What settles it is the inconsistency: for an INDIVIDUAL registration the
+/// updater credits the registrant with no proof they played at all. Teams were
+/// held to a stricter evidentiary standard for the same statistic, and the
+/// penalty for failing it was silence.
+///
+/// This drives the real `StatsUpdaterAdapter`, exactly as the completion saga
+/// does, against a match whose only lineup is `declared`.
+#[tokio::test]
+async fn test_participation_credited_from_declared_lineup_when_no_demo() {
+    use portal_domain::services::tournament::MatchStatsUpdater;
+    use std::sync::Arc;
+
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, reg1, reg2) =
+        create_tournament_with_matches(&app, "lineup-p58-declared").await;
+
+    let (user_d, player_d) = create_test_player(&app, "p58_declared_d").await;
+    let (_ue, player_e) = create_test_player(&app, "p58_declared_e").await;
+
+    let pool = app.pool().clone();
+    let lineup_service = portal_domain::services::tournament::LineupService::new(
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgLeagueTeamMemberRepository::new(pool.clone())),
+    );
+    let match_tid: portal_core::TournamentMatchId = match_id.parse().unwrap();
+    let reg1_tid: portal_core::TournamentRegistrationId = reg1.parse().unwrap();
+    let reg2_tid: portal_core::TournamentRegistrationId = reg2.parse().unwrap();
+    let d_pid: portal_core::PlayerId = player_d.to_string().parse().unwrap();
+    let e_pid: portal_core::PlayerId = player_e.to_string().parse().unwrap();
+    let declarer: portal_core::UserId = user_d.to_string().parse().unwrap();
+
+    // A DECLARED lineup only — no demo was ever parsed for this match.
+    lineup_service
+        .declare_lineup(
+            match_tid,
+            reg1_tid,
+            vec![d_pid, e_pid],
+            declarer,
+            true,
+            None,
+        )
+        .await
+        .expect("declare lineup");
+
+    let adapter = portal_api::adapters::StatsUpdaterAdapter::new(
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgDemoMatchLinkRepository::new(pool.clone())),
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        portal_db::GameRepository::new(pool.clone()),
+        portal_domain::services::PlayerGameProfileService::new(Arc::new(
+            portal_db::PgPlayerGameProfileRepository::new(pool.clone()),
+        )),
+        Arc::new(portal_plugins::PluginManager::new()),
+    );
+    adapter
+        .update_player_stats(match_tid, reg1_tid, reg2_tid, false)
+        .await
+        .expect("update player stats");
+
+    let credited = |pid: uuid::Uuid| {
+        let pool = app.pool().clone();
+        let mid = match_tid.as_uuid();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM player_match_stats_applied WHERE player_id=$1 AND match_id=$2",
+            )
+            .bind(pid)
+            .bind(mid)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    assert_eq!(
+        credited(player_d).await,
+        1,
+        "a declared player must be credited when no demo lineup exists — \
+         crediting nobody is what P-58 was"
+    );
+    assert_eq!(
+        credited(player_e).await,
+        1,
+        "both declared players are credited, not just the declarer"
+    );
+}
+
+/// The authority order must HOLD: when a demo lineup exists, a stale declared
+/// lineup naming different players must not dilute it.
+///
+/// This is the assertion that stops the residual fix from becoming a regression
+/// of the original one. Falling back to `declared` is only safe because exactly
+/// one source is ever used — a union would credit players the demo proves did
+/// not play, which is strictly worse than the bug being fixed.
+#[tokio::test]
+async fn test_demo_lineup_outranks_a_stale_declared_lineup() {
+    use portal_domain::services::tournament::MatchStatsUpdater;
+    use std::sync::Arc;
+
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, reg1, reg2) =
+        create_tournament_with_matches(&app, "lineup-p58-order").await;
+
+    let (user_f, player_f) = create_test_player(&app, "p58_order_f").await;
+    let (_ug, player_g) = create_test_player(&app, "p58_order_g").await;
+
+    let pool = app.pool().clone();
+    let lineup_service = portal_domain::services::tournament::LineupService::new(
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgLeagueTeamMemberRepository::new(pool.clone())),
+    );
+    let match_tid: portal_core::TournamentMatchId = match_id.parse().unwrap();
+    let reg1_tid: portal_core::TournamentRegistrationId = reg1.parse().unwrap();
+    let reg2_tid: portal_core::TournamentRegistrationId = reg2.parse().unwrap();
+    let f_pid: portal_core::PlayerId = player_f.to_string().parse().unwrap();
+    let g_pid: portal_core::PlayerId = player_g.to_string().parse().unwrap();
+    let declarer: portal_core::UserId = user_f.to_string().parse().unwrap();
+
+    // F was PROMISED before the match...
+    lineup_service
+        .declare_lineup(match_tid, reg1_tid, vec![f_pid], declarer, true, None)
+        .await
+        .expect("declare lineup");
+    // ...but G is who the demo says actually played.
+    lineup_service
+        .materialize_demo_lineup(match_tid, reg1_tid, Some(1), vec![g_pid])
+        .await
+        .expect("materialize demo lineup");
+
+    let adapter = portal_api::adapters::StatsUpdaterAdapter::new(
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgDemoMatchLinkRepository::new(pool.clone())),
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        portal_db::GameRepository::new(pool.clone()),
+        portal_domain::services::PlayerGameProfileService::new(Arc::new(
+            portal_db::PgPlayerGameProfileRepository::new(pool.clone()),
+        )),
+        Arc::new(portal_plugins::PluginManager::new()),
+    );
+    adapter
+        .update_player_stats(match_tid, reg1_tid, reg2_tid, false)
+        .await
+        .expect("update player stats");
+
+    let credited = |pid: uuid::Uuid| {
+        let pool = app.pool().clone();
+        let mid = match_tid.as_uuid();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM player_match_stats_applied WHERE player_id=$1 AND match_id=$2",
+            )
+            .bind(pid)
+            .bind(mid)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    assert_eq!(
+        credited(player_g).await,
+        1,
+        "the demo lineup is authoritative — G actually played"
+    );
+    assert_eq!(
+        credited(player_f).await,
+        0,
+        "F was only promised. Crediting them would mean the declared source \
+         diluted the demo source, which is worse than the bug this fixes"
+    );
+}

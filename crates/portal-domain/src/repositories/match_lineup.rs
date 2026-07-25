@@ -64,10 +64,32 @@ pub trait MatchLineupRepository: Send + Sync {
         source: LineupSource,
     ) -> Result<Vec<crate::entities::match_lineup::MatchLineupPlayer>, DomainError>;
 
-    /// Distinct players who actually played for `registration_id` in `match_id`,
-    /// per the authoritative (demo-source) lineup — across all maps. Used to
-    /// credit team-match participation from who played, not the whole roster
-    /// (P-58). Empty when no demo lineup exists (caller falls back).
+    /// Distinct players to credit for `registration_id` in `match_id`, across
+    /// all maps — taken from the MOST AUTHORITATIVE lineup source present:
+    /// `demo` > `admin` > `evidence` > `declared`.
+    ///
+    /// P-58 originally queried `source = 'demo'` alone. That fixed the headline
+    /// defect (team matches credited nobody) only for demo-covered matches: a
+    /// team registration's `player_id` is `None`, so the caller's fallback
+    /// credited nobody, and a team that played without a parsed demo still had
+    /// its participation silently dropped — reported by a `warn!` line and
+    /// nothing else.
+    ///
+    /// The inconsistency is what settles it. For an INDIVIDUAL registration the
+    /// caller credits the registrant with no proof they played at all. Teams
+    /// were being held to a stricter evidentiary standard than individuals for
+    /// the same statistic, and the penalty for failing it was silence.
+    ///
+    /// Exactly one source is used — never a union — so a stale `declared`
+    /// promise cannot dilute an authoritative `demo` record. Empty only when no
+    /// lineup of any source exists (the caller then falls back to the
+    /// registration's own player).
+    ///
+    /// NOTE this is deliberately more permissive than eligibility enforcement,
+    /// which must keep reading `demo` alone via `list_players_by_source`:
+    /// judging a roster-rule violation against a pre-match promise would punish
+    /// teams for intentions. Crediting participation and policing eligibility
+    /// want different evidence bars, and only the former is this method.
     async fn distinct_participants(
         &self,
         match_id: TournamentMatchId,

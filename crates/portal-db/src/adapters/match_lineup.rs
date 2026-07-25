@@ -324,12 +324,41 @@ impl MatchLineupRepository for PgMatchLineupRepository {
         match_id: TournamentMatchId,
         registration_id: TournamentRegistrationId,
     ) -> Result<Vec<PlayerId>, DomainError> {
+        // P-58 (residual): this read `source = 'demo'` alone, so a team that
+        // played without a parsed demo credited NOBODY — a team registration's
+        // `player_id` is None, so the caller's fallback had nothing to fall back
+        // to, and the loss was reported only by a log line.
+        //
+        // Now: pick the single most authoritative source PRESENT, and return
+        // only that source's players. The inner query chooses the source; the
+        // outer returns its roster. Using one source rather than a union is the
+        // point — a stale `declared` promise must not dilute an authoritative
+        // `demo` record by adding players who did not actually play.
+        //
+        // `ELSE 5` catches any source added to the column later: it sorts last,
+        // so a new source is used only when nothing better exists, rather than
+        // silently outranking `demo` or being dropped on the floor.
         let ids = sqlx::query_scalar::<_, uuid::Uuid>(
             r"
             SELECT DISTINCT mlp.player_id
             FROM match_lineup_players mlp
             JOIN match_lineups ml ON ml.id = mlp.lineup_id
-            WHERE ml.match_id = $1 AND ml.registration_id = $2 AND mlp.source = 'demo'
+            WHERE ml.match_id = $1
+              AND ml.registration_id = $2
+              AND mlp.source = (
+                SELECT mlp2.source
+                FROM match_lineup_players mlp2
+                JOIN match_lineups ml2 ON ml2.id = mlp2.lineup_id
+                WHERE ml2.match_id = $1 AND ml2.registration_id = $2
+                ORDER BY CASE mlp2.source
+                    WHEN 'demo' THEN 1
+                    WHEN 'admin' THEN 2
+                    WHEN 'evidence' THEN 3
+                    WHEN 'declared' THEN 4
+                    ELSE 5
+                END
+                LIMIT 1
+              )
             ",
         )
         .bind(match_id.as_uuid())

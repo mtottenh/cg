@@ -69,11 +69,14 @@ impl SeasonStatus {
         matches!(self, Self::Active | Self::Playoffs)
     }
 
-    /// Check if the season allows roster changes.
-    #[must_use]
-    pub const fn allows_roster_changes(&self) -> bool {
-        matches!(self, Self::Draft | Self::Registration)
-    }
+    // P-148 — `allows_roster_changes()` used to live here and answered
+    // `Draft | Registration`. It was deleted, not renamed, because the system
+    // no longer follows the rule its name stated: season *status* is no longer
+    // the outer gate on roster composition, the season's
+    // `roster_lock_status` is (see
+    // `portal_domain::services::league_team::roster_lock`). Keeping a helper
+    // whose name asserts the old rule is a trap for the next reader — the
+    // only status-derived rule left is `is_terminal()` below.
 
     /// Check if the season is in a terminal state.
     #[must_use]

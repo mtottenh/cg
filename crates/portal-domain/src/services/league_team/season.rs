@@ -226,11 +226,25 @@ where
     ///
     /// Lifting the lock (`open`) is always allowed; tightening it only makes
     /// sense while the season can still take roster changes at all.
+    ///
+    /// # P-148
+    ///
+    /// "Can still take roster changes at all" used to mean
+    /// `SeasonStatus::allows_roster_changes()` — `draft | registration`. Under
+    /// the owner's ruling that the lock is an optional, per-season decision,
+    /// that reading made the control unusable for its only real purpose: an
+    /// operator could not tighten the lock on a season that had actually
+    /// started, which is when a league decides its rosters are final. It now
+    /// means "not terminal": `draft`, `registration`, `active` and `playoffs`
+    /// may all set any lock value; a `completed` or `cancelled` season may not
+    /// be re-locked, because there is nothing left to lock — its roster is
+    /// frozen by `refusal_reason` regardless of what this column says. Lifting
+    /// to `open` stays unconditional so a mis-set lock is always recoverable.
     fn ensure_lock_change_allowed(
         season_status: SeasonStatus,
         lock: RosterLockStatus,
     ) -> Result<(), DomainError> {
-        if !season_status.allows_roster_changes() && lock != RosterLockStatus::Open {
+        if season_status.is_terminal() && lock != RosterLockStatus::Open {
             return Err(DomainError::InvalidState(
                 "cannot modify roster lock in current season state".to_string(),
             ));
@@ -248,7 +262,7 @@ where
     ) -> Result<LeagueSeason, DomainError> {
         let season = self.get_season(id).await?;
 
-        // Can only lock rosters during registration or active season
+        // The lock can be set on any season that is not already finished.
         Self::ensure_lock_change_allowed(season.status, status)?;
 
         let updated = self

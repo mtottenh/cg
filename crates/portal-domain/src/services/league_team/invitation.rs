@@ -172,13 +172,21 @@ where
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
-        if !season.is_registration_open() {
-            return Err(DomainError::RegistrationClosed);
-        }
-
+        // P-148: this used to open with `if !season.is_registration_open()`,
+        // which made the join path the ONLY roster path still frozen by the
+        // season's phase — a player could be *invited* onto a mid-season roster
+        // whose lock was open, but could not *ask* to join the same roster.
+        // That is the P-15 defect shape (two roster paths disagreeing about the
+        // same rule) reappearing through a different predicate, and it
+        // contradicts the owner's ruling directly: the lock decides whether a
+        // roster may gain a member, not the phase. `is_registration_open()`
+        // answers a different question — whether the season is taking new
+        // *teams* — and `create_team` / `register_for_season` still ask it.
+        //
         // P-15: a join request checked neither lock predicate, so a hard-locked
         // roster still accumulated pending requests that could never be
-        // accepted. Same enforcement point as every other roster mutation.
+        // accepted. Same enforcement point as every other roster mutation, and
+        // now the only gate on this path.
         enforce_roster_lock(
             &season,
             team_season_id,

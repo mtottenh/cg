@@ -35,6 +35,15 @@
 //! the lock would have allowed the change anyway, the override is a no-op and
 //! nothing is recorded. That makes the presence of a row mean exactly one
 //! thing: "a roster lock was bypassed here, by this person, for this reason".
+//!
+//! # What the lock means since P-148
+//!
+//! The lock is an **optional, per-season decision**, and it is the *only* thing
+//! that decides whether a live roster may change. The season's *phase* no
+//! longer gates roster composition; the single surviving status rule is that a
+//! terminal (`completed` / `cancelled`) season is frozen. See
+//! [`refusal_reason`] for the ruling, the reasoning and the P-147 founding
+//! exemption that goes with it.
 
 use crate::entities::audit::ChangeType;
 use crate::entities::league_team::LeagueSeason;
@@ -58,6 +67,16 @@ pub enum RosterChange {
     /// (captain <-> player) — see [`enforce_roster_lock`] for why this is
     /// gated differently (P-16).
     Role,
+
+    /// A roster is being **created**: `create_team` / `register_for_season`
+    /// seat the founding captain as part of entering a season (P-147).
+    ///
+    /// Reached through [`ensure_roster_may_be_founded`], never through
+    /// [`enforce_roster_lock`] — there is no `league_team_seasons` row to
+    /// attribute an audit entry to yet, and this variant is never refused by
+    /// the lock, so an override could never be taken. See
+    /// [`refusal_reason`] for why it is exempt.
+    Founding,
 }
 
 impl RosterChange {
@@ -68,6 +87,7 @@ impl RosterChange {
             Self::Membership(LeagueTeamRole::Player) => "membership:player",
             Self::Membership(LeagueTeamRole::Substitute) => "membership:substitute",
             Self::Role => "role_change",
+            Self::Founding => "founding_captain",
         }
     }
 }
@@ -101,12 +121,65 @@ pub(crate) struct AuditedOverride<'a> {
 ///
 /// This is the one place the lock's meaning is decided.
 ///
-/// * **Membership of a primary role** (captain / player) needs
+/// * A **terminal** season (`completed` / `cancelled`) refuses everything, lock
+///   or no lock — see below.
+/// * Otherwise **membership of a primary role** (captain / player) needs
 ///   `allows_primary_roster_changes()`.
 /// * **Membership of a substitute** needs `allows_substitute_changes()` — which
 ///   `soft_lock` grants and `hard_lock` does not.
 /// * **A role change** (captain <-> player) is gated on the lock **only**, and
 ///   only by `hard_lock`. See the note on [`RosterChange::Role`] below.
+/// * **Founding** a roster is not lock-gated at all — see below.
+///
+/// ## P-148: the lock decides, not the season phase
+///
+/// Until this fix every `allows_*` predicate was ANDed with
+/// `SeasonStatus::allows_roster_changes()` (`draft | registration`), so season
+/// status was the outer gate and the lock only ever had a say *before* the
+/// competition started. The lock was inert in exactly the window it was sold
+/// as protecting.
+///
+/// The owner ruled that the lock is an **optional, per-season decision**: *"I
+/// think the roster lock should really be an 'optional' thing/thing that is a
+/// per tournament decision, (again, this is a casual league, so adding team
+/// members half way through may be okay)."* So `draft`, `registration`,
+/// `active` and `playoffs` all defer to `roster_lock_status`, whose DB default
+/// is `open` (migration 0025) — a casual league gets casual behaviour for
+/// free, and a league that wants strictness sets `soft_lock` or `hard_lock`
+/// when it chooses to.
+///
+/// The one status rule that survives is `is_terminal()`. A `completed` or
+/// `cancelled` season's roster is the historical record of who played; letting
+/// it move would corrupt that, and "optional" was never meant to include
+/// rewriting finished seasons. It is checked first, and it applies to *every*
+/// variant, including [`RosterChange::Role`] — which was previously ungated on
+/// status entirely.
+///
+/// ## P-147: why founding a roster is exempt
+///
+/// `create_team` and `register_for_season` seat the founding captain via
+/// `create_team_with_season_and_captain` / `create_with_captain` without
+/// passing through [`enforce_roster_lock`]. Making that omission explicit is
+/// the point of [`RosterChange::Founding`]: the exemption is now a decision
+/// recorded *here*, in the one place the lock's meaning is decided, instead of
+/// a hole left by two call sites that never asked.
+///
+/// It is exempt because **whether a season accepts new teams is already
+/// decided, once, by `is_registration_open()` / `can_register_team()`** —
+/// status must be `registration` and `now` must be inside the registration
+/// window. Making the lock a second veto on registration would give the
+/// product two knobs for one question and let them disagree: a season would
+/// report `status: "registration"` inside its advertised window while
+/// `POST .../teams` returned 400, with nothing in the season payload
+/// explaining why. An operator who wants to stop new teams closes registration
+/// — that control exists and is the one clients read.
+///
+/// The lock governs how an **existing** roster may change. Note the
+/// consequence is narrow: once a season leaves `registration`,
+/// `can_register_team()` is false anyway, so no team can be founded mid-season
+/// however the lock is set. The only reachable case is a hard-locked season
+/// that is *still* in its registration window, which is the operator's own
+/// deliberate configuration.
 ///
 /// ## P-16: why a role change is gated differently
 ///
@@ -132,7 +205,22 @@ pub(crate) struct AuditedOverride<'a> {
 ///   (the incumbent quits, is banned, or goes silent). Gating on season status
 ///   would make promote/demote impossible for the entire competitive phase.
 fn refusal_reason(season: &LeagueSeason, change: RosterChange) -> Option<String> {
+    // P-148: the only season-status rule left. A finished or abandoned season's
+    // roster is the record of who played it, so it is frozen for every kind of
+    // change and by every caller — an admin override cannot buy past this
+    // either, because the reason it refuses is not the lock.
+    if season.status.is_terminal() {
+        return Some(format!(
+            "season status '{}' is final; its roster is now history and cannot be changed",
+            season.status
+        ));
+    }
+
     match change {
+        // P-147. Governed by `is_registration_open()` / `can_register_team()`,
+        // not by the lock. Deliberate and stated here rather than left implicit
+        // at the two call sites.
+        RosterChange::Founding => None,
         RosterChange::Membership(role) => {
             let allowed = if role.is_primary() {
                 season.allows_primary_roster_changes()
@@ -142,22 +230,14 @@ fn refusal_reason(season: &LeagueSeason, change: RosterChange) -> Option<String>
             if allowed {
                 return None;
             }
-            // Both halves of `allows_*` can refuse; say which one did, because
-            // "the roster is locked" is actively misleading when the lock is
-            // open and it is the season status that closed the door.
-            Some(if season.status.allows_roster_changes() {
-                let who = if role.is_primary() {
-                    "primary member"
-                } else {
-                    "substitute"
-                };
-                format!("roster is locked for {who} changes")
+            // Name which half of the lock refused: "the roster is locked" alone
+            // does not tell a captain that a substitute would still be accepted.
+            let who = if role.is_primary() {
+                "primary member"
             } else {
-                format!(
-                    "roster is locked: season status '{}' does not allow roster changes",
-                    season.status
-                )
-            })
+                "substitute"
+            };
+            Some(format!("roster is locked for {who} changes"))
         }
         RosterChange::Role => {
             if season.roster_lock_status.allows_any_changes() {
@@ -172,7 +252,26 @@ fn refusal_reason(season: &LeagueSeason, change: RosterChange) -> Option<String>
     }
 }
 
+/// Enforce the roster lock for the **creation** of a roster (P-147).
+///
+/// `create_team` and `register_for_season` seat a founding captain before any
+/// `league_team_seasons` row exists, so there is nothing to attribute an audit
+/// row to and no override to take — which is why this is a separate, synchronous
+/// entry point rather than a call to [`enforce_roster_lock`]. It still routes
+/// the decision through [`refusal_reason`], so the exemption is a rule stated
+/// in one place instead of a check two call sites forgot to make.
+pub(crate) fn ensure_roster_may_be_founded(season: &LeagueSeason) -> Result<(), DomainError> {
+    match refusal_reason(season, RosterChange::Founding) {
+        Some(refusal) => Err(DomainError::InvalidState(refusal)),
+        None => Ok(()),
+    }
+}
+
 /// Enforce the roster lock for `change` on `season`.
+///
+/// `change` is a mutation of an **existing** roster; use
+/// [`ensure_roster_may_be_founded`] for [`RosterChange::Founding`], which has no
+/// `team_season_id` to attribute an override to.
 ///
 /// Returns `Ok(())` when the lock permits the change, or when `override_`
 /// carries an admin bypass — in which case the bypass is recorded in the audit
@@ -302,26 +401,113 @@ mod tests {
         assert!(refusal_reason(&season, RosterChange::Role).is_some());
     }
 
+    /// **Spec change (P-148 — the owner's "the roster lock should really be an
+    /// optional thing" ruling).** This test used to be
+    /// `role_change_is_not_gated_on_season_status` and asserted that a
+    /// `playoffs` season with an OPEN lock still refused a membership change —
+    /// i.e. that the season phase, not the lock, was the outer gate. That is
+    /// exactly the rule the ruling reverses, so the assertion is inverted, not
+    /// deleted: the phase no longer has a vote, and an open lock in playoffs
+    /// permits both membership and captaincy changes.
     #[test]
-    fn role_change_is_not_gated_on_season_status() {
-        // Season is past the point where members may be added or removed, but
-        // the lock is open — naming a captain must still be possible.
-        let season = season_with(RosterLockStatus::Open, SeasonStatus::Playoffs);
-
-        assert!(
-            refusal_reason(&season, RosterChange::Membership(LeagueTeamRole::Player)).is_some()
-        );
-        assert!(refusal_reason(&season, RosterChange::Role).is_none());
+    fn an_open_lock_permits_changes_in_every_non_terminal_phase() {
+        for status in [
+            SeasonStatus::Draft,
+            SeasonStatus::Registration,
+            SeasonStatus::Active,
+            SeasonStatus::Playoffs,
+        ] {
+            let season = season_with(RosterLockStatus::Open, status);
+            for change in [
+                RosterChange::Membership(LeagueTeamRole::Captain),
+                RosterChange::Membership(LeagueTeamRole::Player),
+                RosterChange::Membership(LeagueTeamRole::Substitute),
+                RosterChange::Role,
+                RosterChange::Founding,
+            ] {
+                assert!(
+                    refusal_reason(&season, change).is_none(),
+                    "an open lock refused {change:?} in a '{status}' season"
+                );
+            }
+        }
     }
 
+    /// P-148 — the lock, not the phase, is what freezes a live season. A
+    /// mid-competition season is the whole reason the lock exists.
     #[test]
-    fn status_refusal_names_the_status_not_the_lock() {
-        let season = season_with(RosterLockStatus::Open, SeasonStatus::Playoffs);
-        let msg = refusal_reason(&season, RosterChange::Membership(LeagueTeamRole::Player))
-            .expect("playoffs must refuse membership changes");
+    fn a_lock_set_mid_competition_is_what_freezes_the_roster() {
+        let hard = season_with(RosterLockStatus::HardLock, SeasonStatus::Active);
         assert!(
-            msg.contains("season status 'playoffs'"),
-            "misleading refusal message: {msg}"
+            refusal_reason(&hard, RosterChange::Membership(LeagueTeamRole::Player)).is_some(),
+            "a hard lock must freeze an active season"
+        );
+        assert!(
+            refusal_reason(&hard, RosterChange::Membership(LeagueTeamRole::Substitute)).is_some()
+        );
+
+        let soft = season_with(RosterLockStatus::SoftLock, SeasonStatus::Playoffs);
+        assert!(
+            refusal_reason(&soft, RosterChange::Membership(LeagueTeamRole::Player)).is_some(),
+            "a soft lock must still freeze the primary roster in playoffs"
+        );
+        assert!(
+            refusal_reason(&soft, RosterChange::Membership(LeagueTeamRole::Substitute)).is_none(),
+            "a soft lock must still permit substitutes in playoffs"
+        );
+    }
+
+    /// **Spec change (P-148).** This test used to be
+    /// `status_refusal_names_the_status_not_the_lock` and pinned the message
+    /// for the "season phase closed the door" refusal, a refusal that no longer
+    /// exists for `playoffs`. The surviving status refusal is the terminal one,
+    /// so the message assertion moves onto it — and it must still name the
+    /// *status*, because "the roster is locked" would be a lie about a
+    /// completed season whose lock is wide open.
+    #[test]
+    fn a_terminal_season_refuses_everything_and_says_the_status_did_it() {
+        for status in [SeasonStatus::Completed, SeasonStatus::Cancelled] {
+            let season = season_with(RosterLockStatus::Open, status);
+            for change in [
+                RosterChange::Membership(LeagueTeamRole::Captain),
+                RosterChange::Membership(LeagueTeamRole::Player),
+                RosterChange::Membership(LeagueTeamRole::Substitute),
+                RosterChange::Role,
+                RosterChange::Founding,
+            ] {
+                let msg = refusal_reason(&season, change).unwrap_or_else(|| {
+                    panic!("a '{status}' season permitted {change:?} — history is not editable")
+                });
+                assert!(
+                    msg.contains(&format!("season status '{status}'")),
+                    "misleading refusal message: {msg}"
+                );
+            }
+        }
+    }
+
+    /// P-147 — founding a roster is exempt from the lock (registration is the
+    /// control for that), but not from the terminal freeze.
+    #[test]
+    fn founding_a_roster_answers_to_registration_not_to_the_lock() {
+        for lock in [
+            RosterLockStatus::Open,
+            RosterLockStatus::SoftLock,
+            RosterLockStatus::HardLock,
+        ] {
+            let season = season_with(lock, SeasonStatus::Registration);
+            assert!(
+                refusal_reason(&season, RosterChange::Founding).is_none(),
+                "a '{lock}' season refused a founding captain; registration, not the lock, \
+                 decides whether new teams are accepted"
+            );
+            assert!(ensure_roster_may_be_founded(&season).is_ok());
+        }
+
+        let dead = season_with(RosterLockStatus::Open, SeasonStatus::Cancelled);
+        assert!(
+            ensure_roster_may_be_founded(&dead).is_err(),
+            "a cancelled season must not gain a founding captain"
         );
     }
 }

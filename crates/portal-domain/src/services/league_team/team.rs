@@ -11,6 +11,7 @@ use crate::repositories::league_team::{
 };
 use crate::services::league_team::roster_lock::{
     AuditedOverride, RosterChange, RosterLockOverride, enforce_roster_lock,
+    ensure_roster_may_be_founded,
 };
 use portal_core::types::{LeagueTeamRole, LeagueTeamSeasonStatus, LeagueTeamStatus};
 use portal_core::{
@@ -154,6 +155,16 @@ where
             return Err(DomainError::RegistrationClosed);
         }
 
+        // P-147: `create_team_with_season_and_captain` below seats a captain on
+        // a brand-new seasonal roster, and used to do so without the roster
+        // lock ever being consulted — the enforcement point was bypassed by
+        // omission rather than by decision. It now goes through `roster_lock`,
+        // which rules that founding is governed by registration and not by the
+        // lock (the reasoning is on `refusal_reason`). What this call still
+        // refuses is a terminal season, refused in the same place every other
+        // roster path is refused.
+        ensure_roster_may_be_founded(&season)?;
+
         // Check if max teams limit is reached
         if let Some(max_teams) = season.max_teams {
             let team_count = self.season_repo.count_teams(cmd.season_id).await?;
@@ -267,6 +278,11 @@ where
         if !season.can_register_team() {
             return Err(DomainError::RegistrationClosed);
         }
+
+        // P-147, second site: `create_with_captain` seats the registering owner
+        // as captain of the new seasonal roster. Same explicit trip through the
+        // enforcement point as `create_team`, for the same reason.
+        ensure_roster_may_be_founded(&season)?;
 
         // Check if team is already registered for this season
         if self

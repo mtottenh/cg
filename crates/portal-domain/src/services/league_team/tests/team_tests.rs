@@ -514,3 +514,278 @@ async fn test_disband_team_success() {
 
     assert!(result.is_ok());
 }
+
+// ============================================================================
+// P-148 / P-147 — the roster lock is the control, and founding goes through it
+// ============================================================================
+//
+// The owner's ruling: *"I think the roster lock should really be an 'optional'
+// thing/thing that is a per tournament decision, (again, this is a casual
+// league, so adding team members half way through may be okay)."*
+//
+// What the rule WAS: `LeagueSeason::allows_*_roster_changes()` ANDed the lock
+// with `SeasonStatus::allows_roster_changes()` (`draft | registration`), so
+// season phase was the outer gate and the lock only had a say before the
+// competition started.
+//
+// What the rule IS: the lock decides. Every non-terminal phase defers to
+// `roster_lock_status`; `completed` / `cancelled` refuse everything.
+//
+// The granularity is per **league season** (`league_seasons.roster_lock_status`,
+// migration 0025). There is no tournament-level roster lock in the schema.
+
+/// Build the four repo mocks for a successful `add_member_authorized` of a
+/// primary member onto `season`, so the tests below differ only in the season.
+fn add_member_service_for(
+    season: crate::entities::league_team::LeagueSeason,
+) -> (
+    LeagueTeamService<
+        MockLeagueTeamRepository,
+        MockLeagueTeamSeasonRepository,
+        MockLeagueTeamMemberRepository,
+        MockLeagueSeasonRepository,
+    >,
+    LeagueTeamSeasonId,
+    PlayerId,
+) {
+    let team_repo = MockLeagueTeamRepository::new();
+    let mut team_season_repo = MockLeagueTeamSeasonRepository::new();
+    let mut member_repo = MockLeagueTeamMemberRepository::new();
+    let mut season_repo = MockLeagueSeasonRepository::new();
+
+    let team_season = make_team_season(LeagueTeamId::new(), season.id);
+    let team_season_id = team_season.id;
+    let player_id = PlayerId::new();
+
+    team_season_repo
+        .expect_find_by_id()
+        .returning(move |_| Ok(Some(team_season.clone())));
+    season_repo
+        .expect_find_by_id()
+        .returning(move |_| Ok(Some(season.clone())));
+
+    member_repo.expect_is_member().returning(|_, _| Ok(false));
+    member_repo
+        .expect_find_primary_team_in_season()
+        .returning(|_, _| Ok(None));
+    member_repo
+        .expect_count_primary_members()
+        .returning(|_| Ok(0));
+    member_repo.expect_count_substitutes().returning(|_| Ok(0));
+
+    let seated = make_member(team_season_id, player_id);
+    member_repo
+        .expect_add_member()
+        .returning(move |_| Ok(seated.clone()));
+
+    (
+        create_service(team_repo, team_season_repo, member_repo, season_repo),
+        team_season_id,
+        player_id,
+    )
+}
+
+fn season_in(
+    status: SeasonStatus,
+    lock: portal_core::types::RosterLockStatus,
+) -> crate::entities::league_team::LeagueSeason {
+    let mut season = make_season(LeagueId::new());
+    season.status = status;
+    season.roster_lock_status = lock;
+    season
+}
+
+/// P-148 — **this is the assertion that failed before the ruling was
+/// implemented.** A casual league leaves the lock `open` (the DB default) and
+/// must be able to add a player once the season is under way.
+#[tokio::test]
+async fn test_open_lock_permits_a_roster_change_mid_season() {
+    for status in [SeasonStatus::Active, SeasonStatus::Playoffs] {
+        let (service, team_season_id, player_id) = add_member_service_for(season_in(
+            status,
+            portal_core::types::RosterLockStatus::Open,
+        ));
+
+        let result = service
+            .add_member_authorized(
+                team_season_id,
+                player_id,
+                LeagueTeamRole::Player,
+                portal_core::UserId::new(),
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "an open lock refused a roster change in a '{status}' season: {:?}",
+            result.err()
+        );
+    }
+}
+
+/// P-148 — a league that wants strictness sets the lock, and the lock is what
+/// bites. Not the phase: the season here is `active`, which the old rule froze
+/// on its own.
+#[tokio::test]
+async fn test_hard_lock_refuses_a_roster_change_mid_season() {
+    let (service, team_season_id, player_id) = add_member_service_for(season_in(
+        SeasonStatus::Active,
+        portal_core::types::RosterLockStatus::HardLock,
+    ));
+
+    let err = service
+        .add_member_authorized(
+            team_season_id,
+            player_id,
+            LeagueTeamRole::Player,
+            portal_core::UserId::new(),
+            None,
+        )
+        .await
+        .expect_err("a hard lock must freeze an active season's roster");
+
+    match err {
+        DomainError::InvalidState(msg) => assert!(
+            msg.contains("roster is locked"),
+            "refusal must name the lock, not the phase: {msg}"
+        ),
+        other => panic!("expected InvalidState, got {other:?}"),
+    }
+}
+
+/// P-148 — `soft_lock` keeps its documented meaning ("substitutes only") in a
+/// live season: the substitute goes on, the primary member does not.
+#[tokio::test]
+async fn test_soft_lock_permits_substitutes_only_mid_season() {
+    let (service, team_season_id, player_id) = add_member_service_for(season_in(
+        SeasonStatus::Active,
+        portal_core::types::RosterLockStatus::SoftLock,
+    ));
+    assert!(
+        service
+            .add_member_authorized(
+                team_season_id,
+                player_id,
+                LeagueTeamRole::Substitute,
+                portal_core::UserId::new(),
+                None,
+            )
+            .await
+            .is_ok(),
+        "a soft lock must still admit substitutes in an active season"
+    );
+
+    let (service, team_season_id, player_id) = add_member_service_for(season_in(
+        SeasonStatus::Active,
+        portal_core::types::RosterLockStatus::SoftLock,
+    ));
+    assert!(
+        matches!(
+            service
+                .add_member_authorized(
+                    team_season_id,
+                    player_id,
+                    LeagueTeamRole::Player,
+                    portal_core::UserId::new(),
+                    None,
+                )
+                .await,
+            Err(DomainError::InvalidState(_))
+        ),
+        "a soft lock must freeze the primary roster in an active season"
+    );
+}
+
+/// P-148 — the one status rule that survives. "Optional" was never meant to
+/// include editing the record of a season that has already been played, so a
+/// terminal season refuses even with the lock wide open.
+#[tokio::test]
+async fn test_a_terminal_season_refuses_roster_changes_whatever_the_lock_says() {
+    for status in [SeasonStatus::Completed, SeasonStatus::Cancelled] {
+        let (service, team_season_id, player_id) = add_member_service_for(season_in(
+            status,
+            portal_core::types::RosterLockStatus::Open,
+        ));
+
+        let err = service
+            .add_member_authorized(
+                team_season_id,
+                player_id,
+                LeagueTeamRole::Player,
+                portal_core::UserId::new(),
+                None,
+            )
+            .await
+            .err()
+            .unwrap_or_else(|| {
+                panic!("a '{status}' season gained a member; history is not editable")
+            });
+
+        match err {
+            DomainError::InvalidState(msg) => assert!(
+                msg.contains(&format!("season status '{status}'")),
+                "a terminal refusal must name the status, not the (open) lock: {msg}"
+            ),
+            other => panic!("expected InvalidState, got {other:?}"),
+        }
+    }
+}
+
+/// P-147 — founding a roster goes through the enforcement point, and the
+/// enforcement point rules it exempt from the lock: whether a season takes new
+/// teams is decided once, by `can_register_team()`. A hard-locked season that
+/// is still inside its registration window therefore still accepts a new team.
+#[tokio::test]
+async fn test_founding_a_team_is_governed_by_registration_not_by_the_lock() {
+    let mut team_repo = MockLeagueTeamRepository::new();
+    let team_season_repo = MockLeagueTeamSeasonRepository::new();
+    let mut member_repo = MockLeagueTeamMemberRepository::new();
+    let mut season_repo = MockLeagueSeasonRepository::new();
+
+    let league_id = LeagueId::new();
+    let season = season_in(
+        SeasonStatus::Registration,
+        portal_core::types::RosterLockStatus::HardLock,
+    );
+    let season_id = season.id;
+    let owner_player_id = PlayerId::new();
+
+    season_repo
+        .expect_find_by_id()
+        .returning(move |_| Ok(Some(season.clone())));
+    team_repo.expect_name_exists().returning(|_, _| Ok(false));
+    team_repo.expect_tag_exists().returning(|_, _| Ok(false));
+    member_repo
+        .expect_find_primary_team_in_season()
+        .returning(|_, _| Ok(None));
+
+    let team = make_team(league_id);
+    let team_season = make_team_season(team.id, season_id);
+    let created = (team, team_season);
+    team_repo
+        .expect_create_team_with_season_and_captain()
+        .returning(move |_, _, _| Ok(created.clone()));
+
+    let service = create_service(team_repo, team_season_repo, member_repo, season_repo);
+
+    assert!(
+        service
+            .create_team(
+                owner_player_id,
+                CreateLeagueTeamCommand {
+                    league_id,
+                    season_id,
+                    name: "Late Arrival".to_string(),
+                    tag: "LAT".to_string(),
+                    description: None,
+                    logo_url: None,
+                    primary_color: None,
+                    secondary_color: None,
+                },
+            )
+            .await
+            .is_ok(),
+        "the lock must not become a second, invisible veto on registration"
+    );
+}

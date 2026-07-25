@@ -2300,3 +2300,286 @@ fn urlencoding_lite(s: &str) -> String {
         })
         .collect()
 }
+
+// ============================================================================
+// P-148 / P-147 — the lock is the control, not the season phase
+// ============================================================================
+//
+// The owner's ruling: *"I think the roster lock should really be an 'optional'
+// thing/thing that is a per tournament decision, (again, this is a casual
+// league, so adding team members half way through may be okay)."*
+//
+// What the rule WAS: every roster predicate ANDed the lock with
+// `SeasonStatus::allows_roster_changes()` (`draft | registration`). Season
+// phase was the outer gate, so once a season reached `active` or `playoffs`
+// NO roster change was possible whatever the lock said — and the lock, sold as
+// the thing that stops mid-playoffs player swaps, was inert in exactly that
+// window.
+//
+// What the rule IS: `draft` / `registration` / `active` / `playoffs` all defer
+// to the season's `roster_lock_status`, whose DB default is `open` (migration
+// 0025), so a casual league gets casual behaviour for free. `completed` and
+// `cancelled` refuse everything regardless of the lock, because a played
+// season's roster is the record of who played it.
+//
+// The knob is per LEAGUE SEASON (`league_seasons.roster_lock_status`). The
+// ruling said "per tournament"; no tournament-level roster lock exists.
+
+/// Move a season to `status` through the public PATCH endpoint.
+async fn set_season_status(app: &TestApp, season_id: &str, status: &str) {
+    let response = app
+        .patch_json(
+            &format!("/v1/league-seasons/{season_id}"),
+            &json!({ "status": status }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["status"], status,
+        "PATCH reported a season status it did not apply"
+    );
+}
+
+/// Count active members on a seasonal roster.
+async fn active_member_count(app: &TestApp, team_season_id: &str) -> usize {
+    let response = app
+        .get(&format!("/v1/league-team-seasons/{team_season_id}/members"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["status"] == "active")
+        .count()
+}
+
+/// P-148 — **the assertion that fails against the old rule.** A casual league
+/// leaves the lock `open` and adds a player half way through the season, on
+/// both `active` and `playoffs`, through both the direct member path and the
+/// invitation path.
+#[tokio::test]
+async fn test_an_open_lock_lets_a_casual_league_change_its_roster_mid_season() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "casual-open-lock-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "casual-open-lock-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Casual Crew", "CAS").await;
+
+    let (late_a, _token_a) =
+        create_player_with_token(&app, "casual-late-a", "casual-late-a@example.com").await;
+    let (late_b, token_b) =
+        create_player_with_token(&app, "casual-late-b", "casual-late-b@example.com").await;
+
+    // The competition is under way, and the lock is untouched — the DB default
+    // is `open`, which is the whole point of "optional".
+    set_season_status(&app, season_id, "active").await;
+    assert_eq!(
+        season["data"]["roster_lock_status"], "open",
+        "the default lock must be open, or this test proves nothing"
+    );
+
+    // Path 1 — direct add of a PRIMARY member mid-season. Under the old rule
+    // this was a 400 for every season past `registration`.
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({ "player_id": late_a.to_string(), "role": "player" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    // Path 2 — invite, then accept, in playoffs. Both halves used to refuse.
+    set_season_status(&app, season_id, "playoffs").await;
+
+    let invite = app
+        .post_json(
+            &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+            &json!({ "player_id": late_b.to_string(), "role": "substitute" }),
+        )
+        .await;
+    invite.assert_status(StatusCode::CREATED);
+    let invite: serde_json::Value = invite.json();
+    let invitation_id = invite["data"]["id"].as_str().unwrap().to_string();
+
+    app.post_with_token(
+        &format!("/v1/league-team-invitations/{invitation_id}/accept"),
+        &token_b,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // The mutation that matters: both players are really on the roster.
+    assert_eq!(
+        active_member_count(&app, &team_season_id).await,
+        3,
+        "an open lock did not actually seat the mid-season additions"
+    );
+}
+
+/// P-148 — a league that wants strictness sets the lock, and the LOCK is what
+/// bites. The lock is set while the season is already `active`, which the old
+/// `ensure_lock_change_allowed` refused outright.
+#[tokio::test]
+async fn test_a_lock_set_mid_season_is_what_freezes_the_roster() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "midseason-lock-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "midseason-lock-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Serious Squad", "SRS").await;
+
+    let (blocked, _t1) =
+        create_player_with_token(&app, "midlock-blocked", "midlock-blocked@example.com").await;
+    let (sub, _t2) = create_player_with_token(&app, "midlock-sub", "midlock-sub@example.com").await;
+
+    set_season_status(&app, season_id, "active").await;
+
+    // Setting the lock on a live season must work — that is when a league
+    // decides its rosters are final.
+    set_roster_lock(&app, season_id, "hard_lock").await;
+
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({ "player_id": blocked.to_string(), "role": "player" }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+        &json!({ "player_id": sub.to_string(), "role": "substitute" }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    // A soft lock keeps its documented meaning mid-season: substitutes only.
+    set_roster_lock(&app, season_id, "soft_lock").await;
+
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({ "player_id": blocked.to_string(), "role": "player" }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({ "player_id": sub.to_string(), "role": "substitute" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    assert_eq!(
+        active_member_count(&app, &team_season_id).await,
+        2,
+        "soft lock admitted the wrong set of players"
+    );
+}
+
+/// P-148 — the one status rule that survives. "Optional" does not extend to
+/// rewriting a season that has already been played, so a `completed` season
+/// refuses every roster change even with the lock wide open, and the refusal
+/// names the STATUS (saying "the roster is locked" about an open lock would be
+/// a lie).
+#[tokio::test]
+async fn test_a_completed_season_refuses_roster_changes_with_the_lock_open() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "finished-season-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "finished-season-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (_team_id, team_season_id) = create_test_team(&app, season_id, "History Team", "HIS").await;
+    let (latecomer, _token) =
+        create_player_with_token(&app, "too-late", "too-late@example.com").await;
+
+    set_season_status(&app, season_id, "completed").await;
+
+    let fetched = app.get(&format!("/v1/league-seasons/{season_id}")).await;
+    let fetched: serde_json::Value = fetched.json();
+    assert_eq!(
+        fetched["data"]["roster_lock_status"], "open",
+        "the lock must be open, or this test is not testing the status rule"
+    );
+
+    let refused = app
+        .post_json(
+            &format!("/v1/league-team-seasons/{team_season_id}/members"),
+            &json!({ "player_id": latecomer.to_string(), "role": "player" }),
+        )
+        .await;
+    refused.assert_status(StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = refused.json();
+    let detail = body["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("season status 'completed'"),
+        "refusal must name the status, not the open lock: {body}"
+    );
+
+    // The invite path agrees, and the roster really did not move.
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+        &json!({ "player_id": latecomer.to_string(), "role": "substitute" }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    assert_eq!(
+        active_member_count(&app, &team_season_id).await,
+        1,
+        "a completed season's roster moved"
+    );
+}
+
+/// P-147 — `create_team` / `register_for_season` seat a founding captain, and
+/// used to do so without the enforcement point ever being consulted. They now
+/// go through it, and it rules them exempt from the lock: whether a season
+/// takes new teams is decided once, by `is_registration_open()`. Giving the
+/// lock a second veto would let a season advertise `status: "registration"`
+/// while `POST .../teams` returned 400 for a reason nothing in its payload
+/// explains.
+#[tokio::test]
+async fn test_a_hard_locked_season_still_accepts_new_teams_while_registration_is_open() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "founding-under-lock-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "founding-under-lock-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    set_roster_lock(&app, season_id, "hard_lock").await;
+
+    // Registration is still open, so the team is accepted and its founding
+    // captain is seated...
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Founded Under Lock", "FUL").await;
+    assert_eq!(active_member_count(&app, &team_season_id).await, 1);
+
+    // ...but the roster it founded is frozen from that moment on, which is what
+    // the lock actually governs.
+    let (other, _token) =
+        create_player_with_token(&app, "ful-other", "ful-other@example.com").await;
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({ "player_id": other.to_string(), "role": "player" }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+}

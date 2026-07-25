@@ -222,6 +222,18 @@ pub mod admin {
     /// matches, delete.
     pub const DEMOS_MANAGE: &str = "admin.demos.manage";
 
+    /// Manage the game catalog - enable/disable games, edit maps, rank tiers
+    /// and team sizes, and list inactive games.
+    ///
+    /// P-151: this was seeded by migration 0019 and gated on at six sites in
+    /// `handlers/games.rs`, but existed here as a **bare string literal** at
+    /// every one of them and appeared in no registry. That put it outside the
+    /// reach of `test_every_declared_permission_is_seeded_and_granted`, which
+    /// can only check constants in these `ALL` arrays — so the guard added for
+    /// P-140 would not have caught P-139 had it happened to this permission
+    /// instead. The registry is only a safety net for what is in it.
+    pub const GAMES_MANAGE: &str = "admin.games.manage";
+
     /// All admin permissions for iteration.
     pub const ALL: &[&str] = &[
         USERS_VIEW,
@@ -232,6 +244,7 @@ pub mod admin {
         TOURNAMENTS_MANAGE_ANY,
         SYSTEM_MANAGE,
         DEMOS_MANAGE,
+        GAMES_MANAGE,
     ];
 }
 

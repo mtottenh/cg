@@ -76,7 +76,7 @@ pub async fn list_games(
         let is_admin = match &auth.0 {
             Some(user) => state
                 .permission_repo
-                .user_has_permission(user.user_id, "admin.games.manage")
+                .user_has_permission(user.user_id, portal_core::permissions::admin::GAMES_MANAGE)
                 .await
                 .unwrap_or(false),
             None => false,
@@ -377,7 +377,7 @@ pub async fn update_game(
     // Check admin permission
     let is_admin = state
         .permission_repo
-        .user_has_permission(auth.user_id, "admin.games.manage")
+        .user_has_permission(auth.user_id, portal_core::permissions::admin::GAMES_MANAGE)
         .await
         .unwrap_or(false);
 
@@ -517,7 +517,7 @@ pub async fn set_map_pool(
     // Check admin permission
     let is_admin = state
         .permission_repo
-        .user_has_permission(auth.user_id, "admin.games.manage")
+        .user_has_permission(auth.user_id, portal_core::permissions::admin::GAMES_MANAGE)
         .await
         .unwrap_or(false);
 
@@ -606,7 +606,7 @@ pub async fn enable_game(
     // Check admin permission
     let is_admin = state
         .permission_repo
-        .user_has_permission(auth.user_id, "admin.games.manage")
+        .user_has_permission(auth.user_id, portal_core::permissions::admin::GAMES_MANAGE)
         .await
         .unwrap_or(false);
 
@@ -665,7 +665,7 @@ pub async fn disable_game(
     // Check admin permission
     let is_admin = state
         .permission_repo
-        .user_has_permission(auth.user_id, "admin.games.manage")
+        .user_has_permission(auth.user_id, portal_core::permissions::admin::GAMES_MANAGE)
         .await
         .unwrap_or(false);
 
@@ -768,7 +768,7 @@ pub(crate) fn game_catalog_map_ids(
 async fn require_games_admin(state: &GamesState, auth: &AuthenticatedUser) -> ApiResult<()> {
     let is_admin = state
         .permission_repo
-        .user_has_permission(auth.user_id, "admin.games.manage")
+        .user_has_permission(auth.user_id, portal_core::permissions::admin::GAMES_MANAGE)
         .await
         .unwrap_or(false);
 

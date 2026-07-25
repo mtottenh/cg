@@ -849,7 +849,12 @@ async fn test_no_permission_is_used_as_a_bare_literal() {
     /// namespaces the product uses.
     fn looks_like_a_permission(literal: &str) -> bool {
         const NAMESPACES: &[&str] = &[
-            "admin.", "team.", "league.", "tournament.", "match.", "service.",
+            "admin.",
+            "team.",
+            "league.",
+            "tournament.",
+            "match.",
+            "service.",
         ];
         NAMESPACES.iter().any(|ns| literal.starts_with(ns))
             && literal.matches('.').count() >= 2
@@ -859,7 +864,9 @@ async fn test_no_permission_is_used_as_a_bare_literal() {
     }
 
     fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = fs::read_dir(dir) else { return };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -883,7 +890,9 @@ async fn test_no_permission_is_used_as_a_bare_literal() {
 
     let mut offenders = Vec::new();
     for file in &files {
-        let Ok(text) = fs::read_to_string(file) else { continue };
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
         for (idx, line) in text.lines().enumerate() {
             let trimmed = line.trim_start();
             // Documentation is allowed to name a permission — `dto/responses/role.rs`

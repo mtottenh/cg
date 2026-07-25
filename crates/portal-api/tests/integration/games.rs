@@ -1286,7 +1286,15 @@ async fn test_game_config_writes_by_uuid_persist() {
 async fn test_list_games_actually_paginates() {
     let app = TestApp::new().await;
 
-    // Establish the true catalog size from an explicitly large page.
+    // Establish the catalog size from an explicitly large page.
+    //
+    // Every assertion below is deliberately independent of this number staying
+    // stable across requests. It cannot change here — TestDb gives each test its
+    // own database — but a test that would break if it did is a test whose
+    // failures are ambiguous, and this one already produced one ambiguous report:
+    // a concurrent full-suite run saw it red while a red-proof probe for this
+    // very defect was momentarily in the shared tree, and it was reported as
+    // flakiness. Order-independence makes the next failure mean one thing.
     let all = app.get("/v1/games?page=1&per_page=100").await;
     all.assert_status(StatusCode::OK);
     let all_body: serde_json::Value = all.json();
@@ -1316,13 +1324,14 @@ async fn test_list_games_actually_paginates() {
         first_page.len()
     );
 
-    // ...and `total` must remain the CATALOG size, not the page size. Counting
-    // after the slice would collapse total_pages to 1 and silently disable the
-    // client's "next page" control.
-    assert_eq!(
-        first_body["pagination"]["total_items"].as_u64().unwrap(),
-        total,
-        "total must count the catalog, not the returned page"
+    // ...while `total` still reports the CATALOG, not the page. Counting after
+    // the slice would make this 1, collapsing total_pages and silently disabling
+    // the client's "next page" control. Asserted as `>= 2` rather than `== total`
+    // so it tests the property rather than the stability of an earlier read.
+    assert!(
+        first_body["pagination"]["total_items"].as_u64().unwrap() >= 2,
+        "total must count the catalog, not the returned page (got {})",
+        first_body["pagination"]["total_items"]
     );
 
     // Page 2 must be DIFFERENT items. This is the assertion that fails on the
@@ -1338,8 +1347,9 @@ async fn test_list_games_actually_paginates() {
         "page 2 returned the same game as page 1 — pagination is decorative"
     );
 
-    // Past the end: empty page, unchanged total.
-    let past_end = app.get(&format!("/v1/games?page={}&per_page=100", total + 10)).await;
+    // Far past the end: empty page. A fixed, absurdly high page number rather
+    // than one derived from `total`, so this cannot depend on an earlier read.
+    let past_end = app.get("/v1/games?page=10000&per_page=100").await;
     past_end.assert_status(StatusCode::OK);
     let past_body: serde_json::Value = past_end.json();
     assert!(

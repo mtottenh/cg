@@ -204,10 +204,10 @@ impl PermissionChecker {
         }
 
         let admin_permission = match scope_type {
-            ScopeType::Team => "admin.teams.manage_any",
-            ScopeType::League => "admin.leagues.manage_any",
-            ScopeType::Tournament => "admin.tournaments.manage_any",
-            ScopeType::Match => "admin.tournaments.manage_any", // Matches fall under tournament admin
+            ScopeType::Team => portal_core::permissions::admin::TEAMS_MANAGE_ANY,
+            ScopeType::League => portal_core::permissions::admin::LEAGUES_MANAGE_ANY,
+            ScopeType::Tournament => portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
+            ScopeType::Match => portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY, // Matches fall under tournament admin
         };
 
         log_and_deny(

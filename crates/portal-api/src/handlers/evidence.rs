@@ -336,6 +336,49 @@ pub async fn list_evidence(
     Ok(Json(DataResponse::new(summaries, request_id)))
 }
 
+/// Get evidence details.
+///
+/// P-67 listed this as a redundant single-getter over the summary list, and it
+/// is not: `find_by_match` excludes `pending` and `deleted`
+/// (`portal-db/src/adapters/evidence.rs:53`), so the list cannot show an
+/// in-flight upload at all. Between `initiate` and `complete` — the exact window
+/// the three-step upload flow occupies — this is the only way to read an
+/// evidence row's state. It has no frontend consumer today, which is why it was
+/// proposed for deletion; deleting it would have removed the only read path for
+/// a state the product genuinely has.
+#[utoipa::path(
+    get,
+    path = "/v1/matches/{match_id}/evidence/{evidence_id}",
+    params(
+        ("match_id" = String, Path, description = "Match ID"),
+        ("evidence_id" = String, Path, description = "Evidence ID")
+    ),
+    responses(
+        (status = 200, description = "Evidence details", body = DataResponse<EvidenceResponse>),
+        (status = 404, description = "Evidence not found", body = ApiError),
+    ),
+    tag = "evidence"
+)]
+pub async fn get_evidence(
+    State(state): State<EvidenceState>,
+    headers: HeaderMap,
+    Path((match_id, evidence_id)): Path<(TournamentMatchId, EvidenceId)>,
+) -> ApiResult<Json<DataResponse<EvidenceResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let evidence = state.evidence_service.get_evidence(evidence_id).await?;
+
+    // Verify the evidence belongs to this match
+    if evidence.match_id != match_id {
+        return Err(ApiError::not_found("Evidence not found for this match"));
+    }
+
+    Ok(Json(DataResponse::new(
+        EvidenceResponse::from(evidence),
+        request_id,
+    )))
+}
+
 /// Get a presigned URL for accessing evidence.
 #[utoipa::path(
     get,

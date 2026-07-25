@@ -65,6 +65,10 @@ pub fn routes() -> Router<AppState> {
         // Evidence instance endpoints
         .route(
             "/{match_id}/evidence/{evidence_id}",
+            get(evidence::get_evidence),
+        )
+        .route(
+            "/{match_id}/evidence/{evidence_id}",
             delete(evidence::delete_evidence),
         )
         .route(

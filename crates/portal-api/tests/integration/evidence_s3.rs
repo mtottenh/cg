@@ -174,7 +174,12 @@ async fn test_evidence_upload_s3_full_flow() {
         "Presigned URL should point to MinIO, got: {upload_url}"
     );
 
-    // 2. Verify evidence is pending (GET detail should show pending status)
+    // 2. Verify evidence is pending (GET detail should show pending status).
+    //
+    // This is why the single-evidence GET survived the P-67 sweep: the summary
+    // list excludes `pending` at the query level
+    // (`portal-db/src/adapters/evidence.rs:53`), so between `initiate` and
+    // `complete` this endpoint is the only way to observe the row at all.
     let response = app
         .get(&format!(
             "/v1/matches/{}/evidence/{}",

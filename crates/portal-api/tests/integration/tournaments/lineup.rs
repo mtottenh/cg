@@ -12,11 +12,14 @@ use super::*;
 const DEV_PLAYER_ID: &str = "00000000-0000-0000-0000-000000000001";
 
 /// Schedule the match so declaration/check-in is possible.
+///
+/// P-67 deleted the participant-facing direct-set duplicate; the admin route is
+/// the only direct-set path now, and the dev identity holds the permission.
 async fn schedule(app: &TestApp, tournament_id: &str, match_id: &str) {
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({ "scheduled_at": scheduled_time.to_rfc3339() }),
         )
         .await;

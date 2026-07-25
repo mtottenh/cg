@@ -314,6 +314,7 @@ use utoipa_swagger_ui::SwaggerUi;
         evidence::complete_upload,
         evidence::add_link_evidence,
         evidence::list_evidence,
+        evidence::get_evidence,
         evidence::get_access_url,
         evidence::delete_evidence,
         evidence::discover_evidence,

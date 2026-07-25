@@ -11,6 +11,7 @@ mod dispute;
 mod enrichment_idempotency;
 mod evidence;
 mod forfeit;
+mod game_server_flow;
 mod game_servers;
 mod games;
 mod league_teams;

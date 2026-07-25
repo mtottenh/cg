@@ -211,6 +211,28 @@ impl TestApp {
         .await
     }
 
+    /// Make a POST request with JSON body and one custom header (no auth) —
+    /// the MatchZy webhook shape (single bearer header pair).
+    pub async fn post_json_with_header<T: serde::Serialize>(
+        &self,
+        uri: &str,
+        body: &T,
+        header_name: &str,
+        header_value: &str,
+    ) -> TestResponse {
+        let json = serde_json::to_string(body).unwrap();
+        self.request(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("Content-Type", "application/json")
+                .header(header_name, header_value)
+                .body(Body::from(json))
+                .unwrap(),
+        )
+        .await
+    }
+
     /// Make a POST request with JSON body (without auth).
     pub async fn post_json_no_auth<T: serde::Serialize>(
         &self,

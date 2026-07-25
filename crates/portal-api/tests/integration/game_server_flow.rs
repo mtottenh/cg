@@ -89,6 +89,7 @@ async fn seed_allocated_reservation(
             None,
             Utc::now() - Duration::seconds(90),
             Utc::now(),
+            None,
         )
         .await
         .unwrap()
@@ -157,6 +158,7 @@ async fn test_allocation_predicate_and_exclusivity() {
             None,
             Utc::now() - Duration::seconds(90),
             Utc::now(),
+            None,
         )
         .await
         .unwrap();
@@ -173,6 +175,7 @@ async fn test_allocation_predicate_and_exclusivity() {
             None,
             Utc::now() - Duration::seconds(90),
             Utc::now(),
+            None,
         )
         .await
         .unwrap()
@@ -204,6 +207,7 @@ async fn test_allocation_predicate_and_exclusivity() {
             None,
             Utc::now() - Duration::seconds(90),
             Utc::now(),
+            None,
         )
         .await
         .unwrap();
@@ -257,6 +261,7 @@ async fn test_hard_hold_booking_blocks_allocation() {
             None,
             Utc::now() - Duration::seconds(90),
             Utc::now(),
+            None,
         )
         .await
         .unwrap();

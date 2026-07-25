@@ -869,9 +869,17 @@ fn filter_broadcast_for_connection(
             }
         }
         LobbyBroadcast::ServerAssignmentUpdate(update) => {
+            // §9 / M1: connect details (sv_password) are participant-only.
+            // Spectators get the bare status; the REST endpoint applies the
+            // same gating for cold loads.
+            let connect = if connection.is_spectator() {
+                None
+            } else {
+                update.connect.clone()
+            };
             Some(ServerMessage::ServerAssignmentUpdate {
                 status: update.status.clone(),
-                connect: update.connect.clone(),
+                connect,
                 reason: update.reason.clone(),
             })
         }

@@ -223,6 +223,34 @@ where
         })
     }
 
+    /// Renew an agent's certificate over its established mTLS channel
+    /// (§5.3 step 4): sign a fresh CSR for an ALREADY-authenticated server
+    /// — no enrollment token involved.
+    pub async fn renew_certificate(
+        &self,
+        server_id: GameServerId,
+        csr_pem: &str,
+        ca: &CertificateAuthority,
+    ) -> Result<(AgentCertificate, String), DomainError> {
+        let server = self.get(server_id).await?;
+        let issued: IssuedCertificate =
+            ca.sign_csr(csr_pem, &server.id.to_string(), self.cert_validity_days)?;
+        let certificate = self
+            .cert_repo
+            .create(CreateAgentCertificate {
+                server_id: server.id,
+                serial: issued.serial.clone(),
+                fingerprint_sha256: issued.fingerprint_sha256.clone(),
+                not_before: issued.not_before,
+                not_after: issued.not_after,
+            })
+            .await?;
+        self.server_repo
+            .complete_enrollment(server.id, &issued.serial, issued.not_after)
+            .await?;
+        Ok((certificate, issued.cert_pem))
+    }
+
     /// Resolve a presented client-cert serial to its server, enforcing
     /// validity window and revocation. The agent-WS auth path (§5.4).
     pub async fn authenticate_agent(&self, serial: &str) -> Result<GameServer, DomainError> {

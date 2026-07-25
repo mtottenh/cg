@@ -12,7 +12,10 @@ use portal_core::ids::{GameId, GameServerId, ServerBookingId, TournamentId};
 use portal_core::permissions;
 use portal_core::types::GameServerStatus;
 use portal_domain::entities::{GameServer, ServerBooking};
-use portal_domain::repositories::{CreateGameServer, CreateServerBooking, UpdateGameServer};
+use portal_domain::repositories::{
+    CreateGameServer, CreateServerBooking, ServerEventRepository, ServerReservationRepository,
+    UpdateGameServer,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
@@ -655,6 +658,7 @@ pub async fn send_command(
         "admin console passthrough"
     );
 
+    let command_text = body.command.clone();
     let outcome = state
         .agent_manager
         .send_command(
@@ -665,11 +669,40 @@ pub async fn send_command(
         )
         .await
         .map_err(ApiError::from)?;
+    let output = outcome.output.or(outcome.error).unwrap_or_default();
+
+    // Durable audit row (actor + command + output), alongside the tracing
+    // line above — §9 (review minor).
+    if let Some(reservation) = state
+        .server_reservation_repo
+        .find_live_by_server(id)
+        .await
+        .ok()
+        .flatten()
+    {
+        let event = state
+            .server_event_repo
+            .insert(portal_domain::repositories::CreateServerEvent {
+                reservation_id: Some(reservation.id),
+                server_id: id,
+                event_type: "admin_command".to_string(),
+                map_number: None,
+                round_number: None,
+                payload: serde_json::json!({
+                    "admin_user_id": auth.user_id.to_string(),
+                    "admin": auth.username,
+                    "command": command_text,
+                    "output": output,
+                }),
+            })
+            .await;
+        if let Ok(Some(event)) = event {
+            let _ = state.server_event_repo.mark_processed(event.id, None).await;
+        }
+    }
 
     Ok(Json(DataResponse::new(
-        SendCommandResponse {
-            output: outcome.output.or(outcome.error).unwrap_or_default(),
-        },
+        SendCommandResponse { output },
         request_id,
     )))
 }

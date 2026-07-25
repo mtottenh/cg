@@ -24,10 +24,15 @@ use futures_util::{SinkExt, StreamExt};
 use portal_core::ids::GameServerId;
 use portal_core::types::AgentGamestate;
 use portal_domain::entities::{GameServer, HeartbeatUpdate};
+use portal_domain::repositories::ServerReservationRepository;
 use serde::{Deserialize, Serialize};
 
 /// Header set by Caddy after client-cert verification.
 const CLIENT_CERT_SERIAL_HEADER: &str = "x-client-cert-serial";
+/// Marker only the agents vhost sets (and the main site strips): the
+/// serial header is trusted ONLY when this accompanies it (§5.4 — without
+/// it, a client could post a forged serial through the public site).
+const AGENT_VHOST_HEADER: &str = "x-portal-agent-vhost";
 /// Dev-mode identity header (only honored with `PORTAL_AGENT_INSECURE`).
 const DEV_SERVER_ID_HEADER: &str = "x-dev-server-id";
 
@@ -103,9 +108,14 @@ async fn authenticate(
     state: &GameServerState,
     headers: &HeaderMap,
 ) -> Result<GameServer, ApiError> {
-    if let Some(serial) = headers
-        .get(CLIENT_CERT_SERIAL_HEADER)
+    let via_agent_vhost = headers
+        .get(AGENT_VHOST_HEADER)
         .and_then(|v| v.to_str().ok())
+        == Some("1");
+    if via_agent_vhost
+        && let Some(serial) = headers
+            .get(CLIENT_CERT_SERIAL_HEADER)
+            .and_then(|v| v.to_str().ok())
     {
         // Caddy normalizes serials to lowercase hex; ours are stored likewise.
         return state
@@ -214,11 +224,26 @@ async fn handle_agent_message(
                 gamestate,
                 reported_matchzy_id,
             };
-            // Phase 1: no reservations exist yet, so a loaded match is
-            // always out-of-band (`busy_external`, §6.7).
+            // §6.7 rule 3: a loaded match is OURS when a live reservation
+            // exists and the reported matchid matches (or is unreported).
+            let ours = match state
+                .server_reservation_repo
+                .find_live_by_server(server_id)
+                .await
+            {
+                Ok(Some(reservation)) => update
+                    .reported_matchzy_id
+                    .is_none_or(|id| id == reservation.matchzy_id),
+                Ok(None) => false,
+                Err(e) => {
+                    tracing::warn!(server_id = %server_id, error = %e,
+                        "live-reservation lookup failed; assuming ours");
+                    true
+                }
+            };
             if let Err(e) = state
                 .registry
-                .record_heartbeat(server_id, update, false)
+                .record_heartbeat(server_id, update, ours)
                 .await
             {
                 tracing::warn!(server_id = %server_id, error = %e, "heartbeat processing failed");
@@ -229,4 +254,44 @@ async fn handle_agent_message(
             tracing::debug!(server_id = %server_id, error = %e, "unparseable agent frame");
         }
     }
+}
+
+/// Request body for certificate renewal.
+#[derive(Debug, Deserialize)]
+pub struct RenewRequest {
+    /// Fresh PEM-encoded CSR (a new local keypair is recommended).
+    pub csr_pem: String,
+}
+
+/// Renewal response: the re-signed certificate.
+#[derive(Debug, Serialize)]
+pub struct RenewResponse {
+    pub certificate_pem: String,
+    pub expires_at: String,
+}
+
+/// Renew the calling agent's certificate (§5.3 step 4, mTLS-authenticated
+/// — the agents vhost verified the CURRENT cert to get here).
+pub async fn renew(
+    State(state): State<GameServerState>,
+    headers: HeaderMap,
+    Json(body): Json<RenewRequest>,
+) -> ApiResult<Json<RenewResponse>> {
+    let ca = state.agent_ca.as_ref().ok_or_else(|| {
+        ApiError::service_unavailable(
+            "game-server integration is not configured (PORTAL_AGENT_CA_DIR unset)",
+        )
+    })?;
+    let server = authenticate(&state, &headers).await?;
+    let (certificate, cert_pem) = state
+        .registry
+        .renew_certificate(server.id, &body.csr_pem, ca)
+        .await
+        .map_err(ApiError::from)?;
+    tracing::info!(server_id = %server.id, serial = %certificate.serial,
+        "agent certificate renewed");
+    Ok(Json(RenewResponse {
+        certificate_pem: cert_pem,
+        expires_at: certificate.not_after.to_rfc3339(),
+    }))
 }

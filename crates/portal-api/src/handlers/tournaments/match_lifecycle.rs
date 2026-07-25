@@ -159,6 +159,13 @@ pub async fn match_check_in(
         );
     }
 
+    // §6.6 trigger 2: matches WITHOUT a veto get their server on check-in
+    // completion (maps come from the tournament map pool). The drain task
+    // applies the tournament opt-in gate.
+    if match_.status == TournamentMatchStatus::InProgress && !match_.veto_required {
+        let _ = state.server_assignment_tx.send(match_id);
+    }
+
     Ok(Json(DataResponse::new(
         TournamentMatchResponse::from(match_),
         request_id,

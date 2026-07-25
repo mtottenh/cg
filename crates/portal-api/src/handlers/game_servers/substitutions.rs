@@ -70,6 +70,25 @@ impl From<MatchSubstitution> for SubstitutionResponse {
     }
 }
 
+async fn require_match_participant(
+    state: &AppState,
+    match_id: TournamentMatchId,
+    auth: &AuthenticatedUser,
+    perm_checker: &PermissionChecker,
+) -> Result<(), ApiError> {
+    if perm_checker
+        .has_permission(auth, permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await
+        || super::match_server::is_participant(state, match_id, auth).await?
+    {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "only match participants and admins may view this",
+        ))
+    }
+}
+
 fn parse_match_id(raw: &str) -> Result<TournamentMatchId, ApiError> {
     raw.parse()
         .map_err(|_| ApiError::bad_request("invalid match id"))
@@ -143,12 +162,14 @@ pub async fn create_substitution(
 )]
 pub async fn list_substitutions(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<String>,
 ) -> ApiResult<Json<DataResponse<Vec<SubstitutionResponse>>>> {
     let request_id = get_request_id(&headers);
     let match_id = parse_match_id(&match_id)?;
+    require_match_participant(&state, match_id, &auth, &perm_checker).await?;
     let subs = state
         .match_substitution_repo
         .list_by_match(match_id)
@@ -303,6 +324,24 @@ pub async fn reject_substitution(
     let id: MatchSubstitutionId = substitution_id
         .parse()
         .map_err(|_| ApiError::bad_request("invalid substitution id"))?;
+    let substitution = state
+        .match_substitution_repo
+        .find_by_id(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::not_found("substitution not found"))?;
+    // An applied substitution is history — it cannot be "rejected" while
+    // the roster edit stands (review minor).
+    if !matches!(
+        substitution.status,
+        SubstitutionStatus::Pending
+            | SubstitutionStatus::AwaitingApproval
+            | SubstitutionStatus::Applying
+    ) {
+        return Err(ApiError::bad_request(
+            "only pending/awaiting/applying substitutions can be rejected",
+        ));
+    }
     state
         .match_substitution_repo
         .set_status(id, SubstitutionStatus::Rejected, None, Some(auth.user_id))
@@ -344,12 +383,15 @@ pub struct SubstitutionOptionsSide {
 )]
 pub async fn substitution_options(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(match_id): Path<String>,
 ) -> ApiResult<Json<DataResponse<Vec<SubstitutionOptionsSide>>>> {
     let request_id = get_request_id(&headers);
     let match_id = parse_match_id(&match_id)?;
+    // Roster + bench enumeration is participant/admin-only (review minor).
+    require_match_participant(&state, match_id, &auth, &perm_checker).await?;
     let sides = game_server_flow::substitution_options(&state, match_id)
         .await
         .map_err(ApiError::from)?;

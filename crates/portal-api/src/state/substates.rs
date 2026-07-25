@@ -305,6 +305,10 @@ pub struct GameServerState {
     pub insecure_dev_auth: bool,
     /// Public https base URL (demo upload / config URLs in responses).
     pub public_base_url: String,
+    /// Reservation lookups (heartbeat §6.7 ours-vs-external detection).
+    pub server_reservation_repo: Arc<portal_db::PgServerReservationRepository>,
+    /// Event rows (admin-command audit trail).
+    pub server_event_repo: Arc<portal_db::PgServerEventRepository>,
 }
 
 impl FromRef<AppState> for GameServerState {
@@ -315,6 +319,8 @@ impl FromRef<AppState> for GameServerState {
             agent_ca: s.agent_ca.clone(),
             insecure_dev_auth: s.agent_insecure_dev_auth,
             public_base_url: s.public_base_url.clone(),
+            server_reservation_repo: Arc::clone(&s.server_reservation_repo),
+            server_event_repo: Arc::clone(&s.server_event_repo),
         }
     }
 }
@@ -463,6 +469,9 @@ pub struct TournamentState {
     /// Award service — `complete_tournament` auto-finalizes the
     /// tournament's active awards.
     pub award_service: AppAwardService,
+    /// Veto-completion / check-in server-assignment trigger (§6.6).
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
 }
 
 impl FromRef<AppState> for TournamentState {
@@ -487,6 +496,7 @@ impl FromRef<AppState> for TournamentState {
             plugin_manager: Arc::clone(&s.plugin_manager),
             role_repo: s.role_repo.clone(),
             award_service: s.award_service.clone(),
+            server_assignment_tx: s.server_assignment_tx.clone(),
         }
     }
 }

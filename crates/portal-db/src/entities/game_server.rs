@@ -73,6 +73,7 @@ pub struct ServerReservationRow {
     pub config_token_expires_at: DateTime<Utc>,
     pub match_config: Option<serde_json::Value>,
     pub config_fetched_at: Option<DateTime<Utc>>,
+    pub config_fetch_count: i32,
     pub went_live_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub failure_reason: Option<String>,

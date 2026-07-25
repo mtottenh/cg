@@ -17,8 +17,9 @@ use portal_domain::entities::{
     GameServer, ServerEvent, ServerReservation, TournamentMatch, TransitionTrigger, VetoStatus,
 };
 use portal_domain::repositories::{
-    CreateServerEvent, CreateServerReservation, LeagueTeamMemberRepository, ServerEventRepository,
-    ServerReservationRepository, TournamentMatchGameRepository, TournamentMatchRepository,
+    CreateServerEvent, CreateServerReservation, LeagueTeamMemberRepository,
+    MatchSubstitutionRepository as _, ServerEventRepository, ServerReservationRepository,
+    TournamentMapPoolRepository, TournamentMatchGameRepository, TournamentMatchRepository,
 };
 use portal_domain::services::game_server::{
     derive_map_sides, generate_connect_password, generate_reservation_token, hash_token,
@@ -45,6 +46,9 @@ pub struct GameServerSettings {
     pub hostname: Option<String>,
     pub auto_confirm_minutes: Option<i64>,
     pub cvars: BTreeMap<String, String>,
+    /// Minutes a `ready` server may wait with nobody going live before
+    /// admins are flagged (§6.6; default 20).
+    pub no_show_minutes: Option<i64>,
     /// `settings.game_server.substitution_policy` — `"admin_approval"`
     /// routes requests through admin review; anything else applies rostered
     /// subs immediately (§6.8 default `roster_free`).
@@ -87,6 +91,9 @@ impl GameServerSettings {
                 .get("auto_confirm_minutes")
                 .and_then(serde_json::Value::as_i64),
             cvars,
+            no_show_minutes: gs
+                .get("no_show_minutes")
+                .and_then(serde_json::Value::as_i64),
             substitution_policy: gs
                 .get("substitution_policy")
                 .and_then(|p| p.as_str())
@@ -138,6 +145,11 @@ pub async fn request_assignment(
     state: &AppState,
     match_id: TournamentMatchId,
 ) -> Result<ServerReservation, DomainError> {
+    if !state.gameserver_enabled {
+        return Err(DomainError::InvalidState(
+            "game-server integration is disabled (PORTAL_GAMESERVER_ENABLED)".into(),
+        ));
+    }
     if let Some(existing) = state
         .server_reservation_repo
         .find_live_by_match(match_id)
@@ -161,7 +173,9 @@ pub async fn request_assignment(
         )));
     }
 
-    // The config needs a completed veto: it is the source of maps + sides.
+    // With a veto the config's maps/sides come from its result; without
+    // one (§6.6 trigger 2) they come from the tournament map pool, all
+    // knife-for-sides — build_config branches on the same flag.
     if match_.veto_required {
         let veto = state.veto_service.get_session_state(match_id).await?;
         if veto.session.status != VetoStatus::Completed {
@@ -169,11 +183,6 @@ pub async fn request_assignment(
                 "map veto has not completed yet".into(),
             ));
         }
-    } else {
-        return Err(DomainError::InvalidState(
-            "server integration currently requires a map veto (maps come from the veto result)"
-                .into(),
-        ));
     }
 
     let event_token = generate_reservation_token();
@@ -243,6 +252,7 @@ pub async fn try_allocate_and_load(
             settings.region.as_deref(),
             heartbeat_cutoff,
             Utc::now(),
+            match_.scheduled_at,
         )
         .await?;
 
@@ -336,6 +346,10 @@ async fn handle_load_failure(
     tracing::warn!(reservation_id = %reservation.id, retries, reason,
         "load_match failed");
     if retries >= MAX_LOAD_RETRIES {
+        // §10: fail this reservation, quarantine the server, and re-queue
+        // the match on a fresh reservation for another server (M11).
+        let match_id = reservation.match_id;
+        let bad_server = reservation.server_id;
         state
             .server_reservation_repo
             .release(
@@ -346,7 +360,24 @@ async fn handle_load_failure(
                 )),
             )
             .await?;
-        broadcast_assignment(state, reservation.match_id, "failed", None, Some(reason));
+        if let Some(server_id) = bad_server {
+            let _ = state
+                .game_server_registry
+                .set_server_status(server_id, portal_core::types::GameServerStatus::Error)
+                .await;
+        }
+        broadcast_assignment(state, match_id, "failed", None, Some(reason));
+        match request_assignment_boxed(state, match_id).await {
+            Ok(replacement) => {
+                tracing::info!(match_id = %match_id, reservation_id = %replacement.id,
+                    "re-queued match on a fresh reservation after load failure");
+                return Ok(replacement);
+            }
+            Err(e) => {
+                tracing::warn!(match_id = %match_id, error = %e,
+                    "could not re-queue match after load failure");
+            }
+        }
     }
     // Below the retry cap the reservation keeps its server and stays
     // `pending`-equivalent for the lifecycle pass to retry the load.
@@ -355,6 +386,18 @@ async fn handle_load_failure(
         .find_by_id(reservation.id)
         .await?
         .ok_or_else(|| DomainError::Internal("reservation vanished".into()))
+}
+
+/// Boxed indirection: `handle_load_failure` → `request_assignment` →
+/// `try_allocate_and_load` → `send_load` → `handle_load_failure` would be
+/// infinitely-sized without it.
+fn request_assignment_boxed<'a>(
+    state: &'a AppState,
+    match_id: TournamentMatchId,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<ServerReservation, DomainError>> + Send + 'a>,
+> {
+    Box::pin(request_assignment(state, match_id))
 }
 
 /// Cancel a match's live reservation (admin action or match cancellation).
@@ -399,12 +442,6 @@ async fn build_config(
     reservation: &ServerReservation,
     event_token: &str,
 ) -> Result<serde_json::Value, String> {
-    let veto = state
-        .veto_service
-        .get_session_state(match_.id)
-        .await
-        .map_err(|e| format!("veto state unavailable: {e}"))?;
-
     let (Some(reg1), Some(reg2)) = (
         match_.participant1_registration_id,
         match_.participant2_registration_id,
@@ -412,14 +449,45 @@ async fn build_config(
         return Err("both participants must be set".into());
     };
 
+    // Maps + sides: veto result when a veto ran; else the tournament map
+    // pool in listed order with knife-for-sides (§6.6 trigger 2).
+    let (maplist, veto_state): (
+        Vec<String>,
+        Option<portal_domain::entities::VetoSessionState>,
+    ) = if match_.veto_required {
+        let veto = state
+            .veto_service
+            .get_session_state(match_.id)
+            .await
+            .map_err(|e| format!("veto state unavailable: {e}"))?;
+        (veto.session.selected_maps.clone(), Some(veto))
+    } else {
+        let maps_required = usize::try_from(match_.maps_required.max(1)).unwrap_or(1);
+        let pool = state
+            .tournament_map_pool_repo
+            .get_effective(match_.tournament_id, Some(match_.stage_id))
+            .await
+            .map_err(|e| format!("map pool unavailable: {e}"))?
+            .ok_or_else(|| "tournament has no map pool configured".to_string())?;
+        if pool.maps.len() < maps_required {
+            return Err(format!(
+                "map pool has {} maps but the match needs {maps_required}",
+                pool.maps.len()
+            ));
+        }
+        (pool.maps.into_iter().take(maps_required).collect(), None)
+    };
+
     let team1 = roster_for(
         state,
+        match_.id,
         reg1,
         match_.participant1_name.as_deref().unwrap_or("Team 1"),
     )
     .await?;
     let team2 = roster_for(
         state,
+        match_.id,
         reg2,
         match_.participant2_name.as_deref().unwrap_or("Team 2"),
     )
@@ -432,19 +500,32 @@ async fn build_config(
         .map_err(|e| format!("tournament unavailable: {e}"))?;
     let settings = GameServerSettings::from_tournament_settings(&tournament.settings);
 
-    let map_sides = derive_map_sides(&veto.session.selected_maps, &veto.actions, reg1);
-    let players_per_team =
-        u32::try_from(team1.players.len().max(team2.players.len()).max(5)).unwrap_or(5);
+    let map_sides = match &veto_state {
+        Some(veto) => derive_map_sides(&maplist, &veto.actions, reg1),
+        None => vec!["knife".to_string(); maplist.len()],
+    };
+    // §6.3/§12-Q3: team size comes from the admin-editable game config —
+    // roster size must not widen the server (an 8-man roster is still 5v5).
+    let players_per_team = state
+        .game_repo
+        .find_by_id(tournament.game_id.as_uuid())
+        .await
+        .ok()
+        .flatten()
+        .and_then(|game| u32::try_from(game.team_size_default).ok())
+        .unwrap_or(5);
 
     let base = state.public_base_url.trim_end_matches('/');
     let input = MatchzyConfigInput {
         matchzy_id: reservation.matchzy_id,
-        maplist: veto.session.selected_maps.clone(),
+        maplist: maplist.clone(),
         map_sides,
         team1,
         team2,
         players_per_team,
-        min_players_to_ready: 1,
+        // Full team must ready; short-handed subs lower it in-server via
+        // css_readyrequired (§6.8).
+        min_players_to_ready: players_per_team,
         hostname: settings
             .hostname
             .unwrap_or_else(|| "Portal | {TEAM1} vs {TEAM2}".to_string()),
@@ -458,14 +539,18 @@ async fn build_config(
     validate_matchzy_input(&input)?;
 
     // Materialize the per-map game rows the event pipeline will fill in.
-    ensure_match_games(state, match_, &veto).await;
+    ensure_match_games(state, match_, &maplist, veto_state.as_ref()).await;
 
     Ok(build_matchzy_config(&input))
 }
 
-/// Resolve a registration's roster to `(steamid64, name)` pairs.
+/// Resolve a registration's EFFECTIVE lineup to `(steamid64, name)` pairs:
+/// the roster (or solo player) with applied substitutions swapped in
+/// (§6.3 / §6.8 consistency rule — a rebuilt config must contain the
+/// substitute, not the departed player).
 async fn roster_for(
     state: &AppState,
+    match_id: TournamentMatchId,
     registration_id: TournamentRegistrationId,
     fallback_name: &str,
 ) -> Result<MatchzyTeam, String> {
@@ -475,36 +560,26 @@ async fn roster_for(
         .await
         .map_err(|e| format!("registration unavailable: {e}"))?;
 
+    let player_ids = effective_player_ids(state, match_id, registration_id)
+        .await
+        .map_err(|e| format!("effective roster unavailable: {e}"))?;
+
     let mut players: Vec<(String, String)> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
-
-    let mut push_player =
-        |steam_id: Option<&str>, name: String| match steam_id.and_then(|s| s.parse::<u64>().ok()) {
-            Some(steam64) => players.push((steam64.to_string(), name)),
-            None => missing.push(name),
-        };
-
-    if let Some(team_season_id) = reg.team_season_id {
-        let members = state
-            .league_team_member_repo
-            .list_members_with_players(team_season_id)
-            .await
-            .map_err(|e| format!("roster unavailable: {e}"))?;
-        for member in members {
-            let player = state
-                .player_service
-                .get_player(member.player_id)
-                .await
-                .map_err(|e| format!("player lookup failed: {e}"))?;
-            push_player(player.steam_id.as_deref(), player.display_name);
-        }
-    } else if let Some(player_id) = reg.player_id {
+    for player_id in player_ids {
         let player = state
             .player_service
             .get_player(player_id)
             .await
             .map_err(|e| format!("player lookup failed: {e}"))?;
-        push_player(player.steam_id.as_deref(), player.display_name);
+        match player
+            .steam_id
+            .as_deref()
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            Some(steam64) => players.push((steam64.to_string(), player.display_name)),
+            None => missing.push(player.display_name),
+        }
     }
 
     if !missing.is_empty() {
@@ -526,9 +601,12 @@ async fn roster_for(
 async fn ensure_match_games(
     state: &AppState,
     match_: &TournamentMatch,
-    veto: &portal_domain::entities::VetoSessionState,
+    maplist: &[String],
+    veto: Option<&portal_domain::entities::VetoSessionState>,
 ) {
-    for (index, map) in veto.session.selected_maps.iter().enumerate() {
+    use portal_core::types::VetoActionType;
+
+    for (index, map) in maplist.iter().enumerate() {
         let game_number = i32::try_from(index + 1).unwrap_or(i32::MAX);
         let existing = state
             .tournament_match_game_repo
@@ -557,10 +635,16 @@ async fn ensure_match_games(
                 }
             }
         };
-        let pick_action = veto
-            .actions
-            .iter()
-            .find(|a| a.map_id == *map && a.side_selection.is_some());
+        // Pick attribution: the pick/decider action for this map — side
+        // selection is separate and may be absent (deciders, knife mode).
+        let Some(veto) = veto else { continue };
+        let pick_action = veto.actions.iter().find(|a| {
+            a.map_id == *map
+                && matches!(
+                    a.action_type,
+                    VetoActionType::Pick | VetoActionType::Decider
+                )
+        });
         if let Some(action) = pick_action {
             let _ = state
                 .tournament_match_game_repo
@@ -611,7 +695,7 @@ pub async fn ingest_server_event(
     let inserted = state
         .server_event_repo
         .insert(CreateServerEvent {
-            reservation_id: reservation.id,
+            reservation_id: Some(reservation.id),
             server_id,
             event_type: event_type.clone(),
             map_number: map_number.and_then(|n| i32::try_from(n).ok()),
@@ -619,21 +703,54 @@ pub async fn ingest_server_event(
             payload,
         })
         .await?;
+    let _ = &event_type;
 
-    // Dedupe hit: MatchZy replay or duplicate — already handled.
+    // Dedupe hit: MatchZy replay or duplicate. Lifecycle transitions must
+    // still be recoverable — a re-driven `load_match` (§6.6) re-emits
+    // `series_start` with the same dedupe key, and dropping it would strand
+    // the reservation in `configuring` (M2). These events are idempotent,
+    // so process them from an ephemeral row; scoring events stay dropped.
     let Some(event) = inserted else {
+        if matches!(event_type.as_str(), "series_start" | "going_live") {
+            let ephemeral = ServerEvent {
+                id: portal_core::ids::ServerEventId::new(),
+                reservation_id: Some(reservation.id),
+                server_id: Some(server_id),
+                event_type,
+                map_number: map_number.and_then(|n| i32::try_from(n).ok()),
+                round_number: None,
+                payload: serde_json::Value::Null,
+                processed: false,
+                processed_at: None,
+                processing_error: None,
+                received_at: Utc::now(),
+            };
+            if let Err(e) = process_event(state, reservation, &ephemeral).await {
+                tracing::warn!(reservation_id = %reservation.id, error = %e,
+                    "replayed lifecycle event processing failed");
+            }
+        }
         return Ok(());
     };
 
     let outcome = process_event(state, reservation, &event).await;
-    let error_text = outcome.as_ref().err().map(ToString::to_string);
-    state
-        .server_event_repo
-        .mark_processed(event.id, error_text.as_deref())
-        .await?;
-    if let Err(e) = outcome {
-        tracing::warn!(reservation_id = %reservation.id, event = %event.event_type,
-            error = %e, "server event processing failed");
+    match outcome {
+        Ok(()) => {
+            state
+                .server_event_repo
+                .mark_processed(event.id, None)
+                .await?;
+        }
+        Err(e) => {
+            // Leave processed = FALSE: the lifecycle sweep retries once
+            // and only then parks the row with its error (M3/§6.4).
+            state
+                .server_event_repo
+                .record_processing_error(event.id, &e.to_string())
+                .await?;
+            tracing::warn!(reservation_id = %reservation.id, event = %event.event_type,
+                error = %e, "server event processing failed; queued for retry");
+        }
     }
     Ok(())
 }
@@ -730,7 +847,14 @@ async fn apply_map_result(
 ) -> Result<(), DomainError> {
     let match_ = get_match(state, reservation.match_id).await?;
     let (s1, s2) = team_scores(&event.payload);
-    let winner = if s1 >= s2 {
+    if s1 == s2 {
+        // A drawn map must not be awarded to anyone (review minor); leave
+        // the game row open for admin resolution.
+        tracing::warn!(match_id = %reservation.match_id, s1, s2,
+            "map_result reported a draw; not recording a winner");
+        return Ok(());
+    }
+    let winner = if s1 > s2 {
         match_.participant1_registration_id
     } else {
         match_.participant2_registration_id
@@ -1013,6 +1137,9 @@ const ACTIVE_STALE_MINUTES: i64 = 5;
 /// One maintenance pass over reservations; called from the lifecycle loop.
 pub async fn run_reservation_pass(state: &AppState) -> ReservationPassSummary {
     let mut summary = ReservationPassSummary::default();
+    if !state.gameserver_enabled {
+        return summary;
+    }
     let now = Utc::now();
 
     // 1. Queued reservations → allocate + load.
@@ -1110,6 +1237,94 @@ pub async fn run_reservation_pass(state: &AppState) -> ReservationPassSummary {
         }
         Err(e) => {
             tracing::error!(error = %e, "lifecycle: list_active_stale failed");
+            summary.errors += 1;
+        }
+    }
+
+    // 3b. `ready` with nobody live past the no-show window: flag admins
+    //     (never auto-forfeit, §6.6).
+    match state
+        .server_reservation_repo
+        .list_active_stale(now - Duration::minutes(20))
+        .await
+    {
+        Ok(stale) => {
+            for reservation in stale {
+                if reservation.status == ReservationStatus::Ready
+                    && reservation.went_live_at.is_none()
+                {
+                    tracing::warn!(match_id = %reservation.match_id,
+                        reservation_id = %reservation.id,
+                        "server ready >20m with nobody connected — admin attention needed");
+                    summary.errors += 0; // observability only; no state change
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "lifecycle: no-show sweep failed");
+            summary.errors += 1;
+        }
+    }
+
+    // 3c. Halftime-parked substitutions: retry (round_end also retries,
+    //     but a silent server should not strand them — review minor).
+    match state.match_substitution_repo.list_applying(20).await {
+        Ok(applying) => {
+            for substitution in applying {
+                let Some(reservation_id) = substitution.reservation_id else {
+                    continue;
+                };
+                if let Ok(Some(reservation)) = state
+                    .server_reservation_repo
+                    .find_by_id(reservation_id)
+                    .await
+                {
+                    retry_applying_substitutions(state, &reservation).await;
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "lifecycle: substitution retry sweep failed");
+            summary.errors += 1;
+        }
+    }
+
+    // 4. Unprocessed events (a processing failure left them queued, §6.4):
+    //    one retry, then park with the recorded error.
+    match state.server_event_repo.list_unprocessed(20).await {
+        Ok(events) => {
+            for event in events {
+                let Some(reservation_id) = event.reservation_id else {
+                    let _ = state
+                        .server_event_repo
+                        .mark_processed(event.id, Some("no reservation"))
+                        .await;
+                    continue;
+                };
+                let Ok(Some(reservation)) = state
+                    .server_reservation_repo
+                    .find_by_id(reservation_id)
+                    .await
+                else {
+                    let _ = state
+                        .server_event_repo
+                        .mark_processed(event.id, Some("reservation gone"))
+                        .await;
+                    continue;
+                };
+                let outcome = process_event(state, &reservation, &event).await;
+                let error = outcome.as_ref().err().map(ToString::to_string);
+                let _ = state
+                    .server_event_repo
+                    .mark_processed(event.id, error.as_deref())
+                    .await;
+                if error.is_none() {
+                    summary.reconciled += 1;
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "lifecycle: list_unprocessed failed");
             summary.errors += 1;
         }
     }

@@ -16,6 +16,19 @@ use portal_domain::entities::ServerReservation;
 use portal_domain::repositories::ServerReservationRepository;
 use portal_domain::services::game_server::hash_token;
 
+/// Constant-time equality over the hex digests (§9). Digest comparison is
+/// already preimage-hard, but there is no reason to leak length/prefix
+/// timing either.
+fn token_matches(provided_raw: &str, stored_hash: &str) -> bool {
+    let provided = hash_token(provided_raw);
+    let a = provided.as_bytes();
+    let b = stored_hash.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("authorization")
@@ -48,7 +61,7 @@ pub async fn get_match_config(
         bearer_token(&headers).ok_or_else(|| ApiError::unauthorized("missing bearer token"))?;
     let reservation = reservation_by_matchzy_id(&state, matchzy_id).await?;
 
-    if hash_token(token) != reservation.config_token_hash {
+    if !token_matches(token, &reservation.config_token_hash) {
         return Err(ApiError::unauthorized("invalid config token"));
     }
     if !reservation.config_fetchable(Utc::now()) {
@@ -91,7 +104,7 @@ pub async fn post_event(
         .ok_or_else(|| ApiError::bad_request("event has no matchid"))?;
     let reservation = reservation_by_matchzy_id(&state, matchzy_id).await?;
 
-    if hash_token(token) != reservation.event_token_hash {
+    if !token_matches(token, &reservation.event_token_hash) {
         return Err(ApiError::unauthorized("invalid event token"));
     }
     if reservation.status.is_terminal() {
@@ -152,7 +165,10 @@ pub async fn post_demo(
             data: body,
             filename: file_name.clone(),
             content_type: "application/octet-stream".to_string(),
-            prefix: "matchzy".to_string(),
+            prefix: match matchzy_id {
+                Some(id) => format!("matchzy/{id}"),
+                None => "matchzy/unmatched".to_string(),
+            },
             owner_id: Some(server.id.to_string()),
         })
         .await
@@ -181,6 +197,9 @@ pub async fn post_demo(
             .find_by_matchzy_id(matchzy_id)
             .await
             .map_err(ApiError::from)?
+        // §9 blast-radius: a server may only attach demos to ITS OWN
+        // match (M4) — the MatchZy-MatchId header is attacker-settable.
+        && reservation.server_id == Some(server.id)
     {
         let link = state
             .demo_service
@@ -240,7 +259,7 @@ pub async fn post_backup(
         .and_then(|v| v.parse().ok())
         .ok_or_else(|| ApiError::bad_request("missing MatchZy-MatchId header"))?;
     let reservation = reservation_by_matchzy_id(&state, matchzy_id).await?;
-    if hash_token(token) != reservation.event_token_hash {
+    if !token_matches(token, &reservation.event_token_hash) {
         return Err(ApiError::unauthorized("invalid token"));
     }
 
@@ -267,10 +286,10 @@ pub async fn post_backup(
     };
     // Indexed as a server event; the dedupe key (type+map+round) keeps one
     // row per round, and the restore endpoint reads the latest.
-    let _ = state
+    let inserted = state
         .server_event_repo
         .insert(portal_domain::repositories::CreateServerEvent {
-            reservation_id: reservation.id,
+            reservation_id: Some(reservation.id),
             server_id,
             event_type: "backup_uploaded".to_string(),
             map_number,
@@ -282,6 +301,10 @@ pub async fn post_backup(
         })
         .await
         .map_err(ApiError::from)?;
+    if let Some(event) = inserted {
+        // Storage-indexing rows are terminal on arrival.
+        let _ = state.server_event_repo.mark_processed(event.id, None).await;
+    }
     Ok(axum::http::StatusCode::OK)
 }
 
@@ -301,7 +324,7 @@ pub async fn get_backup(
     let token =
         bearer_token(&headers).ok_or_else(|| ApiError::unauthorized("missing bearer token"))?;
     let reservation = reservation_by_matchzy_id(&state, matchzy_id).await?;
-    if hash_token(token) != reservation.config_token_hash
+    if !token_matches(token, &reservation.config_token_hash)
         || reservation.config_token_expires_at <= Utc::now()
     {
         return Err(ApiError::unauthorized("invalid or expired token"));

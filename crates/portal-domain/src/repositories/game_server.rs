@@ -220,6 +220,7 @@ pub trait ServerReservationRepository: Send + Sync + 'static {
         region: Option<&str>,
         heartbeat_cutoff: DateTime<Utc>,
         now: DateTime<Utc>,
+        scheduled_at: Option<DateTime<Utc>>,
     ) -> Result<Option<(ServerReservation, GameServer)>, DomainError>;
 
     /// Terminalize a reservation and free its server in one transaction:
@@ -257,6 +258,18 @@ pub trait ServerReservationRepository: Send + Sync + 'static {
 
     /// Whether the server currently holds a live reservation.
     async fn has_live_for_server(&self, server_id: GameServerId) -> Result<bool, DomainError>;
+
+    /// The live reservation currently holding this server, if any.
+    async fn find_live_by_server(
+        &self,
+        server_id: GameServerId,
+    ) -> Result<Option<ServerReservation>, DomainError>;
+
+    /// `applying` substitution retry sweep support: not here — see
+    /// [`MatchSubstitutionRepository::list_applying`].
+    ///
+    /// Count of queued reservations created before `before` (queue position).
+    async fn count_pending_before(&self, before: DateTime<Utc>) -> Result<i64, DomainError>;
 
     async fn set_status(
         &self,
@@ -327,7 +340,7 @@ pub trait ServerReservationRepository: Send + Sync + 'static {
 /// Fields for inserting a raw webhook event.
 #[derive(Debug, Clone)]
 pub struct CreateServerEvent {
-    pub reservation_id: ServerReservationId,
+    pub reservation_id: Option<ServerReservationId>,
     pub server_id: GameServerId,
     pub event_type: String,
     pub map_number: Option<i32>,
@@ -354,6 +367,18 @@ pub trait ServerEventRepository: Send + Sync + 'static {
         &self,
         reservation_id: ServerReservationId,
     ) -> Result<Option<ServerEvent>, DomainError>;
+
+    /// Record a processing error WITHOUT marking processed (retried by
+    /// the lifecycle sweep, §6.4).
+    async fn record_processing_error(
+        &self,
+        id: ServerEventId,
+        error: &str,
+    ) -> Result<(), DomainError>;
+
+    /// Oldest unprocessed events (excluding `backup_uploaded`, which is
+    /// storage-indexing, not pipeline work).
+    async fn list_unprocessed(&self, limit: i64) -> Result<Vec<ServerEvent>, DomainError>;
 
     /// Storage key of an uploaded round backup, by filename.
     async fn find_backup_key(
@@ -407,6 +432,9 @@ pub trait MatchSubstitutionRepository: Send + Sync + 'static {
         &self,
         match_id: TournamentMatchId,
     ) -> Result<Vec<MatchSubstitution>, DomainError>;
+
+    /// All `applying` rows (lifecycle retry sweep).
+    async fn list_applying(&self, limit: i64) -> Result<Vec<MatchSubstitution>, DomainError>;
 
     /// `applying` rows for a reservation (halftime retry, §6.8).
     async fn list_applying_by_reservation(

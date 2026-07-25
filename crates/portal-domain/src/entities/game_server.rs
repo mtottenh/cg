@@ -158,6 +158,8 @@ pub struct ServerReservation {
     pub match_config: Option<serde_json::Value>,
 
     pub config_fetched_at: Option<DateTime<Utc>>,
+    /// Fetches served against the current config token (capped, §6.2).
+    pub config_fetch_count: i32,
     pub went_live_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub failure_reason: Option<String>,
@@ -168,6 +170,9 @@ pub struct ServerReservation {
 }
 
 impl ServerReservation {
+    /// Fetches allowed per minted config token (§6.2 — MatchZy may retry).
+    pub const MAX_CONFIG_FETCHES: i32 = 5;
+
     /// Whether the config endpoint may still serve this reservation's config.
     #[must_use]
     pub fn config_fetchable(&self, now: DateTime<Utc>) -> bool {
@@ -175,6 +180,7 @@ impl ServerReservation {
             self.status,
             ReservationStatus::Configuring | ReservationStatus::Ready
         ) && self.config_token_expires_at > now
+            && self.config_fetch_count < Self::MAX_CONFIG_FETCHES
     }
 }
 

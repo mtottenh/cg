@@ -9,6 +9,48 @@ use crate::handlers::game_servers::{admin, agent, match_server, matchzy, substit
 use crate::state::AppState;
 use axum::Router;
 use axum::routing::{get, post};
+use std::sync::Arc;
+use tower_governor::GovernorLayer;
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::key_extractor::{PeerIpKeyExtractor, SmartIpKeyExtractor};
+
+/// Rate-limit the machine-facing endpoints (§6.2 — includes the
+/// unauthenticated `/enroll`). Same env-driven shape as `routes/auth.rs`.
+fn agent_rate_limited(routes: Router<AppState>) -> Router<AppState> {
+    let burst: u32 = std::env::var("PORTAL_GAMESERVER_RATE_BURST")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let per_second: u64 = std::env::var("PORTAL_GAMESERVER_RATE_PER_SECOND")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10)
+        .max(1);
+    let trust_forwarded = std::env::var("PORTAL_TRUST_FORWARDED_FOR")
+        .is_ok_and(|v| matches!(v.as_str(), "true" | "1" | "yes"));
+
+    if trust_forwarded {
+        let config = GovernorConfigBuilder::default()
+            .per_second(per_second)
+            .burst_size(burst)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("valid governor config");
+        routes.layer(GovernorLayer {
+            config: Arc::new(config),
+        })
+    } else {
+        let config = GovernorConfigBuilder::default()
+            .per_second(per_second)
+            .burst_size(burst)
+            .key_extractor(PeerIpKeyExtractor)
+            .finish()
+            .expect("valid governor config");
+        routes.layer(GovernorLayer {
+            config: Arc::new(config),
+        })
+    }
+}
 
 /// Admin registry routes (mounted at `/admin/game-servers`).
 pub fn admin_routes() -> Router<AppState> {
@@ -41,8 +83,13 @@ pub fn admin_routes() -> Router<AppState> {
 
 /// Agent-facing routes (mounted at `/gameserver`).
 pub fn agent_routes() -> Router<AppState> {
+    agent_rate_limited(agent_routes_inner())
+}
+
+fn agent_routes_inner() -> Router<AppState> {
     Router::new()
         .route("/enroll", post(agent::enroll))
+        .route("/renew", post(agent::renew))
         .route("/agent/ws", get(agent::ws_upgrade))
         .route("/match-config/{matchzy_id}", get(matchzy::get_match_config))
         .route("/events", post(matchzy::post_event))

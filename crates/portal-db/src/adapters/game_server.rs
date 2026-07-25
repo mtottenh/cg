@@ -551,6 +551,7 @@ impl From<ServerReservationRow> for ServerReservation {
             config_token_expires_at: row.config_token_expires_at,
             match_config: row.match_config,
             config_fetched_at: row.config_fetched_at,
+            config_fetch_count: row.config_fetch_count,
             went_live_at: row.went_live_at,
             completed_at: row.completed_at,
             failure_reason: row.failure_reason,
@@ -633,6 +634,7 @@ impl ServerReservationRepository for PgServerReservationRepository {
         region: Option<&str>,
         heartbeat_cutoff: DateTime<Utc>,
         now: DateTime<Utc>,
+        scheduled_at: Option<DateTime<Utc>>,
     ) -> Result<Option<(ServerReservation, GameServer)>, DomainError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
 
@@ -647,7 +649,9 @@ impl ServerReservationRepository for PgServerReservationRepository {
                AND NOT EXISTS ( \
                    SELECT 1 FROM server_bookings b \
                    WHERE b.server_id = gs.id \
-                     AND b.starts_at <= $4 AND b.ends_at > $4 \
+                     AND ((b.starts_at <= $4 AND b.ends_at > $4) \
+                          OR ($6::timestamptz IS NOT NULL \
+                              AND b.starts_at <= $6 AND b.ends_at > $6)) \
                      AND (b.tournament_id IS NULL OR b.tournament_id <> $5) \
                ) \
              ORDER BY EXISTS ( \
@@ -665,6 +669,7 @@ impl ServerReservationRepository for PgServerReservationRepository {
             .bind(heartbeat_cutoff)
             .bind(now)
             .bind(tournament_id.as_uuid())
+            .bind(scheduled_at)
             .fetch_optional(&mut *tx)
             .await
             .map_err(internal)?;
@@ -730,7 +735,7 @@ impl ServerReservationRepository for PgServerReservationRepository {
             sqlx::query(
                 "UPDATE game_servers SET status = 'available', current_match_id = NULL, \
                  updated_at = NOW() \
-                 WHERE id = $1 AND status IN ('reserved', 'configuring', 'in_match')",
+                 WHERE id = $1 AND status IN ('reserved', 'configuring', 'in_match', 'busy_external')",
             )
             .bind(server_id)
             .execute(&mut *tx)
@@ -799,6 +804,33 @@ impl ServerReservationRepository for PgServerReservationRepository {
         Ok(row.map(ServerReservation::from))
     }
 
+    async fn find_live_by_server(
+        &self,
+        server_id: GameServerId,
+    ) -> Result<Option<ServerReservation>, DomainError> {
+        let row = sqlx::query_as::<_, ServerReservationRow>(
+            "SELECT * FROM server_reservations WHERE server_id = $1 \
+             AND status IN ('pending','configuring','ready','live')",
+        )
+        .bind(server_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(ServerReservation::from))
+    }
+
+    async fn count_pending_before(&self, before: DateTime<Utc>) -> Result<i64, DomainError> {
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM server_reservations WHERE status = 'pending' \
+             AND created_at < $1",
+        )
+        .bind(before)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(count)
+    }
+
     async fn has_live_for_server(&self, server_id: GameServerId) -> Result<bool, DomainError> {
         let (exists,): (bool,) = sqlx::query_as(
             "SELECT EXISTS(SELECT 1 FROM server_reservations WHERE server_id = $1 \
@@ -846,7 +878,8 @@ impl ServerReservationRepository for PgServerReservationRepository {
     ) -> Result<(), DomainError> {
         sqlx::query(
             "UPDATE server_reservations SET config_token_hash = $2, \
-             config_token_expires_at = $3, updated_at = NOW() WHERE id = $1",
+             config_token_expires_at = $3, config_fetch_count = 0, \
+             updated_at = NOW() WHERE id = $1",
         )
         .bind(id.as_uuid())
         .bind(token_hash)
@@ -879,7 +912,8 @@ impl ServerReservationRepository for PgServerReservationRepository {
         at: DateTime<Utc>,
     ) -> Result<(), DomainError> {
         sqlx::query(
-            "UPDATE server_reservations SET config_fetched_at = $2, updated_at = NOW() \
+            "UPDATE server_reservations SET config_fetched_at = $2, \
+             config_fetch_count = config_fetch_count + 1, updated_at = NOW() \
              WHERE id = $1",
         )
         .bind(id.as_uuid())
@@ -1019,7 +1053,7 @@ impl ServerEventRepository for PgServerEventRepository {
              RETURNING *",
         )
         .bind(ServerEventId::new().as_uuid())
-        .bind(event.reservation_id.as_uuid())
+        .bind(event.reservation_id.map(|r| r.as_uuid()))
         .bind(event.server_id.as_uuid())
         .bind(&event.event_type)
         .bind(event.map_number)
@@ -1061,6 +1095,34 @@ impl ServerEventRepository for PgServerEventRepository {
         .await
         .map_err(internal)?;
         Ok(row.map(ServerEvent::from))
+    }
+
+    async fn record_processing_error(
+        &self,
+        id: ServerEventId,
+        error: &str,
+    ) -> Result<(), DomainError> {
+        sqlx::query("UPDATE server_events SET processing_error = $2 WHERE id = $1")
+            .bind(id.as_uuid())
+            .bind(error)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn list_unprocessed(&self, limit: i64) -> Result<Vec<ServerEvent>, DomainError> {
+        let rows = sqlx::query_as::<_, ServerEventRow>(
+            "SELECT * FROM server_events WHERE processed = FALSE \
+             AND event_type <> 'backup_uploaded' \
+             AND received_at < NOW() - INTERVAL '1 minute' \
+             ORDER BY received_at ASC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(ServerEvent::from).collect())
     }
 
     async fn find_backup_key(
@@ -1215,6 +1277,18 @@ impl MatchSubstitutionRepository for PgMatchSubstitutionRepository {
              ORDER BY created_at ASC",
         )
         .bind(match_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(MatchSubstitution::from).collect())
+    }
+
+    async fn list_applying(&self, limit: i64) -> Result<Vec<MatchSubstitution>, DomainError> {
+        let rows = sqlx::query_as::<_, MatchSubstitutionRow>(
+            "SELECT * FROM match_substitutions WHERE status = 'applying' \
+             ORDER BY created_at ASC LIMIT $1",
+        )
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;

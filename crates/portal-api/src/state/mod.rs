@@ -324,6 +324,9 @@ pub struct AppState {
     pub agent_ca: Option<Arc<CertificateAuthority>>,
     /// Accept `X-Dev-Server-Id` agent auth (tests/dev only).
     pub agent_insecure_dev_auth: bool,
+    /// Global kill switch for the match↔server flows (§8/§11). Registry
+    /// CRUD stays available; assignment/allocation/events stop.
+    pub gameserver_enabled: bool,
     /// Standings service for round robin/swiss standings.
     pub standings_service: AppStandingsService,
     /// Tournament match repository for direct match access.
@@ -840,6 +843,9 @@ impl AppState {
         });
         let agent_insecure_dev_auth = std::env::var("PORTAL_AGENT_INSECURE")
             .is_ok_and(|v| matches!(v.as_str(), "true" | "1" | "yes"));
+        // Default ON: unset means enabled; deploy renders an explicit value.
+        let gameserver_enabled = std::env::var("PORTAL_GAMESERVER_ENABLED")
+            .map_or(true, |v| !matches!(v.as_str(), "false" | "0" | "no"));
         let server_reservation_repo = Arc::new(PgServerReservationRepository::new(db_pool.clone()));
         let server_event_repo = Arc::new(PgServerEventRepository::new(db_pool.clone()));
         let match_substitution_repo = Arc::new(PgMatchSubstitutionRepository::new(db_pool.clone()));
@@ -968,6 +974,7 @@ impl AppState {
             agent_manager,
             agent_ca,
             agent_insecure_dev_auth,
+            gameserver_enabled,
             standings_service,
             tournament_match_repo,
             tournament_map_pool_repo,

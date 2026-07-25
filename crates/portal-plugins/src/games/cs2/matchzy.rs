@@ -80,6 +80,10 @@ pub fn build_matchzy_config(input: &MatchzyConfigInput) -> Value {
     cvars.insert("hostname".to_string(), input.hostname.clone());
     cvars.insert("sv_password".to_string(), input.connect_password.clone());
     if let Some(gotv) = &input.gotv_password {
+        // §6.3: GOTV on, delayed ≥105s (ghosting mitigation, M6). The
+        // delay may be raised (never lowered) via tournament overrides.
+        cvars.insert("tv_enable".to_string(), "1".to_string());
+        cvars.insert("tv_delay".to_string(), "105".to_string());
         cvars.insert("tv_password".to_string(), gotv.clone());
     }
     cvars.insert(
@@ -113,13 +117,11 @@ pub fn build_matchzy_config(input: &MatchzyConfigInput) -> Value {
     // Tournament overrides win over the defaults above — except the
     // security-relevant keys, which are portal-owned.
     for (key, value) in &input.extra_cvars {
-        if matches!(
-            key.as_str(),
-            "sv_password"
-                | "matchzy_remote_log_url"
-                | "matchzy_remote_log_header_key"
-                | "matchzy_remote_log_header_value"
-        ) {
+        if is_portal_owned_cvar(key) {
+            continue;
+        }
+        // tv_delay may only be raised, never lowered (ghosting, M6).
+        if key == "tv_delay" && value.parse::<u32>().is_ok_and(|v| v < 105) {
             continue;
         }
         cvars.insert(key.clone(), value.clone());
@@ -146,6 +148,17 @@ pub fn build_matchzy_config(input: &MatchzyConfigInput) -> Value {
         },
         "cvars": cvars,
     })
+}
+
+/// Cvars the portal owns: security/webhook/credential surface a tournament
+/// override must never touch (M10 — deny by prefix, not by enumerating
+/// literals that drift as keys are added).
+fn is_portal_owned_cvar(key: &str) -> bool {
+    key == "sv_password"
+        || key == "rcon_password"
+        || key == "tv_password"
+        || key.starts_with("matchzy_remote_")
+        || key.starts_with("matchzy_demo_upload_")
 }
 
 /// Validate builder invariants, returning a user-actionable error message.
@@ -238,9 +251,18 @@ mod tests {
         let mut i = input();
         i.extra_cvars
             .insert("sv_password".into(), "attacker".into());
+        i.extra_cvars
+            .insert("matchzy_remote_backup_url".into(), "https://evil".into());
+        i.extra_cvars
+            .insert("matchzy_demo_upload_url".into(), "https://evil".into());
+        i.extra_cvars.insert("tv_delay".into(), "0".into());
         i.extra_cvars.insert("mp_freezetime".into(), "10".into());
         let config = build_matchzy_config(&i);
         assert_eq!(config["cvars"]["sv_password"], "pw123");
+        assert_ne!(config["cvars"]["matchzy_remote_backup_url"], "https://evil");
+        assert!(config["cvars"].get("matchzy_demo_upload_url").is_none());
+        assert_eq!(config["cvars"]["tv_delay"], "105");
+        assert_eq!(config["cvars"]["tv_enable"], "1");
         assert_eq!(config["cvars"]["mp_freezetime"], "10");
     }
 

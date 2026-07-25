@@ -64,13 +64,16 @@ pub struct MatchServerResponse {
     pub gotv_password: Option<String>,
     /// Whether the caller received the participant view.
     pub is_participant: bool,
+    /// 1-based place in the server queue, when `pending` (§6.6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<i64>,
     /// Latest live score, when the match is live.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_score: Option<LiveScoreResponse>,
 }
 
 /// Whether the calling user plays in this match (roster or solo reg).
-async fn is_participant(
+pub(super) async fn is_participant(
     state: &AppState,
     match_id: TournamentMatchId,
     user: &AuthenticatedUser,
@@ -160,6 +163,17 @@ pub async fn get_match_server(
         );
     let gotv_visible = matches!(reservation.status, ReservationStatus::Live) || connect_visible;
 
+    let queue_position = if reservation.status == ReservationStatus::Pending {
+        state
+            .server_reservation_repo
+            .count_pending_before(reservation.created_at)
+            .await
+            .ok()
+            .map(|ahead| ahead + 1)
+    } else {
+        None
+    };
+
     let live_score = if reservation.status == ReservationStatus::Live {
         state
             .server_event_repo
@@ -206,6 +220,7 @@ pub async fn get_match_server(
             .then(|| reservation.gotv_password.clone())
             .flatten(),
         is_participant: participant,
+        queue_position,
         live_score,
     };
     Ok(Json(DataResponse::new(response, request_id)))
@@ -256,6 +271,7 @@ pub async fn assign_match_server(
                 gotv_port: None,
                 gotv_password: None,
                 is_participant: true,
+                queue_position: None,
                 live_score: None,
             },
             request_id,

@@ -1273,3 +1273,77 @@ async fn test_game_config_writes_by_uuid_persist() {
     );
     assert_eq!(game["data"]["team_size"]["max"], 7);
 }
+
+/// P-121: `GET /v1/games` threaded `PaginationParams` into the response
+/// metadata but never applied it to the list, so every page carried the
+/// COMPLETE catalog under page-N metadata. A paginating client renders page
+/// 1's items again under a "page 2" heading, or duplicates them by appending.
+///
+/// Asserted through the wire rather than the handler because the defect was
+/// precisely that metadata and payload disagreed — checking either alone
+/// reproduces the blind spot that let this ship.
+#[tokio::test]
+async fn test_list_games_actually_paginates() {
+    let app = TestApp::new().await;
+
+    // Establish the true catalog size from an explicitly large page.
+    let all = app.get("/v1/games?page=1&per_page=100").await;
+    all.assert_status(StatusCode::OK);
+    let all_body: serde_json::Value = all.json();
+    let total = all_body["pagination"]["total_items"]
+        .as_u64()
+        .expect("pagination.total_items present");
+    let all_len = all_body["data"].as_array().unwrap().len() as u64;
+    assert_eq!(
+        all_len, total,
+        "a page large enough to hold the catalog should return all of it"
+    );
+    assert!(
+        total >= 2,
+        "need at least 2 seeded games to prove pagination slices ({total} present); \
+         with fewer, per_page=1 would return the whole catalog and pass vacuously"
+    );
+
+    // A single-item page must contain exactly one game...
+    let first = app.get("/v1/games?page=1&per_page=1").await;
+    first.assert_status(StatusCode::OK);
+    let first_body: serde_json::Value = first.json();
+    let first_page = first_body["data"].as_array().unwrap();
+    assert_eq!(
+        first_page.len(),
+        1,
+        "per_page=1 must return 1 game, got {} — the list is not being sliced",
+        first_page.len()
+    );
+
+    // ...and `total` must remain the CATALOG size, not the page size. Counting
+    // after the slice would collapse total_pages to 1 and silently disable the
+    // client's "next page" control.
+    assert_eq!(
+        first_body["pagination"]["total_items"].as_u64().unwrap(),
+        total,
+        "total must count the catalog, not the returned page"
+    );
+
+    // Page 2 must be DIFFERENT items. This is the assertion that fails on the
+    // original bug: it returned the full catalog for every page, so page 2's
+    // first item was page 1's first item.
+    let second = app.get("/v1/games?page=2&per_page=1").await;
+    second.assert_status(StatusCode::OK);
+    let second_body: serde_json::Value = second.json();
+    let second_page = second_body["data"].as_array().unwrap();
+    assert_eq!(second_page.len(), 1, "page 2 must also hold exactly 1 game");
+    assert_ne!(
+        first_page[0]["id"], second_page[0]["id"],
+        "page 2 returned the same game as page 1 — pagination is decorative"
+    );
+
+    // Past the end: empty page, unchanged total.
+    let past_end = app.get(&format!("/v1/games?page={}&per_page=100", total + 10)).await;
+    past_end.assert_status(StatusCode::OK);
+    let past_body: serde_json::Value = past_end.json();
+    assert!(
+        past_body["data"].as_array().unwrap().is_empty(),
+        "a page past the end must be empty, not a repeat of the catalog"
+    );
+}

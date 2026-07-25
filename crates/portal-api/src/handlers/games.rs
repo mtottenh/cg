@@ -92,7 +92,7 @@ pub async fn list_games(
     };
 
     // Convert to response DTOs
-    let game_responses: Vec<GameSummaryResponse> = games
+    let all_games: Vec<GameSummaryResponse> = games
         .into_iter()
         .map(|g| GameSummaryResponse {
             id: g.id.to_string(),
@@ -108,10 +108,28 @@ pub async fn list_games(
         })
         .collect();
 
-    let total = game_responses.len() as u64;
+    // P-121: `params` was threaded into `PaginatedResponse::new` but never
+    // applied to the list, so the response carried page-N metadata attached to
+    // the COMPLETE catalog. A client asking for `?page=2&per_page=10` was told
+    // it was on page 2 and handed every game — so a paginating UI renders page
+    // 1's items again under a "page 2" heading, or duplicates them by appending.
+    //
+    // `total` must be counted BEFORE the slice. It previously read
+    // `game_responses.len()`, which was accidentally correct only because
+    // nothing sliced; adding the slice without moving this would have made
+    // `total` the page size and collapsed `total_pages` to 1 — a subtler lie
+    // than the one being fixed.
+    //
+    // The catalog is a handful of rows that the repo returns whole, so slicing
+    // in memory is honest here rather than a stand-in for a LIMIT/OFFSET query.
+    let total = all_games.len() as u64;
+    let offset = usize::try_from(params.offset()).unwrap_or(0);
+    let limit = usize::try_from(params.limit()).unwrap_or(0);
+    let page_of_games: Vec<GameSummaryResponse> =
+        all_games.into_iter().skip(offset).take(limit).collect();
 
     Ok(Json(PaginatedResponse::new(
-        game_responses,
+        page_of_games,
         &params,
         total,
         request_id,

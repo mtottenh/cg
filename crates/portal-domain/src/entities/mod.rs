@@ -76,7 +76,9 @@ pub use forfeit::{
     DisqualifyCommand, ForfeitRecord, ForfeitResult, ForfeitTrigger, ForfeitType,
     ProcessForfeitCommand, WithdrawFromTournamentCommand,
 };
-pub use game_server::{AgentCertificate, GameServer, HeartbeatUpdate, ServerBooking};
+pub use game_server::{
+    AgentCertificate, GameServer, HeartbeatUpdate, ServerBooking, ServerEvent, ServerReservation,
+};
 pub use league::{
     CreateLeagueCommand, League, LeagueAccessType, LeagueInvitation, LeagueInvitationStatus,
     LeagueInvitationType, LeagueMember, LeagueMemberWithUser, LeagueMembershipType, LeagueStatus,

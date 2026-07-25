@@ -57,3 +57,42 @@ pub struct ServerBookingRow {
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
 }
+
+/// Database row for the `server_reservations` table.
+#[derive(Debug, Clone, FromRow)]
+pub struct ServerReservationRow {
+    pub id: Uuid,
+    pub server_id: Option<Uuid>,
+    pub match_id: Uuid,
+    pub matchzy_id: i64,
+    pub status: String,
+    pub connect_password: String,
+    pub gotv_password: Option<String>,
+    pub config_token_hash: String,
+    pub event_token_hash: String,
+    pub config_token_expires_at: DateTime<Utc>,
+    pub match_config: Option<serde_json::Value>,
+    pub config_fetched_at: Option<DateTime<Utc>>,
+    pub went_live_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub failure_reason: Option<String>,
+    pub retry_count: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Database row for the `server_events` table.
+#[derive(Debug, Clone, FromRow)]
+pub struct ServerEventRow {
+    pub id: Uuid,
+    pub reservation_id: Option<Uuid>,
+    pub server_id: Option<Uuid>,
+    pub event_type: String,
+    pub map_number: Option<i32>,
+    pub round_number: Option<i32>,
+    pub payload: serde_json::Value,
+    pub processed: bool,
+    pub processed_at: Option<DateTime<Utc>>,
+    pub processing_error: Option<String>,
+    pub received_at: DateTime<Utc>,
+}

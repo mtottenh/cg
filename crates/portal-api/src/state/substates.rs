@@ -801,6 +801,9 @@ pub struct VetoState {
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
     /// Tournament map pool repository (resolve effective map pool).
     pub tournament_map_pool_repo: Arc<PgTournamentMapPoolRepository>,
+    /// Veto-completion trigger for server assignment (MatchZy, §6.6).
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
     /// Game repository (default map pool fallback).
     pub game_repo: GameRepository,
 }
@@ -816,6 +819,7 @@ impl FromRef<AppState> for VetoState {
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             tournament_map_pool_repo: Arc::clone(&s.tournament_map_pool_repo),
             game_repo: s.game_repo.clone(),
+            server_assignment_tx: s.server_assignment_tx.clone(),
         }
     }
 }
@@ -861,6 +865,9 @@ pub struct VetoWsState {
     pub veto_lobby_manager: Arc<VetoLobbyManager>,
     /// Tournament match repository.
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
+    /// Veto-completion trigger for server assignment (MatchZy, §6.6).
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
 }
 
 impl FromRef<AppState> for VetoWsState {
@@ -874,6 +881,7 @@ impl FromRef<AppState> for VetoWsState {
             veto_lobby_chat_service: s.veto_lobby_chat_service.clone(),
             veto_lobby_manager: Arc::clone(&s.veto_lobby_manager),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
+            server_assignment_tx: s.server_assignment_tx.clone(),
         }
     }
 }

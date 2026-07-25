@@ -5,10 +5,10 @@
 //! machine-facing endpoints authenticated by enrollment tokens / client
 //! certificates, excluded from the public OpenAPI spec.
 
-use crate::handlers::game_servers::{admin, agent};
+use crate::handlers::game_servers::{admin, agent, match_server, matchzy};
 use crate::state::AppState;
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 
 /// Admin registry routes (mounted at `/admin/game-servers`).
 pub fn admin_routes() -> Router<AppState> {
@@ -43,4 +43,19 @@ pub fn agent_routes() -> Router<AppState> {
     Router::new()
         .route("/enroll", post(agent::enroll))
         .route("/agent/ws", get(agent::ws_upgrade))
+        .route("/match-config/{matchzy_id}", get(matchzy::get_match_config))
+        .route("/events", post(matchzy::post_event))
+}
+
+/// Match-facing server routes (mounted at `/matches`).
+pub fn match_server_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/{match_id}/server",
+            get(match_server::get_match_server).delete(match_server::cancel_match_server),
+        )
+        .route(
+            "/{match_id}/server/assign",
+            post(match_server::assign_match_server),
+        )
 }

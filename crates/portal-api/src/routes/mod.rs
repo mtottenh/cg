@@ -27,6 +27,7 @@ pub fn api_routes() -> Router<AppState> {
         .nest("/auth", auth::routes())
         .nest("/admin/game-servers", game_servers::admin_routes())
         .nest("/gameserver", game_servers::agent_routes())
+        .nest("/matches", game_servers::match_server_routes())
         .nest("/users", users::routes())
         .nest("/players", players::routes())
         .nest("/games", games::routes())

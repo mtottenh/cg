@@ -23,9 +23,13 @@ pub struct ResultClaim {
     pub id: ResultClaimId,
     pub match_id: TournamentMatchId,
 
-    /// Who submitted the claim
-    pub submitted_by_registration_id: TournamentRegistrationId,
-    pub submitted_by_user_id: UserId,
+    /// Who submitted the claim. `None` for server-sourced claims
+    /// (`source == "server"`), which have no submitting participant.
+    pub submitted_by_registration_id: Option<TournamentRegistrationId>,
+    pub submitted_by_user_id: Option<UserId>,
+
+    /// Claim origin: `participant` (default), `server`, or `admin`.
+    pub source: String,
 
     /// Claimed result
     pub claimed_winner_registration_id: TournamentRegistrationId,
@@ -109,7 +113,8 @@ impl ResultClaim {
     /// The user must be from the opponent team (not the submitter).
     #[must_use]
     pub fn can_be_confirmed_by(&self, registration_id: TournamentRegistrationId) -> bool {
-        self.is_pending() && registration_id != self.submitted_by_registration_id
+        // `None` submitter = server-sourced claim: either side may confirm.
+        self.is_pending() && self.submitted_by_registration_id != Some(registration_id)
     }
 
     /// Get the series score as (participant1, participant2) tuple.

@@ -11,11 +11,15 @@
 pub mod demo_client;
 pub mod demo_stats;
 pub mod evidence_validator;
+pub mod matchzy;
 pub mod stats;
 
 pub use demo_client::{Cs2DemoClient, validate_base_url as validate_demo_service_url};
 pub use demo_stats::Cs2DemoStats;
 pub use evidence_validator::Cs2EvidenceValidator;
+pub use matchzy::{
+    MatchzyConfigInput, MatchzyTeam, build_matchzy_config, validate_input as validate_matchzy_input,
+};
 
 use serde_json::{Value, json};
 use std::sync::Arc;

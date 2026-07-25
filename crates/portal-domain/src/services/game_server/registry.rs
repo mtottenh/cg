@@ -294,6 +294,16 @@ where
         self.get(id).await
     }
 
+    /// Set a server's status directly (reservation pipeline transitions:
+    /// configuring/in_match are owned by the match-server flow, §6.4).
+    pub async fn set_server_status(
+        &self,
+        id: GameServerId,
+        status: GameServerStatus,
+    ) -> Result<(), DomainError> {
+        self.server_repo.set_status(id, status).await
+    }
+
     /// Mark a server offline when its agent socket closes.
     pub async fn mark_disconnected(&self, id: GameServerId) -> Result<(), DomainError> {
         self.server_repo

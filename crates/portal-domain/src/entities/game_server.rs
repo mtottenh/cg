@@ -7,10 +7,10 @@
 
 use chrono::{DateTime, Utc};
 use portal_core::ids::{
-    GameId, GameServerId, ServerAgentCertId, ServerBookingId, TournamentId, TournamentMatchId,
-    UserId,
+    GameId, GameServerId, ServerAgentCertId, ServerBookingId, ServerEventId, ServerReservationId,
+    TournamentId, TournamentMatchId, UserId,
 };
-use portal_core::types::{AgentGamestate, GameServerStatus};
+use portal_core::types::{AgentGamestate, GameServerStatus, ReservationStatus};
 use std::net::IpAddr;
 
 /// A registered game server.
@@ -129,4 +129,66 @@ pub struct HeartbeatUpdate {
     pub gamestate: Option<AgentGamestate>,
     /// The `matchid` MatchZy reports as loaded, if any.
     pub reported_matchzy_id: Option<i64>,
+}
+
+/// A match's claim on a server for one play-through (§4).
+///
+/// `matchzy_id` is the integer `matchid` MatchZy requires; it is also the
+/// correlation key on every webhook event and the config-fetch URL.
+#[derive(Debug, Clone)]
+pub struct ServerReservation {
+    pub id: ServerReservationId,
+    /// `None` while queued (`pending`) — allocation assigns the server.
+    pub server_id: Option<GameServerId>,
+    pub match_id: TournamentMatchId,
+    pub matchzy_id: i64,
+    pub status: ReservationStatus,
+
+    /// `sv_password` players use; shown only to participants + admins.
+    pub connect_password: String,
+    pub gotv_password: Option<String>,
+    /// SHA-256 of the one-time config-fetch bearer token.
+    pub config_token_hash: String,
+    /// SHA-256 of the per-reservation event-webhook bearer token.
+    pub event_token_hash: String,
+    pub config_token_expires_at: DateTime<Utc>,
+
+    /// The exact MatchZy config served (audit + rebuild-on-reassignment).
+    pub match_config: Option<serde_json::Value>,
+
+    pub config_fetched_at: Option<DateTime<Utc>>,
+    pub went_live_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub failure_reason: Option<String>,
+    pub retry_count: i32,
+
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl ServerReservation {
+    /// Whether the config endpoint may still serve this reservation's config.
+    #[must_use]
+    pub fn config_fetchable(&self, now: DateTime<Utc>) -> bool {
+        matches!(
+            self.status,
+            ReservationStatus::Configuring | ReservationStatus::Ready
+        ) && self.config_token_expires_at > now
+    }
+}
+
+/// A raw MatchZy webhook event, stored before processing (§6.4).
+#[derive(Debug, Clone)]
+pub struct ServerEvent {
+    pub id: ServerEventId,
+    pub reservation_id: Option<ServerReservationId>,
+    pub server_id: Option<GameServerId>,
+    pub event_type: String,
+    pub map_number: Option<i32>,
+    pub round_number: Option<i32>,
+    pub payload: serde_json::Value,
+    pub processed: bool,
+    pub processed_at: Option<DateTime<Utc>>,
+    pub processing_error: Option<String>,
+    pub received_at: DateTime<Utc>,
 }

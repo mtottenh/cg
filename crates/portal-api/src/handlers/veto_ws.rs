@@ -559,6 +559,10 @@ async fn handle_veto_action(
 
             match result {
                 Ok(action_result) => {
+                    // Veto complete → server assignment trigger (§6.6).
+                    if action_result.veto_complete {
+                        let _ = state.server_assignment_tx.send(match_id);
+                    }
                     // Broadcast to lobby (the REST handlers do this, so we mirror the behavior)
                     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
                         if action_result.veto_complete {
@@ -864,6 +868,19 @@ fn filter_broadcast_for_connection(
                 }
             }
         }
+        LobbyBroadcast::ServerAssignmentUpdate(update) => {
+            Some(ServerMessage::ServerAssignmentUpdate {
+                status: update.status.clone(),
+                connect: update.connect.clone(),
+                reason: update.reason.clone(),
+            })
+        }
+        LobbyBroadcast::LiveScoreUpdate(score) => Some(ServerMessage::LiveScoreUpdate {
+            map_number: score.map_number,
+            team1_score: score.team1_score,
+            team2_score: score.team2_score,
+            round_number: score.round_number,
+        }),
         LobbyBroadcast::CoinFlipResult(result) => Some(ServerMessage::CoinFlipResult {
             winner_registration_id: result.winner_registration_id.to_string(),
             winner_name: result.winner_name.clone(),

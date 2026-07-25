@@ -713,9 +713,12 @@ pub struct ResultClaimRow {
     pub id: Uuid,
     pub match_id: Uuid,
 
-    // Who submitted
-    pub submitted_by_registration_id: Uuid,
-    pub submitted_by_user_id: Uuid,
+    // Who submitted (NULL for server-sourced claims)
+    pub submitted_by_registration_id: Option<Uuid>,
+    pub submitted_by_user_id: Option<Uuid>,
+
+    // Claim origin: participant | server | admin
+    pub source: String,
 
     // Claimed result
     pub claimed_winner_registration_id: Uuid,
@@ -755,8 +758,9 @@ pub struct ResultClaimRow {
 #[derive(Debug, Clone)]
 pub struct NewResultClaim {
     pub match_id: Uuid,
-    pub submitted_by_registration_id: Uuid,
-    pub submitted_by_user_id: Uuid,
+    pub submitted_by_registration_id: Option<Uuid>,
+    pub submitted_by_user_id: Option<Uuid>,
+    pub source: String,
     pub claimed_winner_registration_id: Uuid,
     pub claimed_participant1_score: i32,
     pub claimed_participant2_score: i32,

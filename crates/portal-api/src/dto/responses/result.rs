@@ -18,10 +18,15 @@ pub struct ResultClaimResponse {
     pub id: String,
     /// Match ID.
     pub match_id: String,
-    /// Registration ID of who submitted the claim.
-    pub submitted_by_registration_id: String,
-    /// User ID of who submitted the claim.
-    pub submitted_by_user_id: String,
+    /// Registration ID of who submitted the claim. Absent for
+    /// server-sourced claims (`source == "server"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitted_by_registration_id: Option<String>,
+    /// User ID of who submitted the claim. Absent for server claims.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitted_by_user_id: Option<String>,
+    /// Claim origin: `participant`, `server`, or `admin`.
+    pub source: String,
     /// Display name of the player who submitted the claim (enriched by
     /// history/list handlers; absent when the player could not be resolved).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,9 +79,10 @@ impl From<ResultClaim> for ResultClaimResponse {
         Self {
             id: c.id.to_string(),
             match_id: c.match_id.to_string(),
-            submitted_by_registration_id: c.submitted_by_registration_id.to_string(),
-            submitted_by_user_id: c.submitted_by_user_id.to_string(),
+            submitted_by_registration_id: c.submitted_by_registration_id.map(|id| id.to_string()),
+            submitted_by_user_id: c.submitted_by_user_id.map(|id| id.to_string()),
             submitted_by_display_name: None,
+            source: c.source,
             claimed_winner_registration_id: c.claimed_winner_registration_id.to_string(),
             claimed_participant1_score: c.claimed_participant1_score,
             claimed_participant2_score: c.claimed_participant2_score,

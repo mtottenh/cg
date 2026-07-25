@@ -1,19 +1,24 @@
 //! Game-server repository adapters.
 
 use crate::DbPool;
-use crate::entities::{GameServerRow, ServerAgentCertRow, ServerBookingRow};
+use crate::entities::{
+    GameServerRow, ServerAgentCertRow, ServerBookingRow, ServerEventRow, ServerReservationRow,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::errors::DomainError;
 use portal_core::ids::{
-    GameId, GameServerId, ServerAgentCertId, ServerBookingId, TournamentId, TournamentMatchId,
-    UserId,
+    GameId, GameServerId, ServerAgentCertId, ServerBookingId, ServerEventId, ServerReservationId,
+    TournamentId, TournamentMatchId, UserId,
 };
-use portal_core::types::GameServerStatus;
-use portal_domain::entities::{AgentCertificate, GameServer, ServerBooking};
+use portal_core::types::{GameServerStatus, ReservationStatus};
+use portal_domain::entities::{
+    AgentCertificate, GameServer, ServerBooking, ServerEvent, ServerReservation,
+};
 use portal_domain::repositories::{
     AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateServerBooking,
-    GameServerRepository, RecordHeartbeat, ServerBookingRepository, UpdateGameServer,
+    CreateServerEvent, CreateServerReservation, GameServerRepository, RecordHeartbeat,
+    ServerBookingRepository, ServerEventRepository, ServerReservationRepository, UpdateGameServer,
 };
 
 /// Explicit column list: `ip_address` must go through `host()` to come back
@@ -496,5 +501,537 @@ impl ServerBookingRepository for PgServerBookingRepository {
             return Err(DomainError::ServerBookingNotFound(id));
         }
         Ok(())
+    }
+}
+
+// =============================================================================
+// Server Reservation Repository Adapter
+// =============================================================================
+
+impl From<ServerReservationRow> for ServerReservation {
+    fn from(row: ServerReservationRow) -> Self {
+        Self {
+            id: ServerReservationId::from(row.id),
+            server_id: row.server_id.map(GameServerId::from),
+            match_id: TournamentMatchId::from(row.match_id),
+            matchzy_id: row.matchzy_id,
+            status: row.status.parse().unwrap_or_default(),
+            connect_password: row.connect_password,
+            gotv_password: row.gotv_password,
+            config_token_hash: row.config_token_hash,
+            event_token_hash: row.event_token_hash,
+            config_token_expires_at: row.config_token_expires_at,
+            match_config: row.match_config,
+            config_fetched_at: row.config_fetched_at,
+            went_live_at: row.went_live_at,
+            completed_at: row.completed_at,
+            failure_reason: row.failure_reason,
+            retry_count: row.retry_count,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+impl From<ServerEventRow> for ServerEvent {
+    fn from(row: ServerEventRow) -> Self {
+        Self {
+            id: ServerEventId::from(row.id),
+            reservation_id: row.reservation_id.map(ServerReservationId::from),
+            server_id: row.server_id.map(GameServerId::from),
+            event_type: row.event_type,
+            map_number: row.map_number,
+            round_number: row.round_number,
+            payload: row.payload,
+            processed: row.processed,
+            processed_at: row.processed_at,
+            processing_error: row.processing_error,
+            received_at: row.received_at,
+        }
+    }
+}
+
+/// PostgreSQL implementation of the domain `ServerReservationRepository` trait.
+#[derive(Clone)]
+pub struct PgServerReservationRepository {
+    pool: DbPool,
+}
+
+impl PgServerReservationRepository {
+    /// Create a new PostgreSQL server reservation repository.
+    #[must_use]
+    pub const fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl ServerReservationRepository for PgServerReservationRepository {
+    async fn create_pending(
+        &self,
+        create: CreateServerReservation,
+    ) -> Result<ServerReservation, DomainError> {
+        let row = sqlx::query_as::<_, ServerReservationRow>(
+            "INSERT INTO server_reservations \
+                (id, match_id, connect_password, gotv_password, \
+                 config_token_hash, event_token_hash, config_token_expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             RETURNING *",
+        )
+        .bind(create.id.as_uuid())
+        .bind(create.match_id.as_uuid())
+        .bind(&create.connect_password)
+        .bind(&create.gotv_password)
+        .bind(&create.config_token_hash)
+        .bind(&create.event_token_hash)
+        .bind(create.config_token_expires_at)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            if e.to_string().contains("uq_server_reservations_live_match") {
+                DomainError::Conflict("this match already has a live server reservation".into())
+            } else {
+                internal(e)
+            }
+        })?;
+        Ok(ServerReservation::from(row))
+    }
+
+    async fn allocate(
+        &self,
+        id: ServerReservationId,
+        game_id: GameId,
+        tournament_id: TournamentId,
+        region: Option<&str>,
+        heartbeat_cutoff: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<(ServerReservation, GameServer)>, DomainError> {
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+
+        // §6.7 allocation predicate. FOR UPDATE SKIP LOCKED settles the race
+        // between two matches finishing veto simultaneously at the database.
+        let pick_sql = format!(
+            "SELECT {SERVER_COLS} FROM game_servers gs \
+             WHERE gs.enabled AND gs.status = 'available' AND gs.game_id = $1 \
+               AND ($2::text IS NULL OR gs.region = $2) \
+               AND gs.last_heartbeat_at > $3 \
+               AND gs.last_gamestate = 'none' \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM server_bookings b \
+                   WHERE b.server_id = gs.id \
+                     AND b.starts_at <= $4 AND b.ends_at > $4 \
+                     AND (b.tournament_id IS NULL OR b.tournament_id <> $5) \
+               ) \
+             ORDER BY EXISTS ( \
+                   SELECT 1 FROM server_bookings b2 \
+                   WHERE b2.server_id = gs.id \
+                     AND b2.starts_at <= $4 AND b2.ends_at > $4 \
+                     AND b2.tournament_id = $5 \
+               ) DESC, gs.last_heartbeat_at DESC \
+             LIMIT 1 \
+             FOR UPDATE OF gs SKIP LOCKED"
+        );
+        let server_row = sqlx::query_as::<_, GameServerRow>(&pick_sql)
+            .bind(game_id.as_uuid())
+            .bind(region)
+            .bind(heartbeat_cutoff)
+            .bind(now)
+            .bind(tournament_id.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal)?;
+
+        let Some(server_row) = server_row else {
+            tx.rollback().await.map_err(internal)?;
+            return Ok(None);
+        };
+        let server_id = server_row.id;
+
+        let reservation_row = sqlx::query_as::<_, ServerReservationRow>(
+            "UPDATE server_reservations SET server_id = $2, updated_at = NOW() \
+             WHERE id = $1 AND status = 'pending' \
+             RETURNING *",
+        )
+        .bind(id.as_uuid())
+        .bind(server_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(internal)?;
+
+        sqlx::query(
+            "UPDATE game_servers SET status = 'reserved', current_match_id = $2, \
+             updated_at = NOW() WHERE id = $1",
+        )
+        .bind(server_id)
+        .bind(reservation_row.match_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+
+        tx.commit().await.map_err(internal)?;
+
+        let reservation = ServerReservation::from(reservation_row);
+        let mut server = GameServer::from(server_row);
+        server.status = GameServerStatus::Reserved;
+        server.current_match_id = Some(reservation.match_id);
+        Ok(Some((reservation, server)))
+    }
+
+    async fn release(
+        &self,
+        id: ServerReservationId,
+        final_status: ReservationStatus,
+        reason: Option<&str>,
+    ) -> Result<(), DomainError> {
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        let row: Option<(Option<uuid::Uuid>,)> = sqlx::query_as(
+            "UPDATE server_reservations SET status = $2, \
+                failure_reason = COALESCE($3, failure_reason), \
+                completed_at = CASE WHEN $2 = 'completed' THEN NOW() ELSE completed_at END, \
+                updated_at = NOW() \
+             WHERE id = $1 RETURNING server_id",
+        )
+        .bind(id.as_uuid())
+        .bind(final_status.to_string())
+        .bind(reason)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(internal)?;
+
+        if let Some((Some(server_id),)) = row {
+            sqlx::query(
+                "UPDATE game_servers SET status = 'available', current_match_id = NULL, \
+                 updated_at = NOW() \
+                 WHERE id = $1 AND status IN ('reserved', 'configuring', 'in_match')",
+            )
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        }
+        tx.commit().await.map_err(internal)?;
+        Ok(())
+    }
+
+    async fn find_by_id(
+        &self,
+        id: ServerReservationId,
+    ) -> Result<Option<ServerReservation>, DomainError> {
+        let row = sqlx::query_as::<_, ServerReservationRow>(
+            "SELECT * FROM server_reservations WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(ServerReservation::from))
+    }
+
+    async fn find_by_matchzy_id(
+        &self,
+        matchzy_id: i64,
+    ) -> Result<Option<ServerReservation>, DomainError> {
+        let row = sqlx::query_as::<_, ServerReservationRow>(
+            "SELECT * FROM server_reservations WHERE matchzy_id = $1",
+        )
+        .bind(matchzy_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(ServerReservation::from))
+    }
+
+    async fn find_live_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<ServerReservation>, DomainError> {
+        let row = sqlx::query_as::<_, ServerReservationRow>(
+            "SELECT * FROM server_reservations WHERE match_id = $1 \
+             AND status IN ('pending','configuring','ready','live')",
+        )
+        .bind(match_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(ServerReservation::from))
+    }
+
+    async fn find_latest_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<ServerReservation>, DomainError> {
+        let row = sqlx::query_as::<_, ServerReservationRow>(
+            "SELECT * FROM server_reservations WHERE match_id = $1 \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(match_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(ServerReservation::from))
+    }
+
+    async fn has_live_for_server(&self, server_id: GameServerId) -> Result<bool, DomainError> {
+        let (exists,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM server_reservations WHERE server_id = $1 \
+             AND status IN ('pending','configuring','ready','live'))",
+        )
+        .bind(server_id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(exists)
+    }
+
+    async fn set_status(
+        &self,
+        id: ServerReservationId,
+        status: ReservationStatus,
+    ) -> Result<(), DomainError> {
+        sqlx::query("UPDATE server_reservations SET status = $2, updated_at = NOW() WHERE id = $1")
+            .bind(id.as_uuid())
+            .bind(status.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn mark_failed(&self, id: ServerReservationId, reason: &str) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE server_reservations SET status = 'failed', failure_reason = $2, \
+             updated_at = NOW() WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(reason)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn set_config_token(
+        &self,
+        id: ServerReservationId,
+        token_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE server_reservations SET config_token_hash = $2, \
+             config_token_expires_at = $3, updated_at = NOW() WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(token_hash)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn store_config(
+        &self,
+        id: ServerReservationId,
+        config: &serde_json::Value,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE server_reservations SET match_config = $2, updated_at = NOW() WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(config)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn mark_config_fetched(
+        &self,
+        id: ServerReservationId,
+        at: DateTime<Utc>,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE server_reservations SET config_fetched_at = $2, updated_at = NOW() \
+             WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(at)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn mark_live(
+        &self,
+        id: ServerReservationId,
+        at: DateTime<Utc>,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE server_reservations SET status = 'live', went_live_at = $2, \
+             updated_at = NOW() WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(at)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn mark_completed(
+        &self,
+        id: ServerReservationId,
+        at: DateTime<Utc>,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE server_reservations SET status = 'completed', completed_at = $2, \
+             updated_at = NOW() WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(at)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn increment_retry(&self, id: ServerReservationId) -> Result<i32, DomainError> {
+        let (count,): (i32,) = sqlx::query_as(
+            "UPDATE server_reservations SET retry_count = retry_count + 1, \
+             updated_at = NOW() WHERE id = $1 RETURNING retry_count",
+        )
+        .bind(id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(count)
+    }
+
+    async fn touch(&self, id: ServerReservationId) -> Result<(), DomainError> {
+        sqlx::query("UPDATE server_reservations SET updated_at = NOW() WHERE id = $1")
+            .bind(id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn list_pending(&self, limit: i64) -> Result<Vec<ServerReservation>, DomainError> {
+        let rows = sqlx::query_as::<_, ServerReservationRow>(
+            "SELECT * FROM server_reservations WHERE status = 'pending' \
+             ORDER BY created_at ASC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(ServerReservation::from).collect())
+    }
+
+    async fn list_stuck_configuring(
+        &self,
+        before: DateTime<Utc>,
+    ) -> Result<Vec<ServerReservation>, DomainError> {
+        let rows = sqlx::query_as::<_, ServerReservationRow>(
+            "SELECT * FROM server_reservations WHERE status = 'configuring' \
+             AND updated_at < $1",
+        )
+        .bind(before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(ServerReservation::from).collect())
+    }
+
+    async fn list_active_stale(
+        &self,
+        before: DateTime<Utc>,
+    ) -> Result<Vec<ServerReservation>, DomainError> {
+        let rows = sqlx::query_as::<_, ServerReservationRow>(
+            "SELECT * FROM server_reservations WHERE status IN ('ready','live') \
+             AND updated_at < $1",
+        )
+        .bind(before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(ServerReservation::from).collect())
+    }
+}
+
+// =============================================================================
+// Server Event Repository Adapter
+// =============================================================================
+
+/// PostgreSQL implementation of the domain `ServerEventRepository` trait.
+#[derive(Clone)]
+pub struct PgServerEventRepository {
+    pool: DbPool,
+}
+
+impl PgServerEventRepository {
+    /// Create a new PostgreSQL server event repository.
+    #[must_use]
+    pub const fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl ServerEventRepository for PgServerEventRepository {
+    async fn insert(&self, event: CreateServerEvent) -> Result<Option<ServerEvent>, DomainError> {
+        // ON CONFLICT DO NOTHING against the dedupe index makes MatchZy
+        // replays no-ops without surfacing an error.
+        let row = sqlx::query_as::<_, ServerEventRow>(
+            "INSERT INTO server_events \
+                (id, reservation_id, server_id, event_type, map_number, round_number, payload) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT DO NOTHING \
+             RETURNING *",
+        )
+        .bind(ServerEventId::new().as_uuid())
+        .bind(event.reservation_id.as_uuid())
+        .bind(event.server_id.as_uuid())
+        .bind(&event.event_type)
+        .bind(event.map_number)
+        .bind(event.round_number)
+        .bind(&event.payload)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(ServerEvent::from))
+    }
+
+    async fn mark_processed(
+        &self,
+        id: ServerEventId,
+        error: Option<&str>,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE server_events SET processed = TRUE, processed_at = NOW(), \
+             processing_error = $2 WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(error)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn latest_round_end(
+        &self,
+        reservation_id: ServerReservationId,
+    ) -> Result<Option<ServerEvent>, DomainError> {
+        let row = sqlx::query_as::<_, ServerEventRow>(
+            "SELECT * FROM server_events WHERE reservation_id = $1 \
+             AND event_type = 'round_end' ORDER BY received_at DESC LIMIT 1",
+        )
+        .bind(reservation_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(ServerEvent::from))
     }
 }

@@ -2,7 +2,8 @@
 
 use anyhow::Result;
 use portal_api::{
-    AppState, TokenConfig, spawn_lifecycle_task, spawn_timeout_warning_task, try_create_app,
+    AppState, TokenConfig, spawn_lifecycle_task, spawn_server_assignment_task,
+    spawn_timeout_warning_task, try_create_app,
 };
 use portal_db::{PoolConfig, create_pool};
 use std::net::SocketAddr;
@@ -76,6 +77,7 @@ async fn main() -> Result<()> {
     // would be silently swallowed.
     let timeout_handle = spawn_timeout_warning_task(state.clone(), Arc::clone(&shutdown));
     let lifecycle_handle = spawn_lifecycle_task(state.clone(), Arc::clone(&shutdown));
+    let assignment_handle = spawn_server_assignment_task(state.clone(), Arc::clone(&shutdown));
 
     // Keep a handle to the pool so we can drain it after the server stops.
     let pool_for_shutdown = state.db_pool.clone();
@@ -133,6 +135,11 @@ async fn main() -> Result<()> {
         Ok(Ok(())) => info!("lifecycle automation task exited cleanly"),
         Ok(Err(e)) => warn!(error = %e, "lifecycle automation task panicked"),
         Err(_) => warn!("lifecycle automation task did not exit within 10s; abandoning"),
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(10), assignment_handle).await {
+        Ok(Ok(())) => info!("server assignment task exited cleanly"),
+        Ok(Err(e)) => warn!(error = %e, "server assignment task panicked"),
+        Err(_) => warn!("server assignment task did not exit within 10s; abandoning"),
     }
 
     info!("closing database pool");

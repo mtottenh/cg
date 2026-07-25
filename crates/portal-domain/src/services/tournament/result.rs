@@ -255,8 +255,9 @@ where
             .claim_repo
             .create_and_supersede_pending(CreateResultClaim {
                 match_id,
-                submitted_by_registration_id: submitter_registration,
-                submitted_by_user_id: submitted_by_user,
+                submitted_by_registration_id: Some(submitter_registration),
+                submitted_by_user_id: Some(submitted_by_user),
+                source: "participant".to_string(),
                 claimed_winner_registration_id: claimed_winner,
                 participant1_score,
                 participant2_score,
@@ -309,6 +310,77 @@ where
         Ok(claim)
     }
 
+    /// Submit a server-sourced result claim (MatchZy `series_end`, §6.5).
+    ///
+    /// No submitting participant: `source = "server"`, both captains may
+    /// confirm or dispute, and the existing overdue sweep auto-confirms at
+    /// `auto_confirm_at`. Refused when a participant claim is already
+    /// pending or resolved — first claim wins; conflicts land in review.
+    pub async fn submit_server_claim(
+        &self,
+        match_id: TournamentMatchId,
+        claimed_winner: TournamentRegistrationId,
+        participant1_score: i32,
+        participant2_score: i32,
+        game_results: Vec<GameResultInput>,
+        auto_confirm_at: chrono::DateTime<Utc>,
+    ) -> Result<ResultClaim, DomainError> {
+        let match_ = self.get_match(match_id).await?;
+        if !match_.can_submit_result() {
+            return Err(DomainError::InvalidState(format!(
+                "Cannot submit result for match in {} status",
+                match_.status
+            )));
+        }
+        if let Some(existing) = self.claim_repo.find_current_by_match(match_id).await?
+            && existing.is_pending()
+        {
+            return Err(DomainError::Conflict(format!(
+                "a result claim ({}) is already pending for this match",
+                existing.id
+            )));
+        }
+
+        self.validate_claim(
+            &match_,
+            claimed_winner,
+            participant1_score,
+            participant2_score,
+            &game_results,
+        )
+        .await?;
+
+        let game_results: Vec<GameResult> = game_results
+            .into_iter()
+            .map(|g| {
+                self.convert_game_result(
+                    &match_,
+                    g,
+                    claimed_winner,
+                    participant1_score,
+                    participant2_score,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.claim_repo
+            .create_and_supersede_pending(CreateResultClaim {
+                match_id,
+                submitted_by_registration_id: None,
+                submitted_by_user_id: None,
+                source: "server".to_string(),
+                claimed_winner_registration_id: claimed_winner,
+                participant1_score,
+                participant2_score,
+                game_results,
+                auto_confirm_at,
+                evidence_ids: Vec::new(),
+                demo_link_ids: Vec::new(),
+                notes: Some("Automatically reported by the game server".to_string()),
+            })
+            .await
+    }
+
     /// Confirm a result claim (by opponent).
     #[instrument(skip(self))]
     pub async fn confirm_claim(
@@ -334,7 +406,7 @@ where
             .await?;
 
         // Verify confirmer is not the submitter
-        if confirmer_registration == claim.submitted_by_registration_id {
+        if Some(confirmer_registration) == claim.submitted_by_registration_id {
             return Err(DomainError::NotAuthorized(
                 "Cannot confirm your own result claim".to_string(),
             ));
@@ -357,7 +429,7 @@ where
             .confirm_and_apply_to_match(
                 claim_id,
                 confirmer_registration,
-                confirmed_by_user,
+                Some(confirmed_by_user),
                 false,
                 match_.id,
                 claim.claimed_winner_registration_id,
@@ -415,7 +487,7 @@ where
             .await?;
 
         // Verify disputer is not the submitter
-        if disputer_registration == claim.submitted_by_registration_id {
+        if Some(disputer_registration) == claim.submitted_by_registration_id {
             return Err(DomainError::NotAuthorized(
                 "Cannot dispute your own result claim".to_string(),
             ));
@@ -441,7 +513,7 @@ where
         }
 
         // Verify canceller is the submitter
-        if claim.submitted_by_user_id != cancelled_by_user {
+        if claim.submitted_by_user_id != Some(cancelled_by_user) {
             return Err(DomainError::NotAuthorized(
                 "Only the submitter can cancel their own claim".to_string(),
             ));
@@ -745,14 +817,18 @@ where
         // Get the match
         let match_ = self.get_match(claim.match_id).await?;
 
-        // Find opponent registration
-        let opponent =
-            if match_.participant1_registration_id == Some(claim.submitted_by_registration_id) {
-                match_.participant2_registration_id
-            } else {
-                match_.participant1_registration_id
-            }
-            .ok_or_else(|| DomainError::InvalidState("Opponent not found".to_string()))?;
+        // Find the registration recorded as the (auto-)confirmer: the
+        // submitter's opponent — or, for server-sourced claims with no
+        // submitter, the losing side (they held the dispute window).
+        let reference = claim
+            .submitted_by_registration_id
+            .unwrap_or(claim.claimed_winner_registration_id);
+        let opponent = if match_.participant1_registration_id == Some(reference) {
+            match_.participant2_registration_id
+        } else {
+            match_.participant1_registration_id
+        }
+        .ok_or_else(|| DomainError::InvalidState("Opponent not found".to_string()))?;
 
         // Atomic auto-confirm + result application. See audit I5.
         let loser =

@@ -23,6 +23,7 @@ pub mod background;
 pub mod dto;
 pub mod error;
 pub mod extractors;
+pub mod game_server_flow;
 pub mod handlers;
 pub mod middleware;
 pub mod openapi;
@@ -33,6 +34,7 @@ pub mod websocket;
 
 pub use app::{AppConfigError, create_app, try_create_app};
 pub use background::spawn_lifecycle_task;
+pub use game_server_flow::spawn_server_assignment_task;
 pub use state::{
     AdminState, AppState, AuthState, AvailabilityState, BanState, DemoState, DisputeState,
     EvidenceState, ForfeitState, GamesState, InternalState, LeagueTeamState, LeaguesState,

@@ -3,11 +3,16 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::errors::DomainError;
-use portal_core::ids::{GameId, GameServerId, ServerBookingId, TournamentId, UserId};
-use portal_core::types::{AgentGamestate, GameServerStatus};
+use portal_core::ids::{
+    GameId, GameServerId, ServerBookingId, ServerEventId, ServerReservationId, TournamentId,
+    TournamentMatchId, UserId,
+};
+use portal_core::types::{AgentGamestate, GameServerStatus, ReservationStatus};
 use std::net::IpAddr;
 
-use crate::entities::{AgentCertificate, GameServer, ServerBooking};
+use crate::entities::{
+    AgentCertificate, GameServer, ServerBooking, ServerEvent, ServerReservation,
+};
 
 /// Fields for registering a new game server.
 #[derive(Debug, Clone)]
@@ -165,4 +170,178 @@ pub trait ServerBookingRepository: Send + Sync + 'static {
     ) -> Result<Vec<ServerBooking>, DomainError>;
 
     async fn delete(&self, id: ServerBookingId) -> Result<(), DomainError>;
+}
+
+/// Fields for creating a reservation (tokens pre-hashed by the service).
+#[derive(Debug, Clone)]
+pub struct CreateServerReservation {
+    pub id: ServerReservationId,
+    pub match_id: TournamentMatchId,
+    pub connect_password: String,
+    pub gotv_password: Option<String>,
+    pub config_token_hash: String,
+    pub event_token_hash: String,
+    pub config_token_expires_at: DateTime<Utc>,
+}
+
+/// Repository for match server reservations.
+#[async_trait]
+pub trait ServerReservationRepository: Send + Sync + 'static {
+    /// Create a queued (`pending`, serverless) reservation. Fails on the
+    /// one-live-reservation-per-match unique index if one already exists.
+    async fn create_pending(
+        &self,
+        create: CreateServerReservation,
+    ) -> Result<ServerReservation, DomainError>;
+
+    /// Atomically pick an eligible server (§6.7 predicate, `FOR UPDATE
+    /// SKIP LOCKED`), assign it to the pending reservation, and mark the
+    /// server `reserved` with `current_match_id` set — one transaction.
+    ///
+    /// Eligibility: enabled, `available`, matching game, fresh heartbeat,
+    /// idle gamestate, and no booking covering `now` for a different
+    /// tournament. Servers with a booking for `tournament_id` sort first.
+    /// Returns `None` when no server qualifies (reservation untouched).
+    async fn allocate(
+        &self,
+        id: ServerReservationId,
+        game_id: GameId,
+        tournament_id: TournamentId,
+        region: Option<&str>,
+        heartbeat_cutoff: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<(ServerReservation, GameServer)>, DomainError>;
+
+    /// Terminalize a reservation and free its server in one transaction:
+    /// the reservation gets `final_status` (+ optional reason), and the
+    /// server — if this reservation holds it — returns to `available`
+    /// with `current_match_id` cleared.
+    async fn release(
+        &self,
+        id: ServerReservationId,
+        final_status: ReservationStatus,
+        reason: Option<&str>,
+    ) -> Result<(), DomainError>;
+
+    async fn find_by_id(
+        &self,
+        id: ServerReservationId,
+    ) -> Result<Option<ServerReservation>, DomainError>;
+
+    async fn find_by_matchzy_id(
+        &self,
+        matchzy_id: i64,
+    ) -> Result<Option<ServerReservation>, DomainError>;
+
+    /// The live (pending/configuring/ready/live) reservation for a match.
+    async fn find_live_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<ServerReservation>, DomainError>;
+
+    /// Most recent reservation for a match regardless of status.
+    async fn find_latest_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<ServerReservation>, DomainError>;
+
+    /// Whether the server currently holds a live reservation.
+    async fn has_live_for_server(&self, server_id: GameServerId) -> Result<bool, DomainError>;
+
+    async fn set_status(
+        &self,
+        id: ServerReservationId,
+        status: ReservationStatus,
+    ) -> Result<(), DomainError>;
+
+    /// Terminal failure with a human-readable reason.
+    async fn mark_failed(&self, id: ServerReservationId, reason: &str) -> Result<(), DomainError>;
+
+    /// Replace the config-fetch token (a fresh one is minted per load
+    /// attempt, §6.6).
+    async fn set_config_token(
+        &self,
+        id: ServerReservationId,
+        token_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), DomainError>;
+
+    /// Store the generated MatchZy config JSON.
+    async fn store_config(
+        &self,
+        id: ServerReservationId,
+        config: &serde_json::Value,
+    ) -> Result<(), DomainError>;
+
+    async fn mark_config_fetched(
+        &self,
+        id: ServerReservationId,
+        at: DateTime<Utc>,
+    ) -> Result<(), DomainError>;
+
+    async fn mark_live(
+        &self,
+        id: ServerReservationId,
+        at: DateTime<Utc>,
+    ) -> Result<(), DomainError>;
+
+    async fn mark_completed(
+        &self,
+        id: ServerReservationId,
+        at: DateTime<Utc>,
+    ) -> Result<(), DomainError>;
+
+    /// Bump the retry counter, returning the new value.
+    async fn increment_retry(&self, id: ServerReservationId) -> Result<i32, DomainError>;
+
+    /// Touch `updated_at` (event-activity marker for staleness detection).
+    async fn touch(&self, id: ServerReservationId) -> Result<(), DomainError>;
+
+    /// Reservations still waiting for a server.
+    async fn list_pending(&self, limit: i64) -> Result<Vec<ServerReservation>, DomainError>;
+
+    /// `configuring` reservations not updated since `before` (load retry).
+    async fn list_stuck_configuring(
+        &self,
+        before: DateTime<Utc>,
+    ) -> Result<Vec<ServerReservation>, DomainError>;
+
+    /// `ready`/`live` reservations with no activity since `before`
+    /// (missed-webhook reconciliation, §6.6).
+    async fn list_active_stale(
+        &self,
+        before: DateTime<Utc>,
+    ) -> Result<Vec<ServerReservation>, DomainError>;
+}
+
+/// Fields for inserting a raw webhook event.
+#[derive(Debug, Clone)]
+pub struct CreateServerEvent {
+    pub reservation_id: ServerReservationId,
+    pub server_id: GameServerId,
+    pub event_type: String,
+    pub map_number: Option<i32>,
+    pub round_number: Option<i32>,
+    pub payload: serde_json::Value,
+}
+
+/// Repository for raw MatchZy webhook events.
+#[async_trait]
+pub trait ServerEventRepository: Send + Sync + 'static {
+    /// Insert an event. Returns `None` when the dedupe index rejects it
+    /// (same reservation + type + map + round already stored) — MatchZy
+    /// replays become no-ops (§6.4).
+    async fn insert(&self, event: CreateServerEvent) -> Result<Option<ServerEvent>, DomainError>;
+
+    async fn mark_processed(
+        &self,
+        id: ServerEventId,
+        error: Option<&str>,
+    ) -> Result<(), DomainError>;
+
+    /// Latest round_end payload for a reservation (live-score snapshot).
+    async fn latest_round_end(
+        &self,
+        reservation_id: ServerReservationId,
+    ) -> Result<Option<ServerEvent>, DomainError>;
 }

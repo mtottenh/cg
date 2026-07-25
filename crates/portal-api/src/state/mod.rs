@@ -38,9 +38,10 @@ use portal_db::{
     PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository,
     PgPlayerRepository, PgProgressionLogRepository, PgRefreshTokenRepository,
     PgResultClaimRepository, PgResultReviewRepository, PgSagaExecutionRepository,
-    PgScheduleProposalRepository, PgServerBookingRepository, PgSteamTrackingRepository,
-    PgSuggestedTimeRepository, PgSystemSettingsRepository, PgTournamentBracketRepository,
-    PgTournamentInvitationRepository, PgTournamentMapPoolRepository, PgTournamentMatchRepository,
+    PgScheduleProposalRepository, PgServerBookingRepository, PgServerEventRepository,
+    PgServerReservationRepository, PgSteamTrackingRepository, PgSuggestedTimeRepository,
+    PgSystemSettingsRepository, PgTournamentBracketRepository, PgTournamentInvitationRepository,
+    PgTournamentMapPoolRepository, PgTournamentMatchGameRepository, PgTournamentMatchRepository,
     PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
     PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
     PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
@@ -287,6 +288,26 @@ pub struct AppState {
     pub veto_lobby_manager: Arc<VetoLobbyManager>,
     /// Game-server registry service (MatchZy integration).
     pub game_server_registry: AppGameServerRegistryService,
+    /// Match server reservations (MatchZy Phases 2–3).
+    pub server_reservation_repo: Arc<PgServerReservationRepository>,
+    /// Raw MatchZy webhook events.
+    pub server_event_repo: Arc<PgServerEventRepository>,
+    /// Per-map game rows (populated by the server event pipeline).
+    pub tournament_match_game_repo: Arc<PgTournamentMatchGameRepository>,
+    /// League-team rosters (server config generation).
+    pub league_team_member_repo: Arc<PgLeagueTeamMemberRepository>,
+    /// Public https base URL MatchZy fetches configs from / posts events to.
+    pub public_base_url: String,
+    /// Fire-and-forget veto-completion trigger for server assignment; the
+    /// drain task (`spawn_server_assignment_task`) runs the actual flow.
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
+    /// Receiver side, taken once by the drain task at startup.
+    pub server_assignment_rx: Arc<
+        tokio::sync::Mutex<
+            Option<tokio::sync::mpsc::UnboundedReceiver<portal_core::ids::TournamentMatchId>>,
+        >,
+    >,
     /// Connected server-agent manager (outbound mTLS WSS channel).
     pub agent_manager: Arc<AgentConnectionManager>,
     /// Portal CA for signing agent certificates. `None` when
@@ -810,6 +831,15 @@ impl AppState {
         });
         let agent_insecure_dev_auth = std::env::var("PORTAL_AGENT_INSECURE")
             .is_ok_and(|v| matches!(v.as_str(), "true" | "1" | "yes"));
+        let server_reservation_repo = Arc::new(PgServerReservationRepository::new(db_pool.clone()));
+        let server_event_repo = Arc::new(PgServerEventRepository::new(db_pool.clone()));
+        let tournament_match_game_repo =
+            Arc::new(PgTournamentMatchGameRepository::new(db_pool.clone()));
+        // MatchZy fetches configs over the public URL (agents + game servers
+        // are remote); falls back to the Steam-auth public URL default.
+        let public_base_url = std::env::var("PORTAL_PUBLIC_URL")
+            .unwrap_or_else(|_| "http://localhost:3000".to_string());
+        let (server_assignment_tx, server_assignment_rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Create match completion saga with adapters
         let saga_execution_repo = Arc::new(PgSagaExecutionRepository::new(db_pool.clone()));
@@ -883,6 +913,13 @@ impl AppState {
             veto_authorization_service,
             veto_lobby_manager,
             game_server_registry,
+            server_reservation_repo,
+            server_event_repo,
+            tournament_match_game_repo,
+            league_team_member_repo: Arc::clone(&league_team_member_repo),
+            public_base_url,
+            server_assignment_tx,
+            server_assignment_rx: Arc::new(tokio::sync::Mutex::new(Some(server_assignment_rx))),
             agent_manager,
             agent_ca,
             agent_insecure_dev_auth,

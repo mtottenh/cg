@@ -357,6 +357,9 @@ use utoipa_swagger_ui::SwaggerUi;
         game_servers::admin::list_bookings,
         game_servers::admin::create_booking,
         game_servers::admin::delete_booking,
+        game_servers::match_server::get_match_server,
+        game_servers::match_server::assign_match_server,
+        game_servers::match_server::cancel_match_server,
         // Steam tracking
         steam_tracking::register_tracking,
         steam_tracking::get_tracking,
@@ -727,6 +730,8 @@ use utoipa_swagger_ui::SwaggerUi;
             crate::handlers::game_servers::admin::CreateServerBookingRequest,
             crate::handlers::game_servers::admin::ServerBookingResponse,
             portal_core::types::GameServerStatus,
+            crate::handlers::game_servers::match_server::MatchServerResponse,
+            crate::handlers::game_servers::match_server::LiveScoreResponse,
             // Steam Tracking
             crate::handlers::steam_tracking::RegisterSteamTrackingRequest,
             crate::handlers::steam_tracking::UpdateSteamTrackingRequest,

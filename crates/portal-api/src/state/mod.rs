@@ -280,6 +280,10 @@ pub struct AppState {
     pub standings_service: AppStandingsService,
     /// Tournament match repository for direct match access.
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
+    /// Entity-change (audit trail) repository. Written by the roster-lock
+    /// override (P-18) and by the admin match score override (P-72); read
+    /// back by the admin score-correction history.
+    pub entity_change_repo: Arc<dyn portal_domain::repositories::EntityChangeRepository>,
     /// Tournament map pool repository for veto auto-creation.
     pub tournament_map_pool_repo: Arc<PgTournamentMapPoolRepository>,
     /// Permission service for high-level authorization checks (`is_admin`, etc).
@@ -850,6 +854,7 @@ impl AppState {
             veto_lobby_manager,
             standings_service,
             tournament_match_repo,
+            entity_change_repo,
             tournament_map_pool_repo,
             permission_service,
             permission_repo,

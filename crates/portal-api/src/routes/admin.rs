@@ -4,7 +4,7 @@ use axum::Router;
 use axum::routing::{delete, get, patch, post};
 
 use crate::handlers::{
-    admin, bans, demos, dispute, forfeit, progression, result_reviews, roles, tournaments,
+    admin, bans, demos, dispute, forfeit, progression, result_reviews, results, roles, tournaments,
 };
 use crate::state::AppState;
 
@@ -57,6 +57,17 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/tournaments/{tournament_id}/generate-next-round",
             post(tournaments::admin_generate_next_swiss_round),
+        )
+        // P-72: the only operator-reachable way to correct a score that was
+        // confirmed (or auto-confirmed) wrong with no dispute raised. Every
+        // other score-writing admin path is keyed on a dispute id.
+        .route(
+            "/tournaments/{tournament_id}/matches/{match_id}/result-override",
+            post(results::admin_override_match_result),
+        )
+        .route(
+            "/tournaments/{tournament_id}/matches/{match_id}/result-overrides",
+            get(results::admin_list_match_result_overrides),
         )
         // Progression admin routes
         .route(

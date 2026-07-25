@@ -130,6 +130,14 @@ pub fn routes() -> Router<AppState> {
             "/{tournament_id}/matches/{match_id}",
             get(tournaments::get_match),
         )
+        // P-53/P-56: resolve BOTH of a match's registrations, and which one is
+        // the caller's, in O(1). Replaces the client-side scan over the
+        // paginated registrations list, whose 100-row ceiling silently broke
+        // result submission for everyone past row 100.
+        .route(
+            "/{tournament_id}/matches/{match_id}/participants",
+            get(tournaments::get_match_participants),
+        )
         // Match lifecycle
         .route(
             "/{tournament_id}/matches/{match_id}/status",

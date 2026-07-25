@@ -922,3 +922,79 @@ impl From<ScheduleProposal> for ScheduleProposalResponse {
         }
     }
 }
+
+// =============================================================================
+// MATCH PARTICIPANT RESOLUTION (P-53 / P-56)
+// =============================================================================
+
+/// The two registrations that face each other in one match, plus which of
+/// them (if either) belongs to the caller.
+///
+/// # Why this exists
+///
+/// Resolving "which registration am I in this match?" used to be done in the
+/// browser by paging `GET /v1/tournaments/{id}/registrations` and scanning the
+/// rows. That scan is bounded by `PaginationParams::limit()`, which clamps
+/// `per_page` to 100 — so in a tournament with more than 100 participants
+/// every participant whose row sorts past #100 resolved to `null`, and the
+/// result-submission affordance simply never appeared for them. 128-player
+/// events are routine, and the failure is silent.
+///
+/// This endpoint answers the question directly from the match row, in O(1),
+/// so participant count cannot affect it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MatchParticipantsResponse {
+    /// The match these registrations belong to.
+    pub match_id: String,
+    /// Registration seated in slot 1, if the slot is filled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant1: Option<TournamentRegistrationResponse>,
+    /// Registration seated in slot 2, if the slot is filled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant2: Option<TournamentRegistrationResponse>,
+    /// The caller's own registration id, when the caller is one of the two —
+    /// directly as the registered player, or as a member of the registered
+    /// team-season. `null` for spectators and staff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub my_registration_id: Option<String>,
+}
+
+// =============================================================================
+// ADMIN RESULT OVERRIDE (P-72)
+// =============================================================================
+
+/// One recorded admin correction of a match's score.
+///
+/// Read back from the `entity_changes` audit trail, which is where
+/// `override_result_audited` writes it in the same transaction as the score
+/// itself — so a correction that is not on this list did not happen.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MatchResultOverrideResponse {
+    /// Audit row id.
+    pub id: String,
+    /// Match whose score was corrected.
+    pub match_id: String,
+    /// Score recorded before the correction (absent if the match had none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_participant1_score: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_participant2_score: Option<i32>,
+    /// Winner recorded before the correction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_winner_registration_id: Option<String>,
+    /// Score recorded by the correction.
+    pub new_participant1_score: i32,
+    pub new_participant2_score: i32,
+    /// Winner recorded by the correction.
+    pub new_winner_registration_id: String,
+    /// Operator-supplied justification.
+    pub reason: String,
+    /// Player id of the admin who made the correction.
+    pub changed_by_player_id: String,
+    /// That admin's display name — never make an operator read a truncated
+    /// UUID to find out who changed a score.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_by_name: Option<String>,
+    /// When the correction was made.
+    pub created_at: DateTime<Utc>,
+}

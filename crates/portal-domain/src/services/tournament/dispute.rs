@@ -510,20 +510,15 @@ where
 
         let match_ = self.get_match(dispute.match_id).await?;
 
-        // Determine winner based on new scores
-        let new_winner_id = if new_participant1_score > new_participant2_score {
-            match_.participant1_registration_id
-        } else {
-            match_.participant2_registration_id
-        }
-        .ok_or_else(|| DomainError::InvalidState("Cannot determine winner".to_string()))?;
-
-        let loser_id = if match_.participant1_registration_id == Some(new_winner_id) {
-            match_.participant2_registration_id
-        } else {
-            match_.participant1_registration_id
-        }
-        .ok_or_else(|| DomainError::InvalidState("Cannot determine loser".to_string()))?;
+        // Shared with the admin score-override (P-72) so the two paths cannot
+        // disagree about who the adjusted score makes the winner. It also
+        // rejects a tie, which the open-coded version silently awarded to
+        // participant 2.
+        let (new_winner_id, loser_id) = super::helpers::derive_result_outcome(
+            &match_,
+            new_participant1_score,
+            new_participant2_score,
+        )?;
 
         let resolution = DisputeResolution {
             resolution_type: ResolutionType::Adjusted,

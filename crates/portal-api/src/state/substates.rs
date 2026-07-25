@@ -547,6 +547,10 @@ pub struct ResultState {
     pub match_completion_saga: super::AppMatchCompletionSaga,
     /// Player service (claim history resolves submitter display names).
     pub player_service: AppPlayerService,
+    /// Entity-change repository — the read side of the P-72 admin score
+    /// override. The write side goes through the match repository so the
+    /// audit row and the score share a transaction.
+    pub entity_change_repo: Arc<dyn portal_domain::repositories::EntityChangeRepository>,
 }
 
 impl FromRef<AppState> for ResultState {
@@ -556,6 +560,7 @@ impl FromRef<AppState> for ResultState {
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             match_completion_saga: s.match_completion_saga.clone(),
             player_service: s.player_service.clone(),
+            entity_change_repo: Arc::clone(&s.entity_change_repo),
         }
     }
 }

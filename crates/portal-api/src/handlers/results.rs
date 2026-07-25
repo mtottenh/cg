@@ -1,13 +1,15 @@
 //! Result submission handlers.
 
 use crate::dto::common::DataResponse;
-use crate::dto::requests::{DisputeResultClaimRequest, SubmitResultClaimRequest};
+use crate::dto::requests::{
+    AdminOverrideMatchResultRequest, DisputeResultClaimRequest, SubmitResultClaimRequest,
+};
 use crate::dto::responses::{
-    ResultClaimResponse, ResultClaimSubmissionResponse, ResultConfirmationResponse,
-    ResultDisputeResponse,
+    MatchResultOverrideResponse, ResultClaimResponse, ResultClaimSubmissionResponse,
+    ResultConfirmationResponse, ResultDisputeResponse, TournamentMatchResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::{DisputeState, ResultState};
 use axum::Json;
 use axum::extract::{Path, State};
@@ -19,7 +21,9 @@ use portal_core::{
 use portal_domain::entities::dispute::DisputeReason;
 use portal_domain::entities::result_claim::GameResultInput;
 use portal_domain::repositories::tournament::TournamentMatchRepository;
-use portal_domain::services::tournament::MatchCompletionInput;
+use portal_domain::services::tournament::{
+    MATCH_RESULT_OVERRIDE_ENTITY, MATCH_RESULT_OVERRIDE_FIELD, MatchCompletionInput,
+};
 use std::collections::HashMap;
 use tracing::warn;
 
@@ -456,4 +460,202 @@ pub async fn dispute_result(
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
+}
+
+// =============================================================================
+// ADMIN RESULT OVERRIDE (P-72)
+// =============================================================================
+
+/// Admin: correct the score recorded against a match.
+///
+/// # The hole this closes
+///
+/// Every other admin path that can write a score
+/// (`/v1/admin/disputes/{id}/resolve/{overturn,adjusted,double-dq}`) is keyed
+/// on a **dispute id** and refuses to run without one. So the case "both
+/// parties confirmed a wrong score" — or "nobody looked and it auto-confirmed
+/// after 24 hours" — with nobody raising a dispute produced a match whose
+/// score no operator could correct by any means, while the bracket kept
+/// progressing on it. `revert`/`reapply` progression exist and move the
+/// bracket, but they replay whatever score is recorded; they cannot change it.
+///
+/// # Gate
+///
+/// `tournament.results.manage` ("Report or override match results"), scoped to
+/// the tournament that owns the match — resolved from the match row, never
+/// from the `tournament_id` path segment, so an admin of tournament A cannot
+/// reach tournament B's match by crafting the URL. `require_tournament_permission`
+/// falls back to the global `admin.tournaments.manage_any` override.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/tournaments/{tournament_id}/matches/{match_id}/result-override",
+    request_body = AdminOverrideMatchResultRequest,
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("match_id" = String, Path, description = "Match ID"),
+    ),
+    responses(
+        (status = 200, description = "Score corrected", body = DataResponse<TournamentMatchResponse>),
+        (status = 400, description = "Invalid scores, or the match has no recorded result", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing tournament.results.manage", body = ApiError),
+        (status = 404, description = "Match not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "results"
+)]
+pub async fn admin_override_match_result(
+    State(state): State<ResultState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path((_tournament_id, match_id)): Path<(String, String)>,
+    ValidatedJson(req): ValidatedJson<AdminOverrideMatchResultRequest>,
+) -> ApiResult<Json<DataResponse<TournamentMatchResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Match not found"))?;
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            match_.tournament_id.as_uuid(),
+            portal_core::permissions::tournament::RESULTS_MANAGE,
+        )
+        .await?;
+
+    let updated = state
+        .result_service
+        .override_result(
+            match_id,
+            req.participant1_score,
+            req.participant2_score,
+            req.reason,
+            auth.player_id,
+            Some(request_id.to_string()),
+        )
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentMatchResponse::from(updated),
+        request_id,
+    )))
+}
+
+/// Admin: list the score corrections recorded against a match.
+///
+/// Read straight off the `entity_changes` rows that
+/// `override_result_audited` writes in the same transaction as the score, so
+/// this list is the authoritative answer to "has anyone edited this score, and
+/// if so who, when, from what, to what, and why". An audit trail no operator
+/// can read would have been barely better than none.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/tournaments/{tournament_id}/matches/{match_id}/result-overrides",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("match_id" = String, Path, description = "Match ID"),
+    ),
+    responses(
+        (status = 200, description = "Recorded score corrections, newest first", body = DataResponse<Vec<MatchResultOverrideResponse>>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing tournament.results.manage", body = ApiError),
+        (status = 404, description = "Match not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "results"
+)]
+pub async fn admin_list_match_result_overrides(
+    State(state): State<ResultState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path((_tournament_id, match_id)): Path<(String, String)>,
+) -> ApiResult<Json<DataResponse<Vec<MatchResultOverrideResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Match not found"))?;
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            match_.tournament_id.as_uuid(),
+            portal_core::permissions::tournament::RESULTS_MANAGE,
+        )
+        .await?;
+
+    let changes = state
+        .entity_change_repo
+        .list_by_field(
+            MATCH_RESULT_OVERRIDE_ENTITY,
+            match_id.as_uuid(),
+            MATCH_RESULT_OVERRIDE_FIELD,
+            100,
+            0,
+        )
+        .await?;
+
+    // Resolve the acting admins' display names in one round-trip. A score
+    // correction that names its author only by UUID is not usable audit — and
+    // UUID v7 prefixes are timestamps, so a truncated id is ambiguous by
+    // construction.
+    let player_ids: Vec<portal_core::PlayerId> = changes.iter().map(|c| c.changed_by).collect();
+    let names: HashMap<portal_core::PlayerId, String> = state
+        .player_service
+        .get_players_by_ids(&player_ids)
+        .await?
+        .into_iter()
+        .map(|p| (p.id, p.display_name))
+        .collect();
+
+    let overrides: Vec<MatchResultOverrideResponse> = changes
+        .into_iter()
+        .map(|c| {
+            let old = c.old_value.unwrap_or(serde_json::Value::Null);
+            let new = c.new_value.unwrap_or(serde_json::Value::Null);
+            let as_i32 = |v: &serde_json::Value, k: &str| {
+                v.get(k)
+                    .and_then(serde_json::Value::as_i64)
+                    .map(|n| n as i32)
+            };
+            let as_str = |v: &serde_json::Value, k: &str| {
+                v.get(k)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            };
+            MatchResultOverrideResponse {
+                id: c.id.to_string(),
+                match_id: match_id.to_string(),
+                previous_participant1_score: as_i32(&old, "participant1_score"),
+                previous_participant2_score: as_i32(&old, "participant2_score"),
+                previous_winner_registration_id: as_str(&old, "winner_registration_id"),
+                new_participant1_score: as_i32(&new, "participant1_score").unwrap_or_default(),
+                new_participant2_score: as_i32(&new, "participant2_score").unwrap_or_default(),
+                new_winner_registration_id: as_str(&new, "winner_registration_id")
+                    .unwrap_or_default(),
+                reason: as_str(&new, "reason").unwrap_or_default(),
+                changed_by_player_id: c.changed_by.to_string(),
+                changed_by_name: names.get(&c.changed_by).cloned(),
+                created_at: c.created_at,
+            }
+        })
+        .collect();
+
+    Ok(Json(DataResponse::new(overrides, request_id)))
 }

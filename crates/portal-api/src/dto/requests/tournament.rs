@@ -799,6 +799,31 @@ pub struct AdminMatchTransitionRequest {
     pub override_reason: String,
 }
 
+/// Request for an admin to correct a match's recorded score (P-72).
+///
+/// The only score-writing admin path used to be
+/// `POST /v1/admin/disputes/{id}/resolve/adjusted`, which requires a dispute
+/// row to exist. A result that both parties confirmed — or that auto-confirmed
+/// after the 24h window — with nobody disputing it therefore had **no**
+/// operator-reachable correction path at all, while the bracket kept
+/// progressing on the wrong number.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct AdminOverrideMatchResultRequest {
+    /// Corrected score for participant 1.
+    #[validate(range(min = 0, max = 1000))]
+    pub participant1_score: i32,
+
+    /// Corrected score for participant 2.
+    #[validate(range(min = 0, max = 1000))]
+    pub participant2_score: i32,
+
+    /// Why the score is being corrected. Recorded in the audit trail; an
+    /// unexplained override is indistinguishable from tampering, so this is
+    /// required rather than optional.
+    #[validate(length(min = 5, max = 500))]
+    pub reason: String,
+}
+
 /// Request to forfeit a match.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct ForfeitMatchRequest {

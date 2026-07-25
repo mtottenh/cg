@@ -758,6 +758,28 @@ pub trait TournamentMatchRepository: Send + Sync {
         loser_id: TournamentRegistrationId,
     ) -> Result<TournamentMatch, DomainError>;
 
+    /// Overwrite an already-recorded result **and** append the audit row that
+    /// records the change, in one transaction.
+    ///
+    /// P-72: a confirmed-but-wrong score used to be permanently uncorrectable
+    /// — the only score-writing admin path (`resolve/adjusted`) requires a
+    /// dispute to exist, so a result nobody disputed could never be repaired.
+    ///
+    /// The audit row is not optional and not a separate call: the two writes
+    /// share a transaction, so there is no ordering in which an override lands
+    /// without its record, or a record lands without its override. That is the
+    /// whole reason this is a repository method rather than "call
+    /// `submit_result`, then call `EntityChangeRepository::create`".
+    async fn override_result_audited(
+        &self,
+        id: TournamentMatchId,
+        participant1_score: i32,
+        participant2_score: i32,
+        winner_id: TournamentRegistrationId,
+        loser_id: TournamentRegistrationId,
+        audit: crate::repositories::CreateEntityChange,
+    ) -> Result<TournamentMatch, DomainError>;
+
     /// Clear a recorded result: drop `winner_registration_id`,
     /// `loser_registration_id` and `completed_at`, leaving the scores in
     /// place for audit.

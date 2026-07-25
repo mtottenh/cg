@@ -12,6 +12,7 @@ use portal_core::{
     TournamentRegistrationId, TournamentStageId, UserId,
 };
 use portal_domain::entities::tournament::TournamentMatch;
+use portal_domain::repositories::CreateEntityChange;
 use portal_domain::repositories::tournament::{
     CreateTournamentMatch, MatchLinkCandidate, ParticipantSlot, TournamentMatchRepository,
     UpdateTournamentMatch,
@@ -481,6 +482,71 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(TournamentMatch::from(row))
+    }
+
+    async fn override_result_audited(
+        &self,
+        id: TournamentMatchId,
+        participant1_score: i32,
+        participant2_score: i32,
+        winner_id: TournamentRegistrationId,
+        loser_id: TournamentRegistrationId,
+        audit: CreateEntityChange,
+    ) -> Result<TournamentMatch, DomainError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // The score write is `submit_result_in_tx` — literally the same
+        // statement the confirmed-claim and adjusted-dispute paths run, so an
+        // overridden match row is indistinguishable from a normally-recorded
+        // one and everything derived from it (standings, progression) keeps
+        // working. Duplicating the UPDATE here is how those three paths would
+        // drift apart.
+        let match_ = Self::submit_result_in_tx(
+            &mut tx,
+            id,
+            participant1_score,
+            participant2_score,
+            winner_id,
+            loser_id,
+        )
+        .await?;
+
+        // Same transaction as the score write. `ip_address` needs the explicit
+        // `::inet` cast for the same reason it does in
+        // `PgEntityChangeRepository::create` — the bound value is text.
+        sqlx::query(
+            r"
+            INSERT INTO entity_changes (
+                entity_type, entity_id, change_type, field_name,
+                old_value, new_value, changed_by,
+                request_id, ip_address, user_agent
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10)
+            ",
+        )
+        .bind(&audit.entity_type)
+        .bind(audit.entity_id)
+        .bind(audit.change_type.to_string())
+        .bind(&audit.field_name)
+        .bind(&audit.old_value)
+        .bind(&audit.new_value)
+        .bind(audit.changed_by.as_uuid())
+        .bind(&audit.request_id)
+        .bind(&audit.ip_address)
+        .bind(&audit.user_agent)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(match_)
     }
 
     async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError> {

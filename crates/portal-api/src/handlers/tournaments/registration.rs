@@ -19,7 +19,8 @@ use crate::dto::requests::{
     RegisterTeamRequest, RejectRegistrationRequest,
 };
 use crate::dto::responses::{
-    CheckInStatusResponse, TournamentInvitationResponse, TournamentRegistrationResponse,
+    CheckInStatusResponse, MatchParticipantsResponse, TournamentInvitationResponse,
+    TournamentRegistrationResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
@@ -28,6 +29,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{PlayerId, TournamentId};
+use portal_domain::repositories::tournament::TournamentMatchRepository;
 
 /// Query parameter for filtering registrations by status.
 #[derive(Debug, serde::Deserialize)]
@@ -469,6 +471,106 @@ pub async fn get_registrations(
         data,
         &pagination,
         total as u64,
+        request_id,
+    )))
+}
+
+/// Resolve the two registrations facing each other in one match, and which of
+/// them belongs to the caller.
+///
+/// # Why this endpoint exists (P-53 / P-56)
+///
+/// `useMatchDetail` used to answer "which registration am I?" by fetching
+/// `GET /v1/tournaments/{id}/registrations` and scanning the page for the
+/// caller's `player_id` (or one of their team-seasons). That scan is bounded
+/// by [`PaginationParams::limit`], which clamps `per_page` at **100** — so in
+/// any tournament with more than 100 participants, every participant whose row
+/// sorts past #100 resolved to `null`. `canSubmitResult`,
+/// `showConfirmationPanel`, `showSchedulingPanel` and `showCheckInPanel` are
+/// all gated on that value, so those players could not submit a result, could
+/// not confirm one, and could not schedule — with no error anywhere: the
+/// controls simply never rendered. 128-player CS2 events are routine.
+///
+/// Raising the page size only moves the ceiling. Answering the question from
+/// the match row removes it: the match already names both registrations, so
+/// this is two lookups by id regardless of how large the tournament is.
+///
+/// `my_registration_id` uses the same "belongs to" test as the dispute thread
+/// (`is_dispute_participant`): the registered player themself, or an active
+/// member of the registration's team-season. Staff and spectators get `null`,
+/// which is exactly what the participant-only panels should key off.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/matches/{match_id}/participants",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("match_id" = String, Path, description = "Match ID"),
+    ),
+    responses(
+        (status = 200, description = "Both participants plus the caller's own registration", body = DataResponse<MatchParticipantsResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Match not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn get_match_participants(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path((_tournament_id, match_id)): Path<(String, String)>,
+) -> ApiResult<Json<DataResponse<MatchParticipantsResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let match_id: portal_core::TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Match not found"))?;
+
+    let mut resolved: [Option<TournamentRegistrationResponse>; 2] = [None, None];
+    let mut my_registration_id: Option<String> = None;
+
+    for (slot, reg_id) in [
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let Some(reg_id) = reg_id else { continue };
+        let registration = state.registration_service.get_registration(reg_id).await?;
+
+        let is_mine = registration.player_id == Some(auth.player_id)
+            || match registration.team_season_id {
+                Some(ts_id) => {
+                    state
+                        .league_team_service
+                        .is_member(ts_id, auth.player_id)
+                        .await?
+                }
+                None => false,
+            };
+        if is_mine {
+            my_registration_id = Some(reg_id.to_string());
+        }
+
+        resolved[slot] = Some(TournamentRegistrationResponse::from(registration));
+    }
+
+    let [participant1, participant2] = resolved;
+
+    Ok(Json(DataResponse::new(
+        MatchParticipantsResponse {
+            match_id: match_id.to_string(),
+            participant1,
+            participant2,
+            my_registration_id,
+        },
         request_id,
     )))
 }

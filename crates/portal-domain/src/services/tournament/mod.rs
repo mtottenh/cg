@@ -62,7 +62,9 @@ pub use match_completion::{
 pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails, MatchStatusTransitioner};
 pub use progression::{Advancement, LoserResult, ProgressionResult, ProgressionService};
 pub use registration::{RegistrationService, initial_registration_status};
-pub use result::{MapPoolProvider, ResultService};
+pub use result::{
+    MATCH_RESULT_OVERRIDE_ENTITY, MATCH_RESULT_OVERRIDE_FIELD, MapPoolProvider, ResultService,
+};
 pub use result_review::ResultReviewService;
 pub use saga::{Saga, SagaCoordinator, SagaDefinition, SagaResult, SagaStep};
 pub use scheduling::SchedulingService;

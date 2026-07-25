@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use portal_core::{DomainError, TournamentMatchId};
+use portal_core::{DomainError, TournamentMatchId, TournamentRegistrationId};
 
 use crate::entities::tournament::TournamentMatch;
 use crate::repositories::tournament::{ParticipantSlot, TournamentMatchRepository};
@@ -121,4 +121,44 @@ pub fn parse_round_match(position: &str, prefix: &str) -> (i32, i32) {
     let round: i32 = parts[0].parse().unwrap_or(0);
     let match_in_round: i32 = parts[1].parse().unwrap_or(0);
     (round, match_in_round)
+}
+
+// =============================================================================
+// RESULT OUTCOME DERIVATION
+// =============================================================================
+
+/// Derive `(winner, loser)` registrations for a match from a pair of scores.
+///
+/// The single place that answers "given these two numbers, who won?". Used by
+/// `DisputeService::resolve_adjusted` and by the admin score-override added
+/// for P-72, so an admin correction and a dispute adjustment cannot disagree
+/// about the outcome they imply.
+///
+/// A **tie is rejected**. The open-coded version this replaced was
+/// `if p1 > p2 { participant1 } else { participant2 }`, which silently handed
+/// an equal-score adjustment to participant 2 and then wrote that fabricated
+/// winner into the bracket. There is no match format in the product where a
+/// draw is a legal recorded result, so "cannot determine a winner" is the
+/// honest answer.
+pub fn derive_result_outcome(
+    match_: &TournamentMatch,
+    participant1_score: i32,
+    participant2_score: i32,
+) -> Result<(TournamentRegistrationId, TournamentRegistrationId), DomainError> {
+    let (Some(p1), Some(p2)) = (
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ) else {
+        return Err(DomainError::InvalidState(
+            "Match does not have two participants".to_string(),
+        ));
+    };
+
+    match participant1_score.cmp(&participant2_score) {
+        std::cmp::Ordering::Greater => Ok((p1, p2)),
+        std::cmp::Ordering::Less => Ok((p2, p1)),
+        std::cmp::Ordering::Equal => Err(DomainError::InvalidState(format!(
+            "Cannot determine a winner from a tied score ({participant1_score}-{participant2_score})"
+        ))),
+    }
 }

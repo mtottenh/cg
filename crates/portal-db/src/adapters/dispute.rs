@@ -850,27 +850,23 @@ impl DisputeRepository for PgDisputeRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?
         .ok_or(DomainError::DisputeNotFound(dispute_id))?;
 
-        sqlx::query(
-            r"
-            UPDATE tournament_matches SET
-                participant1_score = $2,
-                participant2_score = $3,
-                winner_registration_id = $4,
-                loser_registration_id = $5,
-                completed_at = NOW(),
-                status = 'completed',
-                updated_at = NOW()
-            WHERE id = $1
-            ",
+        // Score write delegated to the ONE statement that records a match
+        // result (P-72). This used to be a hand-copied `UPDATE
+        // tournament_matches` — identical to the one in
+        // `PgTournamentMatchRepository::submit_result_in_tx`, and free to drift
+        // from it. The admin score-override added for P-72 writes through the
+        // same helper, so "corrected by an admin", "resolved as adjusted" and
+        // "confirmed by the opponent" all leave the match row in exactly the
+        // same shape.
+        crate::adapters::tournament::PgTournamentMatchRepository::submit_result_in_tx(
+            &mut tx,
+            match_id,
+            new_participant1_score,
+            new_participant2_score,
+            new_winner_registration_id,
+            new_loser_registration_id,
         )
-        .bind(match_id.as_uuid())
-        .bind(new_participant1_score)
-        .bind(new_participant2_score)
-        .bind(new_winner_registration_id.as_uuid())
-        .bind(new_loser_registration_id.as_uuid())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .await?;
 
         let msg_evidence_ids: Vec<uuid::Uuid> = resolution_message
             .evidence_ids

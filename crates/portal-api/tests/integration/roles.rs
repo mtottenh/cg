@@ -821,3 +821,95 @@ async fn test_revoking_an_unknown_role_is_still_not_found() {
         .await;
     response.assert_status(StatusCode::NOT_FOUND);
 }
+
+/// P-151 — a permission used as a bare string literal is invisible to the
+/// registry, and therefore invisible to
+/// `test_every_declared_permission_is_seeded_and_granted`.
+///
+/// `admin.games.manage` was exactly that: seeded by migration 0019, gated on at
+/// six sites in `handlers/games.rs`, and present in no `ALL` array. The P-140
+/// guard would not have caught P-139 had it happened to this permission
+/// instead, because a registry is only a safety net for what is in it.
+///
+/// This closes the other direction: every permission string in the code must
+/// come from a declared constant. Together the two tests mean a permission
+/// cannot exist in code without also existing in the registry, in a migration,
+/// and on at least one role.
+///
+/// Deliberately scans the SOURCE rather than the binary: a literal that is
+/// equal to a registered permission's value still fails, because the defect is
+/// the missing indirection, not a wrong string. Copying a correct value is what
+/// produced all ten sites.
+#[tokio::test]
+async fn test_no_permission_is_used_as_a_bare_literal() {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// Anything shaped like `"segment.segment.segment"` in the permission
+    /// namespaces the product uses.
+    fn looks_like_a_permission(literal: &str) -> bool {
+        const NAMESPACES: &[&str] = &[
+            "admin.", "team.", "league.", "tournament.", "match.", "service.",
+        ];
+        NAMESPACES.iter().any(|ns| literal.starts_with(ns))
+            && literal.matches('.').count() >= 2
+            && literal
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '.' || c == '_')
+    }
+
+    fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                rs_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rs_files(&src, &mut files);
+    assert!(
+        files.len() > 50,
+        "only {} source files found under {} — the walk is broken and this test \
+         would pass vacuously",
+        files.len(),
+        src.display()
+    );
+
+    let mut offenders = Vec::new();
+    for file in &files {
+        let Ok(text) = fs::read_to_string(file) else { continue };
+        for (idx, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            // Documentation is allowed to name a permission — `dto/responses/role.rs`
+            // legitimately carries `"team.roster.manage"` as a schema example and in
+            // a doc comment. Skipping these is not a loophole: neither reaches a gate.
+            if trimmed.starts_with("//") || trimmed.starts_with("#[schema(") {
+                continue;
+            }
+            for literal in line.split('"').skip(1).step_by(2) {
+                if looks_like_a_permission(literal) {
+                    offenders.push(format!(
+                        "{}:{}  {:?}",
+                        file.strip_prefix(&src).unwrap_or(file).display(),
+                        idx + 1,
+                        literal
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "permission strings must come from `portal_core::permissions::*`, not \
+         literals — a literal is absent from the registry, so nothing verifies it \
+         is seeded or granted to any role (P-139/P-151):\n  {}",
+        offenders.join("\n  ")
+    );
+}

@@ -80,14 +80,14 @@ pub use role::{
     UpdateRoleRequest,
 };
 pub use tournament::{
-    AcceptScheduleProposalRequest, AdminMatchTransitionRequest, AdminScheduleRequest,
-    AutoSeedRequest, CancelScheduleProposalRequest, CheckInRequest, CounterProposeRequest,
-    CreateTournamentInvitationRequest, CreateTournamentRequest, CreateTournamentStageRequest,
-    DeclareLineupRequest, DisputeMatchRequest, DisqualifyRequest, EligibilityRestrictionsInput,
-    ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest, MatchCheckInRequest,
-    ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
-    RejectScheduleProposalRequest, ResolveDisputeRequest, SeedAssignment,
-    SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
+    AcceptScheduleProposalRequest, AdminMatchTransitionRequest, AdminOverrideMatchResultRequest,
+    AdminScheduleRequest, AutoSeedRequest, CancelScheduleProposalRequest, CheckInRequest,
+    CounterProposeRequest, CreateTournamentInvitationRequest, CreateTournamentRequest,
+    CreateTournamentStageRequest, DeclareLineupRequest, DisputeMatchRequest, DisqualifyRequest,
+    EligibilityRestrictionsInput, ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest,
+    MatchCheckInRequest, ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest,
+    RejectRegistrationRequest, RejectScheduleProposalRequest, ResolveDisputeRequest,
+    SeedAssignment, SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
     WithdrawRequest,
 };
 pub use veto::{

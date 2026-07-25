@@ -51,6 +51,16 @@ pub trait MapPoolProvider: Send + Sync {
     ) -> Result<Vec<String>, DomainError>;
 }
 
+/// `entity_changes.entity_type` used for admin score corrections (P-72).
+///
+/// Exported so the read side (`list_result_overrides`) and the write side
+/// cannot drift — an audit row written under one key and read under another
+/// is an audit trail that silently shows nothing.
+pub const MATCH_RESULT_OVERRIDE_ENTITY: &str = "tournament_match";
+
+/// `entity_changes.field_name` used for admin score corrections (P-72).
+pub const MATCH_RESULT_OVERRIDE_FIELD: &str = "result_override";
+
 /// Which authority a submitted map ID was checked against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MapSource {
@@ -375,6 +385,109 @@ where
         );
 
         Ok(claim)
+    }
+
+    /// Administratively correct the score already recorded against a match.
+    ///
+    /// # Why this exists (P-72)
+    ///
+    /// The score-writing admin paths were: `resolve/overturn`,
+    /// `resolve/adjusted` and `resolve/double-dq` — **all** of which take a
+    /// `dispute_id` and refuse to run without a dispute row. So the failure
+    /// mode "both parties confirmed the wrong score" (or "nobody looked and it
+    /// auto-confirmed after 24h"), with nobody disputing, produced a match no
+    /// operator could correct by any means, while the bracket kept advancing
+    /// on it. `revert`/`reapply` exist and move the bracket, but they replay
+    /// the recorded score — they cannot change it.
+    ///
+    /// # Why it goes through the repository's audited write
+    ///
+    /// `override_result_audited` performs the score write and the audit row in
+    /// one transaction, using the same statement
+    /// (`submit_result_in_tx`) as opponent-confirmation and adjusted-dispute
+    /// resolution. So (a) the resulting match row is indistinguishable from a
+    /// normally-recorded one, which is what keeps standings and progression
+    /// consistent, and (b) there is no code path that changes a score without
+    /// recording who changed it, from what, to what, and why.
+    ///
+    /// Bracket progression is **not** re-run here — deliberately, and for the
+    /// same reason `resolve_adjusted` does not: moving participants that have
+    /// already advanced is the job of the explicit
+    /// revert/reapply-progression controls, which an admin uses after the
+    /// correction if the winner changed. Silently reshaping downstream
+    /// pairings as a side effect of a score edit would be worse than the
+    /// defect being fixed.
+    #[instrument(skip(self, reason))]
+    pub async fn override_result(
+        &self,
+        match_id: TournamentMatchId,
+        participant1_score: i32,
+        participant2_score: i32,
+        reason: String,
+        changed_by: portal_core::PlayerId,
+        request_id: Option<String>,
+    ) -> Result<TournamentMatch, DomainError> {
+        let match_ = self.get_match(match_id).await?;
+
+        // Only a match that already carries a recorded result can be
+        // "corrected". Writing a score onto a match that was never played
+        // would be a different operation with different consequences
+        // (it would complete the match), and the admin transition + forfeit
+        // controls already own that.
+        if match_.winner_registration_id.is_none() {
+            return Err(DomainError::InvalidState(
+                "Match has no recorded result to correct".to_string(),
+            ));
+        }
+
+        let (winner_id, loser_id) = crate::services::tournament::helpers::derive_result_outcome(
+            &match_,
+            participant1_score,
+            participant2_score,
+        )?;
+
+        let old_value = serde_json::json!({
+            "participant1_score": match_.participant1_score,
+            "participant2_score": match_.participant2_score,
+            "winner_registration_id": match_.winner_registration_id.map(|id| id.to_string()),
+        });
+        let new_value = serde_json::json!({
+            "participant1_score": participant1_score,
+            "participant2_score": participant2_score,
+            "winner_registration_id": winner_id.to_string(),
+            "reason": reason,
+        });
+
+        let updated = self
+            .match_repo
+            .override_result_audited(
+                match_id,
+                participant1_score,
+                participant2_score,
+                winner_id,
+                loser_id,
+                crate::repositories::CreateEntityChange {
+                    entity_type: MATCH_RESULT_OVERRIDE_ENTITY.to_string(),
+                    entity_id: match_id.as_uuid(),
+                    change_type: crate::entities::audit::ChangeType::Update,
+                    field_name: Some(MATCH_RESULT_OVERRIDE_FIELD.to_string()),
+                    old_value: Some(old_value),
+                    new_value: Some(new_value),
+                    changed_by,
+                    request_id,
+                    ip_address: None,
+                    user_agent: None,
+                },
+            )
+            .await?;
+
+        info!(
+            match_id = %match_id,
+            changed_by = %changed_by,
+            "Match result corrected by admin override"
+        );
+
+        Ok(updated)
     }
 
     /// Authorize a dispute against a result claim, without writing

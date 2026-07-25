@@ -3,9 +3,9 @@
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AssociateDemoRequest, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
-    GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest,
-    PipelineQuery, ProcessUnlinkedDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest,
-    SubmitDemoStatsRequest, UpdateAutoLinkSettingRequest,
+    DemoStatusCountsQuery, GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery,
+    MarkDemoFailedRequest, PipelineQuery, ProcessUnlinkedDemosQuery, SetDemoNotesRequest,
+    SetDemoVisibilityRequest, SubmitDemoStatsRequest, UpdateAutoLinkSettingRequest,
 };
 use crate::dto::responses::{
     AutoLinkSettingResponse, BatchCatalogErrorResponse, BatchCatalogResultResponse,
@@ -22,12 +22,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::DateTime;
 use portal_core::{
-    DemoCategory, DemoId, DemoLinkType, DemoStatus, GameId, LeagueId, ScopeType, TournamentId,
-    TournamentMatchId,
+    DemoCategory, DemoId, DemoLinkType, DemoStatus, EvidenceId, GameId, LeagueId, ScopeType,
+    TournamentId, TournamentMatchId,
 };
 use portal_domain::entities::demo::{Demo, DemoFilter, DemoPlayerStats, ParsedDemoMetadata};
 use portal_domain::services::DemoPlayerInput;
 use portal_domain::services::system_settings;
+use portal_domain::services::tournament::RegistrationActor;
 use validator::Validate;
 
 /// Extract request ID from headers.
@@ -567,9 +568,12 @@ pub async fn get_demo_download(
 }
 
 /// Get demo status counts for admin dashboard.
+///
+/// Scoped to `game_id` when given; unscoped otherwise (P-144).
 #[utoipa::path(
     get,
     path = "/v1/admin/demos/stats",
+    params(DemoStatusCountsQuery),
     responses(
         (status = 200, description = "Demo status counts", body = DataResponse<DemoStatusCountsResponse>),
         (status = 401, description = "Unauthorized", body = ApiError),
@@ -582,6 +586,7 @@ pub async fn get_demo_status_counts(
     State(state): State<DemoState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
+    Query(query): Query<DemoStatusCountsQuery>,
 ) -> ApiResult<Json<DataResponse<DemoStatusCountsResponse>>> {
     let request_id = get_request_id(&headers);
 
@@ -596,7 +601,10 @@ pub async fn get_demo_status_counts(
         return Err(ApiError::forbidden("Admin access required"));
     }
 
-    let counts = state.demo_service.get_status_counts().await?;
+    let counts = state
+        .demo_service
+        .get_status_counts(query.game_id.map(GameId::from))
+        .await?;
 
     let response = DemoStatusCountsResponse {
         pending: counts
@@ -858,7 +866,11 @@ async fn evidence_ids_by_demo(
         .collect())
 }
 
-/// Unlink a demo from a match (admin only).
+/// Detach a demo from a match (admin only).
+///
+/// Removes the `demo_match_link` **and** the `match_evidence` row that names
+/// the same demo, because they are one fact: "this demo is evidence for this
+/// match". See the body for why (P-158).
 #[utoipa::path(
     delete,
     path = "/v1/admin/demos/{demo_id}/link/{match_id}",
@@ -867,7 +879,7 @@ async fn evidence_ids_by_demo(
         ("match_id" = String, Path, description = "Match ID to unlink from"),
     ),
     responses(
-        (status = 204, description = "Demo unlinked from match"),
+        (status = 204, description = "Demo detached from the match (link and evidence row)"),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Admin access required", body = ApiError),
         (status = 404, description = "Link not found", body = ApiError),
@@ -889,10 +901,46 @@ pub async fn unlink_demo_from_match(
         .parse::<TournamentMatchId>()
         .map_err(|_| ApiError::bad_request("Invalid match ID"))?;
 
+    // P-158: this used to delete the link and nothing else.
+    //
+    // Attaching a catalogued demo to a match writes TWO rows — the
+    // `demo_match_link` and a `match_evidence` row stamped with the demo's id
+    // (`link_discovered` and `link_demo` both do it) — and the product has two
+    // buttons both labelled "Unlink", one per row. `DELETE
+    // /v1/matches/{id}/evidence/{id}` removed both; this one removed only the
+    // link, so after an admin pressed it the Evidence Records table still
+    // listed the demo as evidence for the match it had just been detached from.
+    // The operator could not tell which of the two things they had done, and
+    // during a dispute that is the difference between "this demo is evidence"
+    // and "it isn't".
+    //
+    // So both delete paths now maintain the pair, and in the same order: the
+    // link (the pointer) goes first, then the evidence row. A failure between
+    // them leaves an evidence row with no link — visible and harmless — rather
+    // than a link pointing at a deleted evidence row, which is the corruption
+    // P-157 names.
+    let evidence_id = evidence_ids_by_demo(&state, match_id)
+        .await?
+        .get(&demo_id)
+        .copied();
+
     state
         .demo_service
         .unlink_from_match(demo_id, match_id)
         .await?;
+
+    if let Some(evidence_id) = evidence_id {
+        // `require_demos_manage` above is the authorization for this route, so
+        // the evidence service is told the caller is acting as an admin.
+        state
+            .evidence_service
+            .delete_evidence(
+                EvidenceId::from(evidence_id),
+                RegistrationActor::new(auth.user_id, auth.player_id),
+                true,
+            )
+            .await?;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1382,10 +1430,14 @@ pub async fn get_pipeline_overview(
         .count_retry_exhausted(game_id)
         .await?;
 
-    // The demo catalog counts are global — `demos` carry no game filter on
-    // the count query — so they are reported as-is rather than pretending to
-    // be scoped.
-    let demo_counts = state.demo_service.get_status_counts().await?;
+    // P-144: these used to be global — the count query carried no game filter —
+    // while everything beside them on this response (tracking health, the
+    // discovered-match queue) is scoped by `game_id`. So selecting CS2 in the
+    // pipeline view narrowed two of the three stages and silently left the third
+    // as a cross-game total, which is worse than no filter: the view exists to
+    // localise where ingestion stopped, and a stage that counts other games'
+    // demos cannot do that.
+    let demo_counts = state.demo_service.get_status_counts(game_id).await?;
 
     let auto_link_enabled = state
         .system_settings_service

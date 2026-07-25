@@ -428,10 +428,21 @@ impl DemoRepository for PgDemoRepository {
         rows.into_iter().map(demo_row_to_domain).collect()
     }
 
-    async fn count_by_status(&self) -> Result<Vec<(DemoStatus, i64)>, DomainError> {
+    async fn count_by_status(
+        &self,
+        game_id: Option<GameId>,
+    ) -> Result<Vec<(DemoStatus, i64)>, DomainError> {
+        // P-144: the counts had no game filter, so a CS2 admin's pipeline cards
+        // were the sum over every game in the catalog. `demos.game_id` is NOT
+        // NULL and indexed (`migrations/0040_demos.sql`), so scoping is a
+        // predicate, not a schema change. `$1 IS NULL` keeps the unscoped
+        // rollup available for the all-games view rather than forking the query.
         let rows = sqlx::query_as::<_, (String, i64)>(
-            r"SELECT status, COUNT(*) FROM demos GROUP BY status",
+            r"SELECT status, COUNT(*) FROM demos
+              WHERE ($1::uuid IS NULL OR game_id = $1)
+              GROUP BY status",
         )
+        .bind(game_id.map(|id| id.as_uuid()))
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DomainError::internal(format!("Failed to count demos by status: {e}")))?;

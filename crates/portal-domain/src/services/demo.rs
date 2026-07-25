@@ -443,21 +443,50 @@ where
         Ok(link)
     }
 
-    /// Unlink a demo from a match.
+    /// Unlink a demo from a match, erroring when the pairing does not exist.
+    ///
+    /// This is the admin endpoint's contract: unlinking something that is not
+    /// linked is a 404, because the operator named a pairing that isn't there.
     #[instrument(skip(self))]
     pub async fn unlink_from_match(
         &self,
         demo_id: DemoId,
         match_id: TournamentMatchId,
     ) -> Result<(), DomainError> {
-        let link = self
+        if self.unlink_from_match_if_linked(demo_id, match_id).await? {
+            Ok(())
+        } else {
+            Err(DomainError::LookupFailed {
+                resource: "demo match link",
+                query: format!("demo={demo_id},match={match_id}"),
+            })
+        }
+    }
+
+    /// Unlink a demo from a match if the pairing exists; `Ok(false)` if it does
+    /// not.
+    ///
+    /// P-157: deleting evidence has to detach the demo it names, and "there was
+    /// nothing to detach" is an ordinary state there — evidence can carry a
+    /// `catalog_demo_id` whose link was already removed, or was never created.
+    /// The delete handler used to swallow *both* that and a genuine failure
+    /// with `let _ = ...`, so a failed unlink left a `demo_match_link` row
+    /// pointing at deleted evidence while the caller was handed a 204.
+    /// Returning the distinction is what lets a caller be idempotent about the
+    /// first case and loud about the second.
+    #[instrument(skip(self))]
+    pub async fn unlink_from_match_if_linked(
+        &self,
+        demo_id: DemoId,
+        match_id: TournamentMatchId,
+    ) -> Result<bool, DomainError> {
+        let Some(link) = self
             .link_repo
             .find_by_demo_and_match(demo_id, match_id)
             .await?
-            .ok_or_else(|| DomainError::LookupFailed {
-                resource: "demo match link",
-                query: format!("demo={demo_id},match={match_id}"),
-            })?;
+        else {
+            return Ok(false);
+        };
 
         self.link_repo.delete(link.id).await?;
 
@@ -487,7 +516,7 @@ where
         }
 
         info!(demo_id = %demo_id, match_id = %match_id, "Unlinked demo from match");
-        Ok(())
+        Ok(true)
     }
 
     /// Get all demos linked to a match.
@@ -857,9 +886,14 @@ where
     // =========================================================================
 
     /// Get demo count by status (for admin dashboard).
+    ///
+    /// `game_id` scopes the rollup; `None` counts every game (P-144).
     #[instrument(skip(self))]
-    pub async fn get_status_counts(&self) -> Result<Vec<(DemoStatus, i64)>, DomainError> {
-        self.demo_repo.count_by_status().await
+    pub async fn get_status_counts(
+        &self,
+        game_id: Option<GameId>,
+    ) -> Result<Vec<(DemoStatus, i64)>, DomainError> {
+        self.demo_repo.count_by_status(game_id).await
     }
 
     /// Delete a demo and all associated data.

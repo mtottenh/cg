@@ -85,7 +85,15 @@ pub trait DemoRepository: Send + Sync {
     async fn find_ready_unlinked(&self, limit: i64) -> Result<Vec<Demo>, DomainError>;
 
     /// Count demos by status (for admin dashboard).
-    async fn count_by_status(&self) -> Result<Vec<(DemoStatus, i64)>, DomainError>;
+    ///
+    /// `game_id` scopes the rollup to one game; `None` counts every game.
+    /// P-144: this took no argument at all, so per-game admin surfaces rendered
+    /// a cross-game total and a CS2 admin saw numbers inflated by every other
+    /// game's demos.
+    async fn count_by_status(
+        &self,
+        game_id: Option<GameId>,
+    ) -> Result<Vec<(DemoStatus, i64)>, DomainError>;
 
     /// Delete a demo (hard delete, use with caution).
     async fn delete(&self, id: DemoId) -> Result<(), DomainError>;

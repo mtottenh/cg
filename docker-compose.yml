@@ -52,7 +52,9 @@ services:
   #   1. create one:  cargo run -p portal-cli -- api-key create portal-scanner \
   #                     --permissions demos.catalog,demos.read,demos.stats
   #   2. put it in .env as SCANNER_PORTAL_API_KEY (or portal-scanner.credentials.dev)
-  #   3. start with:  docker compose --profile scanner up -d
+  #   3. set CS2_DEMO_SERVICE_URL in .env — there is deliberately NO default
+  #      (see below); the container exits at startup without it
+  #   4. start with:  docker compose --profile scanner up -d
   # Points at the local MinIO bucket by default; set SCANNER_* vars in .env to
   # target Linode object storage instead.
   scanner:
@@ -73,7 +75,14 @@ services:
       SCANNER_S3_REGION: ${SCANNER_S3_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${SCANNER_AWS_ACCESS_KEY_ID:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${SCANNER_AWS_SECRET_ACCESS_KEY:-minioadmin}
-      CS2_DEMO_SERVICE_URL: ${CS2_DEMO_SERVICE_URL:-https://demos.cs210mans.uk}
+      # P-160: this used to default to `https://demos.cs210mans.uk`, so
+      # `docker compose --profile scanner up` with no .env silently wired the
+      # scanner to a live third-party host that nobody had chosen. No default
+      # now — empty reaches portal-scanner, which refuses to start and names
+      # the variable (crates/portal-scanner/src/config.rs). `:?` is not an
+      # option here for the same reason as PORTAL_API_KEY above: it breaks
+      # `docker compose config` for everyone even with the profile inactive.
+      CS2_DEMO_SERVICE_URL: ${CS2_DEMO_SERVICE_URL:-}
       RUST_LOG: portal_scanner=info
     depends_on:
       api:

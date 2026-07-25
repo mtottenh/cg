@@ -487,12 +487,21 @@ where
         })
     }
 
-    /// Delete evidence.
+    /// Check that `deleted_by` is allowed to delete this evidence, without
+    /// deleting anything.
     ///
-    /// Only the original uploader, a participant of the evidence's match, or
-    /// an admin (`acting_as_admin`, verified by the handler) may delete.
+    /// Only the original uploader, a participant of the evidence's match, or an
+    /// admin (`acting_as_admin`, verified by the handler) may delete.
+    ///
+    /// P-157: deleting a demo's evidence also has to detach the demo, and the
+    /// detach must happen *first* so a failure cannot leave a `demo_match_link`
+    /// row pointing at a deleted evidence row. That reorders a mutation ahead
+    /// of `delete_evidence`'s own authorization check, so the check is exposed
+    /// separately for the caller to run before it touches anything.
+    /// `delete_evidence` still runs it, so this is a pre-flight, never a
+    /// substitute.
     #[instrument(skip(self))]
-    pub async fn delete_evidence(
+    pub async fn authorize_delete(
         &self,
         evidence_id: EvidenceId,
         deleted_by: RegistrationActor,
@@ -504,7 +513,6 @@ where
             .await?
             .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
 
-        // Authorization: uploader, match participant, or admin.
         if !acting_as_admin && evidence.uploaded_by_user_id != Some(deleted_by.user_id) {
             let match_ = self
                 .match_repo
@@ -514,6 +522,29 @@ where
             // Propagates NotAuthorized when the caller is not a participant.
             self.find_actor_registration(&match_, deleted_by).await?;
         }
+
+        Ok(())
+    }
+
+    /// Delete evidence.
+    ///
+    /// Only the original uploader, a participant of the evidence's match, or
+    /// an admin (`acting_as_admin`, verified by the handler) may delete.
+    #[instrument(skip(self))]
+    pub async fn delete_evidence(
+        &self,
+        evidence_id: EvidenceId,
+        deleted_by: RegistrationActor,
+        acting_as_admin: bool,
+    ) -> Result<(), DomainError> {
+        self.authorize_delete(evidence_id, deleted_by, acting_as_admin)
+            .await?;
+
+        let evidence = self
+            .evidence_repo
+            .find_by_id(evidence_id)
+            .await?
+            .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
 
         // Delete from storage if S3
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {

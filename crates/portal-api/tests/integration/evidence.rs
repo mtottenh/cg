@@ -1606,3 +1606,174 @@ async fn test_validate_evidence_requires_the_claimed_game_scores() {
     assert_eq!(linked[0]["link"]["validated"], false);
     assert!(linked[0]["link"]["validation_result"].is_null());
 }
+
+// ============================================================================
+// DEMO ↔ EVIDENCE PAIRING (P-157, P-158)
+// ============================================================================
+
+/// Attaching a catalogued demo writes two rows — the `match_evidence` row and
+/// the `demo_match_link` — and every path that detaches it has to remove both.
+/// Returns `(evidence_id, demo_id)`.
+async fn link_catalog_demo(app: &TestApp, match_id: &str, demo_id: &str) -> String {
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/evidence/link-discovered"),
+            &json!({ "external_id": format!("catalog:{demo_id}"), "game_number": 1 }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    body["data"]["id"].as_str().unwrap().to_string()
+}
+
+/// P-157. Deleting evidence used to unlink the demo **best-effort**:
+///
+///     let _ = state.demo_service.unlink_from_match(demo_id, match_id).await;
+///     Ok(StatusCode::NO_CONTENT)
+///
+/// — and the demo id was recovered with `if let Ok(demo_id) = ...parse()`, a
+/// second swallow. So an evidence row whose `catalog_demo_id` could not be read
+/// was deleted anyway, 204 was returned, and the `demo_match_link` was left
+/// pointing at a deleted evidence row. The operator detaching a demo mid-dispute
+/// was told it worked; the next `GET /v1/matches/{id}/demos` still showed it.
+///
+/// The delete now refuses instead, having changed nothing: an unlink that cannot
+/// be performed is a failure, not a footnote.
+#[tokio::test]
+async fn test_delete_evidence_refuses_when_the_demo_cannot_be_unlinked() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p157-refuse").await;
+    let demo_id = seed_catalog_demo(&app, "p157-orphan.dem", "de_ancient", 13, 8).await;
+    let evidence_id = link_catalog_demo(&app, &info.match_id, &demo_id).await;
+
+    assert_eq!(list_linked_demos(&app, &info.match_id).await.len(), 1);
+
+    // Corrupt the pointer. This is the one reachable way to make the unlink
+    // impossible without also destroying the link row, and it is exactly the
+    // branch the old `if let Ok(..)` skipped in silence.
+    sqlx::query(
+        r#"UPDATE match_evidence
+           SET plugin_metadata = jsonb_set(plugin_metadata, '{catalog_demo_id}', '"not-a-uuid"')
+           WHERE id = $1"#,
+    )
+    .bind(uuid::Uuid::parse_str(&evidence_id).unwrap())
+    .execute(app.pool())
+    .await
+    .expect("corrupt the catalog_demo_id");
+
+    let response = app
+        .delete_auth(&format!(
+            "/v1/matches/{}/evidence/{evidence_id}",
+            info.match_id
+        ))
+        .await;
+    assert_eq!(
+        response.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a delete that cannot detach the demo must fail, not return 204: {}",
+        response.text()
+    );
+
+    // And it failed *before* touching anything, so there is nothing to clean up
+    // and the caller can retry once the data is fixed. The old code deleted the
+    // evidence first, so even a surfaced failure would have left the orphan.
+    assert_eq!(
+        list_linked_demos(&app, &info.match_id).await.len(),
+        1,
+        "the demo link must survive a refused delete"
+    );
+    assert_eq!(
+        list_evidence_default(&app, &info.match_id).await.len(),
+        1,
+        "the evidence row must survive a refused delete"
+    );
+}
+
+/// The other side of P-157: "there was nothing to unlink" is an ordinary state,
+/// not a failure. Evidence can name a catalogued demo whose link was already
+/// removed, and deleting it must still succeed — otherwise the loudness above
+/// would have been bought by breaking the common path.
+#[tokio::test]
+async fn test_delete_evidence_succeeds_when_the_demo_link_is_already_gone() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p157-idem").await;
+    let demo_id = seed_catalog_demo(&app, "p157-idempotent.dem", "de_overpass", 13, 4).await;
+    let evidence_id = link_catalog_demo(&app, &info.match_id, &demo_id).await;
+
+    // Drop the link out from under the evidence row, leaving the metadata
+    // pointer intact.
+    sqlx::query("DELETE FROM demo_match_links WHERE demo_id = $1")
+        .bind(uuid::Uuid::parse_str(&demo_id).unwrap())
+        .execute(app.pool())
+        .await
+        .expect("remove the link");
+
+    let response = app
+        .delete_auth(&format!(
+            "/v1/matches/{}/evidence/{evidence_id}",
+            info.match_id
+        ))
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+    assert!(list_evidence_default(&app, &info.match_id).await.is_empty());
+}
+
+/// P-158. The product has two buttons both labelled "Unlink" and they used to
+/// mean different things: `DELETE /v1/matches/{id}/evidence/{id}` removed the
+/// evidence row *and* the link, while `DELETE /v1/admin/demos/{id}/link/{id}`
+/// removed only the link — so after an admin pressed the one on the match-detail
+/// Evidence tab, the Evidence Records table beneath it still listed the demo as
+/// evidence for the match it had just been detached from. During a dispute that
+/// is the difference between "this demo is evidence" and "it isn't", and nothing
+/// on screen said which had happened.
+#[tokio::test]
+async fn test_admin_unlink_removes_the_evidence_row_too() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p158-admin").await;
+    let demo_id = seed_catalog_demo(&app, "p158-admin.dem", "de_vertigo", 13, 6).await;
+    link_catalog_demo(&app, &info.match_id, &demo_id).await;
+
+    assert_eq!(list_linked_demos(&app, &info.match_id).await.len(), 1);
+    assert_eq!(list_evidence_default(&app, &info.match_id).await.len(), 1);
+
+    let response = app
+        .delete_auth(&format!("/v1/admin/demos/{demo_id}/link/{}", info.match_id))
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+
+    assert!(
+        list_linked_demos(&app, &info.match_id).await.is_empty(),
+        "the link must be gone"
+    );
+    assert!(
+        list_evidence_default(&app, &info.match_id).await.is_empty(),
+        "the evidence row naming the same demo must be gone too — leaving it \
+         makes the two Unlink buttons mean different things"
+    );
+}
+
+/// An auto-linked demo has a `demo_match_link` and no evidence row. The admin
+/// unlink must still work on it — the pairing cleanup is conditional, not a new
+/// precondition.
+#[tokio::test]
+async fn test_admin_unlink_works_on_a_link_with_no_evidence_row() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p158-bare").await;
+    let demo_id = seed_catalog_demo(&app, "p158-bare.dem", "de_anubis", 13, 2).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/link"),
+            &json!({ "match_id": info.match_id, "link_type": "auto_matched", "game_number": 1 }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    assert_eq!(list_linked_demos(&app, &info.match_id).await.len(), 1);
+    assert!(list_evidence_default(&app, &info.match_id).await.is_empty());
+
+    let response = app
+        .delete_auth(&format!("/v1/admin/demos/{demo_id}/link/{}", info.match_id))
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+    assert!(list_linked_demos(&app, &info.match_id).await.is_empty());
+}

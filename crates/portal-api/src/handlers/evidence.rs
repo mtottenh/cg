@@ -462,6 +462,7 @@ pub async fn get_access_url(
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Cannot delete this evidence", body = ApiError),
         (status = 404, description = "Evidence not found", body = ApiError),
+        (status = 500, description = "The demo could not be detached; nothing was deleted", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "evidence"
@@ -479,12 +480,64 @@ pub async fn delete_evidence(
         .has_admin_override(&auth, ScopeType::Tournament)
         .await;
 
-    // Before deleting, check if there's a corresponding demo_match_link to clean up.
-    // Both `link_discovered` (catalog: prefix) and `link_demo` (with demo_id) store
-    // `catalog_demo_id` in the evidence metadata.
+    // Both `link_discovered` (catalog: prefix) and `link_demo` (with demo_id)
+    // stamp `catalog_demo_id` on the evidence metadata, so a demo attached to a
+    // match is TWO rows: the evidence row and the `demo_match_link`. They are
+    // one fact and must be removed together.
     let evidence = state.evidence_service.get_evidence(evidence_id).await?;
 
-    // Authorize before any side effects (the demo unlink below mutates state).
+    // Authorize before any side effect. `delete_evidence` checks this itself,
+    // but the unlink below now runs first and mutates, so the check has to move
+    // ahead of it.
+    state
+        .evidence_service
+        .authorize_delete(
+            evidence_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
+            acting_as_admin,
+        )
+        .await?;
+
+    // P-157: this was `let _ = ...unlink_from_match(...)` AFTER the delete, and
+    // then an unconditional 204.
+    //
+    // Two things were wrong and both matter. The swallow meant a failed unlink
+    // left a `demo_match_link` row pointing at deleted evidence while the caller
+    // was told the delete had worked — the dangling pointer then reappears on
+    // every `GET /v1/matches/{id}/demos`, i.e. the demo an operator just
+    // detached during a dispute is still attached, and nothing anywhere said so.
+    // And the ordering meant that even a surfaced failure would leave that
+    // dangling row behind.
+    //
+    // So: the pointer goes first, and only a *genuine* failure is loud.
+    // "Nothing to unlink" is an ordinary state — evidence can name a catalogued
+    // demo whose link was already removed, or a link that was never created —
+    // and `unlink_from_match_if_linked` reports that as `Ok(false)` rather than
+    // as an error, which is what makes idempotency and loudness separable at
+    // all. Deliberately NOT a transaction: the two rows live behind two
+    // repositories with no shared unit-of-work in this codebase, and inventing
+    // one here would be a far larger change than the defect warrants. Ordering
+    // buys the property that matters instead — if the unlink fails, nothing has
+    // been deleted and the whole call is retryable; if the delete then fails,
+    // an evidence row survives with no link, which is visible and harmless
+    // rather than a pointer into a hole.
+    if let Some(demo_id_str) = evidence
+        .plugin_metadata
+        .get("catalog_demo_id")
+        .and_then(|v| v.as_str())
+    {
+        let demo_id = demo_id_str.parse::<portal_core::DemoId>().map_err(|_| {
+            ApiError::internal(format!(
+                "Evidence {evidence_id} carries an unreadable catalog_demo_id ({demo_id_str}); \
+                 refusing to delete it while a demo link may still point at it"
+            ))
+        })?;
+        state
+            .demo_service
+            .unlink_from_match_if_linked(demo_id, match_id)
+            .await?;
+    }
+
     state
         .evidence_service
         .delete_evidence(
@@ -493,19 +546,6 @@ pub async fn delete_evidence(
             acting_as_admin,
         )
         .await?;
-
-    if let Some(demo_id_str) = evidence
-        .plugin_metadata
-        .get("catalog_demo_id")
-        .and_then(|v| v.as_str())
-        && let Ok(demo_id) = demo_id_str.parse::<portal_core::DemoId>()
-    {
-        // Best-effort: ignore errors if the link was already removed
-        let _ = state
-            .demo_service
-            .unlink_from_match(demo_id, match_id)
-            .await;
-    }
 
     Ok(StatusCode::NO_CONTENT)
 }

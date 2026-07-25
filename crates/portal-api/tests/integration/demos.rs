@@ -1948,3 +1948,110 @@ async fn test_pipeline_reads_are_admin_gated() {
         );
     }
 }
+
+// ============================================================================
+// P-144: GAME-SCOPED CATALOG COUNTS
+// ============================================================================
+
+/// Catalog one demo for an arbitrary game slug and return its id.
+async fn catalog_demo_for_game(app: &TestApp, slug: &str, file_name: &str) -> String {
+    let game_id = get_game_id(app.pool(), slug).await;
+    let response = app
+        .post_json(
+            "/v1/admin/demos",
+            &json!({
+                "game_id": game_id.to_string(),
+                "file_name": file_name,
+                "s3_bucket": "test-bucket",
+                "s3_key": format!("p144/{file_name}"),
+                "file_size_bytes": 1_000_000
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    body["data"]["id"].as_str().unwrap().to_string()
+}
+
+/// P-144. The demo status counts had no game filter — `SELECT status, COUNT(*)
+/// FROM demos GROUP BY status`, full stop — so a CS2 admin read totals that
+/// included every other game's demos, on a page whose table right underneath
+/// has a Game filter. Two demos, two games, and the CS2 rollup must count one.
+#[tokio::test]
+async fn test_demo_status_counts_are_scoped_to_the_requested_game() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    catalog_demo_for_game(&app, "cs2", "p144-cs2-a.dem").await;
+    catalog_demo_for_game(&app, "cs2", "p144-cs2-b.dem").await;
+    catalog_demo_for_game(&app, "aoe4", "p144-aoe4.dem").await;
+
+    let cs2_game_id = get_game_id(app.pool(), "cs2").await;
+    let aoe4_game_id = get_game_id(app.pool(), "aoe4").await;
+
+    // Unscoped: every game, which is what the all-games view wants and what the
+    // endpoint used to return unconditionally.
+    let response = app.get_auth("/v1/admin/demos/stats").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["pending"], 3, "unscoped rollup: {body}");
+
+    let response = app
+        .get_auth(&format!("/v1/admin/demos/stats?game_id={cs2_game_id}"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["pending"], 2,
+        "the CS2 rollup must not count the AoE4 demo: {body}"
+    );
+
+    let response = app
+        .get_auth(&format!("/v1/admin/demos/stats?game_id={aoe4_game_id}"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["pending"], 1,
+        "the AoE4 rollup must not count the CS2 demos: {body}"
+    );
+}
+
+/// The same un-scoped count fed the ingestion-pipeline overview, where it was
+/// worse: tracking health and the discovered-match queue on that response are
+/// both filtered by `game`, so selecting CS2 narrowed two of the three stages
+/// and silently left the third counting every game — in a view whose entire
+/// purpose is localising which stage ingestion stopped at.
+#[tokio::test]
+async fn test_pipeline_overview_demo_counts_are_scoped_to_the_selected_game() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    catalog_demo_for_game(&app, "cs2", "p144-pipeline-cs2.dem").await;
+    catalog_demo_for_game(&app, "aoe4", "p144-pipeline-aoe4-a.dem").await;
+    catalog_demo_for_game(&app, "aoe4", "p144-pipeline-aoe4-b.dem").await;
+
+    let response = app.get_auth("/v1/admin/pipeline/overview?game=cs2").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["game_slug"], "cs2");
+    assert_eq!(
+        body["data"]["demos"]["pending"], 1,
+        "the CS2 pipeline must count only CS2 demos: {body}"
+    );
+
+    let response = app.get_auth("/v1/admin/pipeline/overview?game=aoe4").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["demos"]["pending"], 2,
+        "the AoE4 pipeline must count only AoE4 demos: {body}"
+    );
+
+    // No `game` still means all games, so the fix narrowed the scoped view
+    // without breaking the unscoped one.
+    let response = app.get_auth("/v1/admin/pipeline/overview").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["demos"]["pending"], 3, "unscoped: {body}");
+}

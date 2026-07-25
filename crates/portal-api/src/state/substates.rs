@@ -687,8 +687,12 @@ pub struct DemoState {
     /// and enrichment failures (P-73).
     pub discovered_match_service: AppDiscoveredMatchService,
     /// Evidence service — `get_demos_for_match` names the `match_evidence` row
-    /// behind each link so the frontend can detach it (P-135). Read-only here;
-    /// every evidence *mutation* stays on `EvidenceState`.
+    /// behind each link so the frontend can detach it (P-135), and
+    /// `unlink_demo_from_match` deletes that row alongside the link so the two
+    /// representations of "this demo is evidence for this match" cannot diverge
+    /// (P-158). Read-only when P-135 introduced it; that one pairing invariant
+    /// is the only mutation here, and every other evidence write stays on
+    /// `EvidenceState`.
     pub evidence_service: AppEvidenceService,
 }
 

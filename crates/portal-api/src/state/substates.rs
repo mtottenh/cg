@@ -675,6 +675,12 @@ pub struct DemoState {
     pub demo_stats_repo: Arc<PgDemoPlayerStatsRepository>,
     /// System settings service (auto-link kill-switch).
     pub system_settings_service: AppSystemSettingsService,
+    /// Steam tracking service — the admin pipeline view reads token health
+    /// (P-73). The write side stays on the `X-API-Key` internal routes.
+    pub steam_tracking_service: AppSteamTrackingService,
+    /// Discovered-match service — the admin pipeline view reads queue depth
+    /// and enrichment failures (P-73).
+    pub discovered_match_service: AppDiscoveredMatchService,
 }
 
 impl FromRef<AppState> for DemoState {
@@ -687,6 +693,8 @@ impl FromRef<AppState> for DemoState {
             plugin_manager: Arc::clone(&s.plugin_manager),
             demo_stats_repo: Arc::clone(&s.demo_stats_repo),
             system_settings_service: s.system_settings_service.clone(),
+            steam_tracking_service: s.steam_tracking_service.clone(),
+            discovered_match_service: s.discovered_match_service.clone(),
         }
     }
 }

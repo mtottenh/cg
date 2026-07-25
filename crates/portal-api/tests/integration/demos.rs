@@ -1604,3 +1604,347 @@ async fn test_auto_link_toggle_disables_and_reenables() {
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["tournament_id"], tournament_id);
 }
+
+// ============================================================================
+// CATEGORY E: INGESTION PIPELINE OPERATOR READS (P-73)
+// ============================================================================
+//
+// Everything upstream of the demo catalog previously spoke only over the
+// `X-API-Key` `/v1/internal` routes, so a stalled poller or a stuck enricher
+// was invisible from the portal. These are the admin-authenticated read
+// equivalents; the internal key routes are unchanged and stay service-only.
+
+/// Seed one Steam tracking token, returning `(tracking_id, player_id)`.
+///
+/// Inserted directly: the public `POST /v1/players/me/steam-tracking` route
+/// only ever writes the *caller's* token, and these tests need a specific
+/// health shape (poll errors, a stale timestamp) that no public route can set.
+async fn seed_tracking(
+    app: &TestApp,
+    player_id: uuid::Uuid,
+    steam_id_64: i64,
+    auth_code: &str,
+    poll_errors: i32,
+    last_poll_at: Option<chrono::DateTime<chrono::Utc>>,
+    last_error: Option<&str>,
+    is_active: bool,
+) -> uuid::Uuid {
+    let game_id = get_game_id(app.pool(), "cs2").await;
+    let (id,): (uuid::Uuid,) = sqlx::query_as(
+        r"
+        INSERT INTO steam_tracking
+            (player_id, game_id, steam_id_64, game_auth_code, is_active,
+             poll_errors, last_poll_at, last_error)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id
+        ",
+    )
+    .bind(player_id)
+    .bind(game_id)
+    .bind(steam_id_64)
+    .bind(auth_code)
+    .bind(is_active)
+    .bind(poll_errors)
+    .bind(last_poll_at)
+    .bind(last_error)
+    .fetch_one(app.pool())
+    .await
+    .expect("seed steam_tracking");
+    id
+}
+
+/// Seed one discovered match in a given status.
+async fn seed_discovered_match(
+    app: &TestApp,
+    tracking_id: uuid::Uuid,
+    share_code: &str,
+    status: &str,
+    error: Option<&str>,
+    retry_count: i32,
+) -> uuid::Uuid {
+    let game_id = get_game_id(app.pool(), "cs2").await;
+    let (id,): (uuid::Uuid,) = sqlx::query_as(
+        r"
+        INSERT INTO discovered_matches
+            (tracking_id, game_id, share_code, match_id, outcome_id, token,
+             status, error, retry_count)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::discovered_match_status, $8, $9)
+        RETURNING id
+        ",
+    )
+    .bind(tracking_id)
+    .bind(game_id)
+    .bind(share_code)
+    .bind(1_i64)
+    .bind(2_i64)
+    .bind(3_i32)
+    .bind(status)
+    .bind(error)
+    .bind(retry_count)
+    .fetch_one(app.pool())
+    .await
+    .expect("seed discovered_matches");
+    id
+}
+
+/// The pipeline reads report each stage, and the failures that make a stage
+/// unhealthy are visible with their error text.
+#[tokio::test]
+async fn test_pipeline_overview_reports_every_stage() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    let healthy_player = UserBuilder::new()
+        .username("pipeline_healthy")
+        .email("pipeline-healthy@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let broken_player = UserBuilder::new()
+        .username("pipeline_broken")
+        .email("pipeline-broken@example.com")
+        .build_persisted(app.pool())
+        .await;
+
+    // One healthy token polled a minute ago, one that has been failing and
+    // has not been polled for a week (both stale and erroring).
+    seed_tracking(
+        &app,
+        healthy_player.id,
+        76_561_198_000_000_101,
+        "AAAA-BBBBB-CCCC",
+        0,
+        Some(chrono::Utc::now() - chrono::Duration::minutes(1)),
+        None,
+        true,
+    )
+    .await;
+    let broken_tracking = seed_tracking(
+        &app,
+        broken_player.id,
+        76_561_198_000_000_102,
+        "DDDD-EEEEE-FFFF",
+        7,
+        Some(chrono::Utc::now() - chrono::Duration::days(7)),
+        Some("Valve rejected the auth code"),
+        true,
+    )
+    .await;
+
+    // Queue: one pending, one enriched, one failed with the retry budget spent.
+    seed_discovered_match(
+        &app,
+        broken_tracking,
+        "CSGO-pipe-pending",
+        "pending",
+        None,
+        0,
+    )
+    .await;
+    seed_discovered_match(&app, broken_tracking, "CSGO-pipe-ok", "enriched", None, 0).await;
+    seed_discovered_match(
+        &app,
+        broken_tracking,
+        "CSGO-pipe-dead",
+        "failed",
+        Some("GC timeout after 3 attempts"),
+        3,
+    )
+    .await;
+
+    // ---- Overview --------------------------------------------------------
+    let response = app.get_auth("/v1/admin/pipeline/overview?game=cs2").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let data = &body["data"];
+
+    assert_eq!(data["game_slug"], "cs2");
+    assert_eq!(data["tracking"]["total"], 2);
+    assert_eq!(data["tracking"]["active"], 2);
+    assert_eq!(
+        data["tracking"]["with_errors"], 1,
+        "the failing token must be counted: {body}"
+    );
+    assert_eq!(
+        data["tracking"]["stale"], 1,
+        "a token last polled a week ago is stale: {body}"
+    );
+    assert_eq!(data["discovered_matches"]["pending"], 1);
+    assert_eq!(data["discovered_matches"]["enriched"], 1);
+    assert_eq!(data["discovered_matches"]["failed"], 1);
+    assert_eq!(
+        data["discovered_matches"]["retry_exhausted"], 1,
+        "retry_count >= max_retries means the enricher will never retry it: {body}"
+    );
+    // The auto-link switch is reported so the backfill button can explain
+    // itself; default-on.
+    assert_eq!(data["auto_link_enabled"], true);
+
+    // ---- Tracking list, worst first --------------------------------------
+    let response = app.get_auth("/v1/admin/pipeline/tracking?game=cs2").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let entries = body["data"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0]["player_display_name"], "pipeline_broken",
+        "the worst token must sort first: {body}"
+    );
+    assert_eq!(entries[0]["poll_errors"], 7);
+    assert_eq!(entries[0]["last_error"], "Valve rejected the auth code");
+    assert_eq!(
+        entries[0]["steam_id_64"], "76561198000000102",
+        "SteamID64 exceeds JS's safe integer range and must ship as a string"
+    );
+
+    // ---- Enrichment failures, with their error text ----------------------
+    let response = app
+        .get_auth("/v1/admin/pipeline/discovered-matches?game=cs2&status=failed")
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let failures = body["data"].as_array().unwrap();
+    assert_eq!(failures.len(), 1, "only the failed row: {body}");
+    assert_eq!(failures[0]["share_code"], "CSGO-pipe-dead");
+    assert_eq!(failures[0]["error"], "GC timeout after 3 attempts");
+    assert_eq!(failures[0]["retry_exhausted"], true);
+}
+
+/// The tracking read must never hand the browser a live Steam credential.
+#[tokio::test]
+async fn test_pipeline_tracking_never_exposes_the_auth_code() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    let player = UserBuilder::new()
+        .username("pipeline_secret")
+        .email("pipeline-secret@example.com")
+        .build_persisted(app.pool())
+        .await;
+    seed_tracking(
+        &app,
+        player.id,
+        76_561_198_000_000_201,
+        "SECR-ETAUT-HXYZ",
+        0,
+        None,
+        None,
+        true,
+    )
+    .await;
+
+    let response = app.get_auth("/v1/admin/pipeline/tracking").await;
+    response.assert_status(StatusCode::OK);
+    let raw = response.text();
+    assert!(
+        !raw.contains("SECR-ETAUT-HXYZ"),
+        "game_auth_code leaked into the admin pipeline read: {raw}"
+    );
+    assert!(
+        !raw.contains("game_auth_code"),
+        "the auth-code field must not be projected at all: {raw}"
+    );
+    // …but the entry itself is there, so the absence above is not vacuous.
+    assert!(raw.contains("pipeline_secret"), "entry missing: {raw}");
+}
+
+/// An unrecognised status filter is a 400, not an empty list.
+///
+/// The column is a Postgres enum: an unknown value would match nothing and
+/// read to an operator as "the queue is clear".
+#[tokio::test]
+async fn test_pipeline_discovered_matches_rejects_unknown_status() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    let response = app
+        .get_auth("/v1/admin/pipeline/discovered-matches?status=totally-not-a-status")
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// Filtering to an unknown game is a 404, not a silent all-games read.
+#[tokio::test]
+async fn test_pipeline_unknown_game_is_not_found() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    app.get_auth("/v1/admin/pipeline/overview?game=no-such-game")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+}
+
+/// All three pipeline reads are authorization-gated.
+///
+/// The gate is the *view* permission (`users.view_all`), the same one
+/// `GET /v1/admin/demos/stats` already uses: a moderator may watch ingestion,
+/// a plain registered user may not — the tracking read carries player
+/// identities and SteamIDs.
+#[tokio::test]
+async fn test_pipeline_reads_are_admin_gated() {
+    let app = TestApp::new().await;
+
+    let paths = [
+        "/v1/admin/pipeline/overview",
+        "/v1/admin/pipeline/tracking",
+        "/v1/admin/pipeline/discovered-matches",
+    ];
+
+    // A plain registered user is refused on every one.
+    let outsider = UserBuilder::new()
+        .username("pipeline_outsider")
+        .email("pipeline-outsider@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = create_test_token(
+        outsider.id,
+        outsider.id,
+        "pipeline_outsider",
+        TEST_JWT_SECRET,
+    );
+    for path in paths {
+        let response = app.get_with_token(path, &outsider_token).await;
+        assert_eq!(
+            response.status,
+            StatusCode::FORBIDDEN,
+            "{path} must be 403 for a non-admin, got {}: {}",
+            response.status,
+            response.text()
+        );
+    }
+
+    // Anonymous is refused too.
+    for path in paths {
+        let response = app.get(path).await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNAUTHORIZED,
+            "{path} must be 401 unauthenticated, got {}",
+            response.status
+        );
+    }
+
+    // A moderator holds the view permission and is allowed through — without
+    // this the 403 above would also pass if the endpoints were simply broken.
+    let moderator = UserBuilder::new()
+        .username("pipeline_moderator")
+        .email("pipeline-moderator@example.com")
+        .build_persisted(app.pool())
+        .await;
+    assign_role_to_user(app.pool(), moderator.id, "moderator").await;
+    let mod_token = create_test_token(
+        moderator.id,
+        moderator.id,
+        "pipeline_moderator",
+        TEST_JWT_SECRET,
+    );
+    for path in paths {
+        let response = app.get_with_token(path, &mod_token).await;
+        assert_eq!(
+            response.status,
+            StatusCode::OK,
+            "{path} must be readable by a moderator, got {}: {}",
+            response.status,
+            response.text()
+        );
+    }
+}

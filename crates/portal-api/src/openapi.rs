@@ -39,6 +39,10 @@ use crate::dto::responses::demo::{
     DemoPlayerStatsResponse as DemoCatalogPlayerStatsResponse, DemoResponse,
     DemoStatusCountsResponse, DemoValidationResultResponse, ProcessUnlinkedDemosResponse,
 };
+use crate::dto::responses::pipeline::{
+    DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, PipelineOverviewResponse,
+    TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
+};
 use crate::dto::responses::{
     AccessUrlResponse, AdvancementResponse, AvailabilityOverrideResponse,
     AvailabilityWindowResponse, BanListResponse, BanResponse, CheckInStatusResponse,
@@ -374,6 +378,11 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::process_unlinked_demos,
         demos::get_auto_link_setting,
         demos::update_auto_link_setting,
+        // Ingestion pipeline operator reads (P-73) — admin-authenticated
+        // equivalents of the X-API-Key /v1/internal reads.
+        demos::get_pipeline_overview,
+        demos::list_pipeline_tracking,
+        demos::list_pipeline_discovered_matches,
         // Result reviews
         result_reviews::get_result_review,
         result_reviews::acknowledge_result_review,
@@ -707,6 +716,12 @@ use utoipa_swagger_ui::SwaggerUi;
             ProcessUnlinkedDemosResponse,
             UpdateAutoLinkSettingRequest,
             AutoLinkSettingResponse,
+            // Ingestion pipeline (P-73)
+            PipelineOverviewResponse,
+            TrackingHealthSummaryResponse,
+            TrackingHealthEntryResponse,
+            DiscoveredMatchQueueResponse,
+            DiscoveredMatchAdminResponse,
             // Steam Tracking
             crate::handlers::steam_tracking::RegisterSteamTrackingRequest,
             crate::handlers::steam_tracking::UpdateSteamTrackingRequest,

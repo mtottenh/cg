@@ -143,6 +143,15 @@ pub fn routes() -> Router<AppState> {
             "/demos/{demo_id}/link/{match_id}",
             delete(demos::unlink_demo_from_match),
         )
+        // Ingestion-pipeline operator reads (P-73). Admin-authenticated
+        // equivalents of the `X-API-Key` /v1/internal reads — the internal
+        // routes stay service-only and are never exposed to the browser.
+        .route("/pipeline/overview", get(demos::get_pipeline_overview))
+        .route("/pipeline/tracking", get(demos::list_pipeline_tracking))
+        .route(
+            "/pipeline/discovered-matches",
+            get(demos::list_pipeline_discovered_matches),
+        )
         // Result review admin routes
         .route("/result-reviews", get(result_reviews::list_pending_reviews))
         .route(

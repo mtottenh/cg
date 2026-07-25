@@ -270,4 +270,68 @@ impl DiscoveredMatchRepository for PgDiscoveredMatchRepository {
 
         Ok(DiscoveredMatch::from(row))
     }
+
+    async fn count_by_status(
+        &self,
+        game_id: Option<GameId>,
+    ) -> Result<Vec<(String, i64)>, DomainError> {
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            r"
+            SELECT status::TEXT AS status, COUNT(*)
+            FROM discovered_matches
+            WHERE ($1::uuid IS NULL OR game_id = $1)
+            GROUP BY status
+            ",
+        )
+        .bind(game_id.map(|g| g.as_uuid()))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows)
+    }
+
+    async fn count_retry_exhausted(&self, game_id: Option<GameId>) -> Result<i64, DomainError> {
+        let (count,): (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*)
+            FROM discovered_matches
+            WHERE status = 'failed'
+              AND retry_count >= max_retries
+              AND ($1::uuid IS NULL OR game_id = $1)
+            ",
+        )
+        .bind(game_id.map(|g| g.as_uuid()))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(count)
+    }
+
+    async fn list_by_status(
+        &self,
+        game_id: Option<GameId>,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<DiscoveredMatch>, DomainError> {
+        let sql = format!(
+            r"
+            SELECT {COLUMNS} FROM discovered_matches
+            WHERE ($1::uuid IS NULL OR game_id = $1)
+              AND ($2::text IS NULL OR status::TEXT = $2)
+            ORDER BY discovered_at DESC
+            LIMIT $3
+            "
+        );
+        let rows = sqlx::query_as::<_, DiscoveredMatchRow>(&sql)
+            .bind(game_id.map(|g| g.as_uuid()))
+            .bind(status)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(DiscoveredMatch::from).collect())
+    }
 }

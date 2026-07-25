@@ -4,13 +4,15 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AssociateDemoRequest, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
     GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest,
-    ProcessUnlinkedDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest,
+    PipelineQuery, ProcessUnlinkedDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest,
     SubmitDemoStatsRequest, UpdateAutoLinkSettingRequest,
 };
 use crate::dto::responses::{
     AutoLinkSettingResponse, BatchCatalogErrorResponse, BatchCatalogResultResponse,
     DemoDownloadResponse, DemoListResponse, DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse,
-    DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse, ProcessUnlinkedDemosResponse,
+    DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse, DiscoveredMatchAdminResponse,
+    DiscoveredMatchQueueResponse, PipelineOverviewResponse, ProcessUnlinkedDemosResponse,
+    TRACKING_STALE_AFTER_HOURS, TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
@@ -1213,6 +1215,286 @@ pub async fn set_demo_notes(
         DemoResponse::from(demo),
         request_id,
     )))
+}
+
+// =============================================================================
+// INGESTION PIPELINE — ADMIN READ SURFACES (P-73)
+// =============================================================================
+//
+// Everything upstream of the demo catalog runs through `routes/internal.rs`,
+// which is `X-API-Key`-authenticated service-to-service plumbing and is
+// deliberately absent from the public spec. Before these three endpoints the
+// portal had no view of any of it: `AdminDemosPage` started at the
+// *catalogued* demo, so a poller that stopped polling, a token Valve had
+// revoked, or an enricher stuck in a retry loop were all invisible — and
+// since ingestion is what supplies player ratings, that failure propagated
+// silently into seeding and league entry gates (P-68).
+//
+// These are READS of the same tables, JWT-authenticated and gated on the same
+// `users.view_all` view permission as `get_demo_status_counts`. The internal
+// key routes are NOT exposed to the browser.
+
+/// Read gate for the pipeline dashboards.
+///
+/// Deliberately the *view* gate (`users.view_all`, i.e. moderator and up) and
+/// not `admin.demos.manage`: seeing that ingestion has stalled is a
+/// monitoring job, and the same split already governs
+/// `get_demo_status_counts`. Every mutation on this page (the backfill, the
+/// rating override) keeps its own stricter gate.
+async fn require_pipeline_view(
+    state: &DemoState,
+    auth: &AuthenticatedUser,
+) -> Result<(), ApiError> {
+    let is_admin = state
+        .permission_service
+        .is_admin(auth.user_id)
+        .await
+        .unwrap_or(false);
+
+    if is_admin {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("Admin access required"))
+    }
+}
+
+/// Resolve an optional `game` query value (slug or UUID) to a `GameId`.
+///
+/// `None` means "all games". An unknown slug is a 404 rather than a silent
+/// all-games read — an operator filtering to a typo'd game must not be shown
+/// the unfiltered pipeline and conclude it is healthy.
+async fn resolve_pipeline_game(
+    state: &DemoState,
+    game: Option<&str>,
+) -> ApiResult<Option<(GameId, String)>> {
+    let Some(game) = game.map(str::trim).filter(|g| !g.is_empty()) else {
+        return Ok(None);
+    };
+
+    let found = if let Ok(uuid) = game.parse::<uuid::Uuid>() {
+        state
+            .game_repo
+            .find_by_id(uuid)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+    } else {
+        state
+            .game_repo
+            .find_by_slug(game)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+    };
+
+    let found = found.ok_or_else(|| ApiError::not_found(format!("Game not found: {game}")))?;
+    Ok(Some((GameId::from(found.id), found.slug)))
+}
+
+/// Look up a queue count by status name, defaulting to zero.
+fn queue_count(counts: &[(String, i64)], status: &str) -> i64 {
+    counts
+        .iter()
+        .find(|(s, _)| s == status)
+        .map_or(0, |(_, c)| *c)
+}
+
+/// End-to-end ingestion pipeline health (admin).
+///
+/// One read covering all three stages — Steam tracking tokens → the
+/// discovered-match queue → the demo catalog — so a zero downstream with a
+/// healthy upstream localises where ingestion stopped.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pipeline/overview",
+    params(PipelineQuery),
+    responses(
+        (status = 200, description = "Pipeline health", body = DataResponse<PipelineOverviewResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Game not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn get_pipeline_overview(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Query(query): Query<PipelineQuery>,
+) -> ApiResult<Json<DataResponse<PipelineOverviewResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    require_pipeline_view(&state, &auth).await?;
+
+    let game = resolve_pipeline_game(&state, query.game.as_deref()).await?;
+    let game_id = game.as_ref().map(|(id, _)| *id);
+    let game_slug = game.map(|(_, slug)| slug);
+
+    let tracking = state
+        .steam_tracking_service
+        .health_summary(game_id, TRACKING_STALE_AFTER_HOURS)
+        .await?;
+
+    let queue = state
+        .discovered_match_service
+        .count_by_status(game_id)
+        .await?;
+    let retry_exhausted = state
+        .discovered_match_service
+        .count_retry_exhausted(game_id)
+        .await?;
+
+    // The demo catalog counts are global — `demos` carry no game filter on
+    // the count query — so they are reported as-is rather than pretending to
+    // be scoped.
+    let demo_counts = state.demo_service.get_status_counts().await?;
+
+    let auto_link_enabled = state
+        .system_settings_service
+        .get_bool(system_settings::DEMO_AUTO_LINK_ENABLED, true)
+        .await?;
+
+    let response = PipelineOverviewResponse {
+        game_slug,
+        tracking: TrackingHealthSummaryResponse::from_summary(tracking, TRACKING_STALE_AFTER_HOURS),
+        discovered_matches: DiscoveredMatchQueueResponse {
+            pending: queue_count(&queue, "pending"),
+            enriching: queue_count(&queue, "enriching"),
+            enriched: queue_count(&queue, "enriched"),
+            failed: queue_count(&queue, "failed"),
+            retry_exhausted,
+        },
+        demos: DemoStatusCountsResponse {
+            pending: demo_counts
+                .iter()
+                .find(|(s, _)| *s == DemoStatus::Pending)
+                .map_or(0, |(_, c)| *c),
+            processing: demo_counts
+                .iter()
+                .find(|(s, _)| *s == DemoStatus::Processing)
+                .map_or(0, |(_, c)| *c),
+            ready: demo_counts
+                .iter()
+                .find(|(s, _)| *s == DemoStatus::Ready)
+                .map_or(0, |(_, c)| *c),
+            failed: demo_counts
+                .iter()
+                .find(|(s, _)| *s == DemoStatus::Failed)
+                .map_or(0, |(_, c)| *c),
+            archived: demo_counts
+                .iter()
+                .find(|(s, _)| *s == DemoStatus::Archived)
+                .map_or(0, |(_, c)| *c),
+        },
+        auto_link_enabled,
+    };
+
+    Ok(Json(DataResponse::new(response, request_id)))
+}
+
+/// Steam tracking-token health, worst first (admin).
+///
+/// The tokens are the head of the pipeline: one that stops polling stops that
+/// player's matches, ratings and demos with no other symptom.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pipeline/tracking",
+    params(PipelineQuery),
+    responses(
+        (status = 200, description = "Tracking token health", body = DataResponse<Vec<TrackingHealthEntryResponse>>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Game not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn list_pipeline_tracking(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Query(query): Query<PipelineQuery>,
+) -> ApiResult<Json<DataResponse<Vec<TrackingHealthEntryResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    require_pipeline_view(&state, &auth).await?;
+
+    let game_id = resolve_pipeline_game(&state, query.game.as_deref())
+        .await?
+        .map(|(id, _)| id);
+    let limit = query.limit.unwrap_or(25).clamp(1, 200);
+
+    let entries = state
+        .steam_tracking_service
+        .list_health(game_id, limit)
+        .await?;
+
+    let responses: Vec<TrackingHealthEntryResponse> = entries
+        .into_iter()
+        .map(TrackingHealthEntryResponse::from)
+        .collect();
+
+    Ok(Json(DataResponse::new(responses, request_id)))
+}
+
+/// The discovered-match queue, newest first (admin).
+///
+/// Filter by `status=failed` for the enrichment-failure list, which is the
+/// only place the enricher's error strings are visible outside the logs.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pipeline/discovered-matches",
+    params(PipelineQuery),
+    responses(
+        (status = 200, description = "Discovered matches", body = DataResponse<Vec<DiscoveredMatchAdminResponse>>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Game not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn list_pipeline_discovered_matches(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Query(query): Query<PipelineQuery>,
+) -> ApiResult<Json<DataResponse<Vec<DiscoveredMatchAdminResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    require_pipeline_view(&state, &auth).await?;
+
+    let game_id = resolve_pipeline_game(&state, query.game.as_deref())
+        .await?
+        .map(|(id, _)| id);
+    let limit = query.limit.unwrap_or(25).clamp(1, 200);
+
+    let status = query
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(status) = status {
+        // The column is an enum; an unrecognised value would come back as an
+        // empty list and read as "queue is clear".
+        const KNOWN: [&str; 4] = ["pending", "enriching", "enriched", "failed"];
+        if !KNOWN.contains(&status) {
+            return Err(ApiError::bad_request(format!(
+                "Unknown discovered-match status: {status}"
+            )));
+        }
+    }
+
+    let matches = state
+        .discovered_match_service
+        .list_for_admin(game_id, status, limit)
+        .await?;
+
+    let responses: Vec<DiscoveredMatchAdminResponse> = matches
+        .into_iter()
+        .map(DiscoveredMatchAdminResponse::from)
+        .collect();
+
+    Ok(Json(DataResponse::new(responses, request_id)))
 }
 
 // =============================================================================

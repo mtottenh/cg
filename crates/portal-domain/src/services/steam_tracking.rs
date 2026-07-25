@@ -3,7 +3,9 @@
 use crate::entities::steam_tracking::{
     CreateSteamTrackingCommand, SteamTracking, UpdatePollResultCommand,
 };
-use crate::repositories::steam_tracking::{CreateSteamTracking, SteamTrackingRepository};
+use crate::repositories::steam_tracking::{
+    CreateSteamTracking, SteamTrackingRepository, TrackingHealthEntry, TrackingHealthSummary,
+};
 use crate::repositories::user::PlayerRepository;
 use portal_core::{DomainError, GameId, PlayerId, SteamTrackingId};
 use std::sync::Arc;
@@ -153,6 +155,28 @@ where
         cmd: UpdatePollResultCommand,
     ) -> Result<SteamTracking, DomainError> {
         self.tracking_repo.update_poll_result(id, cmd).await
+    }
+
+    /// Tracking-token health for the admin pipeline view (P-73), worst first.
+    #[instrument(skip(self))]
+    pub async fn list_health(
+        &self,
+        game_id: Option<GameId>,
+        limit: i64,
+    ) -> Result<Vec<TrackingHealthEntry>, DomainError> {
+        self.tracking_repo.list_health(game_id, limit).await
+    }
+
+    /// Aggregate tracking-token health counts.
+    #[instrument(skip(self))]
+    pub async fn health_summary(
+        &self,
+        game_id: Option<GameId>,
+        stale_after_hours: i64,
+    ) -> Result<TrackingHealthSummary, DomainError> {
+        self.tracking_repo
+            .tracking_health_summary(game_id, stale_after_hours)
+            .await
     }
 }
 

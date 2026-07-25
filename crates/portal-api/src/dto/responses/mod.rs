@@ -14,6 +14,7 @@ pub mod game;
 pub mod league;
 pub mod league_team;
 pub mod lineup;
+pub mod pipeline;
 pub mod player;
 pub mod player_game_profile;
 pub mod progression;
@@ -72,6 +73,10 @@ pub use league_team::{
     LeagueTeamSummaryResponse, LeagueTeamWithSeasonResponse, PlayerLeagueTeamMembershipResponse,
 };
 pub use lineup::{MatchLineupPlayerResponse, MatchLineupResponse};
+pub use pipeline::{
+    DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, PipelineOverviewResponse,
+    TRACKING_STALE_AFTER_HOURS, TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
+};
 pub use player::{PlayerResponse, PlayerSearchResponse, SocialLinksResponse};
 pub use player_game_profile::{
     DisplayStatResponse, MatchHistoryEntryResponse, PlayerGameProfileResponse,

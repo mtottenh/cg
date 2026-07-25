@@ -151,6 +151,19 @@ pub struct LeagueInvitationResponse {
     /// carry `team_name`/`league_name`, so the asymmetry was unintended.
     pub league_name: String,
     pub user_id: String,
+    /// Username of the invited/applying user. Always present.
+    ///
+    /// P-115: the admin invitations and applications tables had only `user_id`
+    /// to show and truncated it to 8 characters — and UUID v7 prefixes are
+    /// timestamps, so rows created seconds apart were indistinguishable rather
+    /// than merely cryptic. `LeagueMemberResponse` has carried `username`
+    /// since it existed; this closes the asymmetry.
+    pub username: String,
+    /// The user's display name, when they have a player profile. This is the
+    /// name the invite search shows the organiser, so it is what the resulting
+    /// row should lead with; `username` is the fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub invitation_type: String,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -180,6 +193,8 @@ impl LeagueInvitationResponse {
             league_id: inv.league_id.to_string(),
             league_name,
             user_id: inv.user_id.to_string(),
+            username: inv.username,
+            display_name: inv.display_name,
             invitation_type: inv.invitation_type.as_str().to_string(),
             status: inv.status.as_str().to_string(),
             message: inv.message,

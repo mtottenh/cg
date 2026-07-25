@@ -1564,3 +1564,230 @@ async fn test_list_members_pagination_declared_and_reaches_past_default_page() {
         );
     }
 }
+
+// ============================================================================
+// P-114 / P-115 REGRESSION TESTS (invitation rows must name a human)
+// ============================================================================
+
+/// P-115: every league-invitation response must carry the invited/applying
+/// user's human identity, not just their `user_id`.
+///
+/// `LeagueMemberResponse` has carried `username` since it existed, but
+/// `LeagueInvitationResponse` exposed only the raw UUID, so the admin
+/// invitations and applications tables could do nothing better than truncate
+/// it to 8 characters — and UUID v7 prefixes are timestamps, so two rows
+/// created seconds apart share theirs and are genuinely indistinguishable.
+///
+/// `display_name` comes from `players` (the name every search surface shows,
+/// including the one an organiser types into when inviting), `username` from
+/// `users` (always present). They are deliberately seeded DIFFERENT here so a
+/// DTO that filled one from the other could not pass.
+///
+/// P-114 rides along: the invitation `message` must be present on the admin
+/// LISTING, not just on the create response — the Message column has nothing
+/// to render otherwise.
+#[tokio::test]
+async fn test_league_invitation_rows_identify_the_user_by_name() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    grant_league_admin_permission(&app).await;
+
+    let invitee = UserBuilder::new()
+        .username("named_invitee")
+        .email("named-invitee-identity@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let invitee_token = create_token_for_user(&app, invitee.id);
+
+    // UserBuilder seeds display_name = username; force them apart so the two
+    // fields cannot be confused for one another.
+    sqlx::query("UPDATE players SET display_name = $2 WHERE user_id = $1")
+        .bind(invitee.id)
+        .bind("Named Invitee")
+        .execute(app.pool())
+        .await
+        .expect("set distinct display name");
+
+    let applicant = UserBuilder::new()
+        .username("named_applicant")
+        .email("named-applicant-identity@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let applicant_token = create_token_for_user(&app, applicant.id);
+    sqlx::query("UPDATE players SET display_name = $2 WHERE user_id = $1")
+        .bind(applicant.id)
+        .bind("Named Applicant")
+        .execute(app.pool())
+        .await
+        .expect("set distinct display name");
+
+    let create = app
+        .post_json(
+            "/v1/leagues",
+            &json!({
+                "game_id": game_id,
+                "name": "Named Rows League",
+                "slug": "named-rows-league",
+                "access_type": "application"
+            }),
+        )
+        .await;
+    create.assert_status(StatusCode::CREATED);
+    let league_id = create.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // --- Invitation: create response ---------------------------------------
+    let invite_message = "Come play for us";
+    let invite = app
+        .post_json(
+            &format!("/v1/leagues/{league_id}/invitations"),
+            &json!({ "user_id": invitee.id.to_string(), "message": invite_message }),
+        )
+        .await;
+    invite.assert_status(StatusCode::CREATED);
+    let invite_body: serde_json::Value = invite.json();
+    assert_eq!(
+        invite_body["data"]["username"], "named_invitee",
+        "invitation response must name the invited user: {invite_body}"
+    );
+    assert_eq!(
+        invite_body["data"]["display_name"], "Named Invitee",
+        "invitation response must carry the invitee's display name: {invite_body}"
+    );
+
+    // --- Invitation: admin listing (what the Invitations tab renders) ------
+    let admin_list = app
+        .get_auth(&format!("/v1/leagues/{league_id}/invitations"))
+        .await;
+    admin_list.assert_status(StatusCode::OK);
+    let admin_body: serde_json::Value = admin_list.json();
+    let invitation_rows = admin_body.as_array().expect("invitation list");
+    assert_eq!(invitation_rows.len(), 1, "one invitation: {admin_body}");
+    assert_eq!(
+        invitation_rows[0]["username"], "named_invitee",
+        "invitation listing must name the user, not just their id: {admin_body}"
+    );
+    assert_eq!(invitation_rows[0]["display_name"], "Named Invitee");
+    // P-114: the message P-94 taught the client to send must survive to the
+    // listing, or the Message column has nothing to show.
+    assert_eq!(
+        invitation_rows[0]["message"], invite_message,
+        "invitation listing must carry the message: {admin_body}"
+    );
+
+    // --- Application: create response + admin listing ----------------------
+    let apply_message = "I would like to join";
+    let apply = app
+        .post_json_with_token(
+            &format!("/v1/leagues/{league_id}/apply"),
+            &json!({ "message": apply_message }),
+            &applicant_token,
+        )
+        .await;
+    apply.assert_status(StatusCode::CREATED);
+    let apply_body: serde_json::Value = apply.json();
+    assert_eq!(
+        apply_body["data"]["username"], "named_applicant",
+        "application response must name the applicant: {apply_body}"
+    );
+    assert_eq!(apply_body["data"]["display_name"], "Named Applicant");
+
+    let applications = app
+        .get_auth(&format!("/v1/leagues/{league_id}/applications"))
+        .await;
+    applications.assert_status(StatusCode::OK);
+    let applications_body: serde_json::Value = applications.json();
+    let application_rows = applications_body.as_array().expect("application list");
+    assert_eq!(
+        application_rows.len(),
+        1,
+        "one application: {applications_body}"
+    );
+    assert_eq!(
+        application_rows[0]["username"], "named_applicant",
+        "application listing must name the applicant: {applications_body}"
+    );
+    assert_eq!(application_rows[0]["display_name"], "Named Applicant");
+    assert_eq!(application_rows[0]["message"], apply_message);
+
+    // --- The invitee's own listing ----------------------------------------
+    let mine = app
+        .get_with_token("/v1/users/me/league-invitations", &invitee_token)
+        .await;
+    mine.assert_status(StatusCode::OK);
+    let mine_body: serde_json::Value = mine.json();
+    let mine_rows = mine_body.as_array().expect("my invitation list");
+    assert_eq!(mine_rows.len(), 1, "one pending invitation: {mine_body}");
+    assert_eq!(mine_rows[0]["username"], "named_invitee");
+    assert_eq!(mine_rows[0]["display_name"], "Named Invitee");
+}
+
+/// P-115, the other half: a user with no `players` row still has to be
+/// identifiable. `username` is `NOT NULL` on `users`, so it is always
+/// available; `display_name` lives on `players` and is therefore optional.
+/// The join must be a LEFT one — an INNER join here would silently drop the
+/// invitation from every listing rather than merely omitting a name.
+#[tokio::test]
+async fn test_league_invitation_row_names_a_user_without_a_player_profile() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    grant_league_admin_permission(&app).await;
+
+    let invitee = UserBuilder::new()
+        .username("playerless_invitee")
+        .email("playerless-invitee@example.com")
+        .build_persisted(app.pool())
+        .await;
+
+    sqlx::query("DELETE FROM players WHERE user_id = $1")
+        .bind(invitee.id)
+        .execute(app.pool())
+        .await
+        .expect("remove player profile");
+
+    let create = app
+        .post_json(
+            "/v1/leagues",
+            &json!({
+                "game_id": game_id,
+                "name": "Playerless League",
+                "slug": "playerless-league",
+                "access_type": "invite_only"
+            }),
+        )
+        .await;
+    create.assert_status(StatusCode::CREATED);
+    let league_id = create.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let invite = app
+        .post_json(
+            &format!("/v1/leagues/{league_id}/invitations"),
+            &json!({ "user_id": invitee.id.to_string() }),
+        )
+        .await;
+    invite.assert_status(StatusCode::CREATED);
+
+    let admin_list = app
+        .get_auth(&format!("/v1/leagues/{league_id}/invitations"))
+        .await;
+    admin_list.assert_status(StatusCode::OK);
+    let body: serde_json::Value = admin_list.json();
+    let rows = body.as_array().expect("invitation list");
+    assert_eq!(
+        rows.len(),
+        1,
+        "an invitation must not vanish because the user has no player profile: {body}"
+    );
+    assert_eq!(rows[0]["username"], "playerless_invitee");
+    assert!(
+        rows[0]["display_name"].is_null() || rows[0].get("display_name").is_none(),
+        "no player profile means no display name: {body}"
+    );
+}

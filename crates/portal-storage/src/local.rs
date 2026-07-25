@@ -104,6 +104,13 @@ impl StorageBackend for LocalStorage {
     }
 
     #[instrument(skip(self))]
+    async fn read(&self, key: &str) -> Result<bytes::Bytes, StorageError> {
+        let path = self.full_path(key);
+        let data = fs::read(&path).await?;
+        Ok(bytes::Bytes::from(data))
+    }
+
+    #[instrument(skip(self))]
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
         let path = self.full_path(key);
 

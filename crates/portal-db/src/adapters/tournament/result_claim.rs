@@ -105,8 +105,9 @@ impl ResultClaimRepository for PgResultClaimRepository {
 
         let new_claim = NewResultClaim {
             match_id: claim.match_id.as_uuid(),
-            submitted_by_registration_id: claim.submitted_by_registration_id.as_uuid(),
-            submitted_by_user_id: claim.submitted_by_user_id.as_uuid(),
+            submitted_by_registration_id: claim.submitted_by_registration_id.map(|r| r.as_uuid()),
+            submitted_by_user_id: claim.submitted_by_user_id.map(|u| u.as_uuid()),
+            source: claim.source.clone(),
             claimed_winner_registration_id: claim.claimed_winner_registration_id.as_uuid(),
             claimed_participant1_score: claim.participant1_score,
             claimed_participant2_score: claim.participant2_score,
@@ -123,9 +124,9 @@ impl ResultClaimRepository for PgResultClaimRepository {
                 match_id, submitted_by_registration_id, submitted_by_user_id,
                 claimed_winner_registration_id, claimed_participant1_score,
                 claimed_participant2_score, game_results, auto_confirm_at,
-                evidence_ids, demo_link_ids, submitter_notes
+                evidence_ids, demo_link_ids, submitter_notes, source
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING *
             ",
         )
@@ -140,6 +141,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(&new_claim.evidence_ids)
         .bind(&new_claim.demo_link_ids)
         .bind(&new_claim.submitter_notes)
+        .bind(&new_claim.source)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(format!("Failed to create result claim: {e}")))?;
@@ -273,7 +275,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
         &self,
         id: ResultClaimId,
         confirmed_by_registration_id: TournamentRegistrationId,
-        confirmed_by_user_id: UserId,
+        confirmed_by_user_id: Option<UserId>,
         was_auto: bool,
         match_id: TournamentMatchId,
         winner_registration_id: TournamentRegistrationId,
@@ -315,7 +317,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
         )
         .bind(id.as_uuid())
         .bind(confirmed_by_registration_id.as_uuid())
-        .bind(confirmed_by_user_id.as_uuid())
+        .bind(confirmed_by_user_id.map(|u| u.as_uuid()))
         .bind(was_auto)
         .fetch_optional(&mut *tx)
         .await
@@ -401,15 +403,15 @@ impl ResultClaimRepository for PgResultClaimRepository {
                 match_id, submitted_by_registration_id, submitted_by_user_id,
                 claimed_winner_registration_id, claimed_participant1_score,
                 claimed_participant2_score, game_results, auto_confirm_at,
-                evidence_ids, demo_link_ids, submitter_notes
+                evidence_ids, demo_link_ids, submitter_notes, source
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING *
             ",
         )
         .bind(claim.match_id.as_uuid())
-        .bind(claim.submitted_by_registration_id.as_uuid())
-        .bind(claim.submitted_by_user_id.as_uuid())
+        .bind(claim.submitted_by_registration_id.map(|r| r.as_uuid()))
+        .bind(claim.submitted_by_user_id.map(|u| u.as_uuid()))
         .bind(claim.claimed_winner_registration_id.as_uuid())
         .bind(claim.participant1_score)
         .bind(claim.participant2_score)
@@ -418,6 +420,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(&evidence_uuids)
         .bind(&demo_link_uuids)
         .bind(&claim.notes)
+        .bind(&claim.source)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(format!("Failed to create result claim: {e}")))?;
@@ -488,10 +491,11 @@ fn row_to_domain(row: ResultClaimRow) -> Result<ResultClaim, DomainError> {
     Ok(ResultClaim {
         id: ResultClaimId::from_uuid(row.id),
         match_id: TournamentMatchId::from_uuid(row.match_id),
-        submitted_by_registration_id: TournamentRegistrationId::from_uuid(
-            row.submitted_by_registration_id,
-        ),
-        submitted_by_user_id: UserId::from_uuid(row.submitted_by_user_id),
+        submitted_by_registration_id: row
+            .submitted_by_registration_id
+            .map(TournamentRegistrationId::from_uuid),
+        submitted_by_user_id: row.submitted_by_user_id.map(UserId::from_uuid),
+        source: row.source,
         claimed_winner_registration_id: TournamentRegistrationId::from_uuid(
             row.claimed_winner_registration_id,
         ),

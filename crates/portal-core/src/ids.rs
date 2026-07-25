@@ -418,6 +418,31 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for an issued server-agent client certificate.
+    ServerAgentCertId
+);
+
+define_id!(
+    /// Unique identifier for a server booking (scheduled event hold).
+    ServerBookingId
+);
+
+define_id!(
+    /// Unique identifier for a match's server reservation.
+    ServerReservationId
+);
+
+define_id!(
+    /// Unique identifier for a raw game-server webhook event.
+    ServerEventId
+);
+
+define_id!(
+    /// Unique identifier for a mid-series substitution.
+    MatchSubstitutionId
+);
+
+define_id!(
     /// Unique identifier for a saga execution.
     SagaId
 );

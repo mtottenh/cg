@@ -364,6 +364,12 @@ pub async fn perform_veto_action(
         )
         .await?;
 
+    // Veto complete → kick off server assignment (MatchZy, §6.6). Fire and
+    // forget: the drain task owns the flow; veto responses never wait on it.
+    if result.veto_complete {
+        let _ = state.server_assignment_tx.send(match_id);
+    }
+
     // Broadcast action to WebSocket lobby
     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
         if result.veto_complete {

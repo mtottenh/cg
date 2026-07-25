@@ -130,6 +130,12 @@ pub struct LifecyclePassSummary {
     pub evidence_expired: u32,
     /// Stale pending evidence records cleaned.
     pub evidence_stale_cleaned: u32,
+    /// Game servers marked offline for missing agent heartbeats.
+    pub game_servers_marked_offline: u32,
+    /// Queued reservations allocated + loaded this pass.
+    pub reservations_allocated: u32,
+    /// Stuck/silent reservations re-driven or reconciled.
+    pub reservations_reconciled: u32,
     /// Errors encountered (each already logged; the pass continues).
     pub errors: u32,
 }
@@ -241,6 +247,30 @@ pub async fn run_lifecycle_pass(
                 error!(error = %e, "lifecycle: stale-pending evidence sweep failed");
                 summary.errors += 1;
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 7: game-server reservations — allocate queued, retry stuck loads,
+    //    reconcile silent matches (§6.6)
+    // ------------------------------------------------------------------
+    let reservation_summary = crate::game_server_flow::run_reservation_pass(state).await;
+    summary.reservations_allocated = reservation_summary.allocated;
+    summary.reservations_reconciled =
+        reservation_summary.load_retried + reservation_summary.reconciled;
+    summary.errors += reservation_summary.errors;
+
+    // ------------------------------------------------------------------
+    // 8: game servers with stale agent heartbeats → offline (§6.7)
+    // ------------------------------------------------------------------
+    match state.game_server_registry.sweep_stale(now).await {
+        Ok(transitioned) => {
+            summary.game_servers_marked_offline =
+                u32::try_from(transitioned.len()).unwrap_or(u32::MAX);
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: game-server staleness sweep failed");
+            summary.errors += 1;
         }
     }
 

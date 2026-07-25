@@ -56,6 +56,8 @@ use super::{
 };
 use crate::steam_openid::{SteamAuthConfig, SteamOpenIdVerifier};
 use crate::websocket::VetoLobbyManager;
+use crate::websocket::agent_manager::AgentConnectionManager;
+use portal_domain::services::game_server::CertificateAuthority;
 use portal_plugins::PluginManager;
 
 // ============================================================================
@@ -289,6 +291,40 @@ impl FromRef<AppState> for SteamTrackingState {
     }
 }
 
+/// State slice for game-server integration handlers (admin registry,
+/// agent enrollment, and the agent WebSocket channel).
+#[derive(Clone)]
+pub struct GameServerState {
+    /// Registry service (CRUD, enrollment, heartbeats, bookings).
+    pub registry: super::AppGameServerRegistryService,
+    /// Connected-agent manager.
+    pub agent_manager: Arc<AgentConnectionManager>,
+    /// Portal CA (None = enrollment disabled).
+    pub agent_ca: Option<Arc<CertificateAuthority>>,
+    /// Accept `X-Dev-Server-Id` auth (tests/dev only).
+    pub insecure_dev_auth: bool,
+    /// Public https base URL (demo upload / config URLs in responses).
+    pub public_base_url: String,
+    /// Reservation lookups (heartbeat §6.7 ours-vs-external detection).
+    pub server_reservation_repo: Arc<portal_db::PgServerReservationRepository>,
+    /// Event rows (admin-command audit trail).
+    pub server_event_repo: Arc<portal_db::PgServerEventRepository>,
+}
+
+impl FromRef<AppState> for GameServerState {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            registry: s.game_server_registry.clone(),
+            agent_manager: Arc::clone(&s.agent_manager),
+            agent_ca: s.agent_ca.clone(),
+            insecure_dev_auth: s.agent_insecure_dev_auth,
+            public_base_url: s.public_base_url.clone(),
+            server_reservation_repo: Arc::clone(&s.server_reservation_repo),
+            server_event_repo: Arc::clone(&s.server_event_repo),
+        }
+    }
+}
+
 /// State slice used by file-upload handlers (player avatar/banner, team
 /// logo/banner). Team uploads need the league-team service to persist the
 /// stored URL back to the team row after a successful upload.
@@ -433,6 +469,9 @@ pub struct TournamentState {
     /// Award service — `complete_tournament` auto-finalizes the
     /// tournament's active awards.
     pub award_service: AppAwardService,
+    /// Veto-completion / check-in server-assignment trigger (§6.6).
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
 }
 
 impl FromRef<AppState> for TournamentState {
@@ -457,6 +496,7 @@ impl FromRef<AppState> for TournamentState {
             plugin_manager: Arc::clone(&s.plugin_manager),
             role_repo: s.role_repo.clone(),
             award_service: s.award_service.clone(),
+            server_assignment_tx: s.server_assignment_tx.clone(),
         }
     }
 }
@@ -796,6 +836,9 @@ pub struct VetoState {
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
     /// Tournament map pool repository (resolve effective map pool).
     pub tournament_map_pool_repo: Arc<PgTournamentMapPoolRepository>,
+    /// Veto-completion trigger for server assignment (MatchZy, §6.6).
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
     /// Game repository (default map pool fallback).
     pub game_repo: GameRepository,
 }
@@ -811,6 +854,7 @@ impl FromRef<AppState> for VetoState {
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             tournament_map_pool_repo: Arc::clone(&s.tournament_map_pool_repo),
             game_repo: s.game_repo.clone(),
+            server_assignment_tx: s.server_assignment_tx.clone(),
         }
     }
 }
@@ -856,6 +900,9 @@ pub struct VetoWsState {
     pub veto_lobby_manager: Arc<VetoLobbyManager>,
     /// Tournament match repository.
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
+    /// Veto-completion trigger for server assignment (MatchZy, §6.6).
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
 }
 
 impl FromRef<AppState> for VetoWsState {
@@ -869,6 +916,7 @@ impl FromRef<AppState> for VetoWsState {
             veto_lobby_chat_service: s.veto_lobby_chat_service.clone(),
             veto_lobby_manager: Arc::clone(&s.veto_lobby_manager),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
+            server_assignment_tx: s.server_assignment_tx.clone(),
         }
     }
 }

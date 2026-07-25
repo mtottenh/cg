@@ -9,6 +9,7 @@ pub mod demos;
 pub mod dispute;
 pub mod evidence;
 pub mod forfeit;
+pub mod game_servers;
 pub mod games;
 pub mod internal;
 pub mod league_teams;

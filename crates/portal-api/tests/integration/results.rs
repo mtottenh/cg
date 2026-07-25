@@ -1488,7 +1488,15 @@ async fn test_resolved_claim_updates_conflict_at_repo_level() {
 
     let err = repo
         .confirm_and_apply_to_match(
-            claim_uuid, p1_reg_id, user_id, false, match_uuid, p1_reg_id, p1_reg_id, 2, 0,
+            claim_uuid,
+            p1_reg_id,
+            Some(user_id),
+            false,
+            match_uuid,
+            p1_reg_id,
+            p1_reg_id,
+            2,
+            0,
         )
         .await
         .expect_err("second confirm must be rejected");

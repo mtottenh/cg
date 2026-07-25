@@ -211,6 +211,61 @@ impl TestApp {
         .await
     }
 
+    /// POST raw bytes with custom headers (MatchZy demo/backup uploads).
+    /// Returns just the status.
+    pub async fn post_bytes_with_headers(
+        &self,
+        uri: &str,
+        body: Vec<u8>,
+        headers: &[(&str, &str)],
+    ) -> axum::http::StatusCode {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("Content-Type", "application/octet-stream");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        self.request(builder.body(Body::from(body)).unwrap())
+            .await
+            .status
+    }
+
+    /// GET with an explicit bearer token (machine-facing endpoints).
+    pub async fn get_with_bearer(&self, uri: &str, token: &str) -> TestResponse {
+        self.request(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    /// Make a POST request with JSON body and one custom header (no auth) —
+    /// the MatchZy webhook shape (single bearer header pair).
+    pub async fn post_json_with_header<T: serde::Serialize>(
+        &self,
+        uri: &str,
+        body: &T,
+        header_name: &str,
+        header_value: &str,
+    ) -> TestResponse {
+        let json = serde_json::to_string(body).unwrap();
+        self.request(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("Content-Type", "application/json")
+                .header(header_name, header_value)
+                .body(Body::from(json))
+                .unwrap(),
+        )
+        .await
+    }
+
     /// Make a POST request with JSON body (without auth).
     pub async fn post_json_no_auth<T: serde::Serialize>(
         &self,

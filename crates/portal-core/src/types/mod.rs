@@ -2,6 +2,7 @@
 
 mod demo;
 pub mod evidence;
+mod game_server;
 mod league_team;
 mod lineup;
 mod pagination;
@@ -19,6 +20,7 @@ pub use evidence::{
     EvidenceValidationResult, ExtractedMatchResult, GameMatchResult, MatchEvidenceContext,
     ParticipantEvidenceContext,
 };
+pub use game_server::{AgentGamestate, GameServerStatus, ReservationStatus, SubstitutionStatus};
 pub use league_team::{
     LeagueTeamInvitationStatus, LeagueTeamInvitationType, LeagueTeamMemberStatus, LeagueTeamRole,
     LeagueTeamSeasonStatus, LeagueTeamStatus, RosterLockStatus, SeasonStatus,

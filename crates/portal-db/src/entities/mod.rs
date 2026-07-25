@@ -16,6 +16,7 @@ mod dispute;
 mod evidence;
 mod forfeit;
 mod game;
+mod game_server;
 mod league;
 pub mod league_team;
 mod match_lineup;
@@ -47,6 +48,10 @@ pub use evidence::{
 };
 pub use forfeit::{ForfeitRecordRow, NewForfeitRecord};
 pub use game::{GameRow, NewGame, UpdateGame};
+pub use game_server::{
+    GameServerRow, MatchSubstitutionRow, ServerAgentCertRow, ServerBookingRow, ServerEventRow,
+    ServerReservationRow,
+};
 pub use league::{
     LeagueInvitationRow, LeagueMemberRow, LeagueMemberWithUserRow, LeagueRow, NewLeague,
     NewLeagueInvitation, NewLeagueMember, UpdateLeague, UpdateLeagueInvitation,

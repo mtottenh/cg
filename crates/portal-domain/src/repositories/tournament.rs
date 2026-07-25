@@ -1444,7 +1444,7 @@ pub trait ResultClaimRepository: Send + Sync {
         &self,
         id: ResultClaimId,
         confirmed_by_registration_id: TournamentRegistrationId,
-        confirmed_by_user_id: UserId,
+        confirmed_by_user_id: Option<UserId>,
         was_auto: bool,
         match_id: TournamentMatchId,
         winner_registration_id: TournamentRegistrationId,
@@ -1482,8 +1482,10 @@ pub trait ResultClaimRepository: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct CreateResultClaim {
     pub match_id: TournamentMatchId,
-    pub submitted_by_registration_id: TournamentRegistrationId,
-    pub submitted_by_user_id: UserId,
+    pub submitted_by_registration_id: Option<TournamentRegistrationId>,
+    pub submitted_by_user_id: Option<UserId>,
+    /// Claim origin: `participant` (default), `server`, or `admin`.
+    pub source: String,
     pub claimed_winner_registration_id: TournamentRegistrationId,
     pub participant1_score: i32,
     pub participant2_score: i32,

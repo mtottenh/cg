@@ -219,7 +219,11 @@ pub async fn list_result_claims(
     // the history can show who submitted each result, not just raw IDs.
     let user_ids: Vec<UserId> = claims
         .iter()
-        .flat_map(|c| std::iter::once(c.submitted_by_user_id).chain(c.confirmed_by_user_id))
+        .flat_map(|c| {
+            c.submitted_by_user_id
+                .into_iter()
+                .chain(c.confirmed_by_user_id)
+        })
         .collect();
     let display_names: HashMap<UserId, String> = state
         .player_service
@@ -232,7 +236,9 @@ pub async fn list_result_claims(
     let responses: Vec<ResultClaimResponse> = claims
         .into_iter()
         .map(|c| {
-            let submitted_by_display_name = display_names.get(&c.submitted_by_user_id).cloned();
+            let submitted_by_display_name = c
+                .submitted_by_user_id
+                .and_then(|id| display_names.get(&id).cloned());
             let confirmed_by_display_name = c
                 .confirmed_by_user_id
                 .and_then(|id| display_names.get(&id).cloned());

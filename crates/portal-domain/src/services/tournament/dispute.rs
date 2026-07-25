@@ -97,7 +97,7 @@ where
         };
 
         if let Some(claim) = &disputed_claim
-            && claim.submitted_by_registration_id == disputed_by_registration_id
+            && claim.submitted_by_registration_id == Some(disputed_by_registration_id)
         {
             return Err(DomainError::InvalidState(
                 "Cannot dispute your own result claim".to_string(),

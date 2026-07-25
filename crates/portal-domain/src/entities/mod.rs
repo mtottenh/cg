@@ -14,6 +14,7 @@ pub mod dispute;
 pub mod eligibility;
 pub mod evidence;
 pub mod forfeit;
+pub mod game_server;
 pub mod league;
 pub mod league_team;
 pub mod match_lifecycle;
@@ -74,6 +75,10 @@ pub use evidence::{
 pub use forfeit::{
     DisqualifyCommand, ForfeitRecord, ForfeitResult, ForfeitTrigger, ForfeitType,
     ProcessForfeitCommand, WithdrawFromTournamentCommand,
+};
+pub use game_server::{
+    AgentCertificate, GameServer, HeartbeatUpdate, MatchSubstitution, ServerBooking, ServerEvent,
+    ServerReservation,
 };
 pub use league::{
     CreateLeagueCommand, League, LeagueAccessType, LeagueInvitation, LeagueInvitationStatus,

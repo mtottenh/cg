@@ -75,9 +75,9 @@ use crate::dto::responses::{
 };
 use crate::error::{ApiError, FieldErrorDto};
 use crate::handlers::{
-    admin, auth, availability, awards, bans, demos, dispute, evidence, forfeit, games,
-    league_teams, leagues, player_game_profiles, players, progression, result_reviews, results,
-    roles, steam_auth, steam_tracking, tournaments, uploads, users, veto, veto_delegates,
+    admin, auth, availability, awards, bans, demos, dispute, evidence, forfeit, game_servers,
+    games, league_teams, leagues, player_game_profiles, players, progression, result_reviews,
+    results, roles, steam_auth, steam_tracking, tournaments, uploads, users, veto, veto_delegates,
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -357,6 +357,28 @@ use utoipa_swagger_ui::SwaggerUi;
         dispute::admin_resolve_rematch,
         dispute::admin_resolve_adjusted,
         dispute::admin_resolve_double_dq,
+        // Game servers (admin registry)
+        game_servers::admin::list_game_servers,
+        game_servers::admin::create_game_server,
+        game_servers::admin::get_game_server,
+        game_servers::admin::update_game_server,
+        game_servers::admin::delete_game_server,
+        game_servers::admin::mint_enrollment_token,
+        game_servers::admin::revoke_agent,
+        game_servers::admin::list_bookings,
+        game_servers::admin::create_booking,
+        game_servers::admin::delete_booking,
+        game_servers::admin::send_command,
+        game_servers::match_server::get_match_server,
+        game_servers::match_server::assign_match_server,
+        game_servers::match_server::cancel_match_server,
+        game_servers::substitutions::create_substitution,
+        game_servers::substitutions::list_substitutions,
+        game_servers::substitutions::cancel_substitution,
+        game_servers::substitutions::approve_substitution,
+        game_servers::substitutions::reject_substitution,
+        game_servers::substitutions::substitution_options,
+        game_servers::match_server::restore_match_server,
         // Steam tracking
         steam_tracking::register_tracking,
         steam_tracking::get_tracking,
@@ -734,6 +756,27 @@ use utoipa_swagger_ui::SwaggerUi;
             TrackingHealthEntryResponse,
             DiscoveredMatchQueueResponse,
             DiscoveredMatchAdminResponse,
+            // Game servers
+            crate::handlers::game_servers::admin::CreateGameServerRequest,
+            crate::handlers::game_servers::admin::UpdateGameServerRequest,
+            crate::handlers::game_servers::admin::GameServerResponse,
+            crate::handlers::game_servers::admin::EnrollmentTokenResponse,
+            crate::handlers::game_servers::admin::RevokeAgentResponse,
+            crate::handlers::game_servers::admin::CreateServerBookingRequest,
+            crate::handlers::game_servers::admin::ServerBookingResponse,
+            crate::handlers::game_servers::admin::SendCommandRequest,
+            crate::handlers::game_servers::admin::SendCommandResponse,
+            portal_core::types::GameServerStatus,
+            portal_core::types::ReservationStatus,
+            crate::handlers::game_servers::match_server::MatchServerResponse,
+            crate::handlers::game_servers::match_server::LiveScoreResponse,
+            crate::handlers::game_servers::substitutions::CreateSubstitutionRequest,
+            crate::handlers::game_servers::substitutions::SubstitutionResponse,
+            crate::handlers::game_servers::substitutions::SubstitutionOptionsSide,
+            crate::handlers::game_servers::substitutions::SubstitutionPlayerOption,
+            portal_core::types::SubstitutionStatus,
+            crate::handlers::game_servers::match_server::RestoreBackupRequest,
+            crate::handlers::game_servers::match_server::RestoreBackupResponse,
             // Steam Tracking
             crate::handlers::steam_tracking::RegisterSteamTrackingRequest,
             crate::handlers::steam_tracking::UpdateSteamTrackingRequest,
@@ -791,6 +834,7 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "demos", description = "Demo file catalog and browsing"),
         (name = "result_reviews", description = "Result review and validation discrepancy handling"),
         (name = "steam_tracking", description = "CS2 Steam match tracking registration"),
+        (name = "game_servers", description = "Game server registry and agent management"),
         (name = "awards", description = "Tournament/season awards, stat leaderboards, and trophy cases")
     ),
     modifiers(&SecurityAddon)

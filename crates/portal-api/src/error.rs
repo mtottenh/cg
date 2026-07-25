@@ -103,6 +103,15 @@ impl ApiError {
         )
     }
 
+    /// Create a service unavailable error (feature not configured).
+    pub fn service_unavailable(detail: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Service Unavailable",
+            detail,
+        )
+    }
+
     /// Create a not implemented error.
     pub fn not_implemented(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_IMPLEMENTED, "Not Implemented", detail)
@@ -156,6 +165,12 @@ impl From<DomainError> for ApiError {
                 Self::not_found(format!("Tournament not found: {id}"))
             }
             DomainError::LeagueNotFound(id) => Self::not_found(format!("League not found: {id}")),
+            DomainError::GameServerNotFound(id) => {
+                Self::not_found(format!("Game server not found: {id}"))
+            }
+            DomainError::ServerBookingNotFound(id) => {
+                Self::not_found(format!("Server booking not found: {id}"))
+            }
             DomainError::LeagueSeasonNotFound(id) => {
                 Self::not_found(format!("League season not found: {id}"))
             }

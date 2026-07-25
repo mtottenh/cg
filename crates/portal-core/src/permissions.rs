@@ -234,6 +234,10 @@ pub mod admin {
     /// instead. The registry is only a safety net for what is in it.
     pub const GAMES_MANAGE: &str = "admin.games.manage";
 
+    /// Manage game servers - register, edit, enroll, revoke, remove,
+    /// and manage bookings.
+    pub const SERVERS_MANAGE: &str = "admin.servers.manage";
+
     /// All admin permissions for iteration.
     pub const ALL: &[&str] = &[
         USERS_VIEW,
@@ -245,6 +249,7 @@ pub mod admin {
         SYSTEM_MANAGE,
         DEMOS_MANAGE,
         GAMES_MANAGE,
+        SERVERS_MANAGE,
     ];
 }
 

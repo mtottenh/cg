@@ -4,9 +4,13 @@ use crate::entities::league_team::{
     CreateLeagueTeamCommand, LeagueTeam, LeagueTeamMember, LeagueTeamMemberWithPlayer,
     LeagueTeamSeason, LeagueTeamSummary, PlayerLeagueTeamMembership, UpdateLeagueTeamCommand,
 };
+use crate::repositories::EntityChangeRepository;
 use crate::repositories::league_team::{
     AddLeagueTeamMember, CreateLeagueTeam, LeagueSeasonRepository, LeagueTeamMemberRepository,
     LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueTeam,
+};
+use crate::services::league_team::roster_lock::{
+    AuditedOverride, RosterChange, RosterLockOverride, enforce_roster_lock,
 };
 use portal_core::types::{LeagueTeamRole, LeagueTeamSeasonStatus, LeagueTeamStatus};
 use portal_core::{
@@ -30,6 +34,10 @@ where
     team_season_repo: Arc<TSR>,
     member_repo: Arc<TMR>,
     season_repo: Arc<SR>,
+    /// Sink for admin roster-lock overrides (P-18). Trait object rather than a
+    /// fifth generic because nothing here dispatches on the concrete type and
+    /// the extra type parameter would propagate into every state alias.
+    audit_repo: Arc<dyn EntityChangeRepository>,
 }
 
 impl<TR, TSR, TMR, SR> LeagueTeamService<TR, TSR, TMR, SR>
@@ -45,12 +53,23 @@ where
         team_season_repo: Arc<TSR>,
         member_repo: Arc<TMR>,
         season_repo: Arc<SR>,
+        audit_repo: Arc<dyn EntityChangeRepository>,
     ) -> Self {
         Self {
             team_repo,
             team_season_repo,
             member_repo,
             season_repo,
+            audit_repo,
+        }
+    }
+
+    /// Wrap an admin override with the audit sink it must be recorded in, so
+    /// [`enforce_roster_lock`] can never be handed a bypass it cannot record.
+    fn audited<'a>(&'a self, over: &'a RosterLockOverride) -> AuditedOverride<'a> {
+        AuditedOverride {
+            audit: self.audit_repo.as_ref(),
+            over,
         }
     }
 
@@ -88,6 +107,18 @@ where
         self.team_season_repo
             .find_by_team_and_season(team_id, season_id)
             .await
+    }
+
+    /// Resolve the season a team season belongs to.
+    async fn season_for_team_season(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<crate::entities::league_team::LeagueSeason, DomainError> {
+        let team_season = self.get_team_season(team_season_id).await?;
+        self.season_repo
+            .find_by_id(team_season.season_id)
+            .await?
+            .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))
     }
 
     /// Get team members with player details for a team season.
@@ -386,6 +417,10 @@ where
     }
 
     /// Add a member to a team's seasonal roster.
+    ///
+    /// `lock_override` is the audited admin bypass (P-18); `None` for every
+    /// ordinary call. It is only honoured when the lock would otherwise have
+    /// refused, and the bypass is recorded before the member is seated.
     #[instrument(skip(self))]
     pub async fn add_member_authorized(
         &self,
@@ -393,6 +428,7 @@ where
         player_id: PlayerId,
         role: LeagueTeamRole,
         added_by: portal_core::UserId,
+        lock_override: Option<&RosterLockOverride>,
     ) -> Result<LeagueTeamMember, DomainError> {
         let team_season = self.get_team_season(team_season_id).await?;
         let season = self
@@ -401,18 +437,13 @@ where
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
-        // Check roster lock status
-        if role.is_primary() && !season.allows_primary_roster_changes() {
-            return Err(DomainError::InvalidState(
-                "roster is locked for primary member changes".to_string(),
-            ));
-        }
-
-        if !role.is_primary() && !season.allows_substitute_changes() {
-            return Err(DomainError::InvalidState(
-                "roster is locked for substitute changes".to_string(),
-            ));
-        }
+        enforce_roster_lock(
+            &season,
+            team_season_id,
+            RosterChange::Membership(role),
+            lock_override.map(|o| self.audited(o)),
+        )
+        .await?;
 
         // Check if player is already a member of this team season
         if self
@@ -480,11 +511,15 @@ where
     }
 
     /// Remove a member from a team's seasonal roster.
+    ///
+    /// `lock_override` is the audited admin bypass (P-18); `None` for every
+    /// ordinary call.
     #[instrument(skip(self))]
     pub async fn remove_member_authorized(
         &self,
         team_season_id: LeagueTeamSeasonId,
         player_id: PlayerId,
+        lock_override: Option<&RosterLockOverride>,
     ) -> Result<(), DomainError> {
         let team_season = self.get_team_season(team_season_id).await?;
         let season = self
@@ -499,18 +534,13 @@ where
             .await?
             .ok_or(DomainError::NotTeamMember)?;
 
-        // Check roster lock status based on member role
-        if member.role.is_primary() && !season.allows_primary_roster_changes() {
-            return Err(DomainError::InvalidState(
-                "roster is locked for primary member changes".to_string(),
-            ));
-        }
-
-        if !member.role.is_primary() && !season.allows_substitute_changes() {
-            return Err(DomainError::InvalidState(
-                "roster is locked for substitute changes".to_string(),
-            ));
-        }
+        enforce_roster_lock(
+            &season,
+            team_season_id,
+            RosterChange::Membership(member.role),
+            lock_override.map(|o| self.audited(o)),
+        )
+        .await?;
 
         // If removing a captain, ensure at least one captain remains
         if member.role == LeagueTeamRole::Captain {
@@ -560,17 +590,36 @@ where
     /// An admin who genuinely wants a non-owner to hold team-settings authority
     /// assigns the scoped role explicitly (`assign_scoped_role`); that path
     /// stays open and is the intended escape hatch.
+    ///
+    /// # Roster lock (P-16)
+    ///
+    /// A promotion is gated on the season's roster lock — refused under
+    /// `hard_lock`, permitted under `soft_lock` and `open`, and never gated on
+    /// season status. The reasoning is in
+    /// [`roster_lock`](super::roster_lock)'s `refusal_reason`; before this it
+    /// was not lock-checked at all, so the admin UI (which disables the whole
+    /// member-action menu under a hard lock) was stricter than the API.
     #[instrument(skip(self))]
     pub async fn promote_to_captain(
         &self,
         team_season_id: LeagueTeamSeasonId,
         player_id: PlayerId,
+        lock_override: Option<&RosterLockOverride>,
     ) -> Result<LeagueTeamMember, DomainError> {
         let member = self
             .member_repo
             .find_member(team_season_id, player_id)
             .await?
             .ok_or(DomainError::NotTeamMember)?;
+
+        let season = self.season_for_team_season(team_season_id).await?;
+        enforce_roster_lock(
+            &season,
+            team_season_id,
+            RosterChange::Role,
+            lock_override.map(|o| self.audited(o)),
+        )
+        .await?;
 
         if member.role == LeagueTeamRole::Captain {
             return Err(DomainError::Conflict(
@@ -599,17 +648,29 @@ where
     }
 
     /// Demote a captain to player.
+    ///
+    /// Lock-gated exactly as [`Self::promote_to_captain`] is (P-16).
     #[instrument(skip(self))]
     pub async fn demote_from_captain(
         &self,
         team_season_id: LeagueTeamSeasonId,
         player_id: PlayerId,
+        lock_override: Option<&RosterLockOverride>,
     ) -> Result<LeagueTeamMember, DomainError> {
         let member = self
             .member_repo
             .find_member(team_season_id, player_id)
             .await?
             .ok_or(DomainError::NotTeamMember)?;
+
+        let season = self.season_for_team_season(team_season_id).await?;
+        enforce_roster_lock(
+            &season,
+            team_season_id,
+            RosterChange::Role,
+            lock_override.map(|o| self.audited(o)),
+        )
+        .await?;
 
         if member.role != LeagueTeamRole::Captain {
             return Err(DomainError::Conflict("member is not a captain".to_string()));
@@ -700,12 +761,17 @@ where
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
-        // Check roster lock status
-        if member.role.is_primary() && !season.allows_primary_roster_changes() {
-            return Err(DomainError::InvalidState(
-                "roster is locked; cannot leave team".to_string(),
-            ));
-        }
+        // Same enforcement point as every other roster mutation. This used to
+        // ask only the *primary* question, so a substitute could walk off a
+        // hard-locked roster — the P-15 defect shape, at a fourth site.
+        // A player leaving is never an admin override.
+        enforce_roster_lock(
+            &season,
+            team_season_id,
+            RosterChange::Membership(member.role),
+            None,
+        )
+        .await?;
 
         self.member_repo
             .remove_member(team_season_id, player_id)
@@ -813,6 +879,7 @@ where
             team_season_repo: Arc::clone(&self.team_season_repo),
             member_repo: Arc::clone(&self.member_repo),
             season_repo: Arc::clone(&self.season_repo),
+            audit_repo: Arc::clone(&self.audit_repo),
         }
     }
 }

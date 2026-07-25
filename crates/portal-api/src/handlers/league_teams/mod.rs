@@ -35,6 +35,73 @@ use crate::error::ApiError;
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::state::LeagueTeamState;
 use portal_core::{LeagueTeamSeasonId, ScopeType};
+use portal_domain::services::RosterLockOverride;
+
+/// Roster-lock override carried in the query string.
+///
+/// The three roster endpoints that take no request body (remove member,
+/// promote, demote) accept the override here; `add_team_member` takes the same
+/// two fields in its JSON body. See [`resolve_roster_lock_override`].
+#[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
+pub struct RosterLockOverrideParams {
+    /// Bypass the season's roster lock (platform team admins only).
+    #[serde(default)]
+    pub override_roster_lock: bool,
+
+    /// Why the lock was overridden. Required when `override_roster_lock` is
+    /// set; at least 10 characters.
+    #[serde(default)]
+    pub override_reason: Option<String>,
+}
+
+/// Minimum length of an override justification, in characters.
+///
+/// Mirrors the `#[validate(length(min = 10))]` on
+/// `AddLeagueTeamMemberRequest::override_reason` so the body and query-string
+/// forms of the override cannot drift apart.
+const MIN_OVERRIDE_REASON_LEN: usize = 10;
+
+/// Turn a requested roster-lock override into a domain [`RosterLockOverride`],
+/// or refuse it (P-18).
+///
+/// Two things make this an *audited* override rather than a hole in the lock:
+///
+/// 1. It is gated on the **platform** team-admin override, not on captaincy —
+///    a captain cannot unlock their own roster, which is the entire point of
+///    the lock.
+/// 2. A justification is mandatory. It is carried into the audit row written by
+///    the domain enforcement point before the mutation is allowed to proceed,
+///    so "who, when, why" is always recorded.
+pub(crate) async fn resolve_roster_lock_override(
+    perm: &PermissionChecker,
+    auth: &AuthenticatedUser,
+    requested: bool,
+    reason: Option<String>,
+    request_id: &str,
+) -> Result<Option<RosterLockOverride>, ApiError> {
+    if !requested {
+        return Ok(None);
+    }
+
+    if !perm.has_admin_override(auth, ScopeType::Team).await {
+        return Err(ApiError::forbidden(
+            "Only platform team admins can override a roster lock",
+        ));
+    }
+
+    let reason = reason.unwrap_or_default().trim().to_string();
+    if reason.chars().count() < MIN_OVERRIDE_REASON_LEN {
+        return Err(ApiError::bad_request(format!(
+            "override_reason is required when overriding the roster lock and must be at least {MIN_OVERRIDE_REASON_LEN} characters"
+        )));
+    }
+
+    Ok(Some(RosterLockOverride {
+        overridden_by: auth.player_id,
+        reason,
+        request_id: (request_id != "unknown").then(|| request_id.to_string()),
+    }))
+}
 
 /// Extract request ID from headers.
 pub(crate) fn get_request_id(headers: &HeaderMap) -> &str {

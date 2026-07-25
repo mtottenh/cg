@@ -1730,3 +1730,573 @@ async fn test_get_player_league_teams() {
     let body: serde_json::Value = response.json();
     assert!(body["data"].as_array().unwrap().is_empty());
 }
+
+// ============================================================================
+// ROSTER LOCK — P-14 / P-15 / P-16 / P-18
+//
+// These four findings are one mechanism, so they are tested as one block.
+// The register's framing matters for what these tests must prove:
+//
+//   P-14  the lock could not be set by ANY caller, so every check below was
+//         unreachable code. A test that only asserts "hard_lock refuses X" can
+//         pass against a build where the lock can never be turned on.
+//   P-15  the direct path and the invitation path disagreed — `add_member`
+//         applied both lock predicates, `create_invitation`/`accept_invitation`
+//         applied only the primary one. So the decisive case is a SUBSTITUTE
+//         under a hard lock, exercised through BOTH paths: a test that only
+//         drives `add_member` passes against exactly the half-fix that created
+//         the finding.
+//   P-16  role changes were not lock-checked at all.
+//   P-18  the check was unconditional, with no audited admin escape.
+// ============================================================================
+
+/// Create a user + player and return `(player_id, token)`.
+async fn create_player_with_token(
+    app: &TestApp,
+    username: &str,
+    email: &str,
+) -> (uuid::Uuid, String) {
+    let user = UserBuilder::new()
+        .username(username)
+        .email(email)
+        .build_persisted(app.pool())
+        .await;
+    let token = create_token_for_user(user.id);
+
+    let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
+        .bind(user.id)
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    let player_id: uuid::Uuid = player_row.get("id");
+
+    (player_id, token)
+}
+
+/// Set a season's roster lock through the public PATCH endpoint.
+async fn set_roster_lock(app: &TestApp, season_id: &str, lock: &str) {
+    let response = app
+        .patch_json(
+            &format!("/v1/league-seasons/{season_id}"),
+            &json!({ "roster_lock_status": lock }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["roster_lock_status"], lock,
+        "PATCH reported a roster lock it did not apply"
+    );
+}
+
+/// P-14 — the roster lock must be settable through the existing season PATCH,
+/// must persist, and must record who locked it.
+#[tokio::test]
+async fn test_roster_lock_is_settable_and_attributed() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "roster-lock-set-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "roster-lock-set-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    // Baseline: a fresh season is open.
+    assert_eq!(season["data"]["roster_lock_status"], "open");
+
+    set_roster_lock(&app, season_id, "hard_lock").await;
+
+    // It persists — the PATCH response is not enough, P-14 was a dropped field.
+    let fetched = app.get(&format!("/v1/league-seasons/{season_id}")).await;
+    fetched.assert_status(StatusCode::OK);
+    let fetched: serde_json::Value = fetched.json();
+    assert_eq!(fetched["data"]["roster_lock_status"], "hard_lock");
+
+    // ...and it is attributed. `roster_locked_by` existed as an audit column
+    // that nothing ever wrote.
+    let row = sqlx::query(
+        "SELECT roster_lock_status, roster_locked_at, roster_locked_by \
+         FROM league_seasons WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(season_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+
+    let locked_by: Option<uuid::Uuid> = row.get("roster_locked_by");
+    let locked_at: Option<chrono::DateTime<chrono::Utc>> = row.get("roster_locked_at");
+    assert_eq!(
+        locked_by,
+        Some(uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()),
+        "roster_locked_by was not stamped with the admin who set the lock"
+    );
+    assert!(
+        locked_at.is_some(),
+        "roster_locked_at was not stamped on a hard lock"
+    );
+
+    // The lock can also be lifted again.
+    set_roster_lock(&app, season_id, "open").await;
+    let fetched = app.get(&format!("/v1/league-seasons/{season_id}")).await;
+    let fetched: serde_json::Value = fetched.json();
+    assert_eq!(fetched["data"]["roster_lock_status"], "open");
+}
+
+/// P-15 — a hard lock must refuse a **substitute** through BOTH the direct
+/// member path and the invitation path.
+///
+/// The substitute role is the decisive case: `add_member_authorized` already
+/// refused it, `create_invitation` / `accept_invitation` did not. Driving only
+/// one path here would certify the half-fix.
+#[tokio::test]
+async fn test_hard_lock_refuses_substitutes_on_both_roster_paths() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "roster-lock-both-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "roster-lock-both-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Both Paths Team", "BPT").await;
+
+    let (sub_a, _token_a) =
+        create_player_with_token(&app, "lock-sub-a", "lock-sub-a@example.com").await;
+    let (sub_b, token_b) =
+        create_player_with_token(&app, "lock-sub-b", "lock-sub-b@example.com").await;
+    let (sub_c, token_c) =
+        create_player_with_token(&app, "lock-sub-c", "lock-sub-c@example.com").await;
+
+    // An invitation issued while the roster is open, held pending across the
+    // lock. This is how the invitation path smuggled a player onto a frozen
+    // roster: the check at creation time no longer reflects reality.
+    let pre_lock_invite = app
+        .post_json(
+            &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+            &json!({ "player_id": sub_c.to_string(), "role": "substitute" }),
+        )
+        .await;
+    pre_lock_invite.assert_status(StatusCode::CREATED);
+    let pre_lock_invite: serde_json::Value = pre_lock_invite.json();
+    let pending_invitation_id = pre_lock_invite["data"]["id"].as_str().unwrap().to_string();
+
+    set_roster_lock(&app, season_id, "hard_lock").await;
+
+    // Path 1 — direct add.
+    let direct = app
+        .post_json(
+            &format!("/v1/league-team-seasons/{team_season_id}/members"),
+            &json!({ "player_id": sub_a.to_string(), "role": "substitute" }),
+        )
+        .await;
+    direct.assert_status(StatusCode::BAD_REQUEST);
+
+    // Path 2 — invite a substitute. THIS is the half that used to succeed.
+    let invite = app
+        .post_json(
+            &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+            &json!({ "player_id": sub_b.to_string(), "role": "substitute" }),
+        )
+        .await;
+    invite.assert_status(StatusCode::BAD_REQUEST);
+
+    // Path 3 — accept an invitation that predates the lock. Also used to
+    // succeed, and this one actually seats the player.
+    let accept = app
+        .post_with_token(
+            &format!("/v1/league-team-invitations/{pending_invitation_id}/accept"),
+            &token_c,
+        )
+        .await;
+    accept.assert_status(StatusCode::BAD_REQUEST);
+
+    // Path 4 — a player applying to join.
+    let apply = app
+        .post_json_with_token(
+            &format!("/v1/league-team-seasons/{team_season_id}/apply"),
+            &json!({ "role": "substitute" }),
+            &token_b,
+        )
+        .await;
+    apply.assert_status(StatusCode::BAD_REQUEST);
+
+    // Cross-check the mutation that matters: nobody made it onto the roster.
+    let members = app
+        .get(&format!("/v1/league-team-seasons/{team_season_id}/members"))
+        .await;
+    members.assert_status(StatusCode::OK);
+    let members: serde_json::Value = members.json();
+    let members = members["data"].as_array().unwrap();
+    assert_eq!(
+        members.len(),
+        1,
+        "a locked roster gained members: {members:?}"
+    );
+}
+
+/// P-15 — a soft lock must behave identically on both paths too: primary
+/// members frozen, substitutes still allowed. This pins that the fix did not
+/// simply tighten everything to `hard_lock` semantics.
+#[tokio::test]
+async fn test_soft_lock_agrees_across_both_roster_paths() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "roster-soft-lock-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "roster-soft-lock-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Soft Lock Team", "SLT").await;
+
+    let (p_direct, _t1) =
+        create_player_with_token(&app, "soft-primary-a", "soft-primary-a@example.com").await;
+    let (p_invite, _t2) =
+        create_player_with_token(&app, "soft-primary-b", "soft-primary-b@example.com").await;
+    let (s_direct, _t3) =
+        create_player_with_token(&app, "soft-sub-a", "soft-sub-a@example.com").await;
+    let (s_invite, _t4) =
+        create_player_with_token(&app, "soft-sub-b", "soft-sub-b@example.com").await;
+
+    set_roster_lock(&app, season_id, "soft_lock").await;
+
+    // Primary members are frozen on both paths.
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({ "player_id": p_direct.to_string(), "role": "player" }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+        &json!({ "player_id": p_invite.to_string(), "role": "player" }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    // Substitutes still move on both paths — soft lock means "minor changes".
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({ "player_id": s_direct.to_string(), "role": "substitute" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+        &json!({ "player_id": s_invite.to_string(), "role": "substitute" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+}
+
+/// P-16 — role changes are lock-checked, and the gate matches the lock's own
+/// semantics: refused under `hard_lock`, permitted under `soft_lock`.
+#[tokio::test]
+async fn test_captaincy_changes_are_gated_on_the_hard_lock_only() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "roster-role-lock-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "roster-role-lock-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Role Lock Team", "RLT").await;
+
+    let (mate, _token) =
+        create_player_with_token(&app, "role-lock-mate", "role-lock-mate@example.com").await;
+
+    // Seat them while the roster is open.
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({ "player_id": mate.to_string(), "role": "player" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    // Hard lock: captaincy cannot move. Captaincy IS the authority that makes
+    // roster changes, so allowing it to move during a freeze reopens the freeze
+    // by proxy.
+    set_roster_lock(&app, season_id, "hard_lock").await;
+    app.post_auth(&format!(
+        "/v1/league-team-seasons/{team_season_id}/members/{mate}/promote"
+    ))
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    // Soft lock: permitted. A promotion moves a member between two *primary*
+    // roles, so it never changes who is eligible to play — it is strictly less
+    // impactful than the substitute swap a soft lock already allows.
+    set_roster_lock(&app, season_id, "soft_lock").await;
+    let promoted = app
+        .post_auth(&format!(
+            "/v1/league-team-seasons/{team_season_id}/members/{mate}/promote"
+        ))
+        .await;
+    promoted.assert_status(StatusCode::OK);
+    let promoted: serde_json::Value = promoted.json();
+    assert_eq!(promoted["data"]["role"], "captain");
+
+    // Demotion is gated identically: refused under a hard lock...
+    set_roster_lock(&app, season_id, "hard_lock").await;
+    app.post_auth(&format!(
+        "/v1/league-team-seasons/{team_season_id}/members/{mate}/demote"
+    ))
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    // ...and permitted once it is softened.
+    set_roster_lock(&app, season_id, "soft_lock").await;
+    let demoted = app
+        .post_auth(&format!(
+            "/v1/league-team-seasons/{team_season_id}/members/{mate}/demote"
+        ))
+        .await;
+    demoted.assert_status(StatusCode::OK);
+    let demoted: serde_json::Value = demoted.json();
+    assert_eq!(demoted["data"]["role"], "player");
+}
+
+/// P-18 — the admin override works AND is recorded.
+///
+/// The recording is the assertion that matters: an override nobody can audit
+/// is the lock quietly ceasing to mean anything. This drives the register's own
+/// scenario — a player has to come off a frozen roster and a substitute has to
+/// go on.
+#[tokio::test]
+async fn test_admin_roster_lock_override_is_recorded() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "roster-override-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "roster-override-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Override Team", "OVT").await;
+
+    let (banned, _t1) =
+        create_player_with_token(&app, "override-banned", "override-banned@example.com").await;
+    let (replacement, _t2) = create_player_with_token(
+        &app,
+        "override-replacement",
+        "override-replacement@example.com",
+    )
+    .await;
+
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({ "player_id": banned.to_string(), "role": "player" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    set_roster_lock(&app, season_id, "hard_lock").await;
+
+    // Without the override the emergency substitution is impossible.
+    app.delete_auth(&format!(
+        "/v1/league-team-seasons/{team_season_id}/members/{banned}"
+    ))
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    let remove_reason = "Player banned for cheating mid-playoffs, ruling PL-2291";
+    let add_reason = "Approved substitute for banned player, ruling PL-2291";
+
+    app.delete_auth(&format!(
+        "/v1/league-team-seasons/{team_season_id}/members/{banned}\
+         ?override_roster_lock=true&override_reason={}",
+        urlencoding_lite(remove_reason)
+    ))
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({
+            "player_id": replacement.to_string(),
+            "role": "player",
+            "override_roster_lock": true,
+            "override_reason": add_reason,
+        }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    // The roster really moved.
+    let members = app
+        .get(&format!("/v1/league-team-seasons/{team_season_id}/members"))
+        .await;
+    let members: serde_json::Value = members.json();
+    let member_ids: Vec<String> = members["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["player_id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(!member_ids.contains(&banned.to_string()));
+    assert!(member_ids.contains(&replacement.to_string()));
+
+    // ...and BOTH bypasses are on the record: who, when, why.
+    let rows = sqlx::query(
+        "SELECT changed_by, created_at, old_value, new_value \
+         FROM entity_changes \
+         WHERE entity_type = 'league_team_season' \
+           AND entity_id = $1 \
+           AND field_name = 'roster_lock_override' \
+         ORDER BY created_at",
+    )
+    .bind(uuid::Uuid::parse_str(&team_season_id).unwrap())
+    .fetch_all(app.pool())
+    .await
+    .unwrap();
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "expected one audit row per overridden lock, got {}",
+        rows.len()
+    );
+
+    let dev_player_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    let reasons: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            let changed_by: uuid::Uuid = r.get("changed_by");
+            assert_eq!(
+                changed_by, dev_player_id,
+                "override recorded the wrong actor"
+            );
+
+            let created_at: chrono::DateTime<chrono::Utc> = r.get("created_at");
+            assert!(
+                created_at <= chrono::Utc::now(),
+                "override recorded an impossible timestamp"
+            );
+
+            let old_value: serde_json::Value = r.get("old_value");
+            assert_eq!(
+                old_value["roster_lock_status"], "hard_lock",
+                "override did not record which lock it bypassed"
+            );
+
+            let new_value: serde_json::Value = r.get("new_value");
+            new_value["reason"].as_str().unwrap().to_string()
+        })
+        .collect();
+
+    assert!(
+        reasons.contains(&remove_reason.to_string()),
+        "the removal override's reason was not recorded: {reasons:?}"
+    );
+    assert!(
+        reasons.contains(&add_reason.to_string()),
+        "the addition override's reason was not recorded: {reasons:?}"
+    );
+}
+
+/// P-18 — the override is not a hole in the lock: it needs platform team-admin
+/// rights and a justification.
+#[tokio::test]
+async fn test_roster_lock_override_requires_admin_and_a_reason() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "roster-override-authz-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "roster-override-authz-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    // The team is founded by a NON-admin, so they are its captain but hold no
+    // platform override. A captain unlocking their own roster would make the
+    // lock worthless.
+    let (captain, captain_token) =
+        create_player_with_token(&app, "override-captain", "override-captain@example.com").await;
+    let create = app
+        .post_json_with_token(
+            &format!("/v1/league-seasons/{season_id}/teams"),
+            &json!({ "name": "Captain Owned", "tag": "COT" }),
+            &captain_token,
+        )
+        .await;
+    create.assert_status(StatusCode::CREATED);
+    let create: serde_json::Value = create.json();
+    let team_season_id = create["data"]["team_season"]["id"].as_str().unwrap();
+
+    let (recruit, _t) =
+        create_player_with_token(&app, "override-recruit", "override-recruit@example.com").await;
+
+    set_roster_lock(&app, season_id, "hard_lock").await;
+
+    // Captain, with a perfectly good reason, is still refused.
+    app.post_json_with_token(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({
+            "player_id": recruit.to_string(),
+            "role": "player",
+            "override_roster_lock": true,
+            "override_reason": "We really need this player for the final",
+        }),
+        &captain_token,
+    )
+    .await
+    .assert_status(StatusCode::FORBIDDEN);
+
+    // An admin without a justification is refused too.
+    app.post_json(
+        &format!("/v1/league-team-seasons/{team_season_id}/members"),
+        &json!({
+            "player_id": recruit.to_string(),
+            "role": "player",
+            "override_roster_lock": true,
+        }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    // Nothing was written to the audit trail by a refused override.
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM entity_changes \
+         WHERE entity_type = 'league_team_season' AND entity_id = $1 \
+           AND field_name = 'roster_lock_override'",
+    )
+    .bind(uuid::Uuid::parse_str(team_season_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(audited, 0, "a refused override still wrote an audit row");
+
+    // The roster is untouched: still just the founding captain.
+    let members = app
+        .get(&format!("/v1/league-team-seasons/{team_season_id}/members"))
+        .await;
+    let members: serde_json::Value = members.json();
+    let members = members["data"].as_array().unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0]["player_id"], captain.to_string());
+}
+
+/// Percent-encode the handful of characters our override reasons contain.
+/// Deliberately tiny — pulling in a URL-encoding crate for two test strings
+/// would be a dependency for nothing.
+fn urlencoding_lite(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            ' ' => "%20".to_string(),
+            other => format!("%{:02X}", other as u32),
+        })
+        .collect()
+}

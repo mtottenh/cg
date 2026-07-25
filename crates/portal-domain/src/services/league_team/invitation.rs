@@ -8,6 +8,7 @@ use crate::repositories::league_team::{
     LeagueTeamInvitationRepository, LeagueTeamMemberRepository, LeagueTeamRepository,
     LeagueTeamSeasonRepository,
 };
+use crate::services::league_team::roster_lock::{RosterChange, enforce_roster_lock};
 use portal_core::types::{LeagueTeamInvitationStatus, LeagueTeamInvitationType, LeagueTeamRole};
 use portal_core::{DomainError, LeagueTeamInvitationId, LeagueTeamSeasonId, PlayerId, UserId};
 use std::sync::Arc;
@@ -82,12 +83,17 @@ where
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
-        // Check roster lock status
-        if role.is_primary() && !season.allows_primary_roster_changes() {
-            return Err(DomainError::InvalidState(
-                "roster is locked for primary member invitations".to_string(),
-            ));
-        }
+        // P-15: this used to ask only the *primary* question, so a substitute
+        // could be invited onto a hard-locked roster that
+        // `add_member_authorized` would have refused. Both paths now go through
+        // the one enforcement point, which applies both predicates.
+        enforce_roster_lock(
+            &season,
+            team_season_id,
+            RosterChange::Membership(role),
+            None,
+        )
+        .await?;
 
         // Check if player is already a member
         if self
@@ -169,6 +175,17 @@ where
         if !season.is_registration_open() {
             return Err(DomainError::RegistrationClosed);
         }
+
+        // P-15: a join request checked neither lock predicate, so a hard-locked
+        // roster still accumulated pending requests that could never be
+        // accepted. Same enforcement point as every other roster mutation.
+        enforce_roster_lock(
+            &season,
+            team_season_id,
+            RosterChange::Membership(role),
+            None,
+        )
+        .await?;
 
         // Check if player is already a member
         if self
@@ -285,12 +302,17 @@ where
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
-        // Re-verify roster lock status
-        if invitation.role.is_primary() && !season.allows_primary_roster_changes() {
-            return Err(DomainError::InvalidState(
-                "roster is locked for primary member changes".to_string(),
-            ));
-        }
+        // P-15: re-verify through the one enforcement point. This is the seat
+        // that actually lands a player on the roster, and it used to apply only
+        // the primary predicate — so an invitation issued before a lock, for a
+        // substitute, could still be accepted after a hard lock.
+        enforce_roster_lock(
+            &season,
+            invitation.team_season_id,
+            RosterChange::Membership(invitation.role),
+            None,
+        )
+        .await?;
 
         // Re-verify one-team-per-season constraint for primary roles
         if invitation.role.is_primary()

@@ -27,21 +27,21 @@ use portal_db::{
     PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgAwardRepository,
     PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
     PgDemoPlayerStatsRepository, PgDemoRepository, PgDiscoveredMatchRepository,
-    PgDisputeMessageRepository, PgDisputeRepository, PgEvidenceRepository,
-    PgForfeitRecordRepository, PgLeagueInvitationRepository, PgLeagueMemberRepository,
-    PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
-    PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
-    PgLeagueTeamSeasonRepository, PgMatchLineupRepository, PgMatchStatusLogRepository,
-    PgPermissionRepository, PgPlayerGameProfileRepository, PgPlayerMatchHistoryRepository,
-    PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository, PgPlayerRepository,
-    PgProgressionLogRepository, PgRefreshTokenRepository, PgResultClaimRepository,
-    PgResultReviewRepository, PgSagaExecutionRepository, PgScheduleProposalRepository,
-    PgSteamTrackingRepository, PgSuggestedTimeRepository, PgSystemSettingsRepository,
-    PgTournamentBracketRepository, PgTournamentInvitationRepository, PgTournamentMapPoolRepository,
-    PgTournamentMatchRepository, PgTournamentRegistrationRepository, PgTournamentRepository,
-    PgTournamentStageRepository, PgTournamentStandingsRepository, PgUserRepository,
-    PgVetoActionRepository, PgVetoDelegateRepository, PgVetoLobbyMessageRepository,
-    PgVetoSessionRepository, RoleRepository, StatsRepository,
+    PgDisputeMessageRepository, PgDisputeRepository, PgEntityChangeRepository,
+    PgEvidenceRepository, PgForfeitRecordRepository, PgLeagueInvitationRepository,
+    PgLeagueMemberRepository, PgLeagueRepository, PgLeagueSeasonParticipantRepository,
+    PgLeagueSeasonRepository, PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository,
+    PgLeagueTeamRepository, PgLeagueTeamSeasonRepository, PgMatchLineupRepository,
+    PgMatchStatusLogRepository, PgPermissionRepository, PgPlayerGameProfileRepository,
+    PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository,
+    PgPlayerRepository, PgProgressionLogRepository, PgRefreshTokenRepository,
+    PgResultClaimRepository, PgResultReviewRepository, PgSagaExecutionRepository,
+    PgScheduleProposalRepository, PgSteamTrackingRepository, PgSuggestedTimeRepository,
+    PgSystemSettingsRepository, PgTournamentBracketRepository, PgTournamentInvitationRepository,
+    PgTournamentMapPoolRepository, PgTournamentMatchRepository, PgTournamentRegistrationRepository,
+    PgTournamentRepository, PgTournamentStageRepository, PgTournamentStandingsRepository,
+    PgUserRepository, PgVetoActionRepository, PgVetoDelegateRepository,
+    PgVetoLobbyMessageRepository, PgVetoSessionRepository, RoleRepository, StatsRepository,
 };
 use portal_domain::services::{
     AwardService, BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
@@ -498,11 +498,18 @@ impl AppState {
         );
         let league_season_service =
             LeagueSeasonService::new(Arc::clone(&league_season_repo), Arc::clone(&league_repo));
+        // P-18: the roster-lock override is only permitted because it is
+        // recorded. The service therefore owns an audit sink, and the
+        // enforcement point writes to it before letting a locked roster change
+        // through.
+        let entity_change_repo: Arc<dyn portal_domain::repositories::EntityChangeRepository> =
+            Arc::new(PgEntityChangeRepository::new(db_pool.clone()));
         let league_team_service = LeagueTeamService::new(
             Arc::clone(&league_team_repo),
             Arc::clone(&league_team_season_repo),
             Arc::clone(&league_team_member_repo),
             Arc::clone(&league_season_repo),
+            Arc::clone(&entity_change_repo),
         );
         let league_team_invitation_service = LeagueTeamInvitationService::new(
             Arc::clone(&league_team_invitation_repo),

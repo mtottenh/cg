@@ -408,6 +408,20 @@ pub struct AddLeagueTeamMemberRequest {
     #[validate(range(min = 0, max = 99))]
     #[serde(default)]
     pub jersey_number: Option<i32>,
+
+    /// Bypass the season's roster lock (platform team admins only).
+    ///
+    /// The emergency path for e.g. substituting a player banned mid-playoffs.
+    /// Requires `override_reason`, and the bypass is written to the audit trail
+    /// before the member is seated.
+    #[serde(default)]
+    pub override_roster_lock: bool,
+
+    /// Why the roster lock was overridden. Required when
+    /// `override_roster_lock` is set.
+    #[validate(length(min = 10, max = 500))]
+    #[serde(default)]
+    pub override_reason: Option<String>,
 }
 
 fn default_member_role() -> String {

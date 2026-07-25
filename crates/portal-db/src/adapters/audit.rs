@@ -62,9 +62,15 @@ impl EntityChangeRepository for PgEntityChangeRepository {
                 old_value, new_value, changed_by,
                 request_id, ip_address, user_agent
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10)
             RETURNING *
             ",
+            // `ip_address` is an INET column but the bound value is a
+            // `Option<String>`, so Postgres refused the statement outright —
+            // "column \"ip_address\" is of type inet but expression is of type
+            // text" — even when the value is NULL. Nothing in the API had ever
+            // called this repository (the audit trail was CLI-read-only), so
+            // the first real writer found it. The explicit cast is the fix.
         )
         .bind(&cmd.entity_type)
         .bind(cmd.entity_id)

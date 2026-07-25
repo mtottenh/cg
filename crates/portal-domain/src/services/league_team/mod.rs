@@ -16,8 +16,15 @@
 //! - `PlayerId` is used for player-related operations (team membership, invitations)
 //! - `UserId` is used for admin/audit fields (`created_by`, `added_by`, `invited_by`, `locked_by`)
 
+//! # Roster lock
+//!
+//! Every path that mutates a seasonal roster enforces the season's roster lock
+//! through the **single** entry point in [`roster_lock`] — see that module for
+//! why (P-15) and for the P-16/P-18 decisions it encodes.
+
 mod invitation;
 mod participant;
+mod roster_lock;
 mod season;
 mod team;
 
@@ -27,5 +34,6 @@ mod tests;
 // Re-export all services for backward compatibility
 pub use invitation::LeagueTeamInvitationService;
 pub use participant::LeagueSeasonParticipantService;
+pub use roster_lock::{RosterChange, RosterLockOverride};
 pub use season::LeagueSeasonService;
 pub use team::LeagueTeamService;

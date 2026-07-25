@@ -29,7 +29,7 @@ pub use eligibility_service::EligibilityService;
 pub use league::LeagueService;
 pub use league_team::{
     LeagueSeasonParticipantService, LeagueSeasonService, LeagueTeamInvitationService,
-    LeagueTeamService,
+    LeagueTeamService, RosterLockOverride,
 };
 pub use permission::PermissionService;
 pub use player::{PlayerSearchResult, PlayerService};

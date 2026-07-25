@@ -2,6 +2,7 @@
 
 use super::helpers::{make_member, make_season, make_team, make_team_season};
 use crate::entities::league_team::CreateLeagueTeamCommand;
+use crate::repositories::audit::MockEntityChangeRepository;
 use crate::repositories::league_team::{
     MockLeagueSeasonRepository, MockLeagueTeamMemberRepository, MockLeagueTeamRepository,
     MockLeagueTeamSeasonRepository,
@@ -29,6 +30,10 @@ fn create_service(
         Arc::new(team_season_repo),
         Arc::new(member_repo),
         Arc::new(season_repo),
+        // No test in this file exercises the admin override, so a bare mock
+        // that expects nothing is correct: any audit write would be an
+        // unexpected call and would fail the test.
+        Arc::new(MockEntityChangeRepository::new()),
     )
 }
 
@@ -441,16 +446,23 @@ async fn test_promote_to_captain_success() {
     let team_repo = MockLeagueTeamRepository::new();
     let mut team_season_repo = MockLeagueTeamSeasonRepository::new();
     let mut member_repo = MockLeagueTeamMemberRepository::new();
-    let season_repo = MockLeagueSeasonRepository::new();
+    let mut season_repo = MockLeagueSeasonRepository::new();
 
+    let league_id = LeagueId::new();
+    let season = make_season(league_id);
     let team_id = LeagueTeamId::new();
-    let team_season = make_team_season(team_id, LeagueSeasonId::new());
+    let team_season = make_team_season(team_id, season.id);
     let team_season_id = team_season.id;
     let player_id = PlayerId::new();
 
     team_season_repo
         .expect_find_by_id()
         .returning(move |_| Ok(Some(team_season.clone())));
+
+    // Promotion is now lock-checked (P-16), so the season is resolved.
+    season_repo
+        .expect_find_by_id()
+        .returning(move |_| Ok(Some(season.clone())));
 
     let member = make_member(team_season_id, player_id);
     let mut promoted = member.clone();
@@ -466,7 +478,9 @@ async fn test_promote_to_captain_success() {
 
     let service = create_service(team_repo, team_season_repo, member_repo, season_repo);
 
-    let result = service.promote_to_captain(team_season_id, player_id).await;
+    let result = service
+        .promote_to_captain(team_season_id, player_id, None)
+        .await;
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap().role, LeagueTeamRole::Captain);

@@ -145,7 +145,7 @@ pub async fn list_seasons(
     request_body = UpdateLeagueSeasonRequest,
     responses(
         (status = 200, description = "Season updated", body = DataResponse<LeagueSeasonResponse>),
-        (status = 400, description = "Validation error", body = ApiError),
+        (status = 400, description = "Validation error, or the season state does not allow the requested roster lock", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Season not found", body = ApiError),
@@ -178,7 +178,7 @@ pub async fn update_season(
     let cmd = req.try_into()?;
     let updated = state
         .league_season_service
-        .update_season(season_id, cmd)
+        .update_season(season_id, cmd, auth.user_id)
         .await?;
 
     Ok(Json(DataResponse::new(

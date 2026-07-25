@@ -242,3 +242,127 @@ async fn test_update_roster_lock_invalid_state() {
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), DomainError::InvalidState(_)));
 }
+
+/// P-14 — `update_season` must forward `roster_lock_status`, and must do it
+/// through `update_roster_lock` so the `roster_locked_by` audit column is
+/// stamped. Before the fix the field was accepted, validated and then silently
+/// dropped, which left every roster-lock check downstream unreachable.
+#[tokio::test]
+async fn test_update_season_forwards_the_roster_lock_with_the_actor() {
+    let mut season_repo = MockLeagueSeasonRepository::new();
+    let league_repo = MockLeagueRepository::new();
+
+    let league_id = LeagueId::new();
+    let mut season = make_season(league_id);
+    season.status = SeasonStatus::Registration;
+    let season_id = season.id;
+    let actor = UserId::new();
+
+    let found = season.clone();
+    season_repo
+        .expect_find_by_id()
+        .returning(move |_| Ok(Some(found.clone())));
+
+    let updated = season.clone();
+    season_repo
+        .expect_update()
+        .returning(move |_, _| Ok(updated.clone()));
+
+    let mut locked = season.clone();
+    locked.roster_lock_status = RosterLockStatus::HardLock;
+    season_repo
+        .expect_update_roster_lock()
+        .withf(move |_, status, locked_by| {
+            *status == RosterLockStatus::HardLock && *locked_by == Some(actor)
+        })
+        .times(1)
+        .returning(move |_, _, _| Ok(locked.clone()));
+
+    let service = LeagueSeasonService::new(Arc::new(season_repo), Arc::new(league_repo));
+
+    let cmd = crate::entities::league_team::UpdateLeagueSeasonCommand {
+        roster_lock_status: Some(RosterLockStatus::HardLock),
+        ..Default::default()
+    };
+
+    let result = service.update_season(season_id, cmd, actor).await;
+
+    assert!(result.is_ok());
+    assert_eq!(
+        result.unwrap().roster_lock_status,
+        RosterLockStatus::HardLock
+    );
+}
+
+/// P-14 — a lock the season state forbids is rejected **before** the generic
+/// field update runs, so a refused PATCH does not half-apply the rest of the
+/// body. `expect_update` is never set up, so any call to it fails the test.
+#[tokio::test]
+async fn test_update_season_rejects_an_illegal_lock_without_writing_anything() {
+    let mut season_repo = MockLeagueSeasonRepository::new();
+    let league_repo = MockLeagueRepository::new();
+
+    let league_id = LeagueId::new();
+    let mut season = make_season(league_id);
+    season.status = SeasonStatus::Completed;
+    let season_id = season.id;
+
+    season_repo
+        .expect_find_by_id()
+        .returning(move |_| Ok(Some(season.clone())));
+    season_repo.expect_update().never();
+    season_repo.expect_update_roster_lock().never();
+
+    let service = LeagueSeasonService::new(Arc::new(season_repo), Arc::new(league_repo));
+
+    let cmd = crate::entities::league_team::UpdateLeagueSeasonCommand {
+        name: Some("Renamed Season".to_string()),
+        roster_lock_status: Some(RosterLockStatus::HardLock),
+        ..Default::default()
+    };
+
+    let result = service.update_season(season_id, cmd, UserId::new()).await;
+
+    assert!(matches!(result.unwrap_err(), DomainError::InvalidState(_)));
+}
+
+/// P-14 — a combined `status` + `roster_lock_status` PATCH is validated against
+/// the status the request moves TO. Locking a season as it enters registration
+/// must work even though it is leaving `draft`.
+#[tokio::test]
+async fn test_update_season_validates_the_lock_against_the_incoming_status() {
+    let mut season_repo = MockLeagueSeasonRepository::new();
+    let league_repo = MockLeagueRepository::new();
+
+    let league_id = LeagueId::new();
+    let mut season = make_season(league_id);
+    season.status = SeasonStatus::Registration;
+    let season_id = season.id;
+
+    let found = season.clone();
+    season_repo
+        .expect_find_by_id()
+        .returning(move |_| Ok(Some(found.clone())));
+
+    // The request moves the season to `active`, which does NOT allow roster
+    // changes — so tightening the lock in the same breath must be refused, and
+    // refused before anything is written.
+    season_repo.expect_update().never();
+    season_repo.expect_update_roster_lock().never();
+
+    let service = LeagueSeasonService::new(Arc::new(season_repo), Arc::new(league_repo));
+
+    let cmd = crate::entities::league_team::UpdateLeagueSeasonCommand {
+        status: Some(SeasonStatus::Active),
+        roster_lock_status: Some(RosterLockStatus::HardLock),
+        ..Default::default()
+    };
+
+    assert!(matches!(
+        service
+            .update_season(season_id, cmd, UserId::new())
+            .await
+            .unwrap_err(),
+        DomainError::InvalidState(_)
+    ));
+}

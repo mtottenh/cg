@@ -622,3 +622,79 @@ async fn test_revoke_role_from_user() {
         "moderator role should be revoked"
     );
 }
+
+// ============================================================================
+// P-140 — EVERY DECLARED PERMISSION MUST BE SEEDED AND GRANTED
+// ============================================================================
+
+/// A permission constant that no role holds is a gate nobody can pass.
+///
+/// `admin.system.manage` sat in `portal_core::permissions::admin` from the day
+/// admin permissions were introduced and was **never seeded** — so
+/// `submit_player_rating`, the only path that can correct a bad scraped rating,
+/// returned 403 to every real caller including `super_admin`, for the endpoint's
+/// entire life.
+///
+/// It stayed invisible because of a gap in the *tests*, not the code:
+/// `PermissionChecker` short-circuits for the dev user in `test-utils` builds,
+/// so every integration test calling an endpoint as `dev-token` passes the gate
+/// without ever consulting the `permissions` table. And no UI called it (that
+/// was P-68), so no human hit the 403 either. Two independent blind spots
+/// covering the same defect.
+///
+/// This asserts against the DATABASE rather than through a handler, which is
+/// what makes it immune to the dev-user bypass that hid the original.
+#[tokio::test]
+async fn test_every_declared_permission_is_seeded_and_granted() {
+    let app = TestApp::new().await;
+
+    // Every permission the code can gate on.
+    let declared: Vec<&str> = portal_core::permissions::admin::ALL
+        .iter()
+        .copied()
+        .collect();
+    assert!(
+        declared.len() >= 8,
+        "permission registry looks empty ({} entries) — this test would pass vacuously",
+        declared.len()
+    );
+
+    let mut unseeded = Vec::new();
+    let mut ungranted = Vec::new();
+
+    for name in &declared {
+        let permission_id: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM permissions WHERE name = $1")
+                .bind(name)
+                .fetch_optional(app.pool())
+                .await
+                .expect("query permissions");
+
+        match permission_id {
+            None => unseeded.push(*name),
+            Some(id) => {
+                let holders: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM role_permissions WHERE permission_id = $1",
+                )
+                .bind(id)
+                .fetch_one(app.pool())
+                .await
+                .expect("query role_permissions");
+                if holders == 0 {
+                    ungranted.push(*name);
+                }
+            }
+        }
+    }
+
+    assert!(
+        unseeded.is_empty(),
+        "these permissions are declared in code but absent from the `permissions` \
+         table, so nothing can ever hold them: {unseeded:?}"
+    );
+    assert!(
+        ungranted.is_empty(),
+        "these permissions exist but are granted to NO role, so every caller is \
+         refused and the endpoints behind them are unreachable: {ungranted:?}"
+    );
+}

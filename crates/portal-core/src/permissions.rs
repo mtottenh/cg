@@ -206,8 +206,14 @@ pub mod admin {
     /// Manage any tournament on the platform.
     pub const TOURNAMENTS_MANAGE_ANY: &str = "admin.tournaments.manage_any";
 
-    /// View audit logs.
-    pub const AUDIT_VIEW: &str = "admin.audit.view";
+    // P-141: `AUDIT_VIEW = "admin.audit.view"` was declared here and referenced
+    // by nothing else in the workspace — no handler gated on it, no migration
+    // seeded it, and there is no audit_log table or audit endpoint for it to
+    // guard. Seeding a grant would have manufactured reachability for a
+    // subsystem that does not exist, so the constant is gone instead. If an
+    // audit viewer is built later, add the constant and its migration in the
+    // same change: `test_every_declared_permission_is_seeded_and_granted` now
+    // enforces that pairing.
 
     /// Manage system settings.
     pub const SYSTEM_MANAGE: &str = "admin.system.manage";
@@ -224,7 +230,6 @@ pub mod admin {
         TEAMS_MANAGE_ANY,
         LEAGUES_MANAGE_ANY,
         TOURNAMENTS_MANAGE_ANY,
-        AUDIT_VIEW,
         SYSTEM_MANAGE,
         DEMOS_MANAGE,
     ];

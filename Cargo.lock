@@ -3784,6 +3784,7 @@ dependencies = [
  "portal-storage",
  "portal-test",
  "rand 0.9.2",
+ "rcgen",
  "regex",
  "reqwest",
  "serde",

@@ -16,7 +16,8 @@ mod repl;
 #[cfg(feature = "scanner")]
 use commands::scan;
 use commands::{
-    api_key, audit, ban, bootstrap, db, demo, game, league_team, player, role, seed, user,
+    api_key, audit, ban, bootstrap, db, demo, game, gameserver, league_team, player, role, seed,
+    user,
 };
 use config::CliConfig;
 use output::OutputFormat;
@@ -67,6 +68,9 @@ pub enum Commands {
 
     /// Game configuration
     Game(game::GameCommand),
+
+    /// Game-server integration (registry, CA, enrollment)
+    Gameserver(gameserver::GameServerCommand),
 
     /// Database utilities
     Db(db::DbCommand),
@@ -130,6 +134,7 @@ async fn main() -> Result<()> {
         Commands::Role(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Player(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Game(cmd) => cmd.execute(&pool, cli.format).await?,
+        Commands::Gameserver(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Db(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Bootstrap(cmd) => cmd.execute(&pool, cli.format).await?,
         Commands::Ban(cmd) => cmd.execute(&pool, cli.format).await?,

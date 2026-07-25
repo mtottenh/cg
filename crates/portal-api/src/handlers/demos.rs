@@ -4,7 +4,7 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AssociateDemoRequest, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
     GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest,
-    PendingDemosQuery, ProcessUnlinkedDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest,
+    ProcessUnlinkedDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest,
     SubmitDemoStatsRequest, UpdateAutoLinkSettingRequest,
 };
 use crate::dto::responses::{
@@ -620,50 +620,6 @@ pub async fn get_demo_status_counts(
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
-}
-
-/// Get demos pending processing.
-#[utoipa::path(
-    get,
-    path = "/v1/admin/demos/pending",
-    params(
-        ("limit" = Option<i64>, Query, description = "Maximum number of demos to return"),
-    ),
-    responses(
-        (status = 200, description = "Pending demos", body = DataResponse<Vec<DemoResponse>>),
-        (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 403, description = "Admin access required", body = ApiError),
-    ),
-    security(("bearer_auth" = [])),
-    tag = "admin"
-)]
-pub async fn get_pending_demos(
-    State(state): State<DemoState>,
-    auth: AuthenticatedUser,
-    headers: HeaderMap,
-    Query(query): Query<PendingDemosQuery>,
-) -> ApiResult<Json<DataResponse<Vec<DemoResponse>>>> {
-    let request_id = get_request_id(&headers);
-
-    // Check admin permission
-    let is_admin = state
-        .permission_service
-        .is_admin(auth.user_id)
-        .await
-        .unwrap_or(false);
-
-    if !is_admin {
-        return Err(ApiError::forbidden("Admin access required"));
-    }
-
-    let demos = state
-        .demo_service
-        .get_pending_demos(query.limit.unwrap_or(50))
-        .await?;
-
-    let responses: Vec<DemoResponse> = demos.into_iter().map(DemoResponse::from).collect();
-
-    Ok(Json(DataResponse::new(responses, request_id)))
 }
 
 /// Run the auto-link pass over demos with stats but no match links.

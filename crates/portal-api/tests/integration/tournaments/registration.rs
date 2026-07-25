@@ -199,6 +199,16 @@ async fn test_register_team_before_registration_opens_rejected() {
     response.assert_status(StatusCode::BAD_REQUEST);
 }
 
+/// P-67: withdrawal goes through the forfeiting path, and only that path.
+///
+/// There were two ways to withdraw. `DELETE /v1/tournaments/{t}/registrations/{r}`
+/// flipped the registration status and stopped there; `POST .../withdraw`
+/// additionally forfeits the participant's remaining matches, which is what the
+/// tournament actually needs and what the frontend calls. The DELETE was a
+/// non-forfeiting duplicate with no consumer — it left the bracket holding
+/// matches for someone who was gone — so it is deleted, and this test now covers
+/// the surviving path. The 405 assertion is the load-bearing half: without it the
+/// duplicate could be reintroduced and nothing would notice.
 #[tokio::test]
 async fn test_withdraw_registration() {
     let app = TestApp::new().await;
@@ -207,17 +217,35 @@ async fn test_withdraw_registration() {
     // Register a player
     let registration_id = register_player(&app, &tournament_id, "Player1").await;
 
-    // Withdraw
+    // The non-forfeiting DELETE duplicate is gone.
     let response = app
         .delete_auth(&format!(
             "/v1/tournaments/{tournament_id}/registrations/{registration_id}"
         ))
         .await;
+    assert_eq!(
+        response.status,
+        StatusCode::NOT_FOUND,
+        "the non-forfeiting DELETE withdrawal must stay deleted (P-67)"
+    );
+
+    // Withdraw through the consumed, forfeiting path.
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/registrations/{registration_id}/withdraw"),
+            &json!({ "reason": "cannot attend" }),
+        )
+        .await;
 
     response.assert_status(StatusCode::OK);
 
-    let body: serde_json::Value = response.json();
-    assert_eq!(body["data"]["status"], "withdrawn");
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tournament_registrations WHERE id = $1")
+            .bind(registration_id.parse::<uuid::Uuid>().unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "withdrawn");
 }
 
 // ============================================================================

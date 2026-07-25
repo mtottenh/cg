@@ -524,47 +524,6 @@ pub async fn check_in(
     )))
 }
 
-/// Withdraw from a tournament.
-#[utoipa::path(
-    delete,
-    path = "/v1/tournaments/{tournament_id}/registrations/{registration_id}",
-    params(
-        ("tournament_id" = String, Path, description = "Tournament ID"),
-        ("registration_id" = String, Path, description = "Registration ID"),
-    ),
-    responses(
-        (status = 200, description = "Withdrawn successfully", body = DataResponse<TournamentRegistrationResponse>),
-        (status = 400, description = "Cannot withdraw", body = ApiError),
-        (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 404, description = "Registration not found", body = ApiError),
-    ),
-    security(("bearer_auth" = [])),
-    tag = "tournaments"
-)]
-pub async fn withdraw(
-    State(state): State<TournamentState>,
-    auth: AuthenticatedUser,
-    headers: HeaderMap,
-    Path(path): Path<RegistrationPath>,
-) -> ApiResult<Json<DataResponse<TournamentRegistrationResponse>>> {
-    let request_id = get_request_id(&headers);
-
-    let registration_id: portal_core::TournamentRegistrationId = path
-        .registration_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
-
-    let registration = state
-        .registration_service
-        .withdraw(registration_id, auth.user_id)
-        .await?;
-
-    Ok(Json(DataResponse::new(
-        TournamentRegistrationResponse::from(registration),
-        request_id,
-    )))
-}
-
 /// Approve a pending registration (admin only).
 #[utoipa::path(
     post,

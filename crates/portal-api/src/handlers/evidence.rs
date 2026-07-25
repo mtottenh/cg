@@ -336,40 +336,6 @@ pub async fn list_evidence(
     Ok(Json(DataResponse::new(summaries, request_id)))
 }
 
-/// Get evidence details.
-#[utoipa::path(
-    get,
-    path = "/v1/matches/{match_id}/evidence/{evidence_id}",
-    params(
-        ("match_id" = String, Path, description = "Match ID"),
-        ("evidence_id" = String, Path, description = "Evidence ID")
-    ),
-    responses(
-        (status = 200, description = "Evidence details", body = DataResponse<EvidenceResponse>),
-        (status = 404, description = "Evidence not found", body = ApiError),
-    ),
-    tag = "evidence"
-)]
-pub async fn get_evidence(
-    State(state): State<EvidenceState>,
-    headers: HeaderMap,
-    Path((match_id, evidence_id)): Path<(TournamentMatchId, EvidenceId)>,
-) -> ApiResult<Json<DataResponse<EvidenceResponse>>> {
-    let request_id = get_request_id(&headers);
-
-    let evidence = state.evidence_service.get_evidence(evidence_id).await?;
-
-    // Verify the evidence belongs to this match
-    if evidence.match_id != match_id {
-        return Err(ApiError::not_found("Evidence not found for this match"));
-    }
-
-    Ok(Json(DataResponse::new(
-        EvidenceResponse::from(evidence),
-        request_id,
-    )))
-}
-
 /// Get a presigned URL for accessing evidence.
 #[utoipa::path(
     get,

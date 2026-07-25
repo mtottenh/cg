@@ -80,11 +80,6 @@ pub fn routes() -> Router<AppState> {
             "/{tournament_id}/registrations/{registration_id}/check-in",
             post(tournaments::check_in),
         )
-        // Registration management
-        .route(
-            "/{tournament_id}/registrations/{registration_id}",
-            delete(tournaments::withdraw),
-        )
         .route(
             "/{tournament_id}/registrations/{registration_id}/approve",
             post(tournaments::approve_registration),
@@ -156,10 +151,6 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/{tournament_id}/matches/{match_id}/lineups",
             get(tournaments::get_match_lineups),
-        )
-        .route(
-            "/{tournament_id}/matches/{match_id}/schedule",
-            post(tournaments::schedule_match),
         )
         .route(
             "/{tournament_id}/matches/{match_id}/forfeit",

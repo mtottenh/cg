@@ -86,7 +86,7 @@ pub use tournament::{
     DeclareLineupRequest, DisputeMatchRequest, DisqualifyRequest, EligibilityRestrictionsInput,
     ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest, MatchCheckInRequest,
     ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
-    RejectScheduleProposalRequest, ResolveDisputeRequest, ScheduleMatchRequest, SeedAssignment,
+    RejectScheduleProposalRequest, ResolveDisputeRequest, SeedAssignment,
     SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
     WithdrawRequest,
 };

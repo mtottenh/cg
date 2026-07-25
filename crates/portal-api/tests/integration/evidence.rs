@@ -260,12 +260,14 @@ async fn test_list_evidence_for_nonexistent_match() {
 async fn test_get_evidence_not_found() {
     let app = TestApp::new().await;
 
-    // Get non-existent evidence
+    // P-67: the single-evidence GET is deleted, so the path only answers DELETE.
+    // 405 rather than 404 is the proof the route itself is gone — a 404 would be
+    // indistinguishable from the handler still being wired and finding nothing.
     let response = app
         .get("/v1/matches/00000000-0000-0000-0000-000000000000/evidence/00000000-0000-0000-0000-000000000001")
         .await;
 
-    response.assert_status(StatusCode::NOT_FOUND);
+    response.assert_status(StatusCode::METHOD_NOT_ALLOWED);
 }
 
 #[tokio::test]
@@ -540,14 +542,16 @@ async fn test_evidence_detail_endpoints_exist() {
     let match_id = "00000000-0000-0000-0000-000000000000";
     let evidence_id = "00000000-0000-0000-0000-000000000001";
 
-    // Verify GET /evidence/{evidence_id} endpoint exists
+    // P-67: the single-evidence GET is deleted — nothing consumed it, and the
+    // summary already carries every field it returned. Pinned, so the dead
+    // surface cannot quietly come back.
     let response = app
         .get(&format!("/v1/matches/{match_id}/evidence/{evidence_id}"))
         .await;
-    assert_ne!(
+    assert_eq!(
         response.status,
         StatusCode::METHOD_NOT_ALLOWED,
-        "GET /evidence/{{id}} endpoint should exist"
+        "GET /evidence/{{id}} must stay deleted (P-67)"
     );
 
     // Verify GET /evidence/{evidence_id}/access endpoint exists (authenticated)

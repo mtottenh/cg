@@ -998,29 +998,6 @@ async fn test_get_demo_status_counts() {
     assert_eq!(body["data"]["archived"], 0);
 }
 
-/// Test listing demos pending processing.
-#[tokio::test]
-async fn test_get_pending_demos() {
-    let app = TestApp::new().await;
-    make_dev_user_admin(&app).await;
-
-    let demo_id = catalog_single_demo(&app, "demos/pending_list.dem").await;
-
-    let response = app.get_auth("/v1/admin/demos/pending").await;
-    response.assert_status(StatusCode::OK);
-    let body: serde_json::Value = response.json();
-    let demos = body["data"].as_array().unwrap();
-    assert_eq!(demos.len(), 1);
-    assert_eq!(demos[0]["id"], demo_id);
-    assert_eq!(demos[0]["status"], "pending");
-
-    // Limit parameter is honored
-    let response = app.get_auth("/v1/admin/demos/pending?limit=0").await;
-    response.assert_status(StatusCode::OK);
-    let body: serde_json::Value = response.json();
-    assert!(body["data"].as_array().unwrap().is_empty());
-}
-
 /// Test the demo download endpoint returns S3 coordinates and a URL.
 #[tokio::test]
 async fn test_get_demo_download() {

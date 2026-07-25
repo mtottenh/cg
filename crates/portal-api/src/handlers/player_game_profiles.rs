@@ -109,76 +109,6 @@ pub async fn list_player_game_profiles(
     Ok(Json(DataResponse::new(responses, request_id)))
 }
 
-/// Get a specific game profile for a player.
-///
-/// The `game_id` path parameter accepts either a game slug (e.g., "cs2") or a game UUID.
-#[utoipa::path(
-    get,
-    path = "/v1/players/{player_id}/games/{game_id}",
-    params(
-        ("player_id" = String, Path, description = "Player ID"),
-        ("game_id" = String, Path, description = "Game slug (e.g., cs2) or UUID"),
-    ),
-    responses(
-        (status = 200, description = "Game profile found", body = DataResponse<PlayerGameProfileResponse>),
-        (status = 404, description = "Profile or player not found", body = ApiError),
-    ),
-    tag = "players"
-)]
-pub async fn get_player_game_profile(
-    State(state): State<PlayerState>,
-    headers: HeaderMap,
-    Path((player_id, game_id_or_slug)): Path<(String, String)>,
-) -> ApiResult<Json<DataResponse<PlayerGameProfileResponse>>> {
-    let request_id = get_request_id(&headers);
-
-    let player_id: PlayerId = player_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid player ID format"))?;
-
-    // Resolve game_id: try parsing as UUID first, fall back to slug lookup
-    let (game_id, plugin_id) = if let Ok(uuid) = game_id_or_slug.parse::<uuid::Uuid>() {
-        let game = state
-            .game_repo
-            .find_by_id(uuid)
-            .await
-            .map_err(|e| ApiError::internal(e.to_string()))?
-            .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id_or_slug}")))?;
-        (GameId::from(game.id), game.plugin_id)
-    } else {
-        let game = state
-            .game_repo
-            .find_by_slug(&game_id_or_slug)
-            .await
-            .map_err(|e| ApiError::internal(e.to_string()))?
-            .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id_or_slug}")))?;
-        (GameId::from(game.id), game.plugin_id)
-    };
-
-    let profile = state
-        .player_game_profile_service
-        .get_profile(player_id, game_id)
-        .await?
-        .ok_or_else(|| {
-            ApiError::not_found(format!(
-                "No game profile found for player {player_id} in game {game_id_or_slug}"
-            ))
-        })?;
-
-    let context = build_stats_context(&state, &profile).await;
-
-    let display_stats = state
-        .plugin_manager
-        .get(&plugin_id)
-        .map(|plugin| plugin.format_player_stats(&profile.game_specific_stats, &context))
-        .unwrap_or_default();
-
-    Ok(Json(DataResponse::new(
-        PlayerGameProfileResponse::from_profile_with_stats(profile, display_stats),
-        request_id,
-    )))
-}
-
 /// Resolve a game_id string (UUID or slug) to a `GameId` and plugin_id.
 async fn resolve_game(
     state: &PlayerState,
@@ -209,34 +139,6 @@ pub struct RatingHistoryQuery {
     /// Maximum number of entries to return (default: 100).
     #[schema(example = 100)]
     pub limit: Option<i64>,
-}
-
-/// List game profiles for the authenticated player.
-#[utoipa::path(
-    get,
-    path = "/v1/players/me/games",
-    responses(
-        (status = 200, description = "List of game profiles", body = DataResponse<Vec<PlayerGameProfileResponse>>),
-        (status = 401, description = "Unauthorized", body = ApiError),
-    ),
-    security(("bearer_auth" = [])),
-    tag = "players"
-)]
-pub async fn get_my_game_profiles(
-    State(state): State<PlayerState>,
-    auth: AuthenticatedUser,
-    headers: HeaderMap,
-) -> ApiResult<Json<DataResponse<Vec<PlayerGameProfileResponse>>>> {
-    let request_id = get_request_id(&headers);
-
-    let profiles = state
-        .player_game_profile_service
-        .list_profiles(auth.player_id)
-        .await?;
-
-    let responses = profiles_to_responses(&state, profiles).await;
-
-    Ok(Json(DataResponse::new(responses, request_id)))
 }
 
 /// Submit a rating update for a player's game profile.

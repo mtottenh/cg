@@ -52,7 +52,7 @@ async fn test_schedule_match() {
 
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339()
             }),
@@ -75,7 +75,7 @@ async fn test_match_check_in() {
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339()
             }),
@@ -110,7 +110,7 @@ async fn test_forfeit_match() {
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339()
             }),
@@ -170,7 +170,7 @@ async fn test_get_match_status_history_after_transitions() {
     let scheduled_time = chrono::Utc::now() + chrono::Duration::hours(1);
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({
                 "scheduled_at": scheduled_time.to_rfc3339()
             }),
@@ -261,7 +261,7 @@ async fn test_match_check_in_requires_authority_over_registration() {
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({ "scheduled_at": scheduled_time.to_rfc3339() }),
         )
         .await;
@@ -342,7 +342,7 @@ async fn test_tournament_staff_can_check_in_on_behalf() {
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({ "scheduled_at": scheduled_time.to_rfc3339() }),
         )
         .await;
@@ -380,7 +380,7 @@ async fn test_match_forfeit_requires_authority_over_registration() {
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app
         .post_json(
-            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
             &json!({ "scheduled_at": scheduled_time.to_rfc3339() }),
         )
         .await;
@@ -421,20 +421,26 @@ async fn test_match_forfeit_requires_authority_over_registration() {
 
 /// P-59: direct-set scheduling is staff-only.
 ///
-/// `POST .../matches/{id}/schedule` DIRECT-SETS `scheduled_at` — which drives
-/// the check-in window and the no-show forfeit sweep — and previously required
-/// nothing beyond a login, so any authenticated user could reschedule any
-/// match and manufacture forfeits. Participants negotiate through
-/// `schedule/propose|accept|…` (own binding, untouched); admins have the
-/// separately-gated `/v1/admin/.../schedule`. This endpoint is now gated on
-/// `admin.tournaments.manage_any`, like `admin_match_transition`.
+/// Direct-setting `scheduled_at` drives the check-in window and the no-show
+/// forfeit sweep, so an unprivileged caller who can write it can manufacture
+/// forfeits. P-59 found the participant-facing
+/// `POST /v1/tournaments/{id}/matches/{id}/schedule` required nothing beyond a
+/// login and gated it.
+///
+/// P-67 then **deleted** that endpoint rather than keeping it: once gated it was
+/// an exact duplicate of `POST /v1/admin/tournaments/{id}/matches/{id}/schedule`,
+/// which is the one the frontend actually calls and which additionally records a
+/// scheduling note (P-84). This test therefore now pins the invariant on the
+/// surviving surface — deleting the duplicate must not have left the remaining
+/// direct-set path ungated. Participants still negotiate through
+/// `schedule/propose|accept|…`, which carries its own proposer/opponent binding.
 #[tokio::test]
 async fn test_direct_schedule_is_staff_only() {
     let app = TestApp::new().await;
     let (tournament_id, match_id, _reg1, _reg2) =
         create_tournament_with_matches(&app, "p59-schedule-gate").await;
 
-    let url = format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule");
+    let url = format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule");
     let when = (chrono::Utc::now() + chrono::Duration::hours(6)).to_rfc3339();
     let payload = serde_json::json!({ "scheduled_at": when });
 

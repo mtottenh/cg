@@ -9,9 +9,7 @@
 
 use super::{auto_create_veto_session, get_request_id, require_registration_actor};
 use crate::dto::common::DataResponse;
-use crate::dto::requests::{
-    AdminMatchTransitionRequest, ForfeitMatchRequest, MatchCheckInRequest, ScheduleMatchRequest,
-};
+use crate::dto::requests::{AdminMatchTransitionRequest, ForfeitMatchRequest, MatchCheckInRequest};
 use crate::dto::responses::{
     MatchStatusDetailsResponse, MatchStatusLogResponse, TournamentMatchResponse,
 };
@@ -186,65 +184,6 @@ async fn lock_lineups_if_started(
             "Failed to lock lineups on match start"
         );
     }
-}
-
-/// Schedule a match.
-#[utoipa::path(
-    post,
-    path = "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule",
-    request_body = ScheduleMatchRequest,
-    params(
-        ("tournament_id" = String, Path, description = "Tournament ID"),
-        ("match_id" = String, Path, description = "Match ID")
-    ),
-    responses(
-        (status = 200, description = "Match scheduled", body = DataResponse<TournamentMatchResponse>),
-        (status = 400, description = "Invalid request", body = ApiError),
-        (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 403, description = "Requires admin.tournaments.manage_any — participants use the schedule/propose flow", body = ApiError),
-        (status = 404, description = "Match not found", body = ApiError),
-    ),
-    security(("bearer_auth" = [])),
-    tag = "match_lifecycle"
-)]
-pub async fn schedule_match(
-    State(state): State<TournamentState>,
-    auth: AuthenticatedUser,
-    perm_checker: PermissionChecker,
-    headers: HeaderMap,
-    Path((_tournament_id, match_id)): Path<(String, String)>,
-    ValidatedJson(req): ValidatedJson<ScheduleMatchRequest>,
-) -> ApiResult<Json<DataResponse<TournamentMatchResponse>>> {
-    let request_id = get_request_id(&headers);
-
-    // Staff-only (P-59 / P-24 family). This endpoint DIRECT-SETS a match's
-    // scheduled time; it previously required nothing beyond a login, so any
-    // authenticated user could reschedule any match — and `scheduled_at`
-    // drives the check-in window and the no-show forfeit sweep, so a stranger
-    // could manufacture forfeits. Participants negotiate times through the
-    // schedule/propose|accept|counter flow, which carries its own proposer/
-    // opponent binding; direct-set is for staff, gated like
-    // `admin_match_transition` below.
-    perm_checker
-        .require_permission(
-            &auth,
-            portal_core::permissions::admin::TOURNAMENTS_MANAGE_ANY,
-        )
-        .await?;
-
-    let match_id: TournamentMatchId = match_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
-
-    let match_ = state
-        .match_lifecycle_service
-        .schedule(match_id, req.scheduled_at, auth.user_id)
-        .await?;
-
-    Ok(Json(DataResponse::new(
-        TournamentMatchResponse::from(match_),
-        request_id,
-    )))
 }
 
 /// Forfeit a match.

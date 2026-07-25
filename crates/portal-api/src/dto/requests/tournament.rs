@@ -702,13 +702,6 @@ pub struct SeedAssignment {
 // TOURNAMENT MATCH REQUESTS
 // =============================================================================
 
-/// Request to schedule a match.
-#[derive(Debug, Deserialize, Validate, ToSchema)]
-pub struct ScheduleMatchRequest {
-    /// Scheduled start time.
-    pub scheduled_at: DateTime<Utc>,
-}
-
 /// Request to submit match results.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct SubmitMatchResultRequest {

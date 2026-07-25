@@ -356,10 +356,35 @@ pub struct StorageConfig {
 }
 
 impl Default for StorageConfig {
+    /// P-118: `base_url` used to be the hard-coded literal
+    /// `http://localhost:3000/uploads`, with nothing able to override it.
+    ///
+    /// That URL is handed to the CLIENT as the destination for the upload PUT,
+    /// so without S3 configured every deployment told its users to upload to
+    /// `localhost:3000` — and every ephemeral e2e run told the browser to
+    /// upload to the DEV stack. When the dev API happened to be running the
+    /// upload silently landed in the developer's real uploads directory and the
+    /// test passed; when it was not, the PUT failed and only the missing
+    /// `/complete` call gave it away. Same shape as P-102: a default that
+    /// quietly points at another environment is worse than a missing value,
+    /// because it works just often enough to look correct.
+    ///
+    /// Now derived, in order: `PORTAL_EVIDENCE_BASE_URL`, else
+    /// `PORTAL_PUBLIC_URL` + `/uploads` (which every runner already sets
+    /// per-instance), else the old literal so nothing that relied on it breaks.
     fn default() -> Self {
+        let base_url = std::env::var("PORTAL_EVIDENCE_BASE_URL")
+            .ok()
+            .or_else(|| {
+                std::env::var("PORTAL_PUBLIC_URL")
+                    .ok()
+                    .map(|public| format!("{}/uploads", public.trim_end_matches('/')))
+            })
+            .unwrap_or_else(|| "http://localhost:3000/uploads".to_string());
+
         Self {
             base_path: "./uploads".to_string(),
-            base_url: "http://localhost:3000/uploads".to_string(),
+            base_url,
         }
     }
 }

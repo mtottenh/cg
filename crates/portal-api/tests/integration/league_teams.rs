@@ -985,6 +985,157 @@ async fn test_transfer_ownership() {
     assert_eq!(team["data"]["owner_player_id"], player2_id.to_string());
 }
 
+/// P-113: transferring ownership must move the AUTHORITY, not just the column.
+///
+/// `update_team`, `disband_team` and `register_team_for_season` all gate on
+/// `require_team_settings_manage` → the team-scoped `team_captain` RBAC grant,
+/// which is written when the team is created. `transfer_ownership` used to
+/// update `league_teams.owner_player_id` and touch nothing else, so after a
+/// transfer the new owner 403'd on every owner action while the OLD owner kept
+/// the power to disband a team they no longer owned.
+///
+/// This asserts the consequences, deliberately — not the presence of a row in
+/// `user_roles`. A test that only checked "the grant moved" would also pass
+/// against a fix that granted without revoking, which leaves the more dangerous
+/// half of the defect (the previous owner's retained disband power) intact.
+///
+/// Both accounts are real JWT users, never `dev-token`: the dev user short
+/// circuits `is_dev_user` in `PermissionChecker` and every assertion below
+/// would pass for the wrong reason.
+#[tokio::test]
+async fn test_transfer_ownership_moves_team_settings_authority() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "transfer-authority-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "transfer-authority-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    // The outgoing owner creates the team, so the RBAC grant lands on them the
+    // way it does in production.
+    let old_owner = UserBuilder::new()
+        .username("authority-old-owner")
+        .email("authority-old-owner@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let old_token = create_token_for_user(old_owner.id);
+
+    let create_response = app
+        .post_json_with_token(
+            &format!("/v1/league-seasons/{season_id}/teams"),
+            &json!({ "name": "Authority Transfer Team", "tag": "ATT" }),
+            &old_token,
+        )
+        .await;
+    create_response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = create_response.json();
+    let team_id = created["data"]["team"]["id"].as_str().unwrap().to_string();
+    let team_season_id = created["data"]["team_season"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The incoming owner joins the roster first (transfer targets a player, and
+    // a captain-run invite is how they get there in the product).
+    let new_owner = UserBuilder::new()
+        .username("authority-new-owner")
+        .email("authority-new-owner@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let new_token = create_token_for_user(new_owner.id);
+    let new_owner_player_id = new_owner.id;
+
+    let invite_response = app
+        .post_json_with_token(
+            &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+            &json!({ "player_id": new_owner_player_id.to_string(), "role": "player" }),
+            &old_token,
+        )
+        .await;
+    invite_response.assert_status(StatusCode::CREATED);
+    let invitation: serde_json::Value = invite_response.json();
+    let invitation_id = invitation["data"]["id"].as_str().unwrap();
+
+    app.post_with_token(
+        &format!("/v1/league-team-invitations/{invitation_id}/accept"),
+        &new_token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // Baseline: before the transfer the authority is the old owner's alone.
+    app.patch_json_with_token(
+        &format!("/v1/league-teams/{team_id}"),
+        &json!({ "description": "written by the incoming owner, too early" }),
+        &new_token,
+    )
+    .await
+    .assert_status(StatusCode::FORBIDDEN);
+
+    app.patch_json_with_token(
+        &format!("/v1/league-teams/{team_id}"),
+        &json!({ "description": "written by the founding owner" }),
+        &old_token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // Act.
+    app.post_json_with_token(
+        &format!("/v1/league-teams/{team_id}/transfer-ownership"),
+        &json!({ "new_owner_player_id": new_owner_player_id.to_string() }),
+        &old_token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // 1. The new owner can now edit the team they own.
+    let new_owner_update = app
+        .patch_json_with_token(
+            &format!("/v1/league-teams/{team_id}"),
+            &json!({ "description": "written by the new owner" }),
+            &new_token,
+        )
+        .await;
+    new_owner_update.assert_status(StatusCode::OK);
+    let updated: serde_json::Value = new_owner_update.json();
+    assert_eq!(updated["data"]["description"], "written by the new owner");
+
+    // 2. The old owner cannot edit a team they no longer own.
+    app.patch_json_with_token(
+        &format!("/v1/league-teams/{team_id}"),
+        &json!({ "description": "written by the former owner" }),
+        &old_token,
+    )
+    .await
+    .assert_status(StatusCode::FORBIDDEN);
+
+    // 3. The dangerous half: the old owner cannot disband it either...
+    app.delete_with_token(&format!("/v1/league-teams/{team_id}"), &old_token)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+
+    // ...and the team really is untouched, not merely reported as refused.
+    let after_refusal = app.get(&format!("/v1/league-teams/{team_id}")).await;
+    let after_refusal_body: serde_json::Value = after_refusal.json();
+    assert_eq!(after_refusal_body["data"]["status"], "active");
+    assert_eq!(
+        after_refusal_body["data"]["description"], "written by the new owner",
+        "the former owner's rejected edit must not have landed"
+    );
+
+    // 4. The new owner can disband, which is the whole point of owning it.
+    app.delete_with_token(&format!("/v1/league-teams/{team_id}"), &new_token)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    let final_team = app.get(&format!("/v1/league-teams/{team_id}")).await;
+    let final_body: serde_json::Value = final_team.json();
+    assert_eq!(final_body["data"]["status"], "disbanded");
+}
+
 #[tokio::test]
 async fn test_disband_team() {
     let app = TestApp::new().await;

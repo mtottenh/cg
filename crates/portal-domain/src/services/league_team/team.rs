@@ -522,6 +522,30 @@ where
     }
 
     /// Promote a member to captain (multiple captains allowed).
+    ///
+    /// Deliberately does **not** grant the team-scoped `team_captain` RBAC
+    /// role, despite the shared word "captain". The two are different things
+    /// and the divergence is the design, not an oversight (P-113 review):
+    ///
+    /// * The roster role lives on `league_team_members`, which is keyed by
+    ///   `team_season_id` — it is **per season**. The RBAC grant is scoped to
+    ///   the **team**, which outlives every season. A promotion in one season
+    ///   would hand out authority that survives the season it was granted in,
+    ///   and demotion in season 4 could not safely revoke it without knowing
+    ///   whether the player is still a captain in seasons 1-3.
+    /// * The `team_captain` RBAC role carries `team.delete` and
+    ///   `team.settings.manage` (migration 0016). Multiple roster captains are
+    ///   allowed by design, so granting it on promotion would let any co-captain
+    ///   permanently disband the team.
+    /// * Nothing needs it. Roster-level operations authorise through
+    ///   `require_captain_or_admin`, which asks `is_captain(team_season_id, …)`
+    ///   — the roster role, directly. Only team-identity operations (update /
+    ///   disband / register-for-season) use the RBAC grant, and those are the
+    ///   owner's, which is why `transfer_ownership` moves it.
+    ///
+    /// An admin who genuinely wants a non-owner to hold team-settings authority
+    /// assigns the scoped role explicitly (`assign_scoped_role`); that path
+    /// stays open and is the intended escape hatch.
     #[instrument(skip(self))]
     pub async fn promote_to_captain(
         &self,

@@ -292,7 +292,42 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         id: LeagueTeamId,
         new_owner_player_id: PlayerId,
     ) -> Result<LeagueTeam, DomainError> {
+        // P-113. `owner_player_id` is only half of what ownership *is*. The
+        // other half is the team-scoped `team_captain` RBAC grant written by
+        // `create_team_with_season_and_captain` below — that grant is what
+        // `require_team_settings_manage` (update_team / disband_team /
+        // register_team_for_season) actually checks.
+        //
+        // This method used to update the column and nothing else, which split
+        // ownership in two: the NEW owner 403'd on every owner-gated endpoint
+        // while the OLD owner kept the power to disband a team they no longer
+        // owned. Both halves therefore move here, in ONE transaction — a
+        // transfer that moves one and not the other is precisely the split
+        // state the finding describes.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
         let now = Utc::now();
+
+        // Read the outgoing owner under a row lock, inside the same
+        // transaction that will overwrite it. Taking it from an earlier
+        // `find_by_id` on another connection would let two concurrent
+        // transfers revoke the same (already-stale) player twice and leave
+        // the loser's grant behind.
+        let previous_owner = sqlx::query_as::<_, (uuid::Uuid,)>(
+            "SELECT owner_player_id FROM league_teams WHERE id = $1 FOR UPDATE",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let Some((previous_owner_player_id,)) = previous_owner else {
+            return Err(DomainError::LeagueTeamNotFound(id));
+        };
 
         let row = sqlx::query_as::<_, LeagueTeamRow>(
             r"
@@ -306,9 +341,61 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         .bind(id.as_uuid())
         .bind(new_owner_player_id.as_uuid())
         .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // Revoke BEFORE granting: a transfer to the current owner (a no-op the
+        // service does not forbid) would otherwise revoke the row it had just
+        // written and leave the owner with no grant at all.
+        //
+        // Scoped to the `team_captain` role only, not every role in the team
+        // scope — a player may hold other team-scoped roles for reasons that
+        // have nothing to do with owning it.
+        sqlx::query(
+            r"
+            UPDATE user_roles ur SET
+                revoked_at = $1
+            FROM players p, roles r
+            WHERE ur.user_id = p.user_id
+              AND ur.role_id = r.id
+              AND r.name = 'team_captain'
+              AND ur.scope_type = 'team'
+              AND ur.scope_id = $2
+              AND ur.revoked_at IS NULL
+              AND p.id = $3
+            ",
+        )
+        .bind(now)
+        .bind(id.as_uuid())
+        .bind(previous_owner_player_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // Same INSERT...SELECT shape as team creation: a player with no linked
+        // user account selects zero rows and grants nothing, which is correct
+        // — there is no user to authorise.
+        sqlx::query(
+            r"
+            INSERT INTO user_roles (user_id, role_id, scope_type, scope_id, granted_at)
+            SELECT p.user_id, r.id, 'team', $1, $2
+            FROM players p
+            JOIN roles r ON r.name = 'team_captain'
+            WHERE p.id = $3 AND p.user_id IS NOT NULL
+            ON CONFLICT DO NOTHING
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(now)
+        .bind(new_owner_player_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(LeagueTeam::from(row))
     }

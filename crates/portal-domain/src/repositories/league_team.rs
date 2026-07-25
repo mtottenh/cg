@@ -217,6 +217,17 @@ pub trait LeagueTeamRepository: Send + Sync {
     ) -> Result<LeagueTeam, DomainError>;
 
     /// Transfer team ownership.
+    ///
+    /// Implementations MUST move the team-scoped `team_captain` RBAC grant
+    /// along with `owner_player_id`, in the same transaction — revoked from
+    /// the outgoing owner, granted to the incoming one.
+    ///
+    /// That grant, not the column, is what the owner-gated endpoints check
+    /// (`update_team`, `disband_team` and `register_team_for_season` all go
+    /// through `require_team_settings_manage` →
+    /// `team.settings.manage`). Moving only the column produced P-113: the
+    /// new owner 403'd on every owner action while the old owner kept the
+    /// power to disband a team they no longer owned.
     async fn transfer_ownership(
         &self,
         id: LeagueTeamId,

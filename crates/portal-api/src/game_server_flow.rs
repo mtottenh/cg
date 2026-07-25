@@ -1277,8 +1277,9 @@ pub async fn request_substitution(
 
     // Validate the incoming player: on the same team-season roster, has a
     // linked Steam ID, and is not already listed on either side.
-    let mut incoming: Option<(portal_core::ids::PlayerId, String, String)> = None;
-    if let Some(player_in) = player_in {
+    let incoming: Option<(portal_core::ids::PlayerId, String, String)> = if let Some(player_in) =
+        player_in
+    {
         let reg = state
             .registration_service
             .get_registration(registration_id)
@@ -1321,8 +1322,10 @@ pub async fn request_substitution(
             .ok_or_else(|| {
                 DomainError::InvalidState(format!("{} has no linked Steam ID", player.display_name))
             })?;
-        incoming = Some((player_in, steam64.to_string(), player.display_name));
-    }
+        Some((player_in, steam64.to_string(), player.display_name))
+    } else {
+        None
+    };
 
     // Substitutions take effect from the next game (completed games count).
     let completed = state
@@ -1684,4 +1687,64 @@ pub async fn restore_backup(
                 .unwrap_or_else(|| "restore failed".into()),
         ))
     }
+}
+
+/// Roster options for the substitution picker (§7.2): per side, the
+/// currently listed players and the bench (rostered, not listed).
+pub struct SubstitutionSide {
+    pub registration_id: TournamentRegistrationId,
+    pub participant_name: String,
+    pub active: Vec<(portal_core::ids::PlayerId, String)>,
+    pub bench: Vec<(portal_core::ids::PlayerId, String, bool)>,
+}
+
+pub async fn substitution_options(
+    state: &AppState,
+    match_id: TournamentMatchId,
+) -> Result<Vec<SubstitutionSide>, DomainError> {
+    let match_ = get_match(state, match_id).await?;
+    let mut sides = Vec::new();
+    for reg_id in [
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let reg = state.registration_service.get_registration(reg_id).await?;
+        let active_ids = effective_player_ids(state, match_id, reg_id).await?;
+        let mut active = Vec::new();
+        for player_id in &active_ids {
+            if let Ok(player) = state.player_service.get_player(*player_id).await {
+                active.push((*player_id, player.display_name));
+            }
+        }
+        let mut bench = Vec::new();
+        if let Some(team_season_id) = reg.team_season_id {
+            for member in state
+                .league_team_member_repo
+                .list_members_with_players(team_season_id)
+                .await?
+            {
+                if active_ids.contains(&member.player_id) {
+                    continue;
+                }
+                let has_steam = state
+                    .player_service
+                    .get_player(member.player_id)
+                    .await
+                    .ok()
+                    .and_then(|p| p.steam_id)
+                    .is_some_and(|sid| sid.parse::<u64>().is_ok());
+                bench.push((member.player_id, member.display_name, has_steam));
+            }
+        }
+        sides.push(SubstitutionSide {
+            registration_id: reg_id,
+            participant_name: reg.participant_name,
+            active,
+            bench,
+        });
+    }
+    Ok(sides)
 }

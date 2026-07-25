@@ -81,6 +81,10 @@ pub fn match_server_routes() -> Router<AppState> {
             get(substitutions::list_substitutions).post(substitutions::create_substitution),
         )
         .route(
+            "/{match_id}/substitutions/options",
+            get(substitutions::substitution_options),
+        )
+        .route(
             "/{match_id}/substitutions/{substitution_id}",
             axum::routing::delete(substitutions::cancel_substitution),
         )

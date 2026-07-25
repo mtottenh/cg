@@ -305,6 +305,16 @@ where
         self.get(id).await
     }
 
+    /// Store a (hashed) server-scoped demo token (enrollment mints one;
+    /// this exposes rotation).
+    pub async fn set_demo_token(
+        &self,
+        id: GameServerId,
+        token_hash: &str,
+    ) -> Result<(), DomainError> {
+        self.server_repo.set_demo_token(id, token_hash).await
+    }
+
     /// Resolve a demo-upload token hash to its server (§6.5 demo auth).
     pub async fn find_by_demo_token(
         &self,

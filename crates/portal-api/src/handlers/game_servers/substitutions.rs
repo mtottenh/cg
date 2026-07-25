@@ -310,3 +310,73 @@ pub async fn reject_substitution(
         .map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// A player option for the substitution picker.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SubstitutionPlayerOption {
+    pub player_id: String,
+    pub display_name: String,
+    /// Bench players without a linked Steam ID cannot come in.
+    pub has_steam: bool,
+}
+
+/// One side's roster options.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SubstitutionOptionsSide {
+    pub registration_id: String,
+    pub participant_name: String,
+    /// Players currently listed on the server.
+    pub active: Vec<SubstitutionPlayerOption>,
+    /// Rostered players not currently listed.
+    pub bench: Vec<SubstitutionPlayerOption>,
+}
+
+/// Roster options for the substitution picker.
+#[utoipa::path(
+    get,
+    path = "/v1/matches/{match_id}/substitutions/options",
+    params(("match_id" = String, Path, description = "Match ID")),
+    responses(
+        (status = 200, description = "Per-side options", body = DataResponse<Vec<SubstitutionOptionsSide>>),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "match_lifecycle"
+)]
+pub async fn substitution_options(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(match_id): Path<String>,
+) -> ApiResult<Json<DataResponse<Vec<SubstitutionOptionsSide>>>> {
+    let request_id = get_request_id(&headers);
+    let match_id = parse_match_id(&match_id)?;
+    let sides = game_server_flow::substitution_options(&state, match_id)
+        .await
+        .map_err(ApiError::from)?;
+    let response = sides
+        .into_iter()
+        .map(|side| SubstitutionOptionsSide {
+            registration_id: side.registration_id.to_string(),
+            participant_name: side.participant_name,
+            active: side
+                .active
+                .into_iter()
+                .map(|(id, name)| SubstitutionPlayerOption {
+                    player_id: id.to_string(),
+                    display_name: name,
+                    has_steam: true,
+                })
+                .collect(),
+            bench: side
+                .bench
+                .into_iter()
+                .map(|(id, name, has_steam)| SubstitutionPlayerOption {
+                    player_id: id.to_string(),
+                    display_name: name,
+                    has_steam,
+                })
+                .collect(),
+        })
+        .collect();
+    Ok(Json(DataResponse::new(response, request_id)))
+}

@@ -366,6 +366,7 @@ use utoipa_swagger_ui::SwaggerUi;
         game_servers::substitutions::cancel_substitution,
         game_servers::substitutions::approve_substitution,
         game_servers::substitutions::reject_substitution,
+        game_servers::substitutions::substitution_options,
         game_servers::match_server::restore_match_server,
         // Steam tracking
         steam_tracking::register_tracking,
@@ -744,6 +745,8 @@ use utoipa_swagger_ui::SwaggerUi;
             crate::handlers::game_servers::match_server::LiveScoreResponse,
             crate::handlers::game_servers::substitutions::CreateSubstitutionRequest,
             crate::handlers::game_servers::substitutions::SubstitutionResponse,
+            crate::handlers::game_servers::substitutions::SubstitutionOptionsSide,
+            crate::handlers::game_servers::substitutions::SubstitutionPlayerOption,
             portal_core::types::SubstitutionStatus,
             crate::handlers::game_servers::match_server::RestoreBackupRequest,
             crate::handlers::game_servers::match_server::RestoreBackupResponse,

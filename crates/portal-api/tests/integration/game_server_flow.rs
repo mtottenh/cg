@@ -498,3 +498,196 @@ async fn get_game_id_str(app: &TestApp) -> String {
         .await
         .to_string()
 }
+
+// =============================================================================
+// Phase 4: demo upload, backups, substitutions, console passthrough
+// =============================================================================
+
+#[tokio::test]
+async fn test_demo_upload_auth_catalog_and_link() {
+    use portal_domain::repositories::GameServerRepository as _;
+
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _r1, _r2) =
+        create_tournament_with_matches(&app, "demo-upload").await;
+    let game_id = get_game_id_str(&app).await;
+    let server_id = seed_available_server(&state, &game_id, "Demo box").await;
+    let (reservation, _token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+
+    // Server-scoped demo token (normally minted at enrollment).
+    let demo_token = "cgm_demo_token_test";
+    state
+        .game_server_registry
+        .set_demo_token(server_id, &hash_token(demo_token))
+        .await
+        .unwrap();
+
+    // Bad token → 401.
+    let status = app
+        .post_bytes_with_headers(
+            "/v1/gameserver/demos",
+            b"DEMOBYTES".to_vec(),
+            &[
+                ("authorization", "Bearer cgm_wrong"),
+                ("matchzy-filename", "test_demo.dem"),
+            ],
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Good token → stored, cataloged, linked with game_number 1.
+    let status = app
+        .post_bytes_with_headers(
+            "/v1/gameserver/demos",
+            b"DEMOBYTES".to_vec(),
+            &[
+                ("authorization", &format!("Bearer {demo_token}")),
+                ("matchzy-filename", "series_map1.dem"),
+                ("matchzy-matchid", &reservation.matchzy_id.to_string()),
+                ("matchzy-mapnumber", "0"),
+            ],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM demos d JOIN demo_match_links l ON l.demo_id = d.id \
+         WHERE d.file_name = 'series_map1.dem' AND l.match_id = $1::uuid \
+         AND l.game_number = 1 AND l.link_type = 'auto_matched'",
+    )
+    .bind(&match_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 1, "demo cataloged and auto-linked");
+}
+
+#[tokio::test]
+async fn test_backup_ingest_and_serving() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _r1, _r2) =
+        create_tournament_with_matches(&app, "backup-flow").await;
+    let game_id = get_game_id_str(&app).await;
+    seed_available_server(&state, &game_id, "Backup box").await;
+    let (reservation, event_token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+    let mid = reservation.matchzy_id;
+
+    // Ingest a round backup with the event token.
+    let status = app
+        .post_bytes_with_headers(
+            "/v1/gameserver/backups",
+            br#"{"round": 5}"#.to_vec(),
+            &[
+                ("authorization", &format!("Bearer {event_token}")),
+                ("matchzy-filename", &format!("matchzy_{mid}_0_round05.json")),
+                ("matchzy-matchid", &mid.to_string()),
+                ("matchzy-mapnumber", "0"),
+                ("matchzy-roundnumber", "5"),
+            ],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Serve it back with the config token (the restore path's fetch).
+    let response = app
+        .get_with_bearer(
+            &format!("/v1/gameserver/backups/{mid}/matchzy_{mid}_0_round05.json"),
+            "cgm_test_config_token",
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Restore with no agent connected → conflict, surfaced as an error.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/server/restore"),
+            &json!({}),
+        )
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn test_substitution_validation_and_options() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _r1, _r2) =
+        create_tournament_with_matches(&app, "subs-flow").await;
+    let game_id = get_game_id_str(&app).await;
+    seed_available_server(&state, &game_id, "Subs box").await;
+
+    // No reservation yet → clear error.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/substitutions"),
+            &json!({ "player_out_id": uuid::Uuid::now_v7().to_string() }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let (reservation, _token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+    state
+        .server_reservation_repo
+        .set_status(reservation.id, ReservationStatus::Ready)
+        .await
+        .unwrap();
+
+    // Options endpoint lists both solo participants as active players.
+    let response = app
+        .get_auth(&format!("/v1/matches/{match_id}/substitutions/options"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let sides = body["data"].as_array().unwrap();
+    assert_eq!(sides.len(), 2);
+    assert_eq!(sides[0]["active"].as_array().unwrap().len(), 1);
+
+    // Unknown outgoing player → rejected with an actionable message.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/substitutions"),
+            &json!({ "player_out_id": uuid::Uuid::now_v7().to_string() }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("effective roster"),
+        "got: {}",
+        body["detail"]
+    );
+}
+
+#[tokio::test]
+async fn test_console_passthrough_requires_agent_and_permission() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let game_id = get_game_id_str(&app).await;
+    let server_id = seed_available_server(&state, &game_id, "Cmd box").await;
+
+    // No auth → 401.
+    let response = app
+        .post_json_no_auth(
+            &format!("/v1/admin/game-servers/{server_id}/command"),
+            &json!({ "command": "css_pause" }),
+        )
+        .await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+
+    // Admin, but no agent connected → conflict.
+    let response = app
+        .post_json(
+            &format!("/v1/admin/game-servers/{server_id}/command"),
+            &json!({ "command": "css_pause" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+}

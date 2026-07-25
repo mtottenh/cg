@@ -681,6 +681,21 @@ where
     }
 
     /// Link discovered evidence to a match.
+    ///
+    /// `source` records **who put this row here**, and the caller must state it
+    /// rather than inherit it from the fact that the artifact was *found* by a
+    /// plugin. P-109: this used to hard-code [`EvidenceSource::PluginDiscovery`]
+    /// for every caller, including the three HTTP handlers a human reaches by
+    /// clicking "Link demo" — and `list_evidence` drops `PluginDiscovery` rows
+    /// from its default listing, so a demo a person deliberately attached was
+    /// invisible on every evidence surface in the product, including the one an
+    /// admin uses to resolve the dispute the demo is evidence for.
+    ///
+    /// A human clicking a button is not plugin discovery. `add_link` (a human
+    /// attaching an external URL) already stamps [`EvidenceSource::ManualUpload`];
+    /// a human attaching a catalogued demo is the same act on a different
+    /// artifact, so it gets the same source. The variant stays available for a
+    /// future automated linker, which is the only caller it was ever right for.
     #[instrument(skip(self))]
     pub async fn link_discovered(
         &self,
@@ -688,6 +703,7 @@ where
         discovered: DiscoveredEvidence,
         game_number: Option<i32>,
         linked_by: UserId,
+        source: EvidenceSource,
     ) -> Result<Evidence, DomainError> {
         // Verify match exists
         let match_ = self
@@ -708,7 +724,7 @@ where
                 match_id,
                 game_number,
                 evidence_type: discovered.evidence_type,
-                evidence_source: EvidenceSource::PluginDiscovery,
+                evidence_source: source,
                 name: discovered.name,
                 description: None,
                 file_size_bytes: discovered.file_size_bytes,
@@ -759,5 +775,31 @@ where
             .await?;
 
         Ok(validation)
+    }
+
+    /// Persist a validation outcome that was computed outside the plugin.
+    ///
+    /// P-111: every validation route in the product went through the external
+    /// CS2 stats service, so in any deployment without that service running
+    /// nothing could ever be validated — which is why
+    /// `demo_match_links.validated` had never been `true` for any row. But the
+    /// portal already stores the extracted result of every catalogued demo
+    /// (`demos.metadata`, written by `save_demo_stats`); for a demo the catalog
+    /// has parsed, validation is a comparison the portal can make on its own.
+    /// This records the outcome of that comparison against the same columns
+    /// `validate_against_result` writes, so both routes are indistinguishable
+    /// to every reader.
+    #[instrument(skip(self, validation))]
+    pub async fn record_validation(
+        &self,
+        evidence_id: EvidenceId,
+        validation: &EvidenceValidation,
+    ) -> Result<Evidence, DomainError> {
+        self.evidence_repo
+            .mark_validated(
+                evidence_id,
+                serde_json::to_value(validation).unwrap_or_default(),
+            )
+            .await
     }
 }

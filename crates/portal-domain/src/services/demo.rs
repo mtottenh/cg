@@ -532,6 +532,40 @@ where
         self.link_repo.find_by_demo(demo_id).await
     }
 
+    /// Record the outcome of validating a demo against a match's claimed result.
+    ///
+    /// P-111: `DemoMatchLinkRepository::mark_validated` had **no caller anywhere
+    /// in the workspace**, so `demo_match_links.validated` was `false` for every
+    /// row that ever existed and the "Validated" chips on `DemoBrowser` and
+    /// `EvidenceDisplay` were dead template. The evidence-validation endpoint
+    /// persisted its verdict to `match_evidence` only; this is the other half of
+    /// the same write, keyed the way `unlink_from_match` already keys the link.
+    ///
+    /// Returns `Ok(None)` when the demo is not linked to that match — validating
+    /// evidence that happens not to have a catalog link is not an error.
+    #[instrument(skip(self, validation_result))]
+    pub async fn record_link_validation(
+        &self,
+        demo_id: DemoId,
+        match_id: TournamentMatchId,
+        validated: bool,
+        validation_result: serde_json::Value,
+    ) -> Result<Option<DemoMatchLink>, DomainError> {
+        let Some(link) = self
+            .link_repo
+            .find_by_demo_and_match(demo_id, match_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let updated = self
+            .link_repo
+            .mark_validated(link.id, validated, validation_result)
+            .await?;
+        Ok(Some(updated))
+    }
+
     // =========================================================================
     // Auto-Linking
     // =========================================================================

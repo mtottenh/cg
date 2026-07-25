@@ -710,17 +710,19 @@ impl DemoMatchLinkRepository for PgDemoMatchLinkRepository {
     async fn mark_validated(
         &self,
         id: DemoMatchLinkId,
+        validated: bool,
         validation_result: serde_json::Value,
     ) -> Result<DemoMatchLink, DomainError> {
         let row = sqlx::query_as::<_, DemoMatchLinkRow>(
             r"
             UPDATE demo_match_links
-            SET validated = true, validated_at = NOW(), validation_result = $2
+            SET validated = $2, validated_at = NOW(), validation_result = $3
             WHERE id = $1
             RETURNING *
             ",
         )
         .bind(id.as_uuid())
+        .bind(validated)
         .bind(&validation_result)
         .fetch_one(&self.pool)
         .await

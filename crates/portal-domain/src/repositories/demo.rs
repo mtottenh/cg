@@ -158,10 +158,20 @@ pub trait DemoMatchLinkRepository: Send + Sync {
     /// Create a new demo-match link.
     async fn create(&self, link: CreateDemoMatchLink) -> Result<DemoMatchLink, DomainError>;
 
-    /// Update link validation result.
+    /// Record the outcome of validating this link's demo against the match's
+    /// claimed result.
+    ///
+    /// `validated` is the *verdict*, not "a validation ran". P-111: this took
+    /// only the result JSON and unconditionally set `validated = true`, so a
+    /// validation that found the demo contradicting the claim would have lit
+    /// the green "Validated" chip on `DemoBrowser` and `EvidenceDisplay` —
+    /// worse than the dead chip it replaced. The failing verdict is still
+    /// persisted (in `validation_result`, with `validated_at`) so the operator
+    /// can see the errors; it just does not claim the demo corroborates.
     async fn mark_validated(
         &self,
         id: DemoMatchLinkId,
+        validated: bool,
         validation_result: serde_json::Value,
     ) -> Result<DemoMatchLink, DomainError>;
 

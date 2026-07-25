@@ -1095,3 +1095,363 @@ async fn test_complete_upload_bound_to_uploader() {
         response.text()
     );
 }
+
+// ============================================================================
+// DEMO EVIDENCE: LINK VISIBILITY (P-109), CATALOG RESOLUTION (P-110),
+// VALIDATION (P-111)
+// ============================================================================
+
+/// A catalogued, `ready` demo with parsed metadata — the row the demo browser
+/// offers and the row `validate_evidence` compares against.
+///
+/// `raw_stats` deliberately carries no `player_summaries`: `try_auto_link`
+/// (`services/demo.rs`) reads its keys as the demo's Steam-ID set, and with it
+/// present stats ingestion would auto-link the demo, which is a different
+/// code path from the one under test.
+async fn seed_catalog_demo(
+    app: &TestApp,
+    file_name: &str,
+    map_name: &str,
+    team1_score: i32,
+    team2_score: i32,
+) -> String {
+    // The catalog is an admin surface; the dev user is not one by default.
+    let dev_user_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    assign_role_to_user(app.pool(), dev_user_id, "platform_admin").await;
+
+    let game_id = get_game_id(app.pool(), "cs2").await;
+
+    let response = app
+        .post_json(
+            "/v1/admin/demos",
+            &json!({
+                "game_id": game_id.to_string(),
+                "file_name": file_name,
+                "s3_bucket": "portal-demos-test",
+                "s3_key": format!("demos/{file_name}"),
+                "file_size_bytes": 1_234_567,
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let demo_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/stats"),
+            &json!({
+                "map_name": map_name,
+                "team1_name": "Alpha",
+                "team2_name": "Bravo",
+                "team1_score": team1_score,
+                "team2_score": team2_score,
+                "total_rounds": team1_score + team2_score,
+                "duration_seconds": 2100,
+                "raw_stats": { "source": "evidence-integration-test" },
+                "players": [
+                    {
+                        "steam_id": "76561198000000901",
+                        "player_name": "alpha_one",
+                        "team_name": "Alpha",
+                        "stats": { "kills": 20, "deaths": 15, "assists": 4 }
+                    },
+                    {
+                        "steam_id": "76561198000000902",
+                        "player_name": "bravo_one",
+                        "team_name": "Bravo",
+                        "stats": { "kills": 14, "deaths": 19, "assists": 6 }
+                    }
+                ]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "ready", "stats submission: {body}");
+
+    demo_id
+}
+
+/// The default evidence listing — no `include_discovered`, exactly what
+/// `stores/evidence.ts fetchEvidence` sends.
+async fn list_evidence_default(app: &TestApp, match_id: &str) -> Vec<serde_json::Value> {
+    let response = app
+        .get_auth(&format!("/v1/matches/{match_id}/evidence"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    body["data"].as_array().cloned().unwrap_or_default()
+}
+
+async fn list_linked_demos(app: &TestApp, match_id: &str) -> Vec<serde_json::Value> {
+    let response = app
+        .get_auth(&format!("/v1/matches/{match_id}/demos?include_stats=true"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    body["data"].as_array().cloned().unwrap_or_default()
+}
+
+/// P-109. Linking a catalog demo wrote a row stamped `plugin_discovery`, and
+/// `list_evidence` drops those from its default listing — so the evidence a
+/// human deliberately attached was invisible on every evidence surface,
+/// including the admin tab used to resolve the dispute it is evidence for.
+#[tokio::test]
+async fn test_linked_demo_evidence_appears_in_the_default_listing() {
+    let app = TestApp::new().await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p109-vis").await;
+    let demo_id = seed_catalog_demo(&app, "p109-visible.dem", "de_nuke", 13, 7).await;
+
+    // Nothing attached yet: the listing is the honest empty state, not a
+    // filter that happens to hide everything.
+    assert!(list_evidence_default(&app, &info.match_id).await.is_empty());
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/link-discovered", info.match_id),
+            &json!({ "external_id": format!("catalog:{demo_id}"), "game_number": 1 }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let evidence = list_evidence_default(&app, &info.match_id).await;
+    assert_eq!(
+        evidence.len(),
+        1,
+        "a human-linked demo must be listed by default: {evidence:?}"
+    );
+    assert_eq!(evidence[0]["evidence_type"], "demo");
+    assert_eq!(evidence[0]["name"], "p109-visible.dem");
+
+    // And asking for discovered rows explicitly does not double-count it or
+    // reveal anything the default listing hid.
+    let response = app
+        .get_auth(&format!(
+            "/v1/matches/{}/evidence?include_discovered=true",
+            info.match_id
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+}
+
+/// P-110. `link_demo` resolved the demo by **file name against the external
+/// stats service** and 404'd when it was absent — while holding `demo_id`,
+/// which it then used anyway to create the link. The list the button acts on
+/// is the catalog, so any catalogued demo without a `.stats.json` was offered
+/// and refused. The unreachable stats URL here is the point: the catalog has
+/// everything this handler needs.
+#[tokio::test]
+async fn test_link_demo_by_catalog_id_does_not_need_the_stats_service() {
+    // Nothing listens on port 1 — every stats fetch fails, immediately.
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p110-cat").await;
+    let demo_id = seed_catalog_demo(&app, "p110-catalog.dem", "de_mirage", 16, 14).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/link-demo", info.match_id),
+            &json!({
+                "demo_name": "p110-catalog.dem",
+                "demo_id": demo_id,
+                "game_number": 1
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // The demo_match_link the browser's Linked Demos list reads...
+    let linked = list_linked_demos(&app, &info.match_id).await;
+    assert_eq!(linked.len(), 1, "expected one demo link: {linked:?}");
+    assert_eq!(linked[0]["link"]["demo_id"], demo_id.as_str());
+    assert_eq!(linked[0]["link"]["game_number"], 1);
+    assert_eq!(linked[0]["link"]["link_type"], "evidence");
+
+    // ...and the evidence row, visible by default (P-109 on this path too),
+    // named after the catalog row rather than after a stats-service lookup.
+    let evidence = list_evidence_default(&app, &info.match_id).await;
+    assert_eq!(evidence.len(), 1, "expected one evidence row: {evidence:?}");
+    assert_eq!(evidence[0]["name"], "p110-catalog.dem");
+}
+
+/// The stats-service route is still the route for a caller that has only a
+/// file name. P-110 narrowed when it is used; it did not delete it.
+#[tokio::test]
+async fn test_link_demo_without_catalog_id_still_resolves_via_the_stats_service() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p110-noid").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/link-demo", info.match_id),
+            &json!({ "demo_name": "never-catalogued.dem", "game_number": 1 }),
+        )
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
+    assert!(list_linked_demos(&app, &info.match_id).await.is_empty());
+}
+
+/// P-111. `DemoMatchLinkRepository::mark_validated` had no caller anywhere in
+/// the workspace, so `demo_match_links.validated` was `false` for every row
+/// that has ever existed and the "Validated" chip was dead template. This
+/// drives the endpoint the frontend now calls and asserts BOTH rows the
+/// verdict has to reach.
+#[tokio::test]
+async fn test_validate_evidence_marks_the_demo_link_validated() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p111-ok").await;
+    let demo_id = seed_catalog_demo(&app, "p111-ok.dem", "de_ancient", 13, 7).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/link-demo", info.match_id),
+            &json!({ "demo_name": "p111-ok.dem", "demo_id": demo_id, "game_number": 1 }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let evidence_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Precondition, stated rather than assumed: nothing is validated yet.
+    let linked = list_linked_demos(&app, &info.match_id).await;
+    assert_eq!(linked[0]["link"]["validated"], false);
+    assert_eq!(
+        list_evidence_default(&app, &info.match_id).await[0]["validated"],
+        false
+    );
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/validate", info.match_id),
+            &json!({
+                "evidence_ids": [evidence_id],
+                "expected_participant1_score": 13,
+                "expected_participant2_score": 7
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["is_valid"], true,
+        "a claim equal to the demo's recorded score must validate: {body}"
+    );
+    assert_eq!(body["data"]["extracted_result"]["map_id"], "de_ancient");
+    assert_eq!(body["data"]["errors"].as_array().unwrap().len(), 0);
+
+    // The link row — what every "Validated" chip in the frontend reads.
+    let linked = list_linked_demos(&app, &info.match_id).await;
+    assert_eq!(
+        linked[0]["link"]["validated"], true,
+        "demo_match_links.validated must be written: {linked:?}"
+    );
+    assert!(!linked[0]["link"]["validated_at"].is_null());
+
+    // ...and the evidence row, which the same verdict also stamps.
+    let evidence = list_evidence_default(&app, &info.match_id).await;
+    assert_eq!(evidence[0]["validated"], true);
+}
+
+/// A failing verdict must be recorded as a failure. `mark_validated` used to
+/// set `validated = true` unconditionally, which would have lit a green
+/// "Validated" chip on a demo that contradicts the claim — worse than the
+/// dead chip it replaced.
+#[tokio::test]
+async fn test_validate_evidence_records_a_contradiction_without_claiming_validation() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p111-bad").await;
+    let demo_id = seed_catalog_demo(&app, "p111-bad.dem", "de_overpass", 13, 7).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/link-demo", info.match_id),
+            &json!({ "demo_name": "p111-bad.dem", "demo_id": demo_id, "game_number": 1 }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let evidence_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Claim a scoreline the demo does not support, in either orientation.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/validate", info.match_id),
+            &json!({
+                "evidence_ids": [evidence_id],
+                "expected_participant1_score": 16,
+                "expected_participant2_score": 14
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["is_valid"], false,
+        "13-7 must not validate a 16-14 claim: {body}"
+    );
+    let errors = body["data"]["errors"].as_array().unwrap();
+    assert_eq!(
+        errors.len(),
+        1,
+        "the contradiction must be reported: {body}"
+    );
+    assert!(
+        errors[0].as_str().unwrap().contains("13 - 7"),
+        "the error should name what the demo actually records: {body}"
+    );
+
+    // The verdict is stored, but it does not claim the demo corroborates.
+    let linked = list_linked_demos(&app, &info.match_id).await;
+    assert_eq!(
+        linked[0]["link"]["validated"], false,
+        "a contradicted demo must not read as validated: {linked:?}"
+    );
+    assert!(
+        !linked[0]["link"]["validation_result"].is_null(),
+        "the failing verdict must still be recorded for the operator: {linked:?}"
+    );
+}
+
+/// Omitted scores are refused, not defaulted.
+///
+/// They used to default to 0, so an omitted score validated the demo against
+/// 0-0 — a scoreline no game can have, which the plugin's own sanity check
+/// then reported as "invalid". They cannot be defaulted from the match row
+/// either: that carries the *series* score (maps won), while a demo records
+/// one map's rounds.
+#[tokio::test]
+async fn test_validate_evidence_requires_the_claimed_game_scores() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p111-req").await;
+    let demo_id = seed_catalog_demo(&app, "p111-required.dem", "de_train", 13, 11).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/link-demo", info.match_id),
+            &json!({ "demo_name": "p111-required.dem", "demo_id": demo_id, "game_number": 1 }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let evidence_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/validate", info.match_id),
+            &json!({ "evidence_ids": [evidence_id] }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert!(
+        response.text().contains("expected_participant1_score"),
+        "the refusal should name what is missing: {}",
+        response.text()
+    );
+
+    // Nothing was recorded off a request that could not be answered.
+    let linked = list_linked_demos(&app, &info.match_id).await;
+    assert_eq!(linked[0]["link"]["validated"], false);
+    assert!(linked[0]["link"]["validation_result"].is_null());
+}

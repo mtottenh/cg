@@ -608,7 +608,9 @@ pub async fn link_discovered_evidence(
     Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<LinkDiscoveredEvidenceRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<EvidenceResponse>>)> {
-    use portal_domain::entities::evidence::{DiscoveredEvidence, EvidenceStorage, EvidenceType};
+    use portal_domain::entities::evidence::{
+        DiscoveredEvidence, EvidenceSource, EvidenceStorage, EvidenceType,
+    };
     use portal_domain::services::tournament::EvidencePluginClient;
 
     let request_id = get_request_id(&headers);
@@ -660,10 +662,19 @@ pub async fn link_discovered_evidence(
             relevance_score: 1.0,
         };
 
-        // Link via evidence service
+        // Link via evidence service. P-109: a person picked this demo out of the
+        // suggestion list and pressed the button, so the row is stamped
+        // `ManualUpload` — stamping `PluginDiscovery` hid it from the default
+        // evidence listing every surface in the product reads.
         let evidence = state
             .evidence_service
-            .link_discovered(match_id, discovered, req.game_number, auth.user_id)
+            .link_discovered(
+                match_id,
+                discovered,
+                req.game_number,
+                auth.user_id,
+                EvidenceSource::ManualUpload,
+            )
             .await?;
 
         return Ok((
@@ -699,7 +710,13 @@ pub async fn link_discovered_evidence(
 
     let evidence = state
         .evidence_service
-        .link_discovered(match_id, discovered, req.game_number, auth.user_id)
+        .link_discovered(
+            match_id,
+            discovered,
+            req.game_number,
+            auth.user_id,
+            EvidenceSource::ManualUpload,
+        )
         .await?;
 
     Ok((
@@ -747,44 +764,267 @@ pub async fn validate_evidence(
     // it must be bound to the match like any other evidence mutation.
     require_match_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
-    let (_match, plugin) = resolve_evidence_plugin(&state, match_id).await?;
-    let adapter = EvidencePluginAdapter::new(plugin)
-        .ok_or_else(|| ApiError::bad_request("Game plugin does not support evidence"))?;
-
-    // Build a minimal GameResult from the request for validation
-    let result = DomainGameResult {
-        game_number: 1,
-        map_id: String::new(),
-        participant1_score: req.expected_participant1_score.unwrap_or(0),
-        participant2_score: req.expected_participant2_score.unwrap_or(0),
-        winner_registration_id: portal_core::TournamentRegistrationId::new(),
-        started_at: None,
-        completed_at: None,
-        duration_seconds: None,
-        evidence_ids: req
-            .evidence_ids
-            .iter()
-            .map(|id| portal_core::EvidenceId::from(*id))
-            .collect(),
-        demo_link_id: None,
-    };
-
     // Validate the first evidence item
     let evidence_id = req
         .evidence_ids
         .first()
         .ok_or_else(|| ApiError::bad_request("At least one evidence ID is required"))?;
-
     let evidence_id = portal_core::EvidenceId::from(*evidence_id);
-    let validation = state
+
+    let (match_, plugin) = resolve_evidence_plugin(&state, match_id).await?;
+
+    let evidence = state.evidence_service.get_evidence(evidence_id).await?;
+    if evidence.match_id != match_id {
+        return Err(ApiError::not_found("Evidence not found on this match"));
+    }
+
+    // The claimed **per-game** result to validate against.
+    //
+    // These used to default to 0, so an omitted score validated a demo against
+    // a scoreline no game can have — and 0-0 fails the plugin's own sanity
+    // check, so the omission silently produced "invalid". Refuse instead. They
+    // cannot be defaulted from the match row either: `tournament_matches`
+    // carries the **series** score (maps won, capped at 10 by
+    // `SubmitResultClaimRequest`), while a demo records one map's rounds, so
+    // filling them in from there would compare two different units and call
+    // every honest demo a contradiction. The caller states the game's score,
+    // which is what `game_results` on the claim records.
+    let (Some(claimed_p1), Some(claimed_p2)) = (
+        req.expected_participant1_score,
+        req.expected_participant2_score,
+    ) else {
+        return Err(ApiError::bad_request(
+            "expected_participant1_score and expected_participant2_score are required to validate evidence against a result",
+        ));
+    };
+
+    // P-111: prefer the portal's own copy of the demo's extracted result.
+    //
+    // Every validation route in the product went through the external CS2
+    // stats service, so nothing was ever validated in any deployment without
+    // it — the reason `demo_match_links.validated` had never been true for a
+    // single row. For a catalogued demo the portal already stores the parsed
+    // result (`demos.metadata` + `demo_players`, written by `save_demo_stats`),
+    // so the comparison needs no external call at all. The plugin remains the
+    // route for evidence with no catalog row behind it.
+    let catalog_demo_id = evidence
+        .plugin_metadata
+        .get("catalog_demo_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<portal_core::DemoId>().ok());
+
+    let catalog_validation =
+        catalog_validation_for(&state, catalog_demo_id, &match_, claimed_p1, claimed_p2).await?;
+
+    let validation = if let Some(v) = catalog_validation {
+        v
+    } else {
+        use portal_domain::services::tournament::EvidencePluginClient;
+
+        let adapter = EvidencePluginAdapter::new(plugin)
+            .ok_or_else(|| ApiError::bad_request("Game plugin does not support evidence"))?;
+        let result = DomainGameResult {
+            game_number: 1,
+            map_id: String::new(),
+            participant1_score: claimed_p1,
+            participant2_score: claimed_p2,
+            winner_registration_id: portal_core::TournamentRegistrationId::new(),
+            started_at: None,
+            completed_at: None,
+            duration_seconds: None,
+            evidence_ids: req
+                .evidence_ids
+                .iter()
+                .map(|id| portal_core::EvidenceId::from(*id))
+                .collect(),
+            demo_link_id: None,
+        };
+        adapter.validate_evidence(&evidence, &result).await?
+    };
+
+    // Persist the verdict against the evidence row...
+    state
         .evidence_service
-        .validate_against_result(evidence_id, &result, &adapter)
+        .record_validation(evidence_id, &validation)
         .await?;
+
+    // ...and against the demo_match_link, which is the row every "Validated"
+    // chip in the frontend actually reads (`DemoBrowser.vue`,
+    // `EvidenceDisplay.vue`, `AdminDemoDetailPage.vue`). Nothing had ever
+    // written it.
+    if let Some(demo_id) = catalog_demo_id {
+        state
+            .demo_service
+            .record_link_validation(
+                demo_id,
+                match_id,
+                validation.is_valid,
+                serde_json::to_value(&validation).unwrap_or_default(),
+            )
+            .await?;
+    }
 
     Ok(Json(DataResponse::new(
         ValidationResultResponse::from(validation),
         request_id,
     )))
+}
+
+/// Validate a claim against the catalog's own copy of the demo's result, when
+/// the evidence has a catalog row behind it and that row has been parsed.
+///
+/// Returns `None` when there is nothing to compare against — no catalog demo,
+/// or a catalogued demo whose stats have not been ingested yet — which is the
+/// signal to fall back to the plugin route.
+async fn catalog_validation_for(
+    state: &EvidenceState,
+    catalog_demo_id: Option<portal_core::DemoId>,
+    match_: &portal_domain::entities::TournamentMatch,
+    claimed_p1: i32,
+    claimed_p2: i32,
+) -> ApiResult<Option<portal_domain::entities::evidence::EvidenceValidation>> {
+    let Some(demo_id) = catalog_demo_id else {
+        return Ok(None);
+    };
+    let Ok(demo) = state.demo_service.get_demo(demo_id).await else {
+        return Ok(None);
+    };
+    let Some(meta) = demo.metadata else {
+        return Ok(None);
+    };
+
+    let players = state
+        .demo_service
+        .get_demo_players(demo_id)
+        .await
+        .unwrap_or_default();
+    let context = build_evidence_context(state, match_).await?;
+
+    Ok(Some(validate_against_catalog(
+        &meta, &players, &context, claimed_p1, claimed_p2,
+    )))
+}
+
+/// Compare a catalogued demo's parsed result against a claimed scoreline.
+///
+/// The catalog records scores per *demo team name*, and nothing in the schema
+/// says which demo team is participant 1. So the demo's players are joined to
+/// the match participants by Steam ID first; only if that join fails does this
+/// fall back to an order-insensitive score comparison, and it says so in a
+/// warning rather than silently guessing.
+fn validate_against_catalog(
+    meta: &portal_domain::entities::demo::ParsedDemoMetadata,
+    players: &[portal_domain::entities::demo::DemoPlayer],
+    context: &MatchEvidenceContext,
+    claimed_p1: i32,
+    claimed_p2: i32,
+) -> portal_domain::entities::evidence::EvidenceValidation {
+    use portal_core::types::evidence::ExtractedMatchResult;
+    use portal_domain::entities::evidence::EvidenceValidation;
+
+    /// Which demo team a participant's Steam IDs sit on, if any is decisive.
+    fn team_of(
+        participant: &ParticipantContext,
+        players: &[portal_domain::entities::demo::DemoPlayer],
+    ) -> Option<String> {
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for p in players {
+            if participant.steam_ids.iter().any(|s| s == &p.steam_id)
+                && let Some(team) = p.team_name.as_deref()
+            {
+                *counts.entry(team).or_default() += 1;
+            }
+        }
+        let mut best: Vec<(&str, usize)> = counts.into_iter().collect();
+        best.sort_by(|a, b| b.1.cmp(&a.1));
+        match best.as_slice() {
+            [(team, _)] => Some((*team).to_owned()),
+            [(team, n), (_, m), ..] if n > m => Some((*team).to_owned()),
+            _ => None,
+        }
+    }
+
+    let mut warnings = Vec::new();
+
+    // Demo-side scores, oriented to participant 1 / participant 2 when the
+    // Steam-ID join is decisive for both sides and puts them on two teams.
+    let oriented = match (context.participants.first(), context.participants.get(1)) {
+        (Some(p1), Some(p2)) => match (team_of(p1, players), team_of(p2, players)) {
+            (Some(t1), Some(t2)) if t1 != t2 => {
+                let score_of = |team: &str| {
+                    if team == meta.team1_name {
+                        Some(meta.team1_score)
+                    } else if team == meta.team2_name {
+                        Some(meta.team2_score)
+                    } else {
+                        None
+                    }
+                };
+                match (score_of(&t1), score_of(&t2)) {
+                    (Some(a), Some(b)) => Some((a, b)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let (demo_p1, demo_p2) = if let Some(pair) = oriented {
+        pair
+    } else {
+        warnings.push(
+            "Could not map demo teams to match participants by Steam ID; scores compared without side assignment".to_string(),
+        );
+        (meta.team1_score, meta.team2_score)
+    };
+
+    let extracted = Some(ExtractedMatchResult {
+        map_id: meta.map_name.clone(),
+        participant1_score: demo_p1,
+        participant2_score: demo_p2,
+        duration_seconds: meta.duration_seconds.unwrap_or(0),
+        player_stats: serde_json::Value::Null,
+    });
+
+    let exact = demo_p1 == claimed_p1 && demo_p2 == claimed_p2;
+    let unordered = demo_p1 == claimed_p2 && demo_p2 == claimed_p1;
+
+    if exact {
+        return EvidenceValidation {
+            is_valid: true,
+            // Not 1.0: the catalog's copy of the result is only as good as the
+            // stats submission that produced it.
+            confidence: 0.9,
+            extracted_result: extracted,
+            warnings,
+            errors: Vec::new(),
+        };
+    }
+
+    if unordered && oriented.is_none() {
+        warnings.push(format!(
+            "Demo scores {demo_p1}-{demo_p2} match the claim {claimed_p1}-{claimed_p2} only with sides swapped"
+        ));
+        return EvidenceValidation {
+            is_valid: true,
+            confidence: 0.5,
+            extracted_result: extracted,
+            warnings,
+            errors: Vec::new(),
+        };
+    }
+
+    EvidenceValidation {
+        is_valid: false,
+        confidence: 0.0,
+        extracted_result: extracted,
+        warnings,
+        errors: vec![format!(
+            "Demo on {} records {demo_p1} - {demo_p2}, but the claimed result is {claimed_p1} - {claimed_p2}",
+            meta.map_name
+        )],
+    }
 }
 
 // =============================================================================
@@ -1198,51 +1438,38 @@ pub async fn link_demo(
     Path(match_id): Path<TournamentMatchId>,
     ValidatedJson(req): ValidatedJson<LinkDemoRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<EvidenceResponse>>)> {
-    use portal_domain::entities::evidence::{DiscoveredEvidence, EvidenceStorage, EvidenceType};
+    use portal_domain::entities::evidence::{
+        DiscoveredEvidence, EvidenceSource, EvidenceStorage, EvidenceType,
+    };
 
     let request_id = get_request_id(&headers);
 
     // P-108: same gap as `link_discovered_evidence` above — no participant check.
     require_match_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
-    let cs2_plugin = create_cs2_plugin(&state);
-
-    // Verify demo exists by fetching stats
-    let stats = cs2_plugin
-        .get_demo_stats(&req.demo_name)
-        .await
-        .map_err(|_| ApiError::not_found(format!("Demo not found: {}", req.demo_name)))?;
-
-    // Build DiscoveredEvidence with proper Demo type
-    let discovered = DiscoveredEvidence {
-        external_id: format!("demo:{}", req.demo_name),
-        evidence_type: EvidenceType::Demo,
-        name: format!("CS2 Demo: {}", stats.map),
-        storage: EvidenceStorage::Url {
-            url: cs2_plugin.get_demo_url(&req.demo_name),
-        },
-        file_size_bytes: None,
-        metadata: serde_json::json!({
-            "demo_name": req.demo_name,
-            "map": stats.map,
-            "description": req.description,
-            "catalog_demo_id": req.demo_id,
-        }),
-        discovered_at: chrono::Utc::now(),
-        relevance_score: 1.0,
-    };
-
-    // If a catalog demo_id was provided, also create a demo_match_link so the
-    // demo is visible via GET /v1/matches/{match_id}/demos.
-    if let Some(ref demo_id_str) = req.demo_id {
+    // P-110: resolve the demo from the SAME source of truth the button's list
+    // came from.
+    //
+    // This handler used to resolve `req.demo_name` against the external CS2
+    // demo-stats service and 404 when it was absent — while holding `demo_id`,
+    // which it then used anyway, three lines further down, to create the link.
+    // The list the "Link demo" button acts on is the **catalog** (`GET /v1/demos`),
+    // so every catalogued demo whose `.stats.json` was missing was offered and
+    // then refused, and in any deployment without the stats service running the
+    // button refused everything. The catalog row carries the file name, the S3
+    // coordinate, the size and the parsed map — everything this handler took
+    // from the stats service — so when the caller names a catalog demo, ask the
+    // catalog. The stats-service path stays for callers that only have a file
+    // name (no `demo_id`), which is the only case it was ever needed for.
+    let discovered = if let Some(ref demo_id_str) = req.demo_id {
         let demo_id: portal_core::DemoId = demo_id_str
             .parse()
             .map_err(|_| ApiError::bad_request("Invalid demo_id format"))?;
 
-        // Verify the catalog demo exists
-        let _demo = state.demo_service.get_demo(demo_id).await?;
+        // 404s if the catalog row is gone — a real, checkable existence proof.
+        let demo = state.demo_service.get_demo(demo_id).await?;
 
-        let _link = state
+        state
             .demo_service
             .link_to_match(
                 demo_id,
@@ -1252,11 +1479,62 @@ pub async fn link_demo(
                 Some(auth.user_id),
             )
             .await?;
-    }
 
+        let map_name = demo.metadata.as_ref().map(|m| m.map_name.clone());
+        DiscoveredEvidence {
+            external_id: format!("demo:{}", demo.file_name),
+            evidence_type: EvidenceType::Demo,
+            name: demo.file_name.clone(),
+            storage: EvidenceStorage::S3 {
+                bucket: demo.s3_bucket.clone(),
+                key: demo.s3_key.clone(),
+            },
+            file_size_bytes: demo.file_size_bytes,
+            metadata: serde_json::json!({
+                "demo_name": demo.file_name,
+                "map": map_name,
+                "description": req.description,
+                "catalog_demo_id": demo_id.to_string(),
+            }),
+            discovered_at: chrono::Utc::now(),
+            relevance_score: 1.0,
+        }
+    } else {
+        let cs2_plugin = create_cs2_plugin(&state);
+        let stats = cs2_plugin
+            .get_demo_stats(&req.demo_name)
+            .await
+            .map_err(|_| ApiError::not_found(format!("Demo not found: {}", req.demo_name)))?;
+
+        DiscoveredEvidence {
+            external_id: format!("demo:{}", req.demo_name),
+            evidence_type: EvidenceType::Demo,
+            name: format!("CS2 Demo: {}", stats.map),
+            storage: EvidenceStorage::Url {
+                url: cs2_plugin.get_demo_url(&req.demo_name),
+            },
+            file_size_bytes: None,
+            metadata: serde_json::json!({
+                "demo_name": req.demo_name,
+                "map": stats.map,
+                "description": req.description,
+                "catalog_demo_id": serde_json::Value::Null,
+            }),
+            discovered_at: chrono::Utc::now(),
+            relevance_score: 1.0,
+        }
+    };
+
+    // P-109: a human clicked "Link demo"; the row is stamped as such.
     let evidence = state
         .evidence_service
-        .link_discovered(match_id, discovered, req.game_number, auth.user_id)
+        .link_discovered(
+            match_id,
+            discovered,
+            req.game_number,
+            auth.user_id,
+            EvidenceSource::ManualUpload,
+        )
         .await?;
 
     Ok((

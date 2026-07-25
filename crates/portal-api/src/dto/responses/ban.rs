@@ -1,6 +1,7 @@
 //! Ban response DTOs.
 
 use portal_domain::entities::Ban;
+use portal_domain::entities::ban::BanType;
 use portal_domain::repositories::PaginatedBans;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -17,8 +18,10 @@ pub struct BanResponse {
     pub user_id: String,
 
     /// Type of ban (platform, matchmaking, chat, league, tournament).
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
     #[schema(example = "platform")]
-    pub ban_type: String,
+    pub ban_type: BanType,
 
     /// Reason for the ban.
     #[schema(example = "Cheating violation detected")]
@@ -72,7 +75,7 @@ impl From<Ban> for BanResponse {
         Self {
             id: ban.id.to_string(),
             user_id: ban.user_id.to_string(),
-            ban_type: ban.ban_type.to_string(),
+            ban_type: ban.ban_type,
             reason: ban.reason,
             scope_type: ban.scope_type,
             scope_id: ban.scope_id.map(|id| id.to_string()),

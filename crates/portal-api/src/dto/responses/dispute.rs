@@ -1,10 +1,10 @@
 //! Dispute response DTOs.
 
 use chrono::{DateTime, Utc};
-use portal_domain::entities::dispute::DisputeStatus;
 use portal_domain::entities::dispute::{
     Dispute, DisputeMessage, DisputeResolution, DisputeResolutionResult, DisputeWithThread,
 };
+use portal_domain::entities::dispute::{DisputePriority, DisputeReason, DisputeStatus};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -29,7 +29,9 @@ pub struct DisputeResponse {
     pub disputed_by_user_id: String,
 
     /// Reason for the dispute.
-    pub reason: String,
+    // P-112: was `String` via `Display`, in front of an enum that already
+    // derives `Serialize` + `ToSchema`. Wire-compatible per `wire_compat_tests`.
+    pub reason: DisputeReason,
     /// Detailed description.
     pub description: String,
     /// Evidence IDs.
@@ -50,7 +52,11 @@ pub struct DisputeResponse {
     // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
     pub status: DisputeStatus,
     /// Priority level.
-    pub priority: String,
+    // P-112: `DisputePriority` has always derived `Serialize` + `ToSchema`; the
+    // DTO threw it away with `to_string()`, so no union reached the generated
+    // client and `disputePriorityMap` could not be keyed — which is exactly how
+    // P-79 shipped (the map said `critical`; the enum says `urgent`).
+    pub priority: DisputePriority,
 
     /// When resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -76,7 +82,7 @@ impl From<Dispute> for DisputeResponse {
             result_claim_id: d.result_claim_id.map(|id| id.to_string()),
             disputed_by_registration_id: d.disputed_by_registration_id.to_string(),
             disputed_by_user_id: d.disputed_by_user_id.to_string(),
-            reason: d.reason.to_string(),
+            reason: d.reason,
             description: d.description,
             evidence_ids: d
                 .evidence_ids
@@ -89,7 +95,7 @@ impl From<Dispute> for DisputeResponse {
             original_participant1_score: d.original_participant1_score,
             original_participant2_score: d.original_participant2_score,
             status: d.status,
-            priority: d.priority.to_string(),
+            priority: d.priority,
             resolved_at: d.resolved_at,
             resolved_by_user_id: d.resolved_by_user_id.map(|id| id.to_string()),
             resolution: d.resolution.map(Into::into),

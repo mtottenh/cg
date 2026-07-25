@@ -22,16 +22,15 @@ use crate::dto::requests::{
     RefreshTokenRequest, RegisterPlayerRequest, RegisterRequest, RegisterTeamForSeasonRequest,
     RegisterTeamRequest, RejectRegistrationRequest, RejectScheduleProposalRequest,
     ResolveAdjustedRequest, ResolveDoubleDqRequest, ResolveOverturnRequest, ResolveRematchRequest,
-    ResolveUpholdRequest, RespondToInvitationRequest, RevokeRoleRequest, ScheduleMatchRequest,
-    SeedAssignment, SelectSideRequest, SetDemoNotesRequest, SetDemoVisibilityRequest,
-    SetMapPoolRequest, SetRankTiersRequest, SetTournamentMapPoolRequest, SocialLinksRequest,
-    SubmitDemoStatsRequest, SubmitMatchResultRequest, SubmitResultClaimRequest,
-    TransferOwnershipRequest, UpdateAutoLinkSettingRequest, UpdateAvailabilityWindowRequest,
-    UpdateGameRequest, UpdateLeagueMemberRoleRequest, UpdateLeagueRequest,
-    UpdateLeagueSeasonRequest, UpdateLeagueTeamMemberRequest, UpdateLeagueTeamRequest,
-    UpdateMapRequest, UpdatePlayerProfileRequest, UpdateRoleRequest, UpdateTeamSizeRequest,
-    UpdateTournamentRequest, ValidateDemoRequest, ValidateEvidenceRequest,
-    WithdrawFromTournamentRequest,
+    ResolveUpholdRequest, RespondToInvitationRequest, RevokeRoleRequest, SeedAssignment,
+    SelectSideRequest, SetDemoNotesRequest, SetDemoVisibilityRequest, SetMapPoolRequest,
+    SetRankTiersRequest, SetTournamentMapPoolRequest, SocialLinksRequest, SubmitDemoStatsRequest,
+    SubmitMatchResultRequest, SubmitResultClaimRequest, TransferOwnershipRequest,
+    UpdateAutoLinkSettingRequest, UpdateAvailabilityWindowRequest, UpdateGameRequest,
+    UpdateLeagueMemberRoleRequest, UpdateLeagueRequest, UpdateLeagueSeasonRequest,
+    UpdateLeagueTeamMemberRequest, UpdateLeagueTeamRequest, UpdateMapRequest,
+    UpdatePlayerProfileRequest, UpdateRoleRequest, UpdateTeamSizeRequest, UpdateTournamentRequest,
+    ValidateDemoRequest, ValidateEvidenceRequest, WithdrawFromTournamentRequest,
 };
 use crate::dto::responses::AutoLinkSettingResponse;
 use crate::dto::responses::demo::{
@@ -167,8 +166,6 @@ use utoipa_swagger_ui::SwaggerUi;
         players::get_my_profile,
         players::update_my_profile,
         player_game_profiles::list_player_game_profiles,
-        player_game_profiles::get_player_game_profile,
-        player_game_profiles::get_my_game_profiles,
         player_game_profiles::submit_player_rating,
         player_game_profiles::get_player_rating_history,
         player_game_profiles::get_player_mm_stats,
@@ -181,6 +178,11 @@ use utoipa_swagger_ui::SwaggerUi;
         users::get_current_user,
         users::get_my_roles,
         users::get_my_matches,
+        // P-65: the route (`routes/users.rs`) and the `#[utoipa::path]`
+        // annotation both existed; only this line was missing, so the operation
+        // never reached the spec and `captainActions.ts` had to cast the path to
+        // `never` to call it. Same family as P-52.
+        users::get_my_action_items,
         // League Seasons
         league_teams::season::create_season,
         league_teams::season::get_season,
@@ -238,7 +240,6 @@ use utoipa_swagger_ui::SwaggerUi;
         tournaments::get_registrations,
         tournaments::check_in,
         // Registration management
-        tournaments::withdraw,
         tournaments::approve_registration,
         tournaments::reject_registration,
         tournaments::disqualify,
@@ -260,7 +261,6 @@ use utoipa_swagger_ui::SwaggerUi;
         tournaments::match_check_in,
         tournaments::declare_lineup,
         tournaments::get_match_lineups,
-        tournaments::schedule_match,
         tournaments::forfeit_match,
         tournaments::admin_match_transition,
         // Match scheduling (proposal workflow)
@@ -314,7 +314,6 @@ use utoipa_swagger_ui::SwaggerUi;
         evidence::complete_upload,
         evidence::add_link_evidence,
         evidence::list_evidence,
-        evidence::get_evidence,
         evidence::get_access_url,
         evidence::delete_evidence,
         evidence::discover_evidence,
@@ -325,7 +324,6 @@ use utoipa_swagger_ui::SwaggerUi;
         evidence::get_demo_stats,
         evidence::link_demo,
         // Progression (bracket advancement)
-        progression::get_progression,
         progression::revert_progression,
         progression::reapply_progression,
         progression::process_progression,
@@ -365,7 +363,6 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::requeue_demo,
         demos::link_demo_to_match,
         demos::get_demo_status_counts,
-        demos::get_pending_demos,
         demos::get_demos_for_match,
         demos::unlink_demo_from_match,
         demos::batch_catalog_demos,
@@ -447,6 +444,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
             // Users
             UserResponse,
+            crate::dto::responses::ActionItemResponse,
             crate::dto::requests::tournament::MyMatchesQuery,
 
             // Auth
@@ -474,6 +472,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
             // Bans
             BanResponse,
+            portal_domain::entities::ban::BanType,
             BanListResponse,
             PaginationMetaResponse,
             CreateBanRequest,
@@ -542,7 +541,6 @@ use utoipa_swagger_ui::SwaggerUi;
             CreateTournamentStageRequest,
             RegisterTeamRequest,
             RegisterPlayerRequest,
-            ScheduleMatchRequest,
             SubmitMatchResultRequest,
             RejectRegistrationRequest,
             DisqualifyRequest,
@@ -571,6 +569,11 @@ use utoipa_swagger_ui::SwaggerUi;
             portal_core::types::TournamentStatus,
             portal_core::types::TournamentRegistrationStatus,
             portal_core::types::StageStatus,
+            // P-112: every entry below this comment used to be stringified by the
+            // DTO in front of an enum that already derived `Serialize` +
+            // `ToSchema`, so no union reached the generated client and the
+            // matching `statusMaps.ts` entry could not be compile-locked.
+            portal_core::types::StageFormat,
             portal_core::types::BracketStatus,
             portal_core::types::ProposalStatus,
             portal_core::types::SeasonStatus,
@@ -578,12 +581,16 @@ use utoipa_swagger_ui::SwaggerUi;
             portal_core::types::LeagueTeamStatus,
             portal_core::types::LeagueTeamSeasonStatus,
             portal_core::types::LeagueTeamMemberStatus,
+            portal_core::types::LeagueTeamRole,
             portal_core::types::LeagueTeamInvitationStatus,
             portal_core::types::DemoStatus,
+            portal_core::types::DemoCategory,
             portal_domain::entities::result_claim::ClaimStatus,
             portal_domain::entities::result_review::ResultReviewStatus,
             portal_domain::entities::evidence::EvidenceStatus,
             portal_domain::entities::dispute::DisputeStatus,
+            portal_domain::entities::dispute::DisputePriority,
+            portal_domain::entities::dispute::DisputeReason,
             CounterProposeRequest,
             AdminScheduleRequest,
             // Availability
@@ -845,6 +852,190 @@ mod operation_id_uniqueness {
             dupes.is_empty(),
             "duplicate operationId(s) would produce an uncompilable generated client: {dupes:#?}\n\
              Fix by adding `operation_id = \"...\"` to the #[utoipa::path] of one handler."
+        );
+    }
+}
+
+#[cfg(test)]
+mod enum_fields_are_not_stringified {
+    use super::*;
+    use utoipa::OpenApi;
+
+    /// Response fields that MUST publish an enum union, not a bare `string`:
+    /// `(schema, field, referenced enum)`.
+    const TYPED: &[(&str, &str, &str)] = &[
+        ("DisputeResponse", "priority", "DisputePriority"),
+        ("DisputeResponse", "reason", "DisputeReason"),
+        ("DemoResponse", "category", "DemoCategory"),
+        ("BanResponse", "ban_type", "BanType"),
+        ("TournamentStageResponse", "format", "StageFormat"),
+        ("LeagueTeamMemberResponse", "role", "LeagueTeamRole"),
+        (
+            "LeagueTeamMemberWithPlayerResponse",
+            "role",
+            "LeagueTeamRole",
+        ),
+        (
+            "PlayerLeagueTeamMembershipResponse",
+            "role",
+            "LeagueTeamRole",
+        ),
+        ("LeagueTeamInvitationResponse", "role", "LeagueTeamRole"),
+        (
+            "LeagueTeamInvitationWithTeamResponse",
+            "role",
+            "LeagueTeamRole",
+        ),
+    ];
+
+    /// P-112: a DTO field typed `String` in front of an enum that already derives
+    /// `Serialize` + `ToSchema` throws the union away, and the frontend's status
+    /// map for that field then cannot be keyed — so it becomes the only kind of
+    /// map that can still drift. That is precisely where P-79 (`critical` vs
+    /// `urgent`) and P-91 happened.
+    ///
+    /// This asserts the shape of the PUBLISHED SCHEMA rather than the Rust type,
+    /// because the published schema is what the generated client is built from: a
+    /// `#[schema(value_type = String)]`, a revert to `.to_string()`, or dropping
+    /// the enum from `components(schemas)` all regress the client while the DTO
+    /// still looks enum-typed at a glance.
+    #[test]
+    fn declared_enums_reach_the_client_as_unions() {
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("serialise spec");
+        let schemas = &doc["components"]["schemas"];
+
+        let mut problems = Vec::new();
+        for (schema, field, want) in TYPED {
+            let prop = &schemas[schema]["properties"][field];
+            if prop.is_null() {
+                problems.push(format!("{schema}.{field} is absent from the spec"));
+                continue;
+            }
+            // utoipa emits either a bare `$ref` or `allOf: [{$ref}]` for a
+            // referenced schema; both become a union in the generated client.
+            let reference = prop["$ref"]
+                .as_str()
+                .or_else(|| prop["allOf"][0]["$ref"].as_str());
+            match reference {
+                Some(r) if r.ends_with(&format!("/{want}")) => {}
+                Some(r) => problems.push(format!("{schema}.{field} references {r}, want {want}")),
+                None => problems.push(format!(
+                    "{schema}.{field} publishes `{}` instead of a $ref to {want} — the enum \
+                     exists and the DTO is throwing it away (P-112)",
+                    prop["type"].as_str().unwrap_or("<no type>")
+                )),
+            }
+            if !schemas[want]["enum"].is_array() {
+                problems.push(format!(
+                    "{want} is not registered in components(schemas), so no union is generated"
+                ));
+            }
+        }
+
+        assert!(problems.is_empty(), "P-112 regressions: {problems:#?}");
+    }
+}
+
+#[cfg(test)]
+mod every_route_is_documented {
+    use std::collections::BTreeSet;
+
+    /// Handler modules whose routes are deliberately absent from the public spec.
+    ///
+    /// `internal.rs` is the API-key surface the demo scanner and enricher call;
+    /// it is not part of the client contract and publishing it would put
+    /// service-to-service endpoints in the generated browser client.
+    /// `veto_ws::ws_upgrade` is a WebSocket upgrade, not an HTTP operation —
+    /// OpenAPI has no way to describe it.
+    const EXEMPT: &[&str] = &["internal", "veto_ws"];
+
+    /// Every handler the router serves must appear in `paths(...)`.
+    ///
+    /// P-65: `GET /v1/users/me/action-items` had a live route AND a complete
+    /// `#[utoipa::path]` annotation, and was still invisible to every client for
+    /// months, because the one-line registration in `paths(...)` was never added.
+    /// Nothing failed: the endpoint worked when called by hand, the annotation
+    /// looked like proof it was documented, and the frontend papered over the
+    /// missing type with `api.GET('…' as never)` — a cast that then silently
+    /// disabled type checking on the whole call. That is the same shape as P-52
+    /// (a spec that serves fine but breaks the generated client), and this is the
+    /// guard that makes the class self-detecting: registration is now something
+    /// you cannot forget, only deliberately exempt.
+    ///
+    /// Matching is by handler FUNCTION NAME, not by the full path, because
+    /// `routes/*.rs` reaches handlers through re-exports (`league_teams::get_team`)
+    /// while `paths(...)` names them fully (`league_teams::team::get_team`).
+    #[test]
+    fn every_router_handler_appears_in_paths() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+        // Handler idents in route position: `get(users::get_my_action_items)`.
+        let mut routed: BTreeSet<(String, String)> = BTreeSet::new();
+        for entry in std::fs::read_dir(manifest.join("src/routes")).expect("routes dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("read route file");
+            for (idx, _) in src.match_indices("::") {
+                // Walk back over `a::b::c` and forward to the closing token, then
+                // require the whole thing to sit inside a method-router call.
+                let head =
+                    src[..idx].rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'));
+                let start = head.map_or(0, |p| p + 1);
+                let rest = &src[idx + 2..];
+                let end = rest
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                    .unwrap_or(rest.len());
+                let full = &src[start..idx + 2 + end];
+                let prefix = src[..start].trim_end();
+                let is_route_position = ["get(", "post(", "put(", "patch(", "delete("]
+                    .iter()
+                    .any(|m| prefix.ends_with(m));
+                if !is_route_position || !full.contains("::") {
+                    continue;
+                }
+                let module = full.split("::").next().unwrap_or_default().to_string();
+                let func = full.rsplit("::").next().unwrap_or_default().to_string();
+                if EXEMPT.contains(&module.as_str()) {
+                    continue;
+                }
+                routed.insert((func, full.to_string()));
+            }
+        }
+        assert!(
+            routed.len() > 200,
+            "route extraction found only {} handlers — the parser has stopped matching, \
+             which would make this guard vacuous",
+            routed.len()
+        );
+
+        // Handler idents inside the `paths(...)` block of the #[openapi] attribute.
+        let doc =
+            std::fs::read_to_string(manifest.join("src/openapi.rs")).expect("read openapi.rs");
+        let block_start = doc.find("    paths(").expect("paths( block");
+        let block_end = doc[block_start..]
+            .find("    components(")
+            .expect("components( block")
+            + block_start;
+        let documented: BTreeSet<&str> = doc[block_start..block_end]
+            .lines()
+            .map(|l| l.trim().trim_end_matches(','))
+            .filter(|l| !l.starts_with("//") && l.contains("::"))
+            .filter_map(|l| l.rsplit("::").next())
+            .collect();
+
+        let missing: Vec<&String> = routed
+            .iter()
+            .filter(|(func, _)| !documented.contains(func.as_str()))
+            .map(|(_, full)| full)
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "these handlers are routed but missing from `paths(...)` in openapi.rs, so no \
+             client can call them in a typed way (P-65): {missing:#?}\n\
+             Add each to the `paths(...)` list, or add its module to EXEMPT with a reason."
         );
     }
 }

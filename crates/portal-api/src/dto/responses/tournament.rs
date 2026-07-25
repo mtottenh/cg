@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use portal_core::types::{
-    BracketStatus, ProposalStatus, StageStatus, TournamentInvitationStatus, TournamentMatchStatus,
-    TournamentRegistrationStatus, TournamentStatus,
+    BracketStatus, ProposalStatus, StageFormat, StageStatus, TournamentInvitationStatus,
+    TournamentMatchStatus, TournamentRegistrationStatus, TournamentStatus,
 };
 use portal_domain::entities::tournament::{
     Tournament, TournamentBracket, TournamentInvitation, TournamentMatch, TournamentMatchGame,
@@ -274,7 +274,9 @@ pub struct TournamentStageResponse {
     pub tournament_id: String,
     pub name: String,
     pub stage_order: i32,
-    pub format: String,
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
+    pub format: StageFormat,
     pub format_settings: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advancement_count: Option<i32>,
@@ -302,7 +304,7 @@ impl From<TournamentStage> for TournamentStageResponse {
             tournament_id: s.tournament_id.to_string(),
             name: s.name,
             stage_order: s.stage_order,
-            format: s.format.to_string(),
+            format: s.format,
             format_settings: s.format_settings,
             advancement_count: s.advancement_count,
             advancement_rule: s.advancement_rule.to_string(),

@@ -1,7 +1,7 @@
 //! Demo catalog response DTOs.
 
 use chrono::{DateTime, Utc};
-use portal_core::types::DemoStatus;
+use portal_core::types::{DemoCategory, DemoStatus};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -28,7 +28,9 @@ pub struct DemoResponse {
     pub file_size_bytes: Option<i64>,
 
     /// Category (uncategorized, pug, league, scrim, ignored).
-    pub category: String,
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
+    pub category: DemoCategory,
     /// Whether the demo is hidden.
     pub is_hidden: bool,
 
@@ -77,7 +79,7 @@ impl From<Demo> for DemoResponse {
             s3_bucket: demo.s3_bucket,
             s3_key: demo.s3_key,
             file_size_bytes: demo.file_size_bytes,
-            category: demo.category.to_string(),
+            category: demo.category,
             is_hidden: demo.is_hidden,
             league_id: demo.league_id.map(|id| id.as_uuid()),
             tournament_id: demo.tournament_id.map(|id| id.as_uuid()),

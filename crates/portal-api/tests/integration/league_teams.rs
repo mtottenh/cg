@@ -1163,6 +1163,63 @@ async fn test_disband_team() {
     assert_eq!(body["data"]["status"], "disbanded");
 }
 
+/// P-126 — a disbanded team must not be editable.
+///
+/// `disband_team` and `withdraw_from_season` both refuse to act on a terminal
+/// row; `update_team_authorized` had no such check, so the persistent identity
+/// of a permanently disbanded team stayed fully mutable. The sharp edge is the
+/// league-scoped uniqueness probe: the dead team's name and tag still occupy
+/// the league namespace, so a disbanded row could be renamed onto — or kept
+/// squatting — a name a live team wants.
+///
+/// The rename below is the same request `test_update_team` makes successfully
+/// against a live team, so the two tests together pin exactly what changed:
+/// disbanded refuses, active still succeeds.
+#[tokio::test]
+async fn test_disbanded_team_cannot_be_updated() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "disbanded-update-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "disbanded-update-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+
+    let (team_id, _team_season_id) =
+        create_test_team(&app, season_id, "Doomed Squad", "DOOM").await;
+
+    app.delete_auth(&format!("/v1/league-teams/{team_id}"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    // The action under test: rename a team that no longer exists.
+    let response = app
+        .patch_json(
+            &format!("/v1/league-teams/{team_id}"),
+            &json!({
+                "name": "Resurrected Squad",
+                "tag": "RES"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let error_body: serde_json::Value = response.json();
+    let detail = error_body["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("disbanded"),
+        "refusal must say why the team cannot be edited, got: {detail}"
+    );
+
+    // Cross-check the row itself: the write was refused, not merely reported
+    // as refused. Status stays terminal and the identity is untouched.
+    let get_response = app.get(&format!("/v1/league-teams/{team_id}")).await;
+    let body: serde_json::Value = get_response.json();
+    assert_eq!(body["data"]["status"], "disbanded");
+    assert_eq!(body["data"]["name"], "Doomed Squad");
+    assert_eq!(body["data"]["tag"], "DOOM");
+}
+
 // ============================================================================
 // CAPTAIN PROMOTION/DEMOTION TESTS
 // ============================================================================

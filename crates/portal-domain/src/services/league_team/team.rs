@@ -287,6 +287,20 @@ where
     ) -> Result<LeagueTeam, DomainError> {
         let team = self.get_team(team_id).await?;
 
+        // P-126: a disbanded team is gone. `disband_team` and
+        // `withdraw_from_season` both refuse to act on a terminal row; this
+        // one did not, so a permanently disbanded team could still be
+        // renamed, re-tagged and re-branded — and since the name/tag
+        // uniqueness probes below are scoped to the whole league, a dead team
+        // could go on squatting a live team's identity. The check goes before
+        // those probes: there is no point asking whether a name is free for a
+        // team that can never use it.
+        if team.status.is_terminal() {
+            return Err(DomainError::InvalidState(
+                "team is disbanded and can no longer be modified".to_string(),
+            ));
+        }
+
         // Check name uniqueness if changing
         if let Some(ref name) = cmd.name
             && name.to_lowercase() != team.name.to_lowercase()

@@ -505,7 +505,12 @@ pub async fn set_map_pool(
         ..Default::default()
     };
 
-    let _ = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(Json(DataResponse::new(pool_maps, request_id)))
 }
@@ -775,7 +780,12 @@ pub async fn add_map(
         available_maps: Some(maps_json),
         ..Default::default()
     };
-    let _ = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(Json(DataResponse::new(maps, request_id)))
 }
@@ -848,7 +858,12 @@ pub async fn update_map(
         available_maps: Some(maps_json),
         ..Default::default()
     };
-    let _ = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(Json(DataResponse::new(updated_map, request_id)))
 }
@@ -899,7 +914,12 @@ pub async fn remove_map(
         available_maps: Some(maps_json),
         ..Default::default()
     };
-    let _ = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -936,8 +956,11 @@ pub async fn set_rank_tiers(
     let request_id = get_request_id(&headers);
     require_games_admin(&state, &auth).await?;
 
-    // Verify game exists
-    let _ = state
+    // Verify game exists. P-87: bind it rather than discarding into `_` — the
+    // write below is keyed on slug and this lookup already knows it. Throwing
+    // the row away is what left that write reaching for the raw `game_id` path
+    // parameter, which is a UUID and never matches.
+    let game = state
         .game_repo
         .find_by_id_or_slug(&game_id)
         .await?
@@ -986,7 +1009,12 @@ pub async fn set_rank_tiers(
         rank_tiers: Some(tiers_json),
         ..Default::default()
     };
-    let _ = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(Json(DataResponse::new(tiers, request_id)))
 }
@@ -1052,7 +1080,12 @@ pub async fn update_team_size(
         team_size_default: req.default,
         ..Default::default()
     };
-    let updated = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let updated = state.game_repo.update(&game.slug, update).await?;
 
     let config = TeamSizeConfig {
         min: updated.team_size_min,

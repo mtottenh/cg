@@ -1021,3 +1021,107 @@ async fn test_health_ready_reports_dependencies() {
     // No CS2_DEMO_SERVICE_URL configured in tests.
     assert_eq!(body["demo_service"], "unconfigured");
 }
+
+// ============================================================================
+// P-87 — GAME-CONFIG WRITES ADDRESSED BY UUID
+// ============================================================================
+
+/// P-87: every game-config WRITE 404'd when the game was addressed by UUID.
+///
+/// `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+/// repositories/game.rs:106) and returns not-found otherwise. Six handlers
+/// resolved the game with `find_by_id_or_slug` — which accepts either — and then
+/// passed the raw `{game_id}` path parameter to that slug-keyed write. Since
+/// migration `0024` made `games.id` a UUID, `GameSummaryResponse.id` is the
+/// UUID, and that is exactly what the admin UI sends. So Add Map, Edit Map,
+/// Delete Map and Save Pool were dead controls that popped a failure snackbar
+/// every time.
+///
+/// The reads were already covered by UUID (see the `*_by_uuid_matches_slug`
+/// tests above) — which is precisely why this went unnoticed. These drive the
+/// **writes** by UUID, and each asserts the mutation PERSISTED rather than
+/// merely returning 2xx: a handler that resolves the game, 404s on the write and
+/// still returns the pre-read state would satisfy a status-only assertion.
+#[tokio::test]
+async fn test_game_config_writes_by_uuid_persist() {
+    let app = TestApp::new().await;
+    let uuid = cs2_uuid(&app).await;
+
+    // These writes are gated on `admin.games.manage`; the dev-token identity
+    // carries no roles by default.
+    let dev_user = portal_test::helpers::get_dev_user_id(app.pool()).await;
+    portal_test::helpers::assign_role_to_user(app.pool(), dev_user, "super_admin").await;
+
+    // --- map catalog: add, addressed by UUID ---------------------------------
+    let map_id = "de_p87_probe";
+    let response = app
+        .post_json(
+            &format!("/v1/games/{uuid}/maps/catalog"),
+            &json!({
+                "id": map_id,
+                "display_name": "P-87 Probe",
+                "game_modes": ["competitive"],
+                "is_active": true
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // The catalog is read back through `GET /maps` — it serves `available_maps`,
+    // the same column `add_map` writes. There is no `GET /maps/catalog` route.
+    let maps = app.get(&format!("/v1/games/{uuid}/maps")).await;
+    maps.assert_status(StatusCode::OK);
+    let maps: serde_json::Value = maps.json();
+    assert!(
+        maps["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == map_id),
+        "P-87: the added map must be persisted when the game is addressed by UUID"
+    );
+
+    // --- rank tiers, addressed by UUID ---------------------------------------
+    let response = app
+        .put_json(
+            &format!("/v1/games/{uuid}/rank-tiers"),
+            &json!({
+                "rank_tiers": [
+                    { "id": "p87_low", "display_name": "P87 Low", "min_rating": 0, "max_rating": 999, "order": 1 },
+                    { "id": "p87_high", "display_name": "P87 High", "min_rating": 1000, "order": 2 }
+                ]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let tiers = app.get(&format!("/v1/games/{uuid}/rank-tiers")).await;
+    tiers.assert_status(StatusCode::OK);
+    let tiers: serde_json::Value = tiers.json();
+    assert!(
+        tiers["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == "p87_high"),
+        "P-87: rank tiers must persist when the game is addressed by UUID"
+    );
+
+    // --- team size, addressed by UUID ----------------------------------------
+    let response = app
+        .patch_json(
+            &format!("/v1/games/{uuid}/team-size"),
+            &json!({ "min": 3, "max": 7, "default": 5 }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let game = app.get(&format!("/v1/games/{uuid}")).await;
+    game.assert_status(StatusCode::OK);
+    let game: serde_json::Value = game.json();
+    assert_eq!(
+        game["data"]["team_size"]["min"], 3,
+        "P-87: team size must persist when the game is addressed by UUID"
+    );
+    assert_eq!(game["data"]["team_size"]["max"], 7);
+}

@@ -193,7 +193,9 @@ pub struct AcknowledgeParams {
 
 /// List pending result reviews for admin queue.
 ///
-/// Returns all reviews pending admin action, ordered by creation date.
+/// Returns all reviews pending admin action, **newest first** — the queue is
+/// paginated, so a fresh escalation ordered onto the last page is one nobody
+/// ever sees (P-55).
 #[utoipa::path(
     get,
     path = "/v1/admin/result-reviews",

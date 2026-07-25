@@ -44,7 +44,12 @@ pub trait ResultReviewRepository: Send + Sync + 'static {
         match_id: TournamentMatchId,
     ) -> Result<Option<ResultReview>, DomainError>;
 
-    /// Find all pending reviews for admin queue.
+    /// Find all pending reviews for the admin queue, **newest first**.
+    ///
+    /// The order is part of the contract, not an implementation detail: the
+    /// queue is paginated, so whichever end sorts last is unreachable in
+    /// practice. It was `created_at ASC` (P-55), which buried every fresh
+    /// escalation on the final page.
     async fn find_pending_admin_reviews(
         &self,
         limit: i64,

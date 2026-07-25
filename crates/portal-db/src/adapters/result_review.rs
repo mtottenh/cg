@@ -188,9 +188,18 @@ impl ResultReviewRepository for PgResultReviewRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<ResultReview>, DomainError> {
+        // P-55: NEWEST FIRST. This was `created_at ASC`, which put the review
+        // that had just escalated on the LAST page of a paginated queue — the
+        // one page an admin never opens (P-43 is the same lesson: anything off
+        // page 1 is, in practice, invisible). A pending review means a match is
+        // stalled and its participants are waiting right now, so recency is the
+        // urgency signal. `find_by_match_id` above already sorts DESC; this is
+        // now consistent with it. Tie-break on `id` because ids are UUID v7 and
+        // therefore share `created_at`'s ordering, which keeps paging stable
+        // when several reviews are raised in the same instant.
         let reviews = sqlx::query_as::<_, ResultReviewRow>(
             &format!(
-                "SELECT {SELECT_COLUMNS} FROM result_reviews WHERE status = 'pending_admin_review' ORDER BY created_at ASC LIMIT $1 OFFSET $2"
+                "SELECT {SELECT_COLUMNS} FROM result_reviews WHERE status = 'pending_admin_review' ORDER BY created_at DESC, id DESC LIMIT $1 OFFSET $2"
             ),
         )
         .bind(limit)

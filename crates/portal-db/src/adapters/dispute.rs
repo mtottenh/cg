@@ -487,6 +487,7 @@ impl DisputeRepository for PgDisputeRepository {
         resolution: DisputeResolution,
         match_id: TournamentMatchId,
         new_match_status: portal_core::types::TournamentMatchStatus,
+        clear_match_result: bool,
         resolution_message: CreateDisputeMessage,
     ) -> Result<Dispute, DomainError> {
         // Atomic counterpart of the `dispute_repo.resolve + match_repo.
@@ -530,19 +531,45 @@ impl DisputeRepository for PgDisputeRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?
         .ok_or(DomainError::DisputeNotFound(dispute_id))?;
 
-        sqlx::query(
-            r"
-            UPDATE tournament_matches SET
-                status = $2,
-                updated_at = NOW()
-            WHERE id = $1
-            ",
-        )
-        .bind(match_id.as_uuid())
-        .bind(new_match_status.to_string())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        // P-78: this used to update `status` and nothing else, so a rematch
+        // left the old winner, loser, scores and completed_at on the row — a
+        // match "ready to replay" still recorded a winner, and progression had
+        // already advanced them. Callers that move the match out of a completed
+        // state pass `clear_match_result`.
+        if clear_match_result {
+            sqlx::query(
+                r"
+                UPDATE tournament_matches SET
+                    status = $2,
+                    winner_registration_id = NULL,
+                    loser_registration_id = NULL,
+                    participant1_score = 0,
+                    participant2_score = 0,
+                    completed_at = NULL,
+                    updated_at = NOW()
+                WHERE id = $1
+                ",
+            )
+            .bind(match_id.as_uuid())
+            .bind(new_match_status.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        } else {
+            sqlx::query(
+                r"
+                UPDATE tournament_matches SET
+                    status = $2,
+                    updated_at = NOW()
+                WHERE id = $1
+                ",
+            )
+            .bind(match_id.as_uuid())
+            .bind(new_match_status.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        }
 
         let msg_evidence_ids: Vec<uuid::Uuid> = resolution_message
             .evidence_ids

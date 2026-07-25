@@ -125,6 +125,13 @@ pub trait DisputeRepository: Send + Sync + 'static {
     ///
     /// Use [`Self::resolve_with_overturn`] instead when the resolution
     /// also overwrites the match scores (Overturned / Adjusted).
+    ///
+    /// `clear_match_result` (P-78): when true, the match's
+    /// `winner_registration_id`, `loser_registration_id`, both scores and
+    /// `completed_at` are cleared alongside the status. A rematch or a
+    /// double-DQ moves the match OUT of a completed state, so leaving the old
+    /// winner and score on the row makes "ready to replay" still report a
+    /// winner — and progression has already advanced them.
     async fn resolve_with_status_change(
         &self,
         dispute_id: DisputeId,
@@ -132,6 +139,7 @@ pub trait DisputeRepository: Send + Sync + 'static {
         resolution: DisputeResolution,
         match_id: TournamentMatchId,
         new_match_status: TournamentMatchStatus,
+        clear_match_result: bool,
         resolution_message: CreateDisputeMessage,
     ) -> Result<Dispute, DomainError>;
 

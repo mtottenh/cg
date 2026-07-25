@@ -89,7 +89,9 @@ async fn test_admin_crud_round_trip() {
     assert_eq!(body["data"]["gotv_port"], 27020);
 
     // Delete (offline server → allowed)
-    let response = app.delete_auth(&format!("/v1/admin/game-servers/{id}")).await;
+    let response = app
+        .delete_auth(&format!("/v1/admin/game-servers/{id}"))
+        .await;
     response.assert_status(StatusCode::NO_CONTENT);
     let response = app.get_auth(&format!("/v1/admin/game-servers/{id}")).await;
     response.assert_status(StatusCode::NOT_FOUND);
@@ -373,7 +375,9 @@ async fn test_bookings_crud_and_validation() {
 
     // Deleted
     let response = app
-        .delete_auth(&format!("/v1/admin/game-servers/{id}/bookings/{booking_id}"))
+        .delete_auth(&format!(
+            "/v1/admin/game-servers/{id}/bookings/{booking_id}"
+        ))
         .await;
     response.assert_status(StatusCode::NO_CONTENT);
 }

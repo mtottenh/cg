@@ -15,14 +15,12 @@ pub mod veto;
 mod wire_compat_tests;
 
 pub use demo::{DemoCategory, DemoLinkType, DemoStatus};
-pub use game_server::{
-    AgentGamestate, GameServerStatus, ReservationStatus, SubstitutionStatus,
-};
 pub use evidence::{
     DemoFileMetadata, DiscoveredEvidenceData, EvidenceStorage, EvidenceType,
     EvidenceValidationResult, ExtractedMatchResult, GameMatchResult, MatchEvidenceContext,
     ParticipantEvidenceContext,
 };
+pub use game_server::{AgentGamestate, GameServerStatus, ReservationStatus, SubstitutionStatus};
 pub use league_team::{
     LeagueTeamInvitationStatus, LeagueTeamInvitationType, LeagueTeamMemberStatus, LeagueTeamRole,
     LeagueTeamSeasonStatus, LeagueTeamStatus, RosterLockStatus, SeasonStatus,

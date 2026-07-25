@@ -73,7 +73,8 @@ impl GameServerCommand {
 fn ca_init(dir: &str, common_name: &str, force: bool) -> Result<()> {
     let cert_path = format!("{dir}/ca.pem");
     let key_path = format!("{dir}/ca.key");
-    if !force && (std::path::Path::new(&cert_path).exists() || std::path::Path::new(&key_path).exists())
+    if !force
+        && (std::path::Path::new(&cert_path).exists() || std::path::Path::new(&key_path).exists())
     {
         bail!("CA material already exists in {dir}; pass --force to overwrite");
     }

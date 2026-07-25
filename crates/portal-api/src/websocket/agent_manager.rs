@@ -184,8 +184,9 @@ impl AgentConnectionManager {
 
     /// Remove a connection — only if it is still the current one.
     pub fn remove(&self, server_id: GameServerId, connection_id: Uuid) {
-        self.agents
-            .remove_if(&server_id, |_, handle| handle.connection_id == connection_id);
+        self.agents.remove_if(&server_id, |_, handle| {
+            handle.connection_id == connection_id
+        });
     }
 
     /// Whether an agent is currently connected for this server.

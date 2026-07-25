@@ -156,8 +156,8 @@ mod tests {
     #[test]
     fn ca_signs_csr_with_assigned_identity() {
         let ca_material = CertificateAuthority::generate("portal-agent-ca").unwrap();
-        let ca = CertificateAuthority::from_pem(&ca_material.cert_pem, &ca_material.key_pem)
-            .unwrap();
+        let ca =
+            CertificateAuthority::from_pem(&ca_material.cert_pem, &ca_material.key_pem).unwrap();
 
         let (csr_pem, _key) = make_csr();
         let issued = ca
@@ -173,8 +173,8 @@ mod tests {
     #[test]
     fn invalid_csr_is_rejected() {
         let ca_material = CertificateAuthority::generate("portal-agent-ca").unwrap();
-        let ca = CertificateAuthority::from_pem(&ca_material.cert_pem, &ca_material.key_pem)
-            .unwrap();
+        let ca =
+            CertificateAuthority::from_pem(&ca_material.cert_pem, &ca_material.key_pem).unwrap();
         assert!(ca.sign_csr("not a csr", "cn", 90).is_err());
     }
 }

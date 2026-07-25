@@ -331,7 +331,10 @@ impl GameServerRepository for PgGameServerRepository {
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        Ok(rows.into_iter().map(|(id,)| GameServerId::from(id)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(id,)| GameServerId::from(id))
+            .collect())
     }
 }
 
@@ -355,10 +358,7 @@ impl PgAgentCertRepository {
 
 #[async_trait]
 impl AgentCertRepository for PgAgentCertRepository {
-    async fn create(
-        &self,
-        cert: CreateAgentCertificate,
-    ) -> Result<AgentCertificate, DomainError> {
+    async fn create(&self, cert: CreateAgentCertificate) -> Result<AgentCertificate, DomainError> {
         let row = sqlx::query_as::<_, ServerAgentCertRow>(
             "INSERT INTO server_agent_certs \
                 (id, server_id, serial, fingerprint_sha256, not_before, not_after) \
@@ -442,13 +442,12 @@ impl ServerBookingRepository for PgServerBookingRepository {
     }
 
     async fn find_by_id(&self, id: ServerBookingId) -> Result<Option<ServerBooking>, DomainError> {
-        let row = sqlx::query_as::<_, ServerBookingRow>(
-            "SELECT * FROM server_bookings WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal)?;
+        let row =
+            sqlx::query_as::<_, ServerBookingRow>("SELECT * FROM server_bookings WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
         Ok(row.map(ServerBooking::from))
     }
 

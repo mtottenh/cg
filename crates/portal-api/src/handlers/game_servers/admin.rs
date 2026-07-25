@@ -452,7 +452,11 @@ pub async fn revoke_agent(
     let request_id = get_request_id(&headers);
     let id = parse_server_id(&server_id)?;
 
-    let revoked_count = state.registry.revoke_agent(id).await.map_err(ApiError::from)?;
+    let revoked_count = state
+        .registry
+        .revoke_agent(id)
+        .await
+        .map_err(ApiError::from)?;
     // Sever the live connection, if any: its cert is no longer valid.
     state.agent_manager.disconnect(id);
 
@@ -487,9 +491,16 @@ pub async fn list_bookings(
     let request_id = get_request_id(&headers);
     let id = parse_server_id(&server_id)?;
 
-    let bookings = state.registry.list_bookings(id).await.map_err(ApiError::from)?;
+    let bookings = state
+        .registry
+        .list_bookings(id)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(DataResponse::new(
-        bookings.iter().map(ServerBookingResponse::from_entity).collect(),
+        bookings
+            .iter()
+            .map(ServerBookingResponse::from_entity)
+            .collect(),
         request_id,
     )))
 }

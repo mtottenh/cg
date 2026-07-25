@@ -108,7 +108,9 @@ async fn authenticate(
     }
 
     if state.insecure_dev_auth
-        && let Some(raw) = headers.get(DEV_SERVER_ID_HEADER).and_then(|v| v.to_str().ok())
+        && let Some(raw) = headers
+            .get(DEV_SERVER_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
     {
         let id: GameServerId = raw
             .parse()
@@ -159,7 +161,7 @@ async fn handle_socket(state: GameServerState, server: GameServer, socket: WebSo
                         handle_agent_message(&state, server_id, &session, text.as_str()).await;
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Binary(_))) => {}
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(Message::Close(_)) | Err(_)) | None => break,
                 }
             }
         }

@@ -15,8 +15,8 @@ use crate::ids::{
     BanId, DemoId, DemoMatchLinkId, DisputeId, EvidenceId, ForfeitRecordId, GameId, GameServerId,
     LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LobbyId, MatchId, PlayerId,
     ResultClaimId, ResultReviewId, ServerBookingId, TournamentBracketId, TournamentId,
-    TournamentInvitationId, TournamentMatchId, TournamentRegistrationId, TournamentStageId,
-    UserId, VetoSessionId,
+    TournamentInvitationId, TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
+    VetoSessionId,
 };
 
 /// A single validation error for a specific field.

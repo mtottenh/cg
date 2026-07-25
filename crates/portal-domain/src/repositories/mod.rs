@@ -11,10 +11,10 @@ pub mod ban;
 pub mod demo;
 pub mod demo_stats;
 pub mod discovered_match;
-pub mod game_server;
 pub mod dispute;
 pub mod evidence;
 pub mod forfeit;
+pub mod game_server;
 pub mod league;
 pub mod league_team;
 pub mod match_lifecycle;
@@ -52,10 +52,6 @@ pub use demo_stats::{
     LeaderboardQuery, LeaderboardScope, PlayerStatsEntry, PlayerStatsQuery, PlayerStatsSort,
 };
 pub use discovered_match::{CreateDiscoveredMatch, DiscoveredMatchRepository};
-pub use game_server::{
-    AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateServerBooking,
-    GameServerRepository, RecordHeartbeat, ServerBookingRepository, UpdateGameServer,
-};
 pub use dispute::{
     CreateDispute, CreateDisputeMessage, DisputeMessageRepository, DisputeRepository, UpdateDispute,
 };
@@ -65,6 +61,10 @@ pub use evidence::{
     SagaExecutionRepository, UpdateEvidence,
 };
 pub use forfeit::{CreateForfeitRecord, ForfeitRecordRepository};
+pub use game_server::{
+    AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateServerBooking,
+    GameServerRepository, RecordHeartbeat, ServerBookingRepository, UpdateGameServer,
+};
 pub use league::{
     AddLeagueMember, CreateLeague, CreateLeagueInvitation, LeagueInvitationRepository,
     LeagueMemberRepository, LeagueRepository, UpdateLeague,

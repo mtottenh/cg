@@ -25,33 +25,33 @@ use crate::steam_openid::{HttpSteamOpenIdVerifier, SteamAuthConfig, SteamOpenIdV
 use crate::websocket::VetoLobbyManager;
 use crate::websocket::agent_manager::AgentConnectionManager;
 use portal_db::{
-    ActionItemRepository, DbPool, GameRepository, PermissionRepository, PgApiKeyRepository,
-    PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgAwardRepository,
-    PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
+    ActionItemRepository, DbPool, GameRepository, PermissionRepository, PgAgentCertRepository,
+    PgApiKeyRepository, PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository,
+    PgAwardRepository, PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
     PgDemoPlayerStatsRepository, PgDemoRepository, PgDiscoveredMatchRepository,
     PgDisputeMessageRepository, PgDisputeRepository, PgEvidenceRepository,
-    PgAgentCertRepository, PgForfeitRecordRepository, PgGameServerRepository,
-    PgLeagueInvitationRepository, PgLeagueMemberRepository,
-    PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
-    PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
-    PgLeagueTeamSeasonRepository, PgMatchLineupRepository, PgMatchStatusLogRepository,
-    PgPermissionRepository, PgPlayerGameProfileRepository, PgPlayerMatchHistoryRepository,
-    PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository, PgPlayerRepository,
-    PgProgressionLogRepository, PgRefreshTokenRepository, PgResultClaimRepository,
-    PgResultReviewRepository, PgSagaExecutionRepository, PgScheduleProposalRepository,
-    PgSteamTrackingRepository, PgSuggestedTimeRepository, PgSystemSettingsRepository,
-    PgTournamentBracketRepository, PgTournamentInvitationRepository, PgTournamentMapPoolRepository,
-    PgTournamentMatchRepository, PgTournamentRegistrationRepository, PgTournamentRepository,
-    PgTournamentStageRepository, PgTournamentStandingsRepository, PgUserRepository,
-    PgVetoActionRepository, PgVetoDelegateRepository, PgVetoLobbyMessageRepository,
-    PgServerBookingRepository, PgVetoSessionRepository, RoleRepository, StatsRepository,
+    PgForfeitRecordRepository, PgGameServerRepository, PgLeagueInvitationRepository,
+    PgLeagueMemberRepository, PgLeagueRepository, PgLeagueSeasonParticipantRepository,
+    PgLeagueSeasonRepository, PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository,
+    PgLeagueTeamRepository, PgLeagueTeamSeasonRepository, PgMatchLineupRepository,
+    PgMatchStatusLogRepository, PgPermissionRepository, PgPlayerGameProfileRepository,
+    PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository,
+    PgPlayerRepository, PgProgressionLogRepository, PgRefreshTokenRepository,
+    PgResultClaimRepository, PgResultReviewRepository, PgSagaExecutionRepository,
+    PgScheduleProposalRepository, PgServerBookingRepository, PgSteamTrackingRepository,
+    PgSuggestedTimeRepository, PgSystemSettingsRepository, PgTournamentBracketRepository,
+    PgTournamentInvitationRepository, PgTournamentMapPoolRepository, PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
+    PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
+    PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
+    RoleRepository, StatsRepository,
 };
 use portal_domain::services::{
     AwardService, BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
-    game_server::{CertificateAuthority, GameServerRegistryService},
     LeagueSeasonService, LeagueService, LeagueTeamInvitationService, LeagueTeamService,
     PermissionService, PlayerGameProfileService, PlayerService, SteamTrackingService,
     SystemSettingsService, TournamentService, UserService,
+    game_server::{CertificateAuthority, GameServerRegistryService},
     tournament::{
         AvailabilityService, CheckInService, DisputeService, EvidenceService,
         EvidenceServiceConfig, ForfeitService, LineupService, MatchCompletionSaga,
@@ -795,11 +795,8 @@ impl AppState {
         let game_server_repo = Arc::new(PgGameServerRepository::new(db_pool.clone()));
         let agent_cert_repo = Arc::new(PgAgentCertRepository::new(db_pool.clone()));
         let server_booking_repo = Arc::new(PgServerBookingRepository::new(db_pool.clone()));
-        let game_server_registry = GameServerRegistryService::new(
-            game_server_repo,
-            agent_cert_repo,
-            server_booking_repo,
-        );
+        let game_server_registry =
+            GameServerRegistryService::new(game_server_repo, agent_cert_repo, server_booking_repo);
         let agent_manager = Arc::new(AgentConnectionManager::new());
         let agent_ca = std::env::var("PORTAL_AGENT_CA_DIR").ok().map(|dir| {
             let cert_pem = std::fs::read_to_string(format!("{dir}/ca.pem"))

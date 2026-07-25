@@ -7,9 +7,7 @@
 pub mod ca;
 pub mod registry;
 
-pub use ca::{
-    AGENT_CERT_VALIDITY_DAYS, CertificateAuthority, GeneratedCa, IssuedCertificate,
-};
+pub use ca::{AGENT_CERT_VALIDITY_DAYS, CertificateAuthority, GeneratedCa, IssuedCertificate};
 pub use registry::{
     ENROLLMENT_TOKEN_TTL_HOURS, EnrollmentResult, GameServerRegistryService,
     HEARTBEAT_STALENESS_SECS, generate_enrollment_token, hash_token,

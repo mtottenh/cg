@@ -253,9 +253,7 @@ where
     ) -> Result<GameServer, DomainError> {
         let server = self.get(id).await?;
 
-        let status = if !heartbeat.rcon_ok {
-            GameServerStatus::Error
-        } else {
+        let status = if heartbeat.rcon_ok {
             match heartbeat.gamestate {
                 // RCON up but no parseable get5_status: keep what we had,
                 // unless we were offline/error — then we're at least reachable.
@@ -278,6 +276,8 @@ where
                 // A match the portal didn't set up: out-of-band pug (§6.7).
                 Some(_) => GameServerStatus::BusyExternal,
             }
+        } else {
+            GameServerStatus::Error
         };
 
         self.server_repo
@@ -336,7 +336,9 @@ where
         server_id: GameServerId,
     ) -> Result<Vec<ServerBooking>, DomainError> {
         let _server = self.get(server_id).await?;
-        self.booking_repo.list_for_server(server_id, Utc::now()).await
+        self.booking_repo
+            .list_for_server(server_id, Utc::now())
+            .await
     }
 
     pub async fn delete_booking(&self, id: ServerBookingId) -> Result<(), DomainError> {

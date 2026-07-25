@@ -10,11 +10,11 @@ pub mod ban;
 pub mod demo;
 pub mod demo_validation;
 pub mod discovered_match;
-pub mod game_server;
 pub mod dispute;
 pub mod eligibility;
 pub mod evidence;
 pub mod forfeit;
+pub mod game_server;
 pub mod league;
 pub mod league_team;
 pub mod match_lifecycle;
@@ -65,9 +65,6 @@ pub use dispute::{
     ResolveDisputeCommand,
 };
 pub use eligibility::{EligibilityRestrictions, EligibilityViolation};
-pub use game_server::{
-    AgentCertificate, GameServer, HeartbeatUpdate, ServerBooking,
-};
 pub use evidence::{
     AddLinkEvidenceCommand, DemoMetadata, DiscoveredEvidence, Evidence, EvidenceAccessLog,
     EvidenceAccessType, EvidenceAccessUrl, EvidenceSource, EvidenceStatus, EvidenceStorage,
@@ -79,6 +76,7 @@ pub use forfeit::{
     DisqualifyCommand, ForfeitRecord, ForfeitResult, ForfeitTrigger, ForfeitType,
     ProcessForfeitCommand, WithdrawFromTournamentCommand,
 };
+pub use game_server::{AgentCertificate, GameServer, HeartbeatUpdate, ServerBooking};
 pub use league::{
     CreateLeagueCommand, League, LeagueAccessType, LeagueInvitation, LeagueInvitationStatus,
     LeagueInvitationType, LeagueMember, LeagueMemberWithUser, LeagueMembershipType, LeagueStatus,

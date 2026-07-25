@@ -121,8 +121,7 @@ pub struct CreateAgentCertificate {
 /// Repository for issued agent client certificates.
 #[async_trait]
 pub trait AgentCertRepository: Send + Sync + 'static {
-    async fn create(&self, cert: CreateAgentCertificate)
-    -> Result<AgentCertificate, DomainError>;
+    async fn create(&self, cert: CreateAgentCertificate) -> Result<AgentCertificate, DomainError>;
 
     /// Look up a certificate by its hex serial (revoked rows included —
     /// callers check [`AgentCertificate::is_valid`]).

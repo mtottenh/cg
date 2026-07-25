@@ -292,15 +292,10 @@ mod tests {
     #[test]
     fn reservation_live_states_match_migration_partial_index() {
         // Keep in lockstep with uq_server_reservations_live_* in 0080.
-        let live: Vec<ReservationStatus> = [
-            "pending",
-            "configuring",
-            "ready",
-            "live",
-        ]
-        .iter()
-        .map(|s| s.parse().unwrap())
-        .collect();
+        let live: Vec<ReservationStatus> = ["pending", "configuring", "ready", "live"]
+            .iter()
+            .map(|s| s.parse().unwrap())
+            .collect();
         for status in live {
             assert!(status.is_live_state());
             assert!(!status.is_terminal());

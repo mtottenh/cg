@@ -735,6 +735,19 @@ pub trait TournamentMatchRepository: Send + Sync {
         seed: Option<i32>,
     ) -> Result<TournamentMatch, DomainError>;
 
+    /// Clear a participant slot — the inverse of [`Self::assign_participant`].
+    ///
+    /// P-83: reverting progression on an elimination bracket needs to take the
+    /// advanced participant back OUT of the downstream match. Without this the
+    /// revert could only clear the source match's own result, so the winner
+    /// stayed seeded in the next round while the UI reported the revert had
+    /// rolled the pairings back.
+    async fn clear_participant(
+        &self,
+        id: TournamentMatchId,
+        slot: ParticipantSlot,
+    ) -> Result<TournamentMatch, DomainError>;
+
     /// Submit match result.
     async fn submit_result(
         &self,

@@ -261,3 +261,207 @@ async fn test_revert_progression_subtracts_persisted_standings() {
         "revert must subtract the loser's persisted deltas"
     );
 }
+
+// ============================================================================
+// P-83 — REVERT ACTUALLY ROLLS BACK AN ELIMINATION ADVANCEMENT
+// ============================================================================
+
+async fn cs2_game_id(app: &TestApp) -> String {
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM games WHERE slug = $1")
+        .bind("cs2")
+        .fetch_one(app.pool())
+        .await
+        .expect("cs2 game row");
+    id.to_string()
+}
+
+/// Whether `registration_id` currently holds either participant slot on `match_id`.
+async fn occupies_slot(
+    app: &TestApp,
+    tournament_id: &str,
+    match_id: &str,
+    registration_id: &str,
+) -> bool {
+    let m = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}"
+        ))
+        .await
+        .json::<serde_json::Value>()["data"]
+        .clone();
+    m["participant1_registration_id"].as_str() == Some(registration_id)
+        || m["participant2_registration_id"].as_str() == Some(registration_id)
+}
+
+/// P-83: reverting progression on a single-elimination bracket must take the
+/// advanced winner back out of the downstream match.
+///
+/// `revert_progression` used to handle RoundRobin | Swiss only; for elimination
+/// it logged "Would revert winner progression - needs implementation" and
+/// returned **200**, while the admin UI's confirm dialog promised that
+/// "downstream pairings created from it are rolled back". An admin got a
+/// success snackbar for work that never happened, on the most
+/// destructive-sounding control in the tab.
+///
+/// The assertion is on the FINAL's participant slot, not on the source match:
+/// clearing the source result was the part that already worked, so asserting
+/// that would pass against the bug.
+#[tokio::test]
+async fn test_revert_withdraws_the_winner_from_the_downstream_elimination_match() {
+    let app = TestApp::new().await;
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "name": "P-83 Revert Elimination",
+                "slug": "p83-revert-elim",
+                "game_id": cs2_game_id(&app).await,
+                "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
+                "participant_type": "individual",
+                "min_participants": 4,
+                "max_participants": 4,
+                "registration_type": "open",
+                "scheduling_mode": "self_scheduled",
+                "default_match_format": "bo1"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let tournament_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
+        .await
+        .assert_status(StatusCode::OK);
+    app.post_auth(&format!(
+        "/v1/tournaments/{tournament_id}/open-registration"
+    ))
+    .await
+    .assert_status(StatusCode::OK);
+
+    // Four DISTINCT players — `register_player` registers the calling identity,
+    // so looping it would 409 on the second. A 4-player bracket is the minimum
+    // that produces a semi-final feeding a final, which is what P-83 is about.
+    for name in ["P1", "P2", "P3", "P4"] {
+        let (user_id, player_id) =
+            crate::tournaments::create_test_player(&app, &format!("p83_{}", name.to_lowercase()))
+                .await;
+        crate::tournaments::insert_test_registration(
+            &app,
+            &tournament_id,
+            player_id,
+            user_id,
+            name,
+        )
+        .await;
+    }
+
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
+        &json!({ "method": "random" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
+        .await
+        .assert_status(StatusCode::OK);
+
+    // Semi-finals feed a final. `winner_progresses_to` is not exposed on any
+    // DTO, so read the bracket wiring straight from the row — which is also the
+    // precise thing this test is about.
+    let (semi_uuid, final_uuid, p1_uuid, p2_uuid): (Uuid, Uuid, Option<Uuid>, Option<Uuid>) =
+        sqlx::query_as(
+            "SELECT m.id, m.winner_progresses_to, m.participant1_registration_id,
+                    m.participant2_registration_id
+             FROM tournament_matches m
+             WHERE m.tournament_id = $1
+               AND m.winner_progresses_to IS NOT NULL
+               AND m.participant1_registration_id IS NOT NULL
+               AND m.participant2_registration_id IS NOT NULL
+             ORDER BY m.created_at
+             LIMIT 1",
+        )
+        .bind(Uuid::parse_str(&tournament_id).unwrap())
+        .fetch_one(app.pool())
+        .await
+        .expect("a seeded semi-final that feeds the final");
+
+    let semi_id = semi_uuid.to_string();
+    let final_id = final_uuid.to_string();
+    let winner_reg = p1_uuid.unwrap().to_string();
+    let loser_reg = p2_uuid.unwrap().to_string();
+
+    // Record the result on the semi. In production progression always follows a
+    // COMPLETED match, so the row carries its winner; the admin
+    // `progression/process` endpoint is a repair tool pointed at such a match,
+    // and it does not itself write a winner. Revert reads that recorded winner
+    // to know who to withdraw, so without this the test would be asserting
+    // against a state the product never reaches.
+    sqlx::query(
+        "UPDATE tournament_matches
+         SET winner_registration_id = $2, loser_registration_id = $3,
+             participant1_score = 1, participant2_score = 0,
+             status = 'completed', completed_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(semi_uuid)
+    .bind(Uuid::parse_str(&winner_reg).unwrap())
+    .bind(Uuid::parse_str(&loser_reg).unwrap())
+    .execute(app.pool())
+    .await
+    .expect("record the semi-final result");
+
+    // Record the result on the semi before advancing. In production progression
+    // runs off a COMPLETED match, so the row carries its winner; the admin
+    // `process` endpoint is a repair tool pointed at such a match, and it does
+    // not itself write one. Reverting has to know who advanced, so a row with no
+    // winner is not a state this test should invent.
+    sqlx::query(
+        "UPDATE tournament_matches
+         SET winner_registration_id = $2, loser_registration_id = $3,
+             status = 'completed', completed_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(semi_uuid)
+    .bind(Uuid::parse_str(&winner_reg).unwrap())
+    .bind(Uuid::parse_str(&loser_reg).unwrap())
+    .execute(app.pool())
+    .await
+    .expect("record the semi-final result");
+
+    // Advance the winner into the final.
+    let response = app
+        .post_json(
+            &format!("/v1/admin/matches/{semi_id}/progression/process"),
+            &json!({
+                "winner_registration_id": winner_reg,
+                "loser_registration_id": loser_reg
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    assert!(
+        occupies_slot(&app, &tournament_id, &final_id, &winner_reg).await,
+        "precondition: processing progression must seat the winner in the final"
+    );
+
+    // Revert it.
+    app.post_json(
+        &format!("/v1/admin/matches/{semi_id}/progression/revert"),
+        &json!({}),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    assert!(
+        !occupies_slot(&app, &tournament_id, &final_id, &winner_reg).await,
+        "P-83: after reverting, the winner must no longer occupy a slot in the \
+         final — the old implementation logged 'needs implementation' and left \
+         them seeded while reporting success"
+    );
+}

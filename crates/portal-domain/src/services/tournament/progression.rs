@@ -840,8 +840,12 @@ where
     /// the recompute is a pure function of what is left, so reverting N
     /// times lands in the same place as reverting once.
     ///
-    /// Elimination-bracket slot clearing still needs dedicated
-    /// infrastructure and is logged only.
+    /// P-83: elimination-bracket slot clearing is implemented — the advanced
+    /// participant is withdrawn from the downstream match. This also repairs
+    /// `reapply_progression`, which calls revert first: it previously only
+    /// appeared to work because `advance_winner` overwrote the same slot, so a
+    /// reapply whose new winner routed to a *different* target slot left the
+    /// stale entry behind.
     #[instrument(skip(self))]
     pub async fn revert_progression(&self, match_id: TournamentMatchId) -> Result<(), DomainError> {
         let match_ = self.get_match(match_id).await?;
@@ -865,24 +869,69 @@ where
             self.standing_repo.recompute_bracket(bracket.id).await?;
         }
 
-        // If winner advanced, we need to clear that participant from the target match
-        // This is a complex operation that may require additional repository methods
-        // For now, we'll just log and return - full revert would need more infrastructure
-        if match_.winner_progresses_to.is_some() {
-            info!(
-                match_id = %match_id,
-                "Would revert winner progression - needs implementation"
-            );
+        // P-83: take the advanced participants back OUT of their downstream
+        // matches. This used to log "needs implementation" and return Ok, while
+        // the confirm dialog promised that "downstream pairings created from it
+        // are rolled back" — so an admin got a success snackbar for work that
+        // had not happened, on the most destructive-sounding control in the tab.
+        if let Some(winner_id) = match_.winner_registration_id {
+            self.withdraw_from_target(&match_, match_.winner_progresses_to, winner_id)
+                .await?;
         }
-
-        if match_.loser_progresses_to.is_some() {
-            info!(
-                match_id = %match_id,
-                "Would revert loser progression - needs implementation"
-            );
+        if let Some(loser_id) = match_.loser_registration_id {
+            self.withdraw_from_target(&match_, match_.loser_progresses_to, loser_id)
+                .await?;
         }
 
         info!(match_id = %match_id, "Reverted progression");
+
+        Ok(())
+    }
+
+    /// Clear `registration_id` from whichever slot it occupies in `target`.
+    ///
+    /// P-83. Deliberately a no-op unless that registration is *still* the
+    /// occupant: by the time a revert runs, the downstream match may already
+    /// have been re-seeded by a reapply, or filled from the other side of the
+    /// bracket. Clearing the slot unconditionally would evict whoever legitimately
+    /// holds it — turning a partial revert into a corrupted bracket, which is
+    /// worse than the no-op this replaces.
+    async fn withdraw_from_target(
+        &self,
+        source_match: &TournamentMatch,
+        target_match_id: Option<TournamentMatchId>,
+        registration_id: TournamentRegistrationId,
+    ) -> Result<(), DomainError> {
+        let Some(target_match_id) = target_match_id else {
+            return Ok(());
+        };
+
+        let target = self.get_match(target_match_id).await?;
+
+        let slot = if target.participant1_registration_id == Some(registration_id) {
+            ParticipantSlot::One
+        } else if target.participant2_registration_id == Some(registration_id) {
+            ParticipantSlot::Two
+        } else {
+            info!(
+                source_match = %source_match.id,
+                target_match = %target_match_id,
+                registration = %registration_id,
+                "Revert: participant no longer occupies the downstream slot; leaving it alone"
+            );
+            return Ok(());
+        };
+
+        self.match_repo
+            .clear_participant(target_match_id, slot)
+            .await?;
+
+        info!(
+            source_match = %source_match.id,
+            target_match = %target_match_id,
+            registration = %registration_id,
+            "Reverted advancement out of the downstream match"
+        );
 
         Ok(())
     }

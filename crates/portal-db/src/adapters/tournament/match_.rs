@@ -337,6 +337,53 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         Ok(result.rows_affected())
     }
 
+    async fn clear_participant(
+        &self,
+        id: TournamentMatchId,
+        slot: ParticipantSlot,
+    ) -> Result<TournamentMatch, DomainError> {
+        // P-83: inverse of `assign_participant`. Clears the denormalised name,
+        // logo and seed alongside the id — leaving those behind would show a
+        // phantom opponent in a slot with no registration.
+        let now = Utc::now();
+        let sql = match slot {
+            ParticipantSlot::One => {
+                r"
+                UPDATE tournament_matches SET
+                    participant1_registration_id = NULL,
+                    participant1_name = NULL,
+                    participant1_logo_url = NULL,
+                    participant1_seed = NULL,
+                    updated_at = $2
+                WHERE id = $1
+                RETURNING *
+                "
+            }
+            ParticipantSlot::Two => {
+                r"
+                UPDATE tournament_matches SET
+                    participant2_registration_id = NULL,
+                    participant2_name = NULL,
+                    participant2_logo_url = NULL,
+                    participant2_seed = NULL,
+                    updated_at = $2
+                WHERE id = $1
+                RETURNING *
+                "
+            }
+        };
+
+        let row = sqlx::query_as::<_, TournamentMatchRow>(sql)
+            .bind(id.as_uuid())
+            .bind(now)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?
+            .ok_or(DomainError::TournamentMatchNotFound(id))?;
+
+        Ok(row.into())
+    }
+
     async fn assign_participant(
         &self,
         id: TournamentMatchId,

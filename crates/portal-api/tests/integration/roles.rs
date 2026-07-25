@@ -648,13 +648,22 @@ async fn test_revoke_role_from_user() {
 async fn test_every_declared_permission_is_seeded_and_granted() {
     let app = TestApp::new().await;
 
-    // Every permission the code can gate on.
+    // Every permission the code can gate on. The scoped registries are
+    // included, not just `admin::ALL`: the P-72 admin score override is gated
+    // on `tournament.results.manage`, and an unseeded SCOPED permission fails
+    // exactly the same silent-403 way an unseeded admin one does. Covering
+    // only `admin::` left four registries where the original defect could
+    // recur unnoticed.
     let declared: Vec<&str> = portal_core::permissions::admin::ALL
         .iter()
+        .chain(portal_core::permissions::tournament::ALL)
+        .chain(portal_core::permissions::league::ALL)
+        .chain(portal_core::permissions::team::ALL)
+        .chain(portal_core::permissions::match_::ALL)
         .copied()
         .collect();
     assert!(
-        declared.len() >= 8,
+        declared.len() >= 25,
         "permission registry looks empty ({} entries) — this test would pass vacuously",
         declared.len()
     );
@@ -697,4 +706,118 @@ async fn test_every_declared_permission_is_seeded_and_granted() {
         "these permissions exist but are granted to NO role, so every caller is \
          refused and the endpoints behind them are unreachable: {ungranted:?}"
     );
+}
+
+/// P-153: the priority ceiling applied to granting a role but NOT to revoking
+/// one, so the asymmetry ran in the dangerous direction — a platform_admin
+/// could not GRANT super_admin, but could STRIP one, removing the only role
+/// that outranks them from the person holding it. Being unable to promote
+/// yourself is worth little if you can demote everyone above you.
+///
+/// `revoke_role_from_user` checked `admin.users.manage` and nothing else. The
+/// admin UI hides revoke buttons for roles that outrank the actor, which is a
+/// guard rail, not a boundary: this test calls the endpoint directly, which is
+/// what an attacker holding a legitimately-granted platform_admin token would
+/// do.
+#[tokio::test]
+async fn test_revoke_is_subject_to_the_same_priority_ceiling_as_assign() {
+    let app = TestApp::new().await;
+
+    let (attacker_id, attacker_token) = register_user(&app, "revoke_ceiling_attacker").await;
+    grant_role(&app, &attacker_id, "platform_admin").await;
+
+    // A super_admin the attacker must not be able to demote.
+    let victim_id = create_test_user(&app, "revoke_ceiling_victim").await;
+    grant_role(&app, &victim_id, "super_admin").await;
+
+    let super_admin_role = role_id_by_name(&app, "super_admin").await;
+    let response = app
+        .delete_with_token(
+            &format!("/v1/admin/users/{victim_id}/roles/{super_admin_role}"),
+            &attacker_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Same tier is refused too — mirroring assign, where 900 >= 900 is blocked.
+    let peer_id = create_test_user(&app, "revoke_ceiling_peer").await;
+    grant_role(&app, &peer_id, "platform_admin").await;
+    let platform_admin_role = role_id_by_name(&app, "platform_admin").await;
+    let response = app
+        .delete_with_token(
+            &format!("/v1/admin/users/{peer_id}/roles/{platform_admin_role}"),
+            &attacker_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // The refusals above must not be an artefact of revoke being broken for
+    // everyone: a role strictly below the attacker still revokes.
+    let subordinate_id = create_test_user(&app, "revoke_ceiling_subordinate").await;
+    grant_role(&app, &subordinate_id, "moderator").await;
+    let moderator_role = role_id_by_name(&app, "moderator").await;
+    let response = app
+        .delete_with_token(
+            &format!("/v1/admin/users/{subordinate_id}/roles/{moderator_role}"),
+            &attacker_token,
+        )
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+
+    // And the victim really did keep the role — a 403 that still revoked would
+    // pass every assertion above.
+    let still_super: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1 AND r.name = 'super_admin' AND ur.revoked_at IS NULL",
+    )
+    .bind(victim_id.parse::<Uuid>().expect("victim id is a uuid"))
+    .fetch_one(app.pool())
+    .await
+    .expect("query user_roles");
+    assert_eq!(
+        still_super, 1,
+        "the super_admin assignment must survive the refused revoke"
+    );
+}
+
+/// A super_admin is exempt from the ceiling on revoke, exactly as on assign.
+#[tokio::test]
+async fn test_super_admin_can_revoke_super_admin() {
+    let app = TestApp::new().await;
+
+    let (admin_id, admin_token) = register_user(&app, "revoke_super_actor").await;
+    grant_role(&app, &admin_id, "super_admin").await;
+
+    let target_id = create_test_user(&app, "revoke_super_target").await;
+    grant_role(&app, &target_id, "super_admin").await;
+
+    let super_admin_role = role_id_by_name(&app, "super_admin").await;
+    let response = app
+        .delete_with_token(
+            &format!("/v1/admin/users/{target_id}/roles/{super_admin_role}"),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+}
+
+/// Revoking a role id that does not exist must stay a 404, not become a 403.
+/// The ceiling check needs the role's priority, so it has to resolve the role
+/// first — if that resolution 403'd instead of 404ing, the endpoint would leak
+/// which role ids exist to any caller who can read the difference.
+#[tokio::test]
+async fn test_revoking_an_unknown_role_is_still_not_found() {
+    let app = TestApp::new().await;
+
+    let (admin_id, admin_token) = register_user(&app, "revoke_unknown_actor").await;
+    grant_role(&app, &admin_id, "platform_admin").await;
+    let target_id = create_test_user(&app, "revoke_unknown_target").await;
+
+    let response = app
+        .delete_with_token(
+            &format!("/v1/admin/users/{target_id}/roles/{}", Uuid::now_v7()),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
 }

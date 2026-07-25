@@ -518,6 +518,64 @@ pub async fn get_user_roles(
     Ok(Json(DataResponse::new(responses, request_id)))
 }
 
+/// The priority ceiling on role administration: a caller may only act on roles
+/// strictly below their own highest-priority role.
+///
+/// Seeded priorities (0014/0016): super_admin=1000, platform_admin=900,
+/// moderator=500, user=100 — so a platform_admin may administer moderator and
+/// user, but not platform_admin or super_admin. Because the `>=` comparison
+/// would also block super_admin from granting super_admin (1000 >= 1000),
+/// callers holding the super_admin role are exempted explicitly. The dev bypass
+/// account (test-utils builds only) is treated like super_admin, matching its
+/// blanket-permission behaviour.
+///
+/// P-153: this lived inline in `assign_role_to_user` and had no counterpart in
+/// `revoke_role_from_user`, which checked `admin.users.manage` and nothing else.
+/// The asymmetry was a privilege-escalation path in the direction that matters
+/// most: a platform_admin could not GRANT super_admin, but could STRIP one —
+/// removing the only role that outranks them, from the person holding it. Being
+/// unable to promote yourself is worth little if you can demote everyone above
+/// you.
+///
+/// The UI hides revoke buttons for roles that outrank the actor, which is a
+/// guard rail, not a boundary — the endpoint is reachable directly. Extracted
+/// to one function rather than copied so the two paths cannot drift again;
+/// `action` only shapes the message.
+async fn ensure_caller_outranks_role(
+    state: &RolesState,
+    auth: &AuthenticatedUser,
+    role_priority: i32,
+    action: &str,
+) -> Result<(), ApiError> {
+    if PermissionChecker::is_bypass(auth) {
+        return Ok(());
+    }
+
+    let caller_roles = state
+        .role_repo
+        .get_user_roles(auth.user_id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to fetch caller roles: {e}")))?;
+
+    if caller_roles.iter().any(|r| r.name == SUPER_ADMIN_ROLE) {
+        return Ok(());
+    }
+
+    let caller_max_priority = caller_roles
+        .iter()
+        .map(|r| r.priority)
+        .max()
+        .unwrap_or(i32::MIN);
+
+    if role_priority >= caller_max_priority {
+        return Err(ApiError::forbidden(format!(
+            "Cannot {action} a role with priority equal to or above your own highest role"
+        )));
+    }
+
+    Ok(())
+}
+
 /// Assign a role to a user.
 #[utoipa::path(
     post,
@@ -572,35 +630,7 @@ pub async fn assign_role_to_user(
         .map_err(|e| ApiError::internal(format!("Failed to fetch role: {e}")))?
         .ok_or_else(|| ApiError::not_found("Role not found"))?;
 
-    // Priority ceiling: a caller may only grant roles strictly below their own
-    // highest-priority role. Seeded priorities (0014/0016): super_admin=1000,
-    // platform_admin=900, moderator=500, user=100 — so a platform_admin can
-    // grant moderator/user but not platform_admin or super_admin. Because the
-    // `>=` comparison would also block super_admin from granting super_admin
-    // (1000 >= 1000), callers holding the super_admin role are exempted
-    // explicitly. The dev bypass account (test-utils builds only) is treated
-    // like super_admin, matching its blanket-permission behaviour.
-    if !PermissionChecker::is_bypass(&auth) {
-        let caller_roles = state
-            .role_repo
-            .get_user_roles(auth.user_id)
-            .await
-            .map_err(|e| ApiError::internal(format!("Failed to fetch caller roles: {e}")))?;
-
-        let is_super_admin = caller_roles.iter().any(|r| r.name == SUPER_ADMIN_ROLE);
-        if !is_super_admin {
-            let caller_max_priority = caller_roles
-                .iter()
-                .map(|r| r.priority)
-                .max()
-                .unwrap_or(i32::MIN);
-            if role.priority >= caller_max_priority {
-                return Err(ApiError::forbidden(
-                    "Cannot assign a role with priority equal to or above your own highest role",
-                ));
-            }
-        }
-    }
+    ensure_caller_outranks_role(&state, &auth, role.priority, "assign").await?;
 
     let new_assignment = NewUserRole {
         user_id: user_uuid,
@@ -637,8 +667,8 @@ pub async fn assign_role_to_user(
     responses(
         (status = 204, description = "Role revoked"),
         (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 403, description = "Not an admin", body = ApiError),
-        (status = 404, description = "Role assignment not found", body = ApiError),
+        (status = 403, description = "Not an admin, or the role is at or above the caller's own highest role", body = ApiError),
+        (status = 404, description = "Role or role assignment not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "admin_rbac"
@@ -662,6 +692,19 @@ pub async fn revoke_role_from_user(
     let role_uuid: Uuid = role_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid role ID"))?;
+
+    // P-153: the same ceiling `assign_role_to_user` applies. Resolve the role
+    // first — revoking a role that does not exist must 404 as it always did,
+    // not 403, so a caller cannot use this endpoint to probe which role ids
+    // exist by reading the difference between the two.
+    let role = state
+        .role_repo
+        .find_by_id(role_uuid)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to fetch role: {e}")))?
+        .ok_or_else(|| ApiError::not_found("Role not found"))?;
+
+    ensure_caller_outranks_role(&state, &auth, role.priority, "revoke").await?;
 
     let scope_id = query.scope_id.and_then(|s| s.parse().ok());
 

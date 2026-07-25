@@ -294,3 +294,58 @@ pub async fn cancel_match_server(
         .map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// Request body for a backup restore.
+#[derive(Debug, serde::Deserialize, ToSchema)]
+pub struct RestoreBackupRequest {
+    /// Restore the newest backup at or before this round; omit for latest.
+    pub before_round: Option<i32>,
+}
+
+/// Result of a restore.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RestoreBackupResponse {
+    /// The backup file that was loaded.
+    pub filename: String,
+}
+
+/// Restore a round backup onto the match's server (admin, Phase 4).
+#[utoipa::path(
+    post,
+    path = "/v1/matches/{match_id}/server/restore",
+    params(("match_id" = String, Path, description = "Match ID")),
+    request_body = RestoreBackupRequest,
+    responses(
+        (status = 200, description = "Backup restored", body = DataResponse<RestoreBackupResponse>),
+        (status = 400, description = "No backups / no live reservation", body = ApiError),
+        (status = 403, description = "Missing admin.servers.manage", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "match_lifecycle"
+)]
+pub async fn restore_match_server(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(match_id): Path<String>,
+    Json(body): Json<RestoreBackupRequest>,
+) -> ApiResult<Json<DataResponse<RestoreBackupResponse>>> {
+    perm_checker
+        .require_permission(&auth, permissions::admin::SERVERS_MANAGE)
+        .await?;
+    let request_id = get_request_id(&headers);
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("invalid match id"))?;
+
+    tracing::info!(admin = %auth.username, %match_id, before_round = ?body.before_round,
+        "admin backup restore");
+    let filename = game_server_flow::restore_backup(&state, match_id, body.before_round)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(DataResponse::new(
+        RestoreBackupResponse { filename },
+        request_id,
+    )))
+}

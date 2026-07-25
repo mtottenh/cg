@@ -45,9 +45,19 @@ pub struct GameServerSettings {
     pub hostname: Option<String>,
     pub auto_confirm_minutes: Option<i64>,
     pub cvars: BTreeMap<String, String>,
+    /// `settings.game_server.substitution_policy` — `"admin_approval"`
+    /// routes requests through admin review; anything else applies rostered
+    /// subs immediately (§6.8 default `roster_free`).
+    pub substitution_policy: Option<String>,
 }
 
 impl GameServerSettings {
+    /// Whether substitutions require admin approval (§6.8).
+    #[must_use]
+    pub fn substitution_policy_admin_approval(&self) -> bool {
+        self.substitution_policy.as_deref() == Some("admin_approval")
+    }
+
     /// Parse from the tournament `settings` JSONB. Absent → all defaults.
     #[must_use]
     pub fn from_tournament_settings(settings: &serde_json::Value) -> Self {
@@ -77,6 +87,10 @@ impl GameServerSettings {
                 .get("auto_confirm_minutes")
                 .and_then(serde_json::Value::as_i64),
             cvars,
+            substitution_policy: gs
+                .get("substitution_policy")
+                .and_then(|p| p.as_str())
+                .map(str::to_string),
         }
     }
 }
@@ -437,6 +451,7 @@ async fn build_config(
         connect_password: reservation.connect_password.clone(),
         gotv_password: reservation.gotv_password.clone(),
         event_url: format!("{base}/v1/gameserver/events"),
+        backup_url: format!("{base}/v1/gameserver/backups"),
         event_token: event_token.to_string(),
         extra_cvars: settings.cvars,
     };
@@ -676,6 +691,8 @@ async fn process_event(
         "round_end" => {
             state.server_reservation_repo.touch(reservation.id).await?;
             broadcast_live_score(state, reservation, &event.payload);
+            // Halftime-blocked roster edits retry on the next round (§6.8).
+            retry_applying_substitutions(state, reservation).await;
         }
         "map_result" => {
             state.server_reservation_repo.touch(reservation.id).await?;
@@ -1187,4 +1204,484 @@ async fn reconcile_stale(
         Some("server went silent; match result needs admin review"),
     );
     Ok(true)
+}
+
+// =============================================================================
+// Mid-series substitutions (§6.8)
+// =============================================================================
+
+/// Errors here are user-facing (`InvalidState`/`NotAuthorized`/`Conflict`).
+#[allow(clippy::too_many_lines)]
+pub async fn request_substitution(
+    state: &AppState,
+    match_id: TournamentMatchId,
+    requester_user: portal_core::ids::UserId,
+    requester_player: portal_core::ids::PlayerId,
+    player_out: portal_core::ids::PlayerId,
+    player_in: Option<portal_core::ids::PlayerId>,
+) -> Result<portal_domain::entities::MatchSubstitution, DomainError> {
+    use portal_core::types::SubstitutionStatus;
+    use portal_domain::repositories::{CreateMatchSubstitution, MatchSubstitutionRepository};
+
+    let match_ = get_match(state, match_id).await?;
+    let reservation = state
+        .server_reservation_repo
+        .find_live_by_match(match_id)
+        .await?
+        .ok_or_else(|| {
+            DomainError::InvalidState(
+                "substitutions are only available while a server is assigned".into(),
+            )
+        })?;
+    if !matches!(
+        reservation.status,
+        ReservationStatus::Ready | ReservationStatus::Live
+    ) {
+        return Err(DomainError::InvalidState(
+            "the server is not ready yet — request the substitution once it is".into(),
+        ));
+    }
+
+    // Which side is the outgoing player on?
+    let mut side: Option<(TournamentRegistrationId, bool)> = None;
+    for (reg_id, is_team1) in [
+        (match_.participant1_registration_id, true),
+        (match_.participant2_registration_id, false),
+    ] {
+        let Some(reg_id) = reg_id else { continue };
+        if effective_player_ids(state, match_id, reg_id)
+            .await?
+            .contains(&player_out)
+        {
+            side = Some((reg_id, is_team1));
+            break;
+        }
+    }
+    let Some((registration_id, is_team1)) = side else {
+        return Err(DomainError::InvalidState(
+            "the outgoing player is not in this match's effective roster".into(),
+        ));
+    };
+
+    // Authority: captain / owner / active delegate / solo player (§6.8
+    // reuses the veto authority chain).
+    state
+        .veto_authorization_service
+        .can_act_for_registration(registration_id, requester_user, requester_player)
+        .await
+        .map_err(|_| {
+            DomainError::NotAuthorized(
+                "only the captain (or a veto delegate) can request substitutions".into(),
+            )
+        })?;
+
+    // Validate the incoming player: on the same team-season roster, has a
+    // linked Steam ID, and is not already listed on either side.
+    let mut incoming: Option<(portal_core::ids::PlayerId, String, String)> = None;
+    if let Some(player_in) = player_in {
+        let reg = state
+            .registration_service
+            .get_registration(registration_id)
+            .await?;
+        let Some(team_season_id) = reg.team_season_id else {
+            return Err(DomainError::InvalidState(
+                "solo registrations cannot substitute".into(),
+            ));
+        };
+        let members = state
+            .league_team_member_repo
+            .list_members_with_players(team_season_id)
+            .await?;
+        if !members.iter().any(|m| m.player_id == player_in) {
+            return Err(DomainError::InvalidState(
+                "the substitute must be on the team-season roster (non-roster \
+                 emergency subs are admin-only)"
+                    .into(),
+            ));
+        }
+        for (other_reg, _) in [
+            (match_.participant1_registration_id, true),
+            (match_.participant2_registration_id, false),
+        ] {
+            if let Some(other_reg) = other_reg
+                && effective_player_ids(state, match_id, other_reg)
+                    .await?
+                    .contains(&player_in)
+            {
+                return Err(DomainError::Conflict(
+                    "that player is already in the match".into(),
+                ));
+            }
+        }
+        let player = state.player_service.get_player(player_in).await?;
+        let steam64 = player
+            .steam_id
+            .as_deref()
+            .and_then(|sid| sid.parse::<u64>().ok())
+            .ok_or_else(|| {
+                DomainError::InvalidState(format!("{} has no linked Steam ID", player.display_name))
+            })?;
+        incoming = Some((player_in, steam64.to_string(), player.display_name));
+    }
+
+    // Substitutions take effect from the next game (completed games count).
+    let completed = state
+        .tournament_match_game_repo
+        .count_completed(match_id)
+        .await
+        .unwrap_or(0);
+    let from_game_number = i32::try_from(completed).unwrap_or(0) + 1;
+
+    // Policy gate (§6.8): roster subs apply immediately by default.
+    let tournament = state
+        .tournament_service
+        .get_tournament(match_.tournament_id)
+        .await?;
+    let settings = GameServerSettings::from_tournament_settings(&tournament.settings);
+    let initial_status = if settings.substitution_policy_admin_approval() {
+        SubstitutionStatus::AwaitingApproval
+    } else {
+        SubstitutionStatus::Pending
+    };
+
+    let substitution = state
+        .match_substitution_repo
+        .create(CreateMatchSubstitution {
+            id: portal_core::ids::MatchSubstitutionId::new(),
+            match_id,
+            registration_id,
+            reservation_id: Some(reservation.id),
+            player_out_id: player_out,
+            player_in_id: player_in,
+            from_game_number,
+            status: initial_status,
+            requested_by: requester_user,
+        })
+        .await?;
+
+    if initial_status == SubstitutionStatus::Pending {
+        apply_substitution(state, &substitution, is_team1, incoming).await?;
+    }
+    state
+        .match_substitution_repo
+        .find_by_id(substitution.id)
+        .await?
+        .ok_or_else(|| DomainError::Internal("substitution vanished".into()))
+}
+
+/// The players currently listed for a registration: roster (or solo) with
+/// applied substitutions swapped in (§6.8 consistency rule).
+async fn effective_player_ids(
+    state: &AppState,
+    match_id: TournamentMatchId,
+    registration_id: TournamentRegistrationId,
+) -> Result<Vec<portal_core::ids::PlayerId>, DomainError> {
+    use portal_domain::repositories::MatchSubstitutionRepository;
+
+    let reg = state
+        .registration_service
+        .get_registration(registration_id)
+        .await?;
+    let mut players: Vec<portal_core::ids::PlayerId> = Vec::new();
+    if let Some(team_season_id) = reg.team_season_id {
+        players.extend(
+            state
+                .league_team_member_repo
+                .list_members_with_players(team_season_id)
+                .await?
+                .into_iter()
+                .map(|m| m.player_id),
+        );
+    } else if let Some(player_id) = reg.player_id {
+        players.push(player_id);
+    }
+    for sub in state
+        .match_substitution_repo
+        .list_applied_by_match(match_id)
+        .await?
+        .into_iter()
+        .filter(|sub| sub.registration_id == registration_id)
+    {
+        players.retain(|p| *p != sub.player_out_id);
+        if let Some(player_in) = sub.player_in_id {
+            players.push(player_in);
+        }
+    }
+    Ok(players)
+}
+
+/// Send the roster edit to the server. Halftime rejections keep the row in
+/// `applying`; round_end processing and the lifecycle pass retry it.
+async fn apply_substitution(
+    state: &AppState,
+    substitution: &portal_domain::entities::MatchSubstitution,
+    is_team1: bool,
+    incoming: Option<(portal_core::ids::PlayerId, String, String)>,
+) -> Result<(), DomainError> {
+    use crate::websocket::agent_manager::AgentCommand;
+    use portal_core::types::SubstitutionStatus;
+    use portal_domain::repositories::MatchSubstitutionRepository;
+
+    let Some(reservation_id) = substitution.reservation_id else {
+        return Err(DomainError::InvalidState(
+            "substitution has no reservation".into(),
+        ));
+    };
+    let Some(reservation) = state
+        .server_reservation_repo
+        .find_by_id(reservation_id)
+        .await?
+    else {
+        return Err(DomainError::InvalidState("reservation vanished".into()));
+    };
+    let Some(server_id) = reservation.server_id else {
+        return Err(DomainError::InvalidState(
+            "reservation has no server".into(),
+        ));
+    };
+
+    state
+        .match_substitution_repo
+        .set_status(substitution.id, SubstitutionStatus::Applying, None, None)
+        .await?;
+
+    let out_player = state
+        .player_service
+        .get_player(substitution.player_out_id)
+        .await?;
+    let out_steam = out_player.steam_id.clone().unwrap_or_default();
+    let team = if is_team1 { "team1" } else { "team2" };
+    let add = incoming
+        .as_ref()
+        .map(|(_, steam64, name)| vec![(steam64.clone(), team.to_string(), name.clone())])
+        .unwrap_or_default();
+
+    let outcome = state
+        .agent_manager
+        .send_command(
+            server_id,
+            AgentCommand::RosterEdit {
+                remove: vec![out_steam],
+                add,
+            },
+        )
+        .await;
+
+    match outcome {
+        Ok(result) if result.ok => {
+            let output = result.output.unwrap_or_default();
+            // MatchZy blocks roster commands during halftime (§2.1); the
+            // console output is our only signal. Best-effort detection.
+            if output.to_ascii_lowercase().contains("halftime") {
+                tracing::info!(substitution_id = %substitution.id,
+                    "roster edit blocked by halftime; will retry");
+                return Ok(());
+            }
+            state
+                .match_substitution_repo
+                .mark_applied(substitution.id, Utc::now())
+                .await?;
+            // Short-handed: lower the in-server ready threshold (§6.8).
+            if incoming.is_none() {
+                let remaining = effective_player_ids(
+                    state,
+                    substitution.match_id,
+                    substitution.registration_id,
+                )
+                .await
+                .map(|p| p.len())
+                .unwrap_or(4);
+                let _ = state
+                    .agent_manager
+                    .send_command(
+                        server_id,
+                        AgentCommand::Exec {
+                            command: format!("css_readyrequired {}", remaining.min(5)),
+                        },
+                    )
+                    .await;
+            }
+            broadcast_lineup_update(state, substitution.match_id);
+            Ok(())
+        }
+        Ok(result) => {
+            let reason = result.error.or(result.output).unwrap_or_default();
+            state
+                .match_substitution_repo
+                .set_status(
+                    substitution.id,
+                    SubstitutionStatus::Applying,
+                    Some(&reason),
+                    None,
+                )
+                .await?;
+            Ok(())
+        }
+        Err(e) => {
+            state
+                .match_substitution_repo
+                .set_status(
+                    substitution.id,
+                    SubstitutionStatus::Applying,
+                    Some(&e.to_string()),
+                    None,
+                )
+                .await?;
+            Ok(())
+        }
+    }
+}
+
+/// Retry `applying` substitutions for a reservation (called on round_end
+/// and from the lifecycle pass — the halftime-retry loop, §6.8).
+pub async fn retry_applying_substitutions(state: &AppState, reservation: &ServerReservation) {
+    use portal_domain::repositories::MatchSubstitutionRepository;
+
+    let Ok(applying) = state
+        .match_substitution_repo
+        .list_applying_by_reservation(reservation.id)
+        .await
+    else {
+        return;
+    };
+    for substitution in applying {
+        let Ok(match_) = get_match(state, substitution.match_id).await else {
+            continue;
+        };
+        let is_team1 = match_.participant1_registration_id == Some(substitution.registration_id);
+        let incoming = match substitution.player_in_id {
+            Some(player_in) => match state.player_service.get_player(player_in).await {
+                Ok(player) => player
+                    .steam_id
+                    .as_deref()
+                    .and_then(|sid| sid.parse::<u64>().ok())
+                    .map(|steam64| (player_in, steam64.to_string(), player.display_name)),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        if substitution.player_in_id.is_some() && incoming.is_none() {
+            continue;
+        }
+        if let Err(e) = apply_substitution(state, &substitution, is_team1, incoming).await {
+            tracing::warn!(substitution_id = %substitution.id, error = %e,
+                "substitution retry failed");
+        }
+    }
+}
+
+fn broadcast_lineup_update(state: &AppState, match_id: TournamentMatchId) {
+    if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
+        lobby.broadcast(LobbyBroadcast::LineupUpdate);
+    }
+}
+
+/// Apply an admin-approved substitution (status already reset to pending).
+pub async fn approve_and_apply(
+    state: &AppState,
+    substitution_id: portal_core::ids::MatchSubstitutionId,
+) -> Result<(), DomainError> {
+    use portal_domain::repositories::MatchSubstitutionRepository;
+
+    let Some(substitution) = state
+        .match_substitution_repo
+        .find_by_id(substitution_id)
+        .await?
+    else {
+        return Err(DomainError::InvalidState("substitution not found".into()));
+    };
+    let match_ = get_match(state, substitution.match_id).await?;
+    let is_team1 = match_.participant1_registration_id == Some(substitution.registration_id);
+    let incoming = match substitution.player_in_id {
+        Some(player_in) => {
+            let player = state.player_service.get_player(player_in).await?;
+            let steam64 = player
+                .steam_id
+                .as_deref()
+                .and_then(|sid| sid.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    DomainError::InvalidState(format!(
+                        "{} has no linked Steam ID",
+                        player.display_name
+                    ))
+                })?;
+            Some((player_in, steam64.to_string(), player.display_name))
+        }
+        None => None,
+    };
+    apply_substitution(state, &substitution, is_team1, incoming).await
+}
+
+/// Restore a round backup onto the reservation's server (admin, Phase 4).
+///
+/// Picks the newest backup at or before `before_round` (or the latest),
+/// mints a fresh config token, and drives `matchzy_loadbackup_url`.
+pub async fn restore_backup(
+    state: &AppState,
+    match_id: TournamentMatchId,
+    before_round: Option<i32>,
+) -> Result<String, DomainError> {
+    use crate::websocket::agent_manager::AgentCommand;
+    use portal_domain::repositories::ServerEventRepository;
+
+    let reservation = state
+        .server_reservation_repo
+        .find_live_by_match(match_id)
+        .await?
+        .ok_or_else(|| {
+            DomainError::InvalidState("this match has no live server reservation".into())
+        })?;
+    let Some(server_id) = reservation.server_id else {
+        return Err(DomainError::InvalidState(
+            "reservation has no server".into(),
+        ));
+    };
+    let backup = state
+        .server_event_repo
+        .latest_backup(reservation.id, before_round)
+        .await?
+        .ok_or_else(|| DomainError::InvalidState("no backups uploaded yet".into()))?;
+    let filename = backup
+        .payload
+        .get("filename")
+        .and_then(|f| f.as_str())
+        .ok_or_else(|| DomainError::Internal("backup event has no filename".into()))?
+        .to_string();
+
+    let token = generate_reservation_token();
+    state
+        .server_reservation_repo
+        .set_config_token(
+            reservation.id,
+            &hash_token(&token),
+            Utc::now() + Duration::minutes(CONFIG_TOKEN_TTL_MINUTES),
+        )
+        .await?;
+    let base = state.public_base_url.trim_end_matches('/');
+    let url = format!(
+        "{base}/v1/gameserver/backups/{}/{filename}",
+        reservation.matchzy_id
+    );
+
+    let outcome = state
+        .agent_manager
+        .send_command(
+            server_id,
+            AgentCommand::LoadBackup {
+                url,
+                header_name: "Authorization".to_string(),
+                header_value: format!("Bearer {token}"),
+            },
+        )
+        .await?;
+    if outcome.ok {
+        Ok(filename)
+    } else {
+        Err(DomainError::Conflict(
+            outcome
+                .error
+                .or(outcome.output)
+                .unwrap_or_else(|| "restore failed".into()),
+        ))
+    }
 }

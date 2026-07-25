@@ -599,3 +599,77 @@ pub async fn delete_booking(
         .map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// Request body for the console passthrough.
+#[derive(Debug, Deserialize, ToSchema, Validate)]
+pub struct SendCommandRequest {
+    /// Console command to execute (e.g. `css_pause`, `mp_pause_match`).
+    #[validate(length(min = 1, max = 512, message = "command must be 1-512 characters"))]
+    pub command: String,
+}
+
+/// Console output from the server.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SendCommandResponse {
+    /// Raw console output.
+    pub output: String,
+}
+
+/// Run a console command on a server via its agent (admin passthrough).
+///
+/// Every invocation is logged with the acting admin (audit trail).
+#[utoipa::path(
+    post,
+    path = "/v1/admin/game-servers/{server_id}/command",
+    params(("server_id" = String, Path, description = "Game server ID")),
+    request_body = SendCommandRequest,
+    responses(
+        (status = 200, description = "Command output", body = DataResponse<SendCommandResponse>),
+        (status = 403, description = "Missing admin.servers.manage", body = ApiError),
+        (status = 409, description = "Agent not connected", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "game_servers"
+)]
+pub async fn send_command(
+    State(state): State<GameServerState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(server_id): Path<String>,
+    Json(body): Json<SendCommandRequest>,
+) -> ApiResult<Json<DataResponse<SendCommandResponse>>> {
+    perm_checker
+        .require_permission(&auth, permissions::admin::SERVERS_MANAGE)
+        .await?;
+    let request_id = get_request_id(&headers);
+    let id = parse_server_id(&server_id)?;
+    body.validate()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let server = state.registry.get(id).await.map_err(ApiError::from)?;
+
+    // Audit: the passthrough is the sharpest tool in the box.
+    tracing::info!(
+        admin = %auth.username, admin_user_id = %auth.user_id,
+        server = %server.name, server_id = %id, command = %body.command,
+        "admin console passthrough"
+    );
+
+    let outcome = state
+        .agent_manager
+        .send_command(
+            id,
+            crate::websocket::agent_manager::AgentCommand::Exec {
+                command: body.command,
+            },
+        )
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(DataResponse::new(
+        SendCommandResponse {
+            output: outcome.output.or(outcome.error).unwrap_or_default(),
+        },
+        request_id,
+    )))
+}

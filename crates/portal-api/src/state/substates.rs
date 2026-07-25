@@ -303,6 +303,8 @@ pub struct GameServerState {
     pub agent_ca: Option<Arc<CertificateAuthority>>,
     /// Accept `X-Dev-Server-Id` auth (tests/dev only).
     pub insecure_dev_auth: bool,
+    /// Public https base URL (demo upload / config URLs in responses).
+    pub public_base_url: String,
 }
 
 impl FromRef<AppState> for GameServerState {
@@ -312,6 +314,7 @@ impl FromRef<AppState> for GameServerState {
             agent_manager: Arc::clone(&s.agent_manager),
             agent_ca: s.agent_ca.clone(),
             insecure_dev_auth: s.agent_insecure_dev_auth,
+            public_base_url: s.public_base_url.clone(),
         }
     }
 }

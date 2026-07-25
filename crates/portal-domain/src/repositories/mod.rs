@@ -62,9 +62,10 @@ pub use evidence::{
 };
 pub use forfeit::{CreateForfeitRecord, ForfeitRecordRepository};
 pub use game_server::{
-    AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateServerBooking,
-    CreateServerEvent, CreateServerReservation, GameServerRepository, RecordHeartbeat,
-    ServerBookingRepository, ServerEventRepository, ServerReservationRepository, UpdateGameServer,
+    AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateMatchSubstitution,
+    CreateServerBooking, CreateServerEvent, CreateServerReservation, GameServerRepository,
+    MatchSubstitutionRepository, RecordHeartbeat, ServerBookingRepository, ServerEventRepository,
+    ServerReservationRepository, UpdateGameServer,
 };
 pub use league::{
     AddLeagueMember, CreateLeague, CreateLeagueInvitation, LeagueInvitationRepository,

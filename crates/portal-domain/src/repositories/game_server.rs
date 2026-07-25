@@ -4,14 +4,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::errors::DomainError;
 use portal_core::ids::{
-    GameId, GameServerId, ServerBookingId, ServerEventId, ServerReservationId, TournamentId,
-    TournamentMatchId, UserId,
+    GameId, GameServerId, MatchSubstitutionId, PlayerId, ServerBookingId, ServerEventId,
+    ServerReservationId, TournamentId, TournamentMatchId, TournamentRegistrationId, UserId,
 };
-use portal_core::types::{AgentGamestate, GameServerStatus, ReservationStatus};
+use portal_core::types::{AgentGamestate, GameServerStatus, ReservationStatus, SubstitutionStatus};
 use std::net::IpAddr;
 
 use crate::entities::{
-    AgentCertificate, GameServer, ServerBooking, ServerEvent, ServerReservation,
+    AgentCertificate, GameServer, MatchSubstitution, ServerBooking, ServerEvent, ServerReservation,
 };
 
 /// Fields for registering a new game server.
@@ -97,6 +97,16 @@ pub trait GameServerRepository: Send + Sync + 'static {
 
     /// Clear the agent cert identity (revocation).
     async fn clear_agent_cert(&self, id: GameServerId) -> Result<(), DomainError>;
+
+    /// Store the server-scoped demo-upload token hash (minted at
+    /// enrollment; lives in the server's permanent MatchZy config, §6.3).
+    async fn set_demo_token(&self, id: GameServerId, token_hash: &str) -> Result<(), DomainError>;
+
+    /// Resolve a demo-upload token hash to its server.
+    async fn find_by_demo_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<GameServer>, DomainError>;
 
     /// Apply a heartbeat's column updates.
     async fn record_heartbeat(
@@ -344,4 +354,77 @@ pub trait ServerEventRepository: Send + Sync + 'static {
         &self,
         reservation_id: ServerReservationId,
     ) -> Result<Option<ServerEvent>, DomainError>;
+
+    /// Storage key of an uploaded round backup, by filename.
+    async fn find_backup_key(
+        &self,
+        reservation_id: ServerReservationId,
+        filename: &str,
+    ) -> Result<Option<String>, DomainError>;
+
+    /// The most recent `backup_uploaded` event for a reservation, optionally
+    /// bounded to rounds `<= before_round` (restore target selection).
+    async fn latest_backup(
+        &self,
+        reservation_id: ServerReservationId,
+        before_round: Option<i32>,
+    ) -> Result<Option<ServerEvent>, DomainError>;
+}
+
+/// Fields for creating a substitution request.
+#[derive(Debug, Clone)]
+pub struct CreateMatchSubstitution {
+    pub id: MatchSubstitutionId,
+    pub match_id: TournamentMatchId,
+    pub registration_id: TournamentRegistrationId,
+    pub reservation_id: Option<ServerReservationId>,
+    pub player_out_id: PlayerId,
+    pub player_in_id: Option<PlayerId>,
+    pub from_game_number: i32,
+    pub status: SubstitutionStatus,
+    pub requested_by: UserId,
+}
+
+/// Repository for mid-series substitutions (§6.8).
+#[async_trait]
+pub trait MatchSubstitutionRepository: Send + Sync + 'static {
+    /// Create a request. The partial unique index rejects a second live
+    /// request for the same outgoing player.
+    async fn create(&self, sub: CreateMatchSubstitution) -> Result<MatchSubstitution, DomainError>;
+
+    async fn find_by_id(
+        &self,
+        id: MatchSubstitutionId,
+    ) -> Result<Option<MatchSubstitution>, DomainError>;
+
+    async fn list_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<MatchSubstitution>, DomainError>;
+
+    /// Applied substitutions for a match (effective-roster computation).
+    async fn list_applied_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<MatchSubstitution>, DomainError>;
+
+    /// `applying` rows for a reservation (halftime retry, §6.8).
+    async fn list_applying_by_reservation(
+        &self,
+        reservation_id: ServerReservationId,
+    ) -> Result<Vec<MatchSubstitution>, DomainError>;
+
+    async fn set_status(
+        &self,
+        id: MatchSubstitutionId,
+        status: SubstitutionStatus,
+        failure_reason: Option<&str>,
+        approved_by: Option<UserId>,
+    ) -> Result<(), DomainError>;
+
+    async fn mark_applied(
+        &self,
+        id: MatchSubstitutionId,
+        at: DateTime<Utc>,
+    ) -> Result<(), DomainError>;
 }

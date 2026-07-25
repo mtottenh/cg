@@ -141,6 +141,8 @@ pub enum ServerMessage {
         /// Failure reason, when terminal.
         reason: Option<String>,
     },
+    /// A substitution was applied — refetch lineups.
+    LineupUpdate,
     /// Live per-map score update.
     LiveScoreUpdate {
         /// 0-based map number.
@@ -308,6 +310,8 @@ pub enum LobbyBroadcast {
     ServerAssignmentUpdate(ServerAssignmentBroadcast),
     /// Live per-map score update from round_end/map_result events.
     LiveScoreUpdate(LiveScoreBroadcast),
+    /// A substitution was applied — clients refetch lineups (§6.8).
+    LineupUpdate,
 }
 
 /// Connect details for a ready/live server (participant-facing).

@@ -51,6 +51,9 @@ pub struct MatchzyConfigInput {
     pub gotv_password: Option<String>,
     /// Absolute URL of the portal's event-webhook endpoint.
     pub event_url: String,
+    /// Absolute URL of the portal's round-backup endpoint (uploads happen
+    /// per round DURING the series, so per-match cvars are race-free here).
+    pub backup_url: String,
     /// Raw bearer token for the event webhook (single MatchZy header pair).
     pub event_token: String,
     /// Extra per-tournament cvar overrides (applied last).
@@ -89,6 +92,18 @@ pub fn build_matchzy_config(input: &MatchzyConfigInput) -> Value {
     );
     cvars.insert(
         "matchzy_remote_log_header_value".to_string(),
+        format!("Bearer {}", input.event_token),
+    );
+    cvars.insert(
+        "matchzy_remote_backup_url".to_string(),
+        input.backup_url.clone(),
+    );
+    cvars.insert(
+        "matchzy_remote_backup_header_key".to_string(),
+        "Authorization".to_string(),
+    );
+    cvars.insert(
+        "matchzy_remote_backup_header_value".to_string(),
         format!("Bearer {}", input.event_token),
     );
     cvars.insert(
@@ -189,6 +204,7 @@ mod tests {
             connect_password: "pw123".into(),
             gotv_password: Some("gotv".into()),
             event_url: "https://portal.test/v1/gameserver/events".into(),
+            backup_url: "https://portal.test/v1/gameserver/backups".into(),
             event_token: "cgm_secret".into(),
             extra_cvars: BTreeMap::new(),
         }

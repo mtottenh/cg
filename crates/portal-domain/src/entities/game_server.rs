@@ -7,10 +7,11 @@
 
 use chrono::{DateTime, Utc};
 use portal_core::ids::{
-    GameId, GameServerId, ServerAgentCertId, ServerBookingId, ServerEventId, ServerReservationId,
-    TournamentId, TournamentMatchId, UserId,
+    GameId, GameServerId, MatchSubstitutionId, PlayerId, ServerAgentCertId, ServerBookingId,
+    ServerEventId, ServerReservationId, TournamentId, TournamentMatchId, TournamentRegistrationId,
+    UserId,
 };
-use portal_core::types::{AgentGamestate, GameServerStatus, ReservationStatus};
+use portal_core::types::{AgentGamestate, GameServerStatus, ReservationStatus, SubstitutionStatus};
 use std::net::IpAddr;
 
 /// A registered game server.
@@ -191,4 +192,29 @@ pub struct ServerEvent {
     pub processed_at: Option<DateTime<Utc>>,
     pub processing_error: Option<String>,
     pub received_at: DateTime<Utc>,
+}
+
+/// A mid-series substitution request (§6.8).
+///
+/// A substitution creates new effective-roster state from
+/// `from_game_number` onward; history is never rewritten (game 1's demo
+/// still validates against the original five).
+#[derive(Debug, Clone)]
+pub struct MatchSubstitution {
+    pub id: MatchSubstitutionId,
+    pub match_id: TournamentMatchId,
+    /// The side being substituted.
+    pub registration_id: TournamentRegistrationId,
+    pub reservation_id: Option<ServerReservationId>,
+    pub player_out_id: PlayerId,
+    /// `None` = play short-handed.
+    pub player_in_id: Option<PlayerId>,
+    pub from_game_number: i32,
+    pub status: SubstitutionStatus,
+    pub requested_by: UserId,
+    pub approved_by: Option<UserId>,
+    pub failure_reason: Option<String>,
+    pub applied_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }

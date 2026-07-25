@@ -49,7 +49,8 @@ pub use evidence::{
 pub use forfeit::{ForfeitRecordRow, NewForfeitRecord};
 pub use game::{GameRow, NewGame, UpdateGame};
 pub use game_server::{
-    GameServerRow, ServerAgentCertRow, ServerBookingRow, ServerEventRow, ServerReservationRow,
+    GameServerRow, MatchSubstitutionRow, ServerAgentCertRow, ServerBookingRow, ServerEventRow,
+    ServerReservationRow,
 };
 pub use league::{
     LeagueInvitationRow, LeagueMemberRow, LeagueMemberWithUserRow, LeagueRow, NewLeague,

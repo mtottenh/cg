@@ -2,23 +2,26 @@
 
 use crate::DbPool;
 use crate::entities::{
-    GameServerRow, ServerAgentCertRow, ServerBookingRow, ServerEventRow, ServerReservationRow,
+    GameServerRow, MatchSubstitutionRow, ServerAgentCertRow, ServerBookingRow, ServerEventRow,
+    ServerReservationRow,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::errors::DomainError;
 use portal_core::ids::{
-    GameId, GameServerId, ServerAgentCertId, ServerBookingId, ServerEventId, ServerReservationId,
-    TournamentId, TournamentMatchId, UserId,
+    GameId, GameServerId, MatchSubstitutionId, PlayerId, ServerAgentCertId, ServerBookingId,
+    ServerEventId, ServerReservationId, TournamentId, TournamentMatchId, TournamentRegistrationId,
+    UserId,
 };
-use portal_core::types::{GameServerStatus, ReservationStatus};
+use portal_core::types::{GameServerStatus, ReservationStatus, SubstitutionStatus};
 use portal_domain::entities::{
-    AgentCertificate, GameServer, ServerBooking, ServerEvent, ServerReservation,
+    AgentCertificate, GameServer, MatchSubstitution, ServerBooking, ServerEvent, ServerReservation,
 };
 use portal_domain::repositories::{
-    AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateServerBooking,
-    CreateServerEvent, CreateServerReservation, GameServerRepository, RecordHeartbeat,
-    ServerBookingRepository, ServerEventRepository, ServerReservationRepository, UpdateGameServer,
+    AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateMatchSubstitution,
+    CreateServerBooking, CreateServerEvent, CreateServerReservation, GameServerRepository,
+    MatchSubstitutionRepository, RecordHeartbeat, ServerBookingRepository, ServerEventRepository,
+    ServerReservationRepository, UpdateGameServer,
 };
 
 /// Explicit column list: `ip_address` must go through `host()` to come back
@@ -298,6 +301,31 @@ impl GameServerRepository for PgGameServerRepository {
         .await
         .map_err(internal)?;
         Ok(())
+    }
+
+    async fn set_demo_token(&self, id: GameServerId, token_hash: &str) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE game_servers SET demo_token_hash = $2, updated_at = NOW() WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(token_hash)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn find_by_demo_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<GameServer>, DomainError> {
+        let sql = format!("SELECT {SERVER_COLS} FROM game_servers WHERE demo_token_hash = $1");
+        let row = sqlx::query_as::<_, GameServerRow>(&sql)
+            .bind(token_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(row.map(GameServer::from))
     }
 
     async fn record_heartbeat(
@@ -1033,5 +1061,219 @@ impl ServerEventRepository for PgServerEventRepository {
         .await
         .map_err(internal)?;
         Ok(row.map(ServerEvent::from))
+    }
+
+    async fn find_backup_key(
+        &self,
+        reservation_id: ServerReservationId,
+        filename: &str,
+    ) -> Result<Option<String>, DomainError> {
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(
+            "SELECT payload FROM server_events WHERE reservation_id = $1 \
+             AND event_type = 'backup_uploaded' AND payload->>'filename' = $2 \
+             ORDER BY received_at DESC LIMIT 1",
+        )
+        .bind(reservation_id.as_uuid())
+        .bind(filename)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.and_then(|(payload,)| {
+            payload
+                .get("storage_key")
+                .and_then(|k| k.as_str())
+                .map(str::to_string)
+        }))
+    }
+
+    async fn latest_backup(
+        &self,
+        reservation_id: ServerReservationId,
+        before_round: Option<i32>,
+    ) -> Result<Option<ServerEvent>, DomainError> {
+        let row = sqlx::query_as::<_, ServerEventRow>(
+            "SELECT * FROM server_events WHERE reservation_id = $1 \
+             AND event_type = 'backup_uploaded' \
+             AND ($2::int IS NULL OR round_number <= $2) \
+             ORDER BY map_number DESC NULLS LAST, round_number DESC NULLS LAST, \
+                      received_at DESC \
+             LIMIT 1",
+        )
+        .bind(reservation_id.as_uuid())
+        .bind(before_round)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(ServerEvent::from))
+    }
+}
+
+// =============================================================================
+// Match Substitution Repository Adapter
+// =============================================================================
+
+impl From<MatchSubstitutionRow> for MatchSubstitution {
+    fn from(row: MatchSubstitutionRow) -> Self {
+        Self {
+            id: MatchSubstitutionId::from(row.id),
+            match_id: TournamentMatchId::from(row.match_id),
+            registration_id: TournamentRegistrationId::from(row.registration_id),
+            reservation_id: row.reservation_id.map(ServerReservationId::from),
+            player_out_id: PlayerId::from(row.player_out_id),
+            player_in_id: row.player_in_id.map(PlayerId::from),
+            from_game_number: row.from_game_number,
+            status: row.status.parse().unwrap_or_default(),
+            requested_by: UserId::from(row.requested_by),
+            approved_by: row.approved_by.map(UserId::from),
+            failure_reason: row.failure_reason,
+            applied_at: row.applied_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+/// PostgreSQL implementation of the domain `MatchSubstitutionRepository` trait.
+#[derive(Clone)]
+pub struct PgMatchSubstitutionRepository {
+    pool: DbPool,
+}
+
+impl PgMatchSubstitutionRepository {
+    /// Create a new PostgreSQL match substitution repository.
+    #[must_use]
+    pub const fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl MatchSubstitutionRepository for PgMatchSubstitutionRepository {
+    async fn create(&self, sub: CreateMatchSubstitution) -> Result<MatchSubstitution, DomainError> {
+        let row = sqlx::query_as::<_, MatchSubstitutionRow>(
+            "INSERT INTO match_substitutions \
+                (id, match_id, registration_id, reservation_id, player_out_id, player_in_id, \
+                 from_game_number, status, requested_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             RETURNING *",
+        )
+        .bind(sub.id.as_uuid())
+        .bind(sub.match_id.as_uuid())
+        .bind(sub.registration_id.as_uuid())
+        .bind(sub.reservation_id.map(|r| r.as_uuid()))
+        .bind(sub.player_out_id.as_uuid())
+        .bind(sub.player_in_id.map(|p| p.as_uuid()))
+        .bind(sub.from_game_number)
+        .bind(sub.status.to_string())
+        .bind(sub.requested_by.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            if e.to_string().contains("uq_match_substitutions_live") {
+                DomainError::Conflict("a substitution for this player is already in flight".into())
+            } else {
+                internal(e)
+            }
+        })?;
+        Ok(MatchSubstitution::from(row))
+    }
+
+    async fn find_by_id(
+        &self,
+        id: MatchSubstitutionId,
+    ) -> Result<Option<MatchSubstitution>, DomainError> {
+        let row = sqlx::query_as::<_, MatchSubstitutionRow>(
+            "SELECT * FROM match_substitutions WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(MatchSubstitution::from))
+    }
+
+    async fn list_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<MatchSubstitution>, DomainError> {
+        let rows = sqlx::query_as::<_, MatchSubstitutionRow>(
+            "SELECT * FROM match_substitutions WHERE match_id = $1 ORDER BY created_at ASC",
+        )
+        .bind(match_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(MatchSubstitution::from).collect())
+    }
+
+    async fn list_applied_by_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Vec<MatchSubstitution>, DomainError> {
+        let rows = sqlx::query_as::<_, MatchSubstitutionRow>(
+            "SELECT * FROM match_substitutions WHERE match_id = $1 AND status = 'applied' \
+             ORDER BY created_at ASC",
+        )
+        .bind(match_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(MatchSubstitution::from).collect())
+    }
+
+    async fn list_applying_by_reservation(
+        &self,
+        reservation_id: ServerReservationId,
+    ) -> Result<Vec<MatchSubstitution>, DomainError> {
+        let rows = sqlx::query_as::<_, MatchSubstitutionRow>(
+            "SELECT * FROM match_substitutions WHERE reservation_id = $1 \
+             AND status = 'applying' ORDER BY created_at ASC",
+        )
+        .bind(reservation_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(MatchSubstitution::from).collect())
+    }
+
+    async fn set_status(
+        &self,
+        id: MatchSubstitutionId,
+        status: SubstitutionStatus,
+        failure_reason: Option<&str>,
+        approved_by: Option<UserId>,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE match_substitutions SET status = $2, \
+                failure_reason = COALESCE($3, failure_reason), \
+                approved_by = COALESCE($4, approved_by), \
+                updated_at = NOW() \
+             WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(status.to_string())
+        .bind(failure_reason)
+        .bind(approved_by.map(|u| u.as_uuid()))
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn mark_applied(
+        &self,
+        id: MatchSubstitutionId,
+        at: DateTime<Utc>,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "UPDATE match_substitutions SET status = 'applied', applied_at = $2, \
+             updated_at = NOW() WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(at)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
     }
 }

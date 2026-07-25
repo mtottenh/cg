@@ -875,6 +875,7 @@ fn filter_broadcast_for_connection(
                 reason: update.reason.clone(),
             })
         }
+        LobbyBroadcast::LineupUpdate => Some(ServerMessage::LineupUpdate),
         LobbyBroadcast::LiveScoreUpdate(score) => Some(ServerMessage::LiveScoreUpdate {
             map_number: score.map_number,
             team1_score: score.team1_score,

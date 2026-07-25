@@ -34,14 +34,15 @@ use portal_db::{
     PgLeagueMemberRepository, PgLeagueRepository, PgLeagueSeasonParticipantRepository,
     PgLeagueSeasonRepository, PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository,
     PgLeagueTeamRepository, PgLeagueTeamSeasonRepository, PgMatchLineupRepository,
-    PgMatchStatusLogRepository, PgPermissionRepository, PgPlayerGameProfileRepository,
-    PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository,
-    PgPlayerRepository, PgProgressionLogRepository, PgRefreshTokenRepository,
-    PgResultClaimRepository, PgResultReviewRepository, PgSagaExecutionRepository,
-    PgScheduleProposalRepository, PgServerBookingRepository, PgServerEventRepository,
-    PgServerReservationRepository, PgSteamTrackingRepository, PgSuggestedTimeRepository,
-    PgSystemSettingsRepository, PgTournamentBracketRepository, PgTournamentInvitationRepository,
-    PgTournamentMapPoolRepository, PgTournamentMatchGameRepository, PgTournamentMatchRepository,
+    PgMatchStatusLogRepository, PgMatchSubstitutionRepository, PgPermissionRepository,
+    PgPlayerGameProfileRepository, PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository,
+    PgPlayerRatingHistoryRepository, PgPlayerRepository, PgProgressionLogRepository,
+    PgRefreshTokenRepository, PgResultClaimRepository, PgResultReviewRepository,
+    PgSagaExecutionRepository, PgScheduleProposalRepository, PgServerBookingRepository,
+    PgServerEventRepository, PgServerReservationRepository, PgSteamTrackingRepository,
+    PgSuggestedTimeRepository, PgSystemSettingsRepository, PgTournamentBracketRepository,
+    PgTournamentInvitationRepository, PgTournamentMapPoolRepository,
+    PgTournamentMatchGameRepository, PgTournamentMatchRepository,
     PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
     PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
     PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
@@ -292,12 +293,20 @@ pub struct AppState {
     pub server_reservation_repo: Arc<PgServerReservationRepository>,
     /// Raw MatchZy webhook events.
     pub server_event_repo: Arc<PgServerEventRepository>,
+    /// Mid-series substitutions (§6.8).
+    pub match_substitution_repo: Arc<PgMatchSubstitutionRepository>,
     /// Per-map game rows (populated by the server event pipeline).
     pub tournament_match_game_repo: Arc<PgTournamentMatchGameRepository>,
     /// League-team rosters (server config generation).
     pub league_team_member_repo: Arc<PgLeagueTeamMemberRepository>,
     /// Public https base URL MatchZy fetches configs from / posts events to.
     pub public_base_url: String,
+    /// Storage backend for MatchZy demo uploads (S3 `portal-demos` in prod
+    /// via DEMO_STORAGE=s3, local uploads dir otherwise) + the catalog
+    /// bucket name recorded on demo rows.
+    pub demo_upload_storage: Arc<dyn StorageBackend>,
+    /// Bucket name recorded in the demo catalog for uploaded demos.
+    pub demo_upload_bucket: String,
     /// Fire-and-forget veto-completion trigger for server assignment; the
     /// drain task (`spawn_server_assignment_task`) runs the actual flow.
     pub server_assignment_tx:
@@ -728,7 +737,7 @@ impl AppState {
             tracing::info!(bucket = %bucket, "Evidence storage: S3");
             (EvidenceStorageBackend::S3(adapter), bucket)
         } else {
-            let local = LocalEvidenceStorage::new(&uploads_path, evidence_base_url);
+            let local = LocalEvidenceStorage::new(&uploads_path, evidence_base_url.clone());
             tracing::info!("Evidence storage: local filesystem");
             (EvidenceStorageBackend::Local(local), "evidence".to_string())
         };
@@ -833,6 +842,7 @@ impl AppState {
             .is_ok_and(|v| matches!(v.as_str(), "true" | "1" | "yes"));
         let server_reservation_repo = Arc::new(PgServerReservationRepository::new(db_pool.clone()));
         let server_event_repo = Arc::new(PgServerEventRepository::new(db_pool.clone()));
+        let match_substitution_repo = Arc::new(PgMatchSubstitutionRepository::new(db_pool.clone()));
         let tournament_match_game_repo =
             Arc::new(PgTournamentMatchGameRepository::new(db_pool.clone()));
         // MatchZy fetches configs over the public URL (agents + game servers
@@ -840,6 +850,38 @@ impl AppState {
         let public_base_url = std::env::var("PORTAL_PUBLIC_URL")
             .unwrap_or_else(|_| "http://localhost:3000".to_string());
         let (server_assignment_tx, server_assignment_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Demo uploads: mirror the evidence-storage selection pattern.
+        let (demo_upload_storage, demo_upload_bucket): (Arc<dyn StorageBackend>, String) =
+            if std::env::var("DEMO_STORAGE").as_deref() == Ok("s3") {
+                let bucket = std::env::var("S3_DEMOS_BUCKET")
+                    .expect("S3_DEMOS_BUCKET must be set when DEMO_STORAGE=s3");
+                let region = std::env::var("S3_DEMOS_REGION")
+                    .or_else(|_| std::env::var("S3_EVIDENCE_REGION"))
+                    .expect("S3_DEMOS_REGION or S3_EVIDENCE_REGION must be set");
+                let public_url = std::env::var("S3_DEMOS_PUBLIC_URL").unwrap_or_default();
+                let endpoint = std::env::var("S3_DEMOS_ENDPOINT")
+                    .ok()
+                    .or_else(|| std::env::var("S3_EVIDENCE_ENDPOINT").ok());
+                let s3 = portal_storage::S3Storage::new(portal_storage::S3Config {
+                    bucket: bucket.clone(),
+                    region,
+                    public_url,
+                    endpoint,
+                })
+                .await;
+                tracing::info!(bucket = %bucket, "Demo upload storage: S3");
+                (Arc::new(s3), bucket)
+            } else {
+                tracing::info!("Demo upload storage: local filesystem");
+                (
+                    Arc::new(LocalStorage::new(
+                        uploads_path.clone(),
+                        evidence_base_url.clone(),
+                    )),
+                    "local".to_string(),
+                )
+            };
 
         // Create match completion saga with adapters
         let saga_execution_repo = Arc::new(PgSagaExecutionRepository::new(db_pool.clone()));
@@ -915,9 +957,12 @@ impl AppState {
             game_server_registry,
             server_reservation_repo,
             server_event_repo,
+            match_substitution_repo,
             tournament_match_game_repo,
             league_team_member_repo: Arc::clone(&league_team_member_repo),
             public_base_url,
+            demo_upload_storage,
+            demo_upload_bucket,
             server_assignment_tx,
             server_assignment_rx: Arc::new(tokio::sync::Mutex::new(Some(server_assignment_rx))),
             agent_manager,

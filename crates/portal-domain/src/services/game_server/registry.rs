@@ -20,6 +20,7 @@ use crate::repositories::{
 };
 
 use super::ca::{AGENT_CERT_VALIDITY_DAYS, CertificateAuthority, IssuedCertificate};
+use super::setup::generate_reservation_token;
 
 /// Heartbeats older than this mark a server offline.
 pub const HEARTBEAT_STALENESS_SECS: i64 = 90;
@@ -53,6 +54,9 @@ pub struct EnrollmentResult {
     pub cert_pem: String,
     /// The CA trust anchor the agent pins.
     pub ca_cert_pem: String,
+    /// Server-scoped demo-upload bearer token (raw — shown once at
+    /// enrollment; goes into the permanent MatchZy config, §6.3).
+    pub demo_token: String,
 }
 
 /// Registry service for game servers.
@@ -203,12 +207,19 @@ where
             .complete_enrollment(server.id, &issued.serial, issued.not_after)
             .await?;
 
+        // Rotate the server-scoped demo-upload token on every enrollment.
+        let demo_token = generate_reservation_token();
+        self.server_repo
+            .set_demo_token(server.id, &hash_token(&demo_token))
+            .await?;
+
         let server = self.get(server.id).await?;
         Ok(EnrollmentResult {
             server,
             certificate,
             cert_pem: issued.cert_pem,
             ca_cert_pem: ca.cert_pem().to_string(),
+            demo_token,
         })
     }
 
@@ -292,6 +303,14 @@ where
             )
             .await?;
         self.get(id).await
+    }
+
+    /// Resolve a demo-upload token hash to its server (§6.5 demo auth).
+    pub async fn find_by_demo_token(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<GameServer>, DomainError> {
+        self.server_repo.find_by_demo_token_hash(token_hash).await
     }
 
     /// Set a server's status directly (reservation pipeline transitions:

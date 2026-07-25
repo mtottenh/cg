@@ -1,0 +1,312 @@
+//! Mid-series substitution endpoints (§6.8).
+
+use crate::dto::common::DataResponse;
+use crate::error::{ApiError, ApiResult};
+use crate::extractors::{AuthenticatedUser, PermissionChecker};
+use crate::game_server_flow;
+use crate::state::AppState;
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use portal_core::ids::{MatchSubstitutionId, PlayerId, TournamentMatchId};
+use portal_core::permissions;
+use portal_core::types::SubstitutionStatus;
+use portal_domain::entities::MatchSubstitution;
+use portal_domain::repositories::MatchSubstitutionRepository;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+use validator::Validate;
+
+fn get_request_id(headers: &HeaderMap) -> &str {
+    headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+}
+
+/// Request a mid-series substitution.
+#[derive(Debug, Deserialize, ToSchema, Validate)]
+pub struct CreateSubstitutionRequest {
+    /// Player leaving the match.
+    pub player_out_id: String,
+    /// Player coming in; omit to play short-handed.
+    pub player_in_id: Option<String>,
+}
+
+/// A substitution request and its lifecycle state.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SubstitutionResponse {
+    pub id: String,
+    pub match_id: String,
+    pub registration_id: String,
+    pub player_out_id: String,
+    pub player_in_id: Option<String>,
+    /// First game the substitution applies from (1-indexed).
+    pub from_game_number: i32,
+    pub status: SubstitutionStatus,
+    pub requested_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_at: Option<String>,
+    pub created_at: String,
+}
+
+impl From<MatchSubstitution> for SubstitutionResponse {
+    fn from(s: MatchSubstitution) -> Self {
+        Self {
+            id: s.id.to_string(),
+            match_id: s.match_id.to_string(),
+            registration_id: s.registration_id.to_string(),
+            player_out_id: s.player_out_id.to_string(),
+            player_in_id: s.player_in_id.map(|p| p.to_string()),
+            from_game_number: s.from_game_number,
+            status: s.status,
+            requested_by: s.requested_by.to_string(),
+            failure_reason: s.failure_reason,
+            applied_at: s.applied_at.map(|at| at.to_rfc3339()),
+            created_at: s.created_at.to_rfc3339(),
+        }
+    }
+}
+
+fn parse_match_id(raw: &str) -> Result<TournamentMatchId, ApiError> {
+    raw.parse()
+        .map_err(|_| ApiError::bad_request("invalid match id"))
+}
+
+/// Request a substitution (captain / delegate; §6.8).
+#[utoipa::path(
+    post,
+    path = "/v1/matches/{match_id}/substitutions",
+    params(("match_id" = String, Path, description = "Match ID")),
+    request_body = CreateSubstitutionRequest,
+    responses(
+        (status = 201, description = "Substitution requested", body = DataResponse<SubstitutionResponse>),
+        (status = 400, description = "Not substitutable", body = ApiError),
+        (status = 403, description = "Not the captain/delegate", body = ApiError),
+        (status = 409, description = "Already in flight", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "match_lifecycle"
+)]
+pub async fn create_substitution(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(match_id): Path<String>,
+    Json(body): Json<CreateSubstitutionRequest>,
+) -> ApiResult<(StatusCode, Json<DataResponse<SubstitutionResponse>>)> {
+    let request_id = get_request_id(&headers);
+    let match_id = parse_match_id(&match_id)?;
+    let player_out: PlayerId = body
+        .player_out_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("invalid player_out_id"))?;
+    let player_in: Option<PlayerId> = body
+        .player_in_id
+        .as_deref()
+        .map(str::parse)
+        .transpose()
+        .map_err(|_| ApiError::bad_request("invalid player_in_id"))?;
+
+    let substitution = game_server_flow::request_substitution(
+        &state,
+        match_id,
+        auth.user_id,
+        auth.player_id,
+        player_out,
+        player_in,
+    )
+    .await
+    .map_err(ApiError::from)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            SubstitutionResponse::from(substitution),
+            request_id,
+        )),
+    ))
+}
+
+/// List a match's substitutions.
+#[utoipa::path(
+    get,
+    path = "/v1/matches/{match_id}/substitutions",
+    params(("match_id" = String, Path, description = "Match ID")),
+    responses(
+        (status = 200, description = "Substitutions", body = DataResponse<Vec<SubstitutionResponse>>),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "match_lifecycle"
+)]
+pub async fn list_substitutions(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(match_id): Path<String>,
+) -> ApiResult<Json<DataResponse<Vec<SubstitutionResponse>>>> {
+    let request_id = get_request_id(&headers);
+    let match_id = parse_match_id(&match_id)?;
+    let subs = state
+        .match_substitution_repo
+        .list_by_match(match_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(DataResponse::new(
+        subs.into_iter().map(SubstitutionResponse::from).collect(),
+        request_id,
+    )))
+}
+
+/// Cancel a substitution before it applies (requester or admin).
+#[utoipa::path(
+    delete,
+    path = "/v1/matches/{match_id}/substitutions/{substitution_id}",
+    params(
+        ("match_id" = String, Path, description = "Match ID"),
+        ("substitution_id" = String, Path, description = "Substitution ID"),
+    ),
+    responses(
+        (status = 204, description = "Cancelled"),
+        (status = 400, description = "Already applied", body = ApiError),
+        (status = 403, description = "Not the requester", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "match_lifecycle"
+)]
+pub async fn cancel_substitution(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    Path((_match_id, substitution_id)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    let id: MatchSubstitutionId = substitution_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("invalid substitution id"))?;
+    let substitution = state
+        .match_substitution_repo
+        .find_by_id(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::not_found("substitution not found"))?;
+
+    let is_admin = perm_checker
+        .has_permission(&auth, permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await;
+    if substitution.requested_by != auth.user_id && !is_admin {
+        return Err(ApiError::forbidden("only the requester can cancel"));
+    }
+    if matches!(
+        substitution.status,
+        SubstitutionStatus::Applied | SubstitutionStatus::Failed
+    ) {
+        return Err(ApiError::bad_request(
+            "the substitution has already been applied",
+        ));
+    }
+    state
+        .match_substitution_repo
+        .set_status(id, SubstitutionStatus::Cancelled, None, None)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Approve a pending substitution (admin; `admin_approval` policy).
+#[utoipa::path(
+    post,
+    path = "/v1/matches/{match_id}/substitutions/{substitution_id}/approve",
+    params(
+        ("match_id" = String, Path, description = "Match ID"),
+        ("substitution_id" = String, Path, description = "Substitution ID"),
+    ),
+    responses(
+        (status = 200, description = "Approved and applying", body = DataResponse<SubstitutionResponse>),
+        (status = 403, description = "Missing admin permission", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "match_lifecycle"
+)]
+pub async fn approve_substitution(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path((_match_id, substitution_id)): Path<(String, String)>,
+) -> ApiResult<Json<DataResponse<SubstitutionResponse>>> {
+    perm_checker
+        .require_permission(&auth, permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
+    let request_id = get_request_id(&headers);
+    let id: MatchSubstitutionId = substitution_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("invalid substitution id"))?;
+    let substitution = state
+        .match_substitution_repo
+        .find_by_id(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::not_found("substitution not found"))?;
+    if substitution.status != SubstitutionStatus::AwaitingApproval {
+        return Err(ApiError::bad_request(
+            "substitution is not awaiting approval",
+        ));
+    }
+    state
+        .match_substitution_repo
+        .set_status(id, SubstitutionStatus::Pending, None, Some(auth.user_id))
+        .await
+        .map_err(ApiError::from)?;
+
+    game_server_flow::approve_and_apply(&state, id)
+        .await
+        .map_err(ApiError::from)?;
+
+    let substitution = state
+        .match_substitution_repo
+        .find_by_id(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::not_found("substitution not found"))?;
+    Ok(Json(DataResponse::new(
+        SubstitutionResponse::from(substitution),
+        request_id,
+    )))
+}
+
+/// Reject a pending substitution (admin).
+#[utoipa::path(
+    post,
+    path = "/v1/matches/{match_id}/substitutions/{substitution_id}/reject",
+    params(
+        ("match_id" = String, Path, description = "Match ID"),
+        ("substitution_id" = String, Path, description = "Substitution ID"),
+    ),
+    responses(
+        (status = 204, description = "Rejected"),
+        (status = 403, description = "Missing admin permission", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "match_lifecycle"
+)]
+pub async fn reject_substitution(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    Path((_match_id, substitution_id)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    perm_checker
+        .require_permission(&auth, permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
+    let id: MatchSubstitutionId = substitution_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("invalid substitution id"))?;
+    state
+        .match_substitution_repo
+        .set_status(id, SubstitutionStatus::Rejected, None, Some(auth.user_id))
+        .await
+        .map_err(ApiError::from)?;
+    Ok(StatusCode::NO_CONTENT)
+}

@@ -96,3 +96,22 @@ pub struct ServerEventRow {
     pub processing_error: Option<String>,
     pub received_at: DateTime<Utc>,
 }
+
+/// Database row for the `match_substitutions` table.
+#[derive(Debug, Clone, FromRow)]
+pub struct MatchSubstitutionRow {
+    pub id: Uuid,
+    pub match_id: Uuid,
+    pub registration_id: Uuid,
+    pub reservation_id: Option<Uuid>,
+    pub player_out_id: Uuid,
+    pub player_in_id: Option<Uuid>,
+    pub from_game_number: i32,
+    pub status: String,
+    pub requested_by: Uuid,
+    pub approved_by: Option<Uuid>,
+    pub failure_reason: Option<String>,
+    pub applied_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

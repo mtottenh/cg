@@ -157,6 +157,24 @@ impl StorageBackend for S3Storage {
     }
 
     #[instrument(skip(self))]
+    async fn read(&self, key: &str) -> Result<bytes::Bytes, StorageError> {
+        let output = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| StorageError::S3 {
+                message: e.to_string(),
+            })?;
+        let data = output.body.collect().await.map_err(|e| StorageError::S3 {
+            message: e.to_string(),
+        })?;
+        Ok(data.into_bytes())
+    }
+
+    #[instrument(skip(self))]
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
         self.client
             .delete_object()

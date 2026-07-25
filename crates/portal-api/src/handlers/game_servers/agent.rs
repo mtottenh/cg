@@ -54,6 +54,11 @@ pub struct EnrollResponse {
     /// The portal CA certificate to pin (PEM).
     pub ca_certificate_pem: String,
     pub expires_at: String,
+    /// Server-scoped demo-upload token — write into the permanent MatchZy
+    /// config (§6.3); shown once.
+    pub demo_token: String,
+    /// Absolute URL MatchZy should upload demos to.
+    pub demo_upload_url: String,
 }
 
 /// Exchange a one-time enrollment token + CSR for a signed agent certificate.
@@ -73,6 +78,7 @@ pub async fn enroll(
         .await
         .map_err(ApiError::from)?;
 
+    let base = state.public_base_url.trim_end_matches('/');
     Ok((
         StatusCode::CREATED,
         Json(EnrollResponse {
@@ -81,6 +87,8 @@ pub async fn enroll(
             certificate_pem: result.cert_pem,
             ca_certificate_pem: result.ca_cert_pem,
             expires_at: result.certificate.not_after.to_rfc3339(),
+            demo_token: result.demo_token,
+            demo_upload_url: format!("{base}/v1/gameserver/demos"),
         }),
     ))
 }

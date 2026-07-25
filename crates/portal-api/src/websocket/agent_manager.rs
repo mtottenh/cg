@@ -37,6 +37,20 @@ pub enum AgentCommand {
     Exec { command: String },
     /// Request an immediate `get5_status`.
     Status,
+    /// Restore a round backup (`matchzy_loadbackup_url`).
+    LoadBackup {
+        url: String,
+        header_name: String,
+        header_value: String,
+    },
+    /// Mid-series roster edit: remove-then-add so the listed player count
+    /// never exceeds `players_per_team` (§6.8).
+    RosterEdit {
+        /// SteamID64s to remove (kicked by MatchZy).
+        remove: Vec<String>,
+        /// `(steamid64, team1|team2, display name)` to add.
+        add: Vec<(String, String, String)>,
+    },
 }
 
 impl AgentCommand {
@@ -46,6 +60,8 @@ impl AgentCommand {
             Self::EndMatch => "end_match",
             Self::Exec { .. } => "exec",
             Self::Status => "status",
+            Self::LoadBackup { .. } => "load_backup",
+            Self::RosterEdit { .. } => "roster_edit",
         }
     }
 
@@ -61,6 +77,26 @@ impl AgentCommand {
                 "header_value": header_value,
             })),
             Self::Exec { command } => Some(serde_json::json!({ "command": command })),
+            Self::LoadBackup {
+                url,
+                header_name,
+                header_value,
+            } => Some(serde_json::json!({
+                "url": url,
+                "header_name": header_name,
+                "header_value": header_value,
+            })),
+            Self::RosterEdit { remove, add } => Some(serde_json::json!({
+                "remove": remove,
+                "add": add
+                    .iter()
+                    .map(|(steamid64, team, name)| serde_json::json!({
+                        "steamid64": steamid64,
+                        "team": team,
+                        "name": name,
+                    }))
+                    .collect::<Vec<_>>(),
+            })),
             Self::EndMatch | Self::Status => None,
         }
     }

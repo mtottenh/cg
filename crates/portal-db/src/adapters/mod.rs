@@ -47,8 +47,8 @@ pub use dispute::{PgDisputeMessageRepository, PgDisputeRepository};
 pub use evidence::PgEvidenceRepository;
 pub use forfeit::PgForfeitRecordRepository;
 pub use game_server::{
-    PgAgentCertRepository, PgGameServerRepository, PgServerBookingRepository,
-    PgServerEventRepository, PgServerReservationRepository,
+    PgAgentCertRepository, PgGameServerRepository, PgMatchSubstitutionRepository,
+    PgServerBookingRepository, PgServerEventRepository, PgServerReservationRepository,
 };
 pub use league::{PgLeagueInvitationRepository, PgLeagueMemberRepository, PgLeagueRepository};
 pub use league_team::{

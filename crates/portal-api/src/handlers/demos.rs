@@ -804,19 +804,58 @@ pub async fn get_demos_for_match(
         demos_with_data = visible;
     }
 
+    // P-135: name the `match_evidence` row behind each link.
+    //
+    // Attaching a demo writes two rows — the link, and an evidence record whose
+    // `plugin_metadata.catalog_demo_id` points back at the catalog demo (both
+    // `link_demo` and `link_discovered_evidence`'s catalog branch stamp it).
+    // Detaching goes through `DELETE .../evidence/{evidence_id}`, which removes
+    // both. Until this join existed the pairing lived only in the frontend's
+    // memory from the link call, so after a reload the unlink sent no request
+    // at all and reported success anyway.
+    let evidence_by_demo = evidence_ids_by_demo(&state, match_id).await?;
+
     let responses: Vec<DemoMatchLinkWithDemoResponse> = demos_with_data
         .into_iter()
         .map(|d| {
+            let evidence_id = evidence_by_demo.get(&d.demo.id).copied();
             DemoMatchLinkWithDemoResponse::from_domain(
                 d.link,
                 d.demo,
                 d.players,
                 query.include_stats,
+                evidence_id,
             )
         })
         .collect();
 
     Ok(Json(DataResponse::new(responses, request_id)))
+}
+
+/// Map each catalogued demo on this match to the evidence row that references
+/// it, so a demo link can be detached by the id the DELETE route takes.
+///
+/// Deliberately reads the match's evidence *unfiltered by source* — the pairing
+/// is a fact about the data, not about which rows a particular listing chooses
+/// to show — and skips rows with no `catalog_demo_id` (uploads, linked URLs),
+/// which have no demo to pair with.
+async fn evidence_ids_by_demo(
+    state: &DemoState,
+    match_id: TournamentMatchId,
+) -> ApiResult<std::collections::HashMap<portal_core::DemoId, uuid::Uuid>> {
+    let evidence = state.evidence_service.get_match_evidence(match_id).await?;
+    Ok(evidence
+        .into_iter()
+        .filter_map(|e| {
+            let demo_id = e
+                .plugin_metadata
+                .get("catalog_demo_id")
+                .and_then(serde_json::Value::as_str)?
+                .parse::<portal_core::DemoId>()
+                .ok()?;
+            Some((demo_id, e.id.as_uuid()))
+        })
+        .collect())
 }
 
 /// Unlink a demo from a match (admin only).

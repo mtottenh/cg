@@ -45,8 +45,15 @@ impl ScannerConfig {
             api_url: std::env::var("PORTAL_API_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),
             api_key: std::env::var("PORTAL_API_KEY").expect("PORTAL_API_KEY is required"),
-            demo_service_url: std::env::var("CS2_DEMO_SERVICE_URL")
-                .unwrap_or_else(|_| "https://demos.cs210mans.uk".to_string()),
+            // P-137, same mechanism as `Cs2DemoClient::default()`: this used to
+            // fall back to the live `https://demos.cs210mans.uk`, so a scanner
+            // started without the variable pointed itself at a third party
+            // rather than refusing to start. Required and validated, like
+            // `PORTAL_API_KEY` and `SCANNER_GAME_ID` above.
+            demo_service_url: portal_plugins::validate_demo_service_url(
+                &std::env::var("CS2_DEMO_SERVICE_URL").expect("CS2_DEMO_SERVICE_URL is required"),
+            )
+            .expect("CS2_DEMO_SERVICE_URL failed validation"),
             interval_secs: std::env::var("SCANNER_INTERVAL_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok())

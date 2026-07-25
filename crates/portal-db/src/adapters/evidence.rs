@@ -244,12 +244,18 @@ impl EvidenceRepository for PgEvidenceRepository {
     async fn mark_validated(
         &self,
         id: EvidenceId,
+        validated: bool,
         validation_result: serde_json::Value,
     ) -> Result<Evidence, DomainError> {
+        // P-138: `validated` used to be hardcoded `true` here, whatever
+        // `validation_result` said. `validated_at` stays unconditional — it
+        // records that a check ran, which is what lets a reader tell a FAILED
+        // validation apart from one that never happened.
         let row = sqlx::query_as::<_, EvidenceRow>(
-            r"UPDATE match_evidence SET validated = true, validated_at = NOW(), validation_result = $2, updated_at = NOW() WHERE id = $1 RETURNING *",
+            r"UPDATE match_evidence SET validated = $2, validated_at = NOW(), validation_result = $3, updated_at = NOW() WHERE id = $1 RETURNING *",
         )
         .bind(id.as_uuid())
+        .bind(validated)
         .bind(&validation_result)
         .fetch_one(&self.pool)
         .await

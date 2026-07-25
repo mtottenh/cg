@@ -681,12 +681,17 @@ pub struct DemoState {
     /// Discovered-match service — the admin pipeline view reads queue depth
     /// and enrichment failures (P-73).
     pub discovered_match_service: AppDiscoveredMatchService,
+    /// Evidence service — `get_demos_for_match` names the `match_evidence` row
+    /// behind each link so the frontend can detach it (P-135). Read-only here;
+    /// every evidence *mutation* stays on `EvidenceState`.
+    pub evidence_service: AppEvidenceService,
 }
 
 impl FromRef<AppState> for DemoState {
     fn from_ref(s: &AppState) -> Self {
         Self {
             demo_service: s.demo_service.clone(),
+            evidence_service: s.evidence_service.clone(),
             cs2_demo_base_url: s.cs2_demo_base_url.clone(),
             permission_service: s.permission_service.clone(),
             game_repo: s.game_repo.clone(),

@@ -1321,8 +1321,15 @@ pub async fn validate_demo(
             }),
             warnings: validation.warnings,
             errors: validation.errors,
-            demo_url: cs2_plugin.get_demo_url(&req.demo_name),
-            stats_url: cs2_plugin.get_stats_url(&req.demo_name),
+            // P-137: fallible now — with no demo service configured there is
+            // no host to build these against, and the old signature invented
+            // one by pointing at a hardcoded third party.
+            demo_url: cs2_plugin
+                .get_demo_url(&req.demo_name)
+                .map_err(|e| ApiError::bad_request(e.to_string()))?,
+            stats_url: cs2_plugin
+                .get_stats_url(&req.demo_name)
+                .map_err(|e| ApiError::bad_request(e.to_string()))?,
         },
         request_id,
     )))
@@ -1404,8 +1411,12 @@ pub async fn get_demo_stats(
             team2_name,
             total_rounds: stats.total_rounds(),
             players,
-            demo_url: cs2_plugin.get_demo_url(&demo_name),
-            stats_url: cs2_plugin.get_stats_url(&demo_name),
+            demo_url: cs2_plugin
+                .get_demo_url(&demo_name)
+                .map_err(|e| ApiError::bad_request(e.to_string()))?,
+            stats_url: cs2_plugin
+                .get_stats_url(&demo_name)
+                .map_err(|e| ApiError::bad_request(e.to_string()))?,
         },
         request_id,
     )))
@@ -1511,7 +1522,9 @@ pub async fn link_demo(
             evidence_type: EvidenceType::Demo,
             name: format!("CS2 Demo: {}", stats.map),
             storage: EvidenceStorage::Url {
-                url: cs2_plugin.get_demo_url(&req.demo_name),
+                url: cs2_plugin
+                    .get_demo_url(&req.demo_name)
+                    .map_err(|e| ApiError::bad_request(e.to_string()))?,
             },
             file_size_bytes: None,
             metadata: serde_json::json!({

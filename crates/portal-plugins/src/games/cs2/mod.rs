@@ -976,14 +976,26 @@ impl EvidencePlugin for Cs2Plugin {
 
 /// CS2 plugin with enhanced evidence support using the external demo service.
 ///
-/// This variant fetches demo stats from `https://demos.cs210mans.uk` and
-/// validates results against claimed match outcomes.
+/// This variant fetches demo stats from the operator-configured demo service
+/// (`CS2_DEMO_SERVICE_URL`) and validates results against claimed match
+/// outcomes. When no service is configured the plugin still registers — the
+/// portal's own demo catalog covers most of what evidence needs — but every
+/// operation that would have to leave the process fails with
+/// [`PluginError::InvalidConfiguration`] instead.
 #[derive(Clone)]
 pub struct Cs2PluginWithEvidence {
     /// Inner plugin (reserved for future game-specific operations).
     #[allow(dead_code)]
     inner: Cs2Plugin,
-    demo_client: Arc<Cs2DemoClient>,
+    /// `None` when no demo service is configured.
+    ///
+    /// P-137: this was `Arc<Cs2DemoClient>` filled from `Cs2DemoClient::default()`,
+    /// which pointed at the live `https://demos.cs210mans.uk`. An unset
+    /// `CS2_DEMO_SERVICE_URL` therefore did not disable the integration, it
+    /// pointed it at a third party — quietly, and from tests as readily as from
+    /// production. Absence is now representable, so misconfiguration reports
+    /// itself instead of resolving to somebody else's host.
+    demo_client: Option<Arc<Cs2DemoClient>>,
 }
 
 impl Default for Cs2PluginWithEvidence {
@@ -995,31 +1007,44 @@ impl Default for Cs2PluginWithEvidence {
 impl std::fmt::Debug for Cs2PluginWithEvidence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cs2PluginWithEvidence")
-            .field("base_url", &self.demo_client.base_url())
+            .field(
+                "base_url",
+                &self.demo_client.as_ref().map(|c| c.base_url()),
+            )
             .finish_non_exhaustive()
     }
 }
 
 impl Cs2PluginWithEvidence {
-    /// Create a new CS2 plugin with evidence support.
+    /// Create a CS2 plugin with **no** external demo service configured.
+    ///
+    /// Demo-service operations then fail with
+    /// [`PluginError::InvalidConfiguration`] naming the missing setting. That
+    /// is the point of P-137: this constructor used to reach
+    /// `Cs2DemoClient::default()` and silently talk to a hardcoded live host.
     pub fn new() -> Self {
         Self {
             inner: Cs2Plugin::new(),
-            demo_client: Arc::new(Cs2DemoClient::default()),
+            demo_client: None,
         }
     }
 
-    /// Create with a custom demo service URL.
+    /// Create with a demo service URL, which the caller must already have
+    /// validated with [`validate_demo_service_url`].
     pub fn with_demo_url(base_url: String) -> Self {
         Self {
             inner: Cs2Plugin::new(),
-            demo_client: Arc::new(Cs2DemoClient::new(base_url)),
+            demo_client: Some(Arc::new(Cs2DemoClient::new(base_url))),
         }
     }
 
-    /// Get the demo client for direct access.
-    pub fn demo_client(&self) -> &Cs2DemoClient {
-        &self.demo_client
+    /// The demo client, or a configuration error naming what is missing.
+    pub fn demo_client(&self) -> Result<&Cs2DemoClient, PluginError> {
+        self.demo_client.as_deref().ok_or_else(|| {
+            PluginError::InvalidConfiguration(
+                "CS2 demo service is not configured; set CS2_DEMO_SERVICE_URL".to_string(),
+            )
+        })
     }
 
     /// Fetch and validate a demo against a claimed result.
@@ -1037,7 +1062,7 @@ impl Cs2PluginWithEvidence {
         team2_steam_ids: &[String],
     ) -> Result<EvidenceValidation, PluginError> {
         // Fetch stats from external service
-        let stats = self.demo_client.get_demo_stats(demo_name).await?;
+        let stats = self.demo_client()?.get_demo_stats(demo_name).await?;
 
         // Validate against claimed result
         let validation = Cs2EvidenceValidator::validate(
@@ -1052,7 +1077,7 @@ impl Cs2PluginWithEvidence {
 
     /// Fetch demo stats without validation.
     pub async fn get_demo_stats(&self, demo_name: &str) -> Result<Cs2DemoStats, PluginError> {
-        self.demo_client.get_demo_stats(demo_name).await
+        self.demo_client()?.get_demo_stats(demo_name).await
     }
 
     /// Extract result from a demo without comparing to a claim.
@@ -1062,7 +1087,7 @@ impl Cs2PluginWithEvidence {
         team1_steam_ids: &[String],
         team2_steam_ids: &[String],
     ) -> Result<Option<ExtractedResult>, PluginError> {
-        let stats = self.demo_client.get_demo_stats(demo_name).await?;
+        let stats = self.demo_client()?.get_demo_stats(demo_name).await?;
         Ok(Cs2EvidenceValidator::extract_result(
             &stats,
             team1_steam_ids,
@@ -1071,13 +1096,17 @@ impl Cs2PluginWithEvidence {
     }
 
     /// Get the download URL for a demo.
-    pub fn get_demo_url(&self, demo_name: &str) -> String {
-        self.demo_client.get_demo_url(demo_name)
+    ///
+    /// Fallible now (P-137): with no demo service configured there is no host
+    /// to build a URL against, and inventing one pointed every caller at a
+    /// hardcoded third party.
+    pub fn get_demo_url(&self, demo_name: &str) -> Result<String, PluginError> {
+        Ok(self.demo_client()?.get_demo_url(demo_name))
     }
 
     /// Get the stats URL for a demo.
-    pub fn get_stats_url(&self, demo_name: &str) -> String {
-        self.demo_client.get_stats_url(demo_name)
+    pub fn get_stats_url(&self, demo_name: &str) -> Result<String, PluginError> {
+        Ok(self.demo_client()?.get_stats_url(demo_name))
     }
 }
 
@@ -1248,7 +1277,7 @@ impl EvidencePlugin for Cs2PluginWithEvidence {
             }
         };
 
-        let stats = self.demo_client.get_demo_stats(&demo_name).await?;
+        let stats = self.demo_client()?.get_demo_stats(&demo_name).await?;
 
         // Validate using the existing validator (Steam IDs unavailable at this layer)
         let validation = Cs2EvidenceValidator::validate(&stats, claimed_result, &[], &[]);
@@ -1270,7 +1299,7 @@ impl EvidencePlugin for Cs2PluginWithEvidence {
             }
         };
 
-        let stats = self.demo_client.get_demo_stats(&demo_name).await?;
+        let stats = self.demo_client()?.get_demo_stats(&demo_name).await?;
 
         let team_names = stats.team_names();
         let team1_score = team_names
@@ -1492,5 +1521,50 @@ mod tests {
         // Check K/D ratio is calculated
         let kd = formatted.iter().find(|s| s.key == "kd_ratio").unwrap();
         assert_eq!(kd.value, "1.25");
+    }
+
+    /// P-137. Without a configured demo service, every operation that would
+    /// have to leave the process must REFUSE.
+    ///
+    /// It used to silently resolve to `https://demos.cs210mans.uk`:
+    /// `Cs2PluginWithEvidence::new()` built `Cs2DemoClient::default()`, whose
+    /// `Default` impl handed out that hardcoded host. An unset
+    /// `CS2_DEMO_SERVICE_URL` therefore did not disable the integration, it
+    /// aimed it at a third party — from a test as readily as from production.
+    #[test]
+    fn unconfigured_demo_service_refuses_instead_of_picking_a_host() {
+        let plugin = Cs2PluginWithEvidence::new();
+
+        for result in [
+            plugin.get_demo_url("match_12345.dem"),
+            plugin.get_stats_url("match_12345.dem"),
+        ] {
+            let err = result.expect_err("no demo service is configured; this must not succeed");
+            assert!(
+                matches!(err, PluginError::InvalidConfiguration(_)),
+                "expected InvalidConfiguration, got {err:?}"
+            );
+            // The refusal names the setting, so an operator can act on it.
+            assert!(
+                err.to_string().contains("CS2_DEMO_SERVICE_URL"),
+                "the error should name the missing setting: {err}"
+            );
+        }
+    }
+
+    /// The positive control for the test above: with a service configured the
+    /// same calls succeed, and against the configured host — not a default.
+    #[test]
+    fn configured_demo_service_builds_urls_against_that_host() {
+        let plugin = Cs2PluginWithEvidence::with_demo_url("https://demos.test.invalid".to_string());
+
+        assert_eq!(
+            plugin.get_demo_url("match_12345.dem").unwrap(),
+            "https://demos.test.invalid/match_12345.dem"
+        );
+        assert_eq!(
+            plugin.get_stats_url("match_12345.dem").unwrap(),
+            "https://demos.test.invalid/stats/match_12345.dem.stats.json"
+        );
     }
 }

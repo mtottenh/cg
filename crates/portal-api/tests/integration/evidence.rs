@@ -1037,6 +1037,60 @@ async fn test_validate_demo_requires_participant() {
     );
 }
 
+/// P-137. With no demo service configured, the demo-service routes must refuse
+/// and say why — not resolve to a hardcoded live third party.
+///
+/// `Cs2DemoClient::default()` returned a client pointed at
+/// `https://demos.cs210mans.uk`, and `create_cs2_plugin` fell back to it
+/// whenever `CS2_DEMO_SERVICE_URL` was unset — which it is in every `TestApp`
+/// and in the e2e stack. `test_validate_demo_requires_participant` directly
+/// above therefore issued a live outbound request to that host on every run,
+/// and its comment ("the plugin fails downstream") described a network 404
+/// from a stranger's server as expected behaviour. Misconfiguration now names
+/// itself instead.
+#[tokio::test]
+async fn test_demo_service_routes_refuse_when_unconfigured() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, _reg1, _reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "evidence-p137")
+            .await;
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/evidence/validate-demo"),
+            &json!({
+                "demo_name": "some_match.dem",
+                "map_id": "de_dust2",
+                "participant1_score": 16,
+                "participant2_score": 0
+            }),
+            &player2_token,
+        )
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let text = response.text();
+    assert!(
+        text.contains("CS2_DEMO_SERVICE_URL"),
+        "the refusal must name the missing setting rather than report a \
+         network failure from whatever host was guessed: {text}"
+    );
+
+    // Same for the stats proxy, the other route that leaves the process.
+    let response = app
+        .get_with_token(
+            &format!("/v1/matches/{match_id}/evidence/demo-stats/some_match.dem"),
+            &player2_token,
+        )
+        .await;
+    assert!(
+        response.text().contains("CS2_DEMO_SERVICE_URL"),
+        "the stats proxy must refuse the same way: {} {}",
+        response.status,
+        response.text()
+    );
+}
+
 /// `complete_upload` flips evidence Pending → Active, so it is bound to the
 /// user who initiated the upload — not merely to any authenticated caller.
 #[tokio::test]
@@ -1412,6 +1466,103 @@ async fn test_validate_evidence_records_a_contradiction_without_claiming_validat
         !linked[0]["link"]["validation_result"].is_null(),
         "the failing verdict must still be recorded for the operator: {linked:?}"
     );
+
+    // P-138: and the EVIDENCE row, which P-111 left behind. `mark_validated`
+    // on the evidence repository wrote `validated = true` unconditionally, so
+    // this row claimed the demo corroborated the result while the link row two
+    // assertions up said it contradicted it — on the very surface an admin uses
+    // to resolve the dispute.
+    let evidence = list_evidence_default(&app, &info.match_id).await;
+    assert_eq!(
+        evidence[0]["validated"], false,
+        "a contradicted demo's evidence row must not read as validated: {evidence:?}"
+    );
+    assert!(
+        !evidence[0]["validated_at"].is_null(),
+        "a failed validation must stay distinguishable from one that never ran: {evidence:?}"
+    );
+    let evidence_errors = evidence[0]["validation_errors"].as_array().unwrap();
+    assert_eq!(
+        evidence_errors.len(),
+        1,
+        "the reason must reach the evidence listing, not only the POST response: {evidence:?}"
+    );
+    assert!(
+        evidence_errors[0].as_str().unwrap().contains("13 - 7"),
+        "the evidence row should name what the demo actually records: {evidence:?}"
+    );
+}
+
+/// P-138's other half: an evidence row that has never been validated must be
+/// distinguishable from one whose validation FAILED. `validated: false` alone
+/// cannot tell them apart, and the operator has to.
+#[tokio::test]
+async fn test_unvalidated_evidence_is_distinguishable_from_a_failed_validation() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p138-never").await;
+    let demo_id = seed_catalog_demo(&app, "p138-never.dem", "de_nuke", 13, 4).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/link-demo", info.match_id),
+            &json!({ "demo_name": "p138-never.dem", "demo_id": demo_id, "game_number": 1 }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let evidence = list_evidence_default(&app, &info.match_id).await;
+    assert_eq!(evidence[0]["validated"], false);
+    assert!(
+        evidence[0]["validated_at"].is_null(),
+        "nothing has validated this: {evidence:?}"
+    );
+    assert_eq!(
+        evidence[0]["validation_errors"].as_array().unwrap().len(),
+        0,
+        "no validation ran, so there is nothing to report: {evidence:?}"
+    );
+}
+
+/// P-135: the evidence row behind a demo link is named in the link listing.
+///
+/// Unlinking a demo is `DELETE .../evidence/{evidence_id}`. The pairing used to
+/// exist only in the frontend's memory from the link call, so after a reload
+/// the unlink had no id, sent nothing, and still reported success. The server
+/// has always known the pairing; it just never said it.
+#[tokio::test]
+async fn test_linked_demo_names_its_evidence_row() {
+    let app = TestApp::new_with_demo_service("http://127.0.0.1:1").await;
+    let info = create_cs2_tournament_with_match(&app, "ev-p135-evid").await;
+    let demo_id = seed_catalog_demo(&app, "p135-link.dem", "de_mirage", 13, 9).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{}/evidence/link-demo", info.match_id),
+            &json!({ "demo_name": "p135-link.dem", "demo_id": demo_id, "game_number": 1 }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let evidence_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // A *fresh* read — carrying no memory of the link call — resolves it.
+    let linked = list_linked_demos(&app, &info.match_id).await;
+    assert_eq!(
+        linked[0]["evidence_id"].as_str(),
+        Some(evidence_id.as_str()),
+        "the link listing must name the evidence row that backs it: {linked:?}"
+    );
+
+    // ...and that id is the one the DELETE route takes, which removes both rows.
+    let response = app
+        .delete_auth(&format!(
+            "/v1/matches/{}/evidence/{evidence_id}",
+            info.match_id
+        ))
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+    assert!(list_linked_demos(&app, &info.match_id).await.is_empty());
+    assert!(list_evidence_default(&app, &info.match_id).await.is_empty());
 }
 
 /// Omitted scores are refused, not defaulted.

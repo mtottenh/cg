@@ -194,7 +194,23 @@ pub struct EvidenceSummaryResponse {
     // Typed as the enum so the schema publishes its permitted values and clients
     // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
     pub status: EvidenceStatus,
+    /// The **verdict**: `true` only when a validation ran *and* the evidence
+    /// corroborated the claimed result.
     pub validated: bool,
+    /// When a validation last ran, whatever it concluded.
+    ///
+    /// P-138: `validated` alone cannot tell "never checked" from "checked and
+    /// FAILED", and those must not look the same to an operator resolving a
+    /// dispute. The pair is the state:
+    ///   - `validated = true`                        → validated
+    ///   - `validated = false`, `validated_at` set   → validation failed
+    ///   - `validated = false`, `validated_at` null  → not yet validated
+    pub validated_at: Option<DateTime<Utc>>,
+    /// Why the last validation failed, when it did — lifted out of the stored
+    /// `validation_result` so a client does not have to parse an untyped blob
+    /// to tell the operator what the evidence actually contradicts. Empty
+    /// whenever the verdict passed or no validation has run.
+    pub validation_errors: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -206,9 +222,30 @@ impl From<Evidence> for EvidenceSummaryResponse {
             name: e.name,
             status: e.status,
             validated: e.validated,
+            validated_at: e.validated_at,
+            validation_errors: validation_errors_of(e.validation_result.as_ref()),
             created_at: e.created_at,
         }
     }
+}
+
+/// Pull the `errors` array out of a stored `EvidenceValidation` blob.
+///
+/// The column holds `serde_json::to_value(&EvidenceValidation)`, so the shape
+/// is known; anything else (a legacy row, a partial write) yields no errors
+/// rather than a parse failure — an operator seeing "validation failed" with
+/// no detail is bad, but a 500 on the evidence list is worse.
+fn validation_errors_of(result: Option<&serde_json::Value>) -> Vec<String> {
+    result
+        .and_then(|v| v.get("errors"))
+        .and_then(serde_json::Value::as_array)
+        .map(|errors| {
+            errors
+                .iter()
+                .filter_map(|e| e.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // =============================================================================

@@ -33,11 +33,12 @@ enum ScanSubcommand {
         #[arg(long, env = "PORTAL_API_TOKEN")]
         api_token: String,
         /// External stats service URL
-        #[arg(
-            long,
-            env = "CS2_DEMO_SERVICE_URL",
-            default_value = "https://demos.cs210mans.uk"
-        )]
+        ///
+        /// P-137: this carried `default_value = "https://demos.cs210mans.uk"`,
+        /// so `portal-cli scan` run without `--stats-url` and without the env
+        /// var pointed itself at a live third party. Required now — exactly as
+        /// the sibling `ProcessStats` variant below already had it.
+        #[arg(long, env = "CS2_DEMO_SERVICE_URL")]
         stats_url: String,
         /// File extension to match
         #[arg(long, default_value = ".dem")]

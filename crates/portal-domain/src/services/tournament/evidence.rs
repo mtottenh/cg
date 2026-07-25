@@ -766,10 +766,13 @@ where
 
         let validation = plugin.validate_evidence(&evidence, result).await?;
 
-        // Update evidence with validation result
+        // Record the verdict. P-138: the outcome is `validation.is_valid` —
+        // the adapter used to write "true, always", which is what let a
+        // contradicted demo read as corroborating the claim.
         self.evidence_repo
             .mark_validated(
                 evidence_id,
+                validation.is_valid,
                 serde_json::to_value(&validation).unwrap_or_default(),
             )
             .await?;
@@ -798,6 +801,7 @@ where
         self.evidence_repo
             .mark_validated(
                 evidence_id,
+                validation.is_valid,
                 serde_json::to_value(validation).unwrap_or_default(),
             )
             .await

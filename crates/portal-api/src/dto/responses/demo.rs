@@ -336,6 +336,20 @@ pub struct DemoMatchLinkWithDemoResponse {
     /// Players in this demo (optional, depends on include_stats query).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub players: Option<Vec<DemoPlayerResponse>>,
+    /// The `match_evidence` row this link was created alongside, if any.
+    ///
+    /// P-135: attaching a demo writes *two* rows — a `demo_match_link` and a
+    /// `match_evidence` record carrying `catalog_demo_id` — and detaching it
+    /// goes through `DELETE /v1/matches/{id}/evidence/{evidence_id}`, which
+    /// cleans up both. Nothing in this response named the evidence row, so the
+    /// frontend could only remember the pairing in memory from the link call
+    /// in the same session: after a reload it had no id, sent no DELETE, and
+    /// still told the operator the demo was unlinked. Serving the pairing is
+    /// what makes the destructive action performable at all.
+    ///
+    /// `None` means no evidence row backs this link — an auto-matched or
+    /// admin-created link, or one whose evidence has already been deleted.
+    pub evidence_id: Option<Uuid>,
 }
 
 impl DemoMatchLinkWithDemoResponse {
@@ -346,6 +360,7 @@ impl DemoMatchLinkWithDemoResponse {
         demo: portal_domain::entities::demo::Demo,
         players: Vec<portal_domain::entities::demo::DemoPlayer>,
         include_players: bool,
+        evidence_id: Option<Uuid>,
     ) -> Self {
         Self {
             link: DemoMatchLinkResponse::from(link),
@@ -355,6 +370,7 @@ impl DemoMatchLinkWithDemoResponse {
             } else {
                 None
             },
+            evidence_id,
         }
     }
 }

@@ -116,8 +116,10 @@ pub async fn on_veto_completed(state: &AppState, match_id: TournamentMatchId) {
 }
 
 /// Create (or return) the live reservation for a match and try to allocate
-/// + load immediately. Used by the veto hook, the admin endpoint, and
-/// re-driven by the lifecycle pass while `pending`.
+/// + load immediately.
+///
+/// Used by the veto hook, the admin endpoint, and re-driven by the
+/// lifecycle pass while `pending`.
 pub async fn request_assignment(
     state: &AppState,
     match_id: TournamentMatchId,
@@ -338,7 +340,7 @@ async fn handle_load_failure(
         .server_reservation_repo
         .find_by_id(reservation.id)
         .await?
-        .ok_or(DomainError::Internal("reservation vanished".into()))
+        .ok_or_else(|| DomainError::Internal("reservation vanished".into()))
 }
 
 /// Cancel a match's live reservation (admin action or match cancellation).

@@ -41,8 +41,8 @@ pub struct LiveScoreResponse {
 /// A match's server reservation, scoped to what the caller may see.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MatchServerResponse {
-    /// Reservation status (`pending`/`configuring`/`ready`/`live`/…).
-    pub status: String,
+    /// Reservation status.
+    pub status: ReservationStatus,
     /// Failure/cancellation reason, when terminal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
@@ -189,7 +189,7 @@ pub async fn get_match_server(
     };
 
     let response = MatchServerResponse {
-        status: reservation.status.to_string(),
+        status: reservation.status,
         failure_reason: reservation.failure_reason.clone(),
         server_name: server.as_ref().map(|s| s.name.clone()),
         ip_address: connect_visible
@@ -247,8 +247,8 @@ pub async fn assign_match_server(
         StatusCode::CREATED,
         Json(DataResponse::new(
             MatchServerResponse {
-                status: reservation.status.to_string(),
-                failure_reason: reservation.failure_reason.clone(),
+                status: reservation.status,
+                failure_reason: reservation.failure_reason,
                 server_name: None,
                 ip_address: None,
                 port: None,

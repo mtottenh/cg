@@ -8,7 +8,7 @@
 use crate::handlers::game_servers::{admin, agent, match_server, matchzy};
 use crate::state::AppState;
 use axum::Router;
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 
 /// Admin registry routes (mounted at `/admin/game-servers`).
 pub fn admin_routes() -> Router<AppState> {

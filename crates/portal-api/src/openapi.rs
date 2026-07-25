@@ -730,6 +730,7 @@ use utoipa_swagger_ui::SwaggerUi;
             crate::handlers::game_servers::admin::CreateServerBookingRequest,
             crate::handlers::game_servers::admin::ServerBookingResponse,
             portal_core::types::GameServerStatus,
+            portal_core::types::ReservationStatus,
             crate::handlers::game_servers::match_server::MatchServerResponse,
             crate::handlers::game_servers::match_server::LiveScoreResponse,
             // Steam Tracking

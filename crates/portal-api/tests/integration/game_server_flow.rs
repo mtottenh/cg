@@ -509,7 +509,6 @@ async fn get_game_id_str(app: &TestApp) -> String {
 
 #[tokio::test]
 async fn test_demo_upload_auth_catalog_and_link() {
-
     let app = TestApp::new().await;
     let state = state_for(&app).await;
     let (tournament_id, match_id, _r1, _r2) =

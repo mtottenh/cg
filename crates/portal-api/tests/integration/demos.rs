@@ -2097,7 +2097,10 @@ async fn test_admin_whole_demo_unlink_removes_link_and_evidence_for_every_game()
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
-    let demo_id = body["data"]["created"][0]["id"].as_str().unwrap().to_string();
+    let demo_id = body["data"]["created"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let demo_uuid: uuid::Uuid = demo_id.parse().unwrap();
 
     // Seed the pair, the shape link_demo writes. (One game only: the DB's

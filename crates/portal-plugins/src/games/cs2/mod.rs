@@ -1011,10 +1011,7 @@ impl Default for Cs2PluginWithEvidence {
 impl std::fmt::Debug for Cs2PluginWithEvidence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cs2PluginWithEvidence")
-            .field(
-                "base_url",
-                &self.demo_client.as_ref().map(|c| c.base_url()),
-            )
+            .field("base_url", &self.demo_client.as_ref().map(|c| c.base_url()))
             .finish_non_exhaustive()
     }
 }

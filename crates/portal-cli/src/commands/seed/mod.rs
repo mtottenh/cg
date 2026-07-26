@@ -36,6 +36,13 @@ enum SeedSubcommand {
     },
     /// Remove all seeded data
     Reset,
+    /// Mint the well-known internal X-API-Key for dev/e2e stacks (P-143).
+    ///
+    /// Separate from `full` because the e2e-ephemeral stack seeds its world
+    /// over HTTP (playwright global-setup) and never runs `seed full` — but
+    /// the internal pipeline routes are key-authenticated, so the key must
+    /// be mintable on its own.
+    InternalApiKey,
     /// Show credentials for existing seeded users
     Credentials {
         /// JWT secret for token generation
@@ -59,6 +66,13 @@ impl SeedCommand {
                 credentials::print_credentials(pool, jwt_secret, *token_expiry_days, format).await
             }
             SeedSubcommand::Reset => reset::reset_seed_data(pool).await,
+            SeedSubcommand::InternalApiKey => {
+                let mut tx = pool.begin().await.context("Failed to start transaction")?;
+                seed_internal_api_key(&mut tx, None).await?;
+                tx.commit().await.context("Failed to commit")?;
+                success("Internal API key seeded");
+                Ok(())
+            }
             SeedSubcommand::Credentials {
                 jwt_secret,
                 token_expiry_days,
@@ -82,7 +96,7 @@ fn hash_password(password: &str) -> Result<String> {
 /// is UNIQUE and conflicts just re-activate the row.
 async fn seed_internal_api_key(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    created_by: uuid::Uuid,
+    created_by: Option<uuid::Uuid>,
 ) -> Result<()> {
     use sha2::Digest as _;
     let mut hasher = sha2::Sha256::new();
@@ -164,7 +178,7 @@ async fn seed_full(pool: &PgPool) -> Result<()> {
     // routes (enrichment failures, discovered matches) that no browser
     // identity can reach.
     info("Seeding internal API key...");
-    seed_internal_api_key(&mut tx, admin.user_id()).await?;
+    seed_internal_api_key(&mut tx, Some(admin.user_id())).await?;
 
     // 4. League (trigger auto-creates "Season 1" with a random UUID)
     info("Seeding league...");

@@ -8,13 +8,13 @@ use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::game_server_flow;
 use crate::state::AppState;
-use portal_domain::repositories::pug::AdhocTeamRepository as _;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::ids::TournamentMatchId;
 use portal_core::permissions;
 use portal_core::types::ReservationStatus;
+use portal_domain::repositories::pug::AdhocTeamRepository as _;
 use portal_domain::repositories::{
     LeagueTeamMemberRepository, ServerEventRepository, ServerReservationRepository,
     TournamentMatchRepository,

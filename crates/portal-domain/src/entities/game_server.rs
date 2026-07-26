@@ -11,7 +11,9 @@ use portal_core::ids::{
     ServerEventId, ServerReservationId, TournamentId, TournamentMatchId, TournamentRegistrationId,
     UserId,
 };
-use portal_core::types::{AgentGamestate, GameServerStatus, ReservationKind, ReservationStatus, SubstitutionStatus};
+use portal_core::types::{
+    AgentGamestate, GameServerStatus, ReservationKind, ReservationStatus, SubstitutionStatus,
+};
 use std::net::IpAddr;
 
 /// A registered game server.

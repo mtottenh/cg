@@ -12,7 +12,6 @@ use crate::dto::requests::{
     CounterProposeRequest, CreateAvailabilityOverrideRequest, CreateAvailabilityWindowRequest,
     CreateBanRequest, CreateLeagueRequest, CreateLeagueSeasonRequest, CreateLeagueTeamRequest,
     CreateRoleRequest, CreateTournamentRequest, CreateTournamentStageRequest,
-    UpdateTournamentStageRequest,
     CreateVetoSessionRequest, DeclareLineupRequest, DemoPlayerInputDto, DisputeResultClaimRequest,
     DisqualifyRequest, ForfeitMatchRequest, GenerateSuggestionsRequest, GetAvailabilityQuery,
     GetDemosForMatchQuery, InitiateUploadRequest, InviteToLeagueRequest, InviteToLeagueTeamRequest,
@@ -32,7 +31,8 @@ use crate::dto::requests::{
     UpdateLeagueMemberRoleRequest, UpdateLeagueRequest, UpdateLeagueSeasonRequest,
     UpdateLeagueTeamMemberRequest, UpdateLeagueTeamRequest, UpdateMapRequest,
     UpdatePlayerProfileRequest, UpdateRoleRequest, UpdateTeamSizeRequest, UpdateTournamentRequest,
-    ValidateDemoRequest, ValidateEvidenceRequest, WithdrawFromTournamentRequest,
+    UpdateTournamentStageRequest, ValidateDemoRequest, ValidateEvidenceRequest,
+    WithdrawFromTournamentRequest,
 };
 use crate::dto::responses::AutoLinkSettingResponse;
 use crate::dto::responses::demo::{
@@ -77,9 +77,8 @@ use crate::dto::responses::{
 use crate::error::{ApiError, FieldErrorDto};
 use crate::handlers::{
     admin, auth, availability, awards, bans, demos, dispute, evidence, forfeit, game_servers,
-    games, league_teams, leagues, player_game_profiles, players, progression, pugs,
-    result_reviews, results, roles, steam_auth, steam_tracking, tournaments, uploads, users, veto,
-    veto_delegates,
+    games, league_teams, leagues, player_game_profiles, players, progression, pugs, result_reviews,
+    results, roles, steam_auth, steam_tracking, tournaments, uploads, users, veto, veto_delegates,
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -1087,7 +1086,8 @@ mod every_route_is_documented {
     // authenticated service-to-service routes from the MatchZy integration),
     // deliberately absent from the public spec for the same reason as
     // `internal` — no browser client should ever call them in a typed way.
-    const EXEMPT: &[&str] = &["internal", "veto_ws", "agent", "matchzy"];
+    // pug_ws: websocket upgrade like veto_ws — no request/response schema to type.
+    const EXEMPT: &[&str] = &["internal", "veto_ws", "pug_ws", "agent", "matchzy"];
 
     /// Every handler the router serves must appear in `paths(...)`.
     ///

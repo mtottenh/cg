@@ -758,12 +758,11 @@ where
                 Some(reg) => Some(reg),
                 None => match session.first_action_registration_id {
                     Some(reg) => Some(reg),
-                    None => {
-                        self.match_repo
-                            .find_by_id(session.match_id)
-                            .await?
-                            .and_then(|m| m.participant1_registration_id)
-                    }
+                    None => self
+                        .match_repo
+                        .find_by_id(session.match_id)
+                        .await?
+                        .and_then(|m| m.participant1_registration_id),
                 },
             };
             if let Some(selector) = selector {
@@ -796,8 +795,8 @@ where
             (None, VetoStatus::Completed, None)
         } else {
             let next_format_action = format.get_action(next_action_number as usize - 1);
-            let next_is_random = next_format_action
-                .is_some_and(|a| matches!(a.action_type, VetoActionType::Random));
+            let next_is_random =
+                next_format_action.is_some_and(|a| matches!(a.action_type, VetoActionType::Random));
             let next_team = self
                 .determine_next_team(session, next_format_action)
                 .await?;
@@ -854,8 +853,8 @@ where
         session: &VetoSession,
         next_action: Option<&VetoFormatAction>,
     ) -> Result<Option<TournamentRegistrationId>, DomainError> {
-        let next_action = next_action
-            .ok_or_else(|| DomainError::InvalidState("No next action".to_string()))?;
+        let next_action =
+            next_action.ok_or_else(|| DomainError::InvalidState("No next action".to_string()))?;
 
         // Team-0 actions (decider, wheel spins) have no owning team. Wheel
         // sessions never run a coin flip, so `first_action` may be unset —

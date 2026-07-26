@@ -135,7 +135,10 @@ async fn test_pug_wheel_bo1_full_lifecycle() {
     locked.assert_status(StatusCode::OK);
     let locked = locked.json::<Value>()["data"].clone();
     assert_eq!(locked["pug"]["status"], "map_selection");
-    let match_id = locked["pug"]["match_id"].as_str().expect("match id").to_string();
+    let match_id = locked["pug"]["match_id"]
+        .as_str()
+        .expect("match id")
+        .to_string();
     assert!(
         locked["my_registration_id"].is_string(),
         "creator must resolve a registration for the veto UI"
@@ -179,7 +182,10 @@ async fn test_pug_wheel_bo1_full_lifecycle() {
     assert!(spin["spin_seed"].is_i64());
 
     // The spin is recorded as a 'random' veto action and the session closed.
-    let veto = app.get(&format!("/v1/matches/{match_id}/veto")).await.json::<Value>();
+    let veto = app
+        .get(&format!("/v1/matches/{match_id}/veto"))
+        .await
+        .json::<Value>();
     assert_eq!(veto["data"]["session"]["status"], "completed");
     let actions = veto["data"]["actions"].as_array().expect("actions");
     assert_eq!(actions.len(), 1);
@@ -229,9 +235,13 @@ async fn test_pug_veto_mode_adhoc_members_can_ban() {
     let id = pug_id(&detail);
     let code = join_code(&detail);
 
-    app.post_json_with_token(&format!("/v1/pugs/code/{code}/join"), &json!({}), &dave.token)
-        .await
-        .assert_status(StatusCode::OK);
+    app.post_json_with_token(
+        &format!("/v1/pugs/code/{code}/join"),
+        &json!({}),
+        &dave.token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
     app.put_json_with_token(
         &format!("/v1/pugs/{id}/team"),
         &json!({ "team": 2 }),
@@ -249,12 +259,18 @@ async fn test_pug_veto_mode_adhoc_members_can_ban() {
 
     // Standard bo1 session: coin flip recorded by the materializer, session
     // in progress on the CS2 default 7-map pool.
-    let veto = app.get(&format!("/v1/matches/{match_id}/veto")).await.json::<Value>();
+    let veto = app
+        .get(&format!("/v1/matches/{match_id}/veto"))
+        .await
+        .json::<Value>();
     let session = &veto["data"]["session"];
     assert_eq!(session["status"], "in_progress");
     assert_eq!(session["veto_format_id"], "bo1_standard");
     assert_eq!(session["map_pool"].as_array().unwrap().len(), 7);
-    let turn = session["current_team_turn"].as_str().expect("turn set").to_string();
+    let turn = session["current_team_turn"]
+        .as_str()
+        .expect("turn set")
+        .to_string();
 
     // Whoever holds the turn bans a map through the standard veto endpoint —
     // this is the ad-hoc speaks-for branch end to end.
@@ -318,12 +334,20 @@ async fn test_pug_lock_requires_steam_linked_players() {
     .await;
     let id = pug_id(&detail);
     let code = join_code(&detail);
-    app.post_json_with_token(&format!("/v1/pugs/code/{code}/join"), &json!({}), &eve.token)
-        .await
-        .assert_status(StatusCode::OK);
-    app.put_json_with_token(&format!("/v1/pugs/{id}/team"), &json!({"team": 2}), &eve.token)
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
+    app.post_json_with_token(
+        &format!("/v1/pugs/code/{code}/join"),
+        &json!({}),
+        &eve.token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    app.put_json_with_token(
+        &format!("/v1/pugs/{id}/team"),
+        &json!({"team": 2}),
+        &eve.token,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
 
     let locked = app
         .post_json_with_token(&format!("/v1/pugs/{id}/lock"), &json!({}), &creator.token)
@@ -361,9 +385,13 @@ async fn test_pug_creator_only_controls_and_cancel() {
     let id = pug_id(&detail);
     let code = join_code(&detail);
 
-    app.post_json_with_token(&format!("/v1/pugs/code/{code}/join"), &json!({}), &grace.token)
-        .await
-        .assert_status(StatusCode::OK);
+    app.post_json_with_token(
+        &format!("/v1/pugs/code/{code}/join"),
+        &json!({}),
+        &grace.token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
 
     // Non-creator: no shuffle, no swap, no kick, no code rotation.
     for (method_is_put, uri, body) in [
@@ -402,7 +430,11 @@ async fn test_pug_creator_only_controls_and_cancel() {
 
     // Rotating the code kills the old link.
     let rotated = app
-        .post_json_with_token(&format!("/v1/pugs/{id}/code/rotate"), &json!({}), &frank.token)
+        .post_json_with_token(
+            &format!("/v1/pugs/{id}/code/rotate"),
+            &json!({}),
+            &frank.token,
+        )
         .await;
     rotated.assert_status(StatusCode::OK);
     let new_code = rotated.json::<Value>()["data"]["join_code"]
@@ -443,7 +475,9 @@ async fn test_pug_active_creation_cap() {
     for _ in 0..2 {
         create_pug(&app, &creator, body.clone()).await;
     }
-    let third = app.post_json_with_token("/v1/pugs", &body, &creator.token).await;
+    let third = app
+        .post_json_with_token("/v1/pugs", &body, &creator.token)
+        .await;
     third.assert_status(StatusCode::CONFLICT);
 }
 
@@ -528,14 +562,22 @@ async fn test_pug_captains_draft_alternates_by_roster_size() {
     let code = join_code(&detail);
 
     for user in [&cap2, &bench_a, &bench_b] {
-        app.post_json_with_token(&format!("/v1/pugs/code/{code}/join"), &json!({}), &user.token)
-            .await
-            .assert_status(StatusCode::OK);
+        app.post_json_with_token(
+            &format!("/v1/pugs/code/{code}/join"),
+            &json!({}),
+            &user.token,
+        )
+        .await
+        .assert_status(StatusCode::OK);
     }
     // cap2 anchors team 2 and gets the armband.
-    app.put_json_with_token(&format!("/v1/pugs/{id}/team"), &json!({"team": 2}), &cap2.token)
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
+    app.put_json_with_token(
+        &format!("/v1/pugs/{id}/team"),
+        &json!({"team": 2}),
+        &cap2.token,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
     app.put_json_with_token(
         &format!("/v1/pugs/{id}/captain"),
         &json!({"player_id": cap2.user_id.to_string(), "is_captain": true}),
@@ -599,6 +641,21 @@ async fn test_pug_ws_doorbell_on_join_and_rejects_outsiders() {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
 
+    async fn next_json(
+        ws: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
+    ) -> Value {
+        loop {
+            let frame = timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("ws frame timeout")
+                .expect("ws closed")
+                .expect("ws error");
+            if let Message::Text(text) = frame {
+                return serde_json::from_str(&text).expect("json frame");
+            }
+        }
+    }
+
     let mut app = TestApp::new().await;
     let game_id = get_cs2_game_id(app.pool()).await;
     let addr = app.start_server().await;
@@ -621,28 +678,14 @@ async fn test_pug_ws_doorbell_on_join_and_rejects_outsiders() {
     let id = pug_id(&detail);
     let code = join_code(&detail);
 
-    async fn next_json(
-        ws: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
-              + Unpin),
-    ) -> Value {
-        loop {
-            let frame = timeout(Duration::from_secs(5), ws.next())
-                .await
-                .expect("ws frame timeout")
-                .expect("ws closed")
-                .expect("ws error");
-            if let Message::Text(text) = frame {
-                return serde_json::from_str(&text).expect("json frame");
-            }
-        }
-    }
-
     // Host connects and authenticates.
     let (mut ws, _) = connect_async(format!("ws://{addr}/v1/ws/pug/{id}"))
         .await
         .expect("connect");
     ws.send(Message::Text(
-        json!({"type": "auth", "token": host.token}).to_string().into(),
+        json!({"type": "auth", "token": host.token})
+            .to_string()
+            .into(),
     ))
     .await
     .unwrap();
@@ -655,7 +698,9 @@ async fn test_pug_ws_doorbell_on_join_and_rejects_outsiders() {
         .expect("connect");
     outsider_ws
         .send(Message::Text(
-            json!({"type": "auth", "token": outsider.token}).to_string().into(),
+            json!({"type": "auth", "token": outsider.token})
+                .to_string()
+                .into(),
         ))
         .await
         .unwrap();
@@ -678,9 +723,13 @@ async fn test_pug_ws_doorbell_on_join_and_rejects_outsiders() {
     assert_eq!(watching["type"], "auth_success");
 
     // A REST mutation rings the doorbell on every connection.
-    app.post_json_with_token(&format!("/v1/pugs/code/{code}/join"), &json!({}), &guest.token)
-        .await
-        .assert_status(StatusCode::OK);
+    app.post_json_with_token(
+        &format!("/v1/pugs/code/{code}/join"),
+        &json!({}),
+        &guest.token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
 
     let ding = next_json(&mut ws).await;
     assert_eq!(ding["type"], "pug_changed");

@@ -12,9 +12,7 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use portal_core::types::PugMapSelectionMode;
-use portal_core::{
-    DomainError, GameId, MatchFormat, PlayerId, PugId, SideSelectionMode, UserId,
-};
+use portal_core::{DomainError, GameId, MatchFormat, PlayerId, PugId, SideSelectionMode, UserId};
 use rand::Rng;
 use rand::seq::SliceRandom;
 use tracing::{info, instrument};
@@ -247,7 +245,12 @@ impl PugService {
     }
 
     #[instrument(skip(self))]
-    pub async fn leave(&self, pug_id: PugId, player: PlayerId, user: UserId) -> Result<(), DomainError> {
+    pub async fn leave(
+        &self,
+        pug_id: PugId,
+        player: PlayerId,
+        user: UserId,
+    ) -> Result<(), DomainError> {
         let pug = self.get(pug_id).await?;
         if !pug.is_open() {
             return Err(DomainError::InvalidState(
@@ -462,7 +465,11 @@ impl PugService {
 
     /// Rotate the invite code (creator only). Old links die immediately.
     #[instrument(skip(self))]
-    pub async fn rotate_code(&self, pug_id: PugId, actor_user: UserId) -> Result<String, DomainError> {
+    pub async fn rotate_code(
+        &self,
+        pug_id: PugId,
+        actor_user: UserId,
+    ) -> Result<String, DomainError> {
         let pug = self.get(pug_id).await?;
         self.require_creator(&pug, actor_user)?;
         if !pug.is_open() {
@@ -506,7 +513,9 @@ impl PugService {
         if map_id.is_empty() || map_id.len() > 64 {
             return Err(DomainError::InvalidState("Invalid map id".to_string()));
         }
-        self.pug_repo.upsert_wheel_entry(pug_id, player, map_id).await
+        self.pug_repo
+            .upsert_wheel_entry(pug_id, player, map_id)
+            .await
     }
 
     /// Aggregate nominations into weighted wheel segments, restricted to
@@ -532,11 +541,13 @@ impl PugService {
         }
         // Maps in the pool nobody nominated (pool padding) spin at weight 1.
         for map_id in allowed {
-            by_map.entry(map_id.as_str()).or_insert_with(|| WheelSegment {
-                map_id: map_id.clone(),
-                weight: 1,
-                nominated_by: Vec::new(),
-            });
+            by_map
+                .entry(map_id.as_str())
+                .or_insert_with(|| WheelSegment {
+                    map_id: map_id.clone(),
+                    weight: 1,
+                    nominated_by: Vec::new(),
+                });
         }
         let mut segments: Vec<WheelSegment> = by_map.into_values().collect();
         // Stable ordering so every client renders identical segments.
@@ -559,7 +570,7 @@ impl PugService {
         })?;
         for segment in &segments {
             if roll < segment.weight {
-                winner = segment.map_id.clone();
+                winner.clone_from(&segment.map_id);
                 break;
             }
             roll -= segment.weight;
@@ -607,8 +618,16 @@ impl PugService {
             ));
         }
 
-        let team1: Vec<PugPlayer> = players.iter().filter(|p| p.team == Some(1)).cloned().collect();
-        let team2: Vec<PugPlayer> = players.iter().filter(|p| p.team == Some(2)).cloned().collect();
+        let team1: Vec<PugPlayer> = players
+            .iter()
+            .filter(|p| p.team == Some(1))
+            .cloned()
+            .collect();
+        let team2: Vec<PugPlayer> = players
+            .iter()
+            .filter(|p| p.team == Some(2))
+            .cloned()
+            .collect();
 
         if team1.is_empty() || team2.is_empty() {
             return Err(DomainError::InvalidState(
@@ -696,7 +715,10 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 #[cfg(test)]

@@ -189,10 +189,7 @@ impl PugRepository for PgPugRepository {
         Ok(row.map(Into::into))
     }
 
-    async fn find_by_match(
-        &self,
-        match_id: TournamentMatchId,
-    ) -> Result<Option<Pug>, DomainError> {
+    async fn find_by_match(&self, match_id: TournamentMatchId) -> Result<Option<Pug>, DomainError> {
         let row = sqlx::query_as::<_, PugRow>("SELECT * FROM pugs WHERE match_id = $1")
             .bind(match_id.as_uuid())
             .fetch_optional(&self.pool)
@@ -511,7 +508,11 @@ impl PugRepository for PgPugRepository {
         pug_id: PugId,
         assignments: &[(PlayerId, Option<i16>)],
     ) -> Result<(), DomainError> {
-        let mut tx = self.pool.begin().await.map_err(|e| DomainError::Internal(e.to_string()))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
         for (player_id, team) in assignments {
             sqlx::query("UPDATE pug_players SET team = $3 WHERE pug_id = $1 AND player_id = $2")
                 .bind(pug_id.as_uuid())
@@ -521,16 +522,20 @@ impl PugRepository for PgPugRepository {
                 .await
                 .map_err(|e| DomainError::Internal(e.to_string()))?;
         }
-        tx.commit().await.map_err(|e| DomainError::Internal(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
         Ok(())
     }
 
     async fn swap_teams(&self, pug_id: PugId) -> Result<(), DomainError> {
-        sqlx::query("UPDATE pug_players SET team = 3 - team WHERE pug_id = $1 AND team IS NOT NULL")
-            .bind(pug_id.as_uuid())
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        sqlx::query(
+            "UPDATE pug_players SET team = 3 - team WHERE pug_id = $1 AND team IS NOT NULL",
+        )
+        .bind(pug_id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
         Ok(())
     }
 
@@ -559,10 +564,7 @@ impl PugRepository for PgPugRepository {
         Ok(())
     }
 
-    async fn list_wheel_entries(
-        &self,
-        pug_id: PugId,
-    ) -> Result<Vec<PugWheelEntry>, DomainError> {
+    async fn list_wheel_entries(&self, pug_id: PugId) -> Result<Vec<PugWheelEntry>, DomainError> {
         let rows = sqlx::query_as::<_, PugWheelEntryRow>(
             r"
             SELECT we.pug_id, we.player_id, p.display_name AS player_name,
@@ -701,7 +703,11 @@ impl AdhocTeamRepository for PgAdhocTeamRepository {
         name: &str,
         members: &[(PlayerId, bool)],
     ) -> Result<AdhocTeam, DomainError> {
-        let mut tx = self.pool.begin().await.map_err(|e| DomainError::Internal(e.to_string()))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         let team = sqlx::query_as::<_, AdhocTeamRow>(
             r"
@@ -731,18 +737,19 @@ impl AdhocTeamRepository for PgAdhocTeamRepository {
             .map_err(|e| DomainError::Internal(e.to_string()))?;
         }
 
-        tx.commit().await.map_err(|e| DomainError::Internal(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
         Ok(team.into())
     }
 
     async fn find_by_id(&self, id: AdhocTeamId) -> Result<Option<AdhocTeam>, DomainError> {
-        let row = sqlx::query_as::<_, AdhocTeamRow>(
-            "SELECT * FROM tournament_adhoc_teams WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row =
+            sqlx::query_as::<_, AdhocTeamRow>("SELECT * FROM tournament_adhoc_teams WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
         Ok(row.map(Into::into))
     }
 

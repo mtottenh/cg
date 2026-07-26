@@ -81,7 +81,6 @@ where
         self
     }
 
-
     /// Create a new scheduling service with custom proposal TTL.
     pub fn with_proposal_ttl(mut self, ttl: Duration) -> Self {
         self.proposal_ttl = ttl;

@@ -20,11 +20,11 @@ pub mod league_team;
 pub mod match_lifecycle;
 pub mod match_lineup;
 pub mod permission;
-pub mod pug;
 pub mod player_game_profile;
 pub mod player_match_history;
 pub mod player_mm_stats;
 pub mod player_rating_history;
+pub mod pug;
 pub mod refresh_token;
 pub mod result_review;
 pub mod schedule_proposal;
@@ -80,13 +80,13 @@ pub use league_team::{
 pub use match_lifecycle::{CreateMatchStatusLog, MatchStatusLogRepository};
 pub use match_lineup::{MatchLineupRepository, MaterializeDemoLineup};
 pub use permission::PermissionRepository;
-pub use pug::{AdhocTeamRepository, CreatePug, CreateWheelSpin, PugRepository};
 pub use player_game_profile::PlayerGameProfileRepository;
 pub use player_match_history::{CreatePlayerMatchHistory, PlayerMatchHistoryRepository};
 pub use player_mm_stats::{AccumulateMatchStats, PlayerMmStatsRepository};
 pub use player_rating_history::{
     CreatePlayerRatingHistory, PlayerRatingHistoryRepository, RatingStats,
 };
+pub use pug::{AdhocTeamRepository, CreatePug, CreateWheelSpin, PugRepository};
 pub use refresh_token::RefreshTokenRepository;
 pub use result_review::{CreateResultReview, ResultReviewRepository};
 pub use schedule_proposal::ScheduleProposalRepository;

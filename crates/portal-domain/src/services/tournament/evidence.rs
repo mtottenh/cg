@@ -151,7 +151,6 @@ where
         self
     }
 
-
     /// Initiate an evidence upload.
     ///
     /// Returns presigned URL information for the client to upload directly to S3.

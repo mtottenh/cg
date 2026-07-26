@@ -12,9 +12,9 @@ pub mod league_teams;
 pub mod leagues;
 pub mod matches;
 pub mod players;
+pub mod pugs;
 pub mod tournaments;
 pub mod users;
-pub mod pugs;
 pub mod veto_delegates;
 pub mod websocket;
 

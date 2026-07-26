@@ -19,8 +19,8 @@ use std::sync::Arc;
 use tracing::{debug, instrument};
 
 use portal_core::{
-    AdhocTeamId, DomainError, LeagueTeamSeasonId, PlayerId, TournamentId,
-    TournamentRegistrationId, UserId, VetoDelegateId,
+    AdhocTeamId, DomainError, LeagueTeamSeasonId, PlayerId, TournamentId, TournamentRegistrationId,
+    UserId, VetoDelegateId,
 };
 
 use crate::entities::veto_delegate::{DelegatedByRole, VetoDelegate};
@@ -160,15 +160,15 @@ where
                 debug!("User authorized as tournament admin (ad-hoc registration)");
                 return Ok(VetoAuthorizationRole::TournamentAdmin);
             }
-            if let Some(adhoc_repo) = &self.adhoc_repo {
-                if adhoc_repo.is_member(adhoc_team_id, player_id).await? {
-                    if adhoc_repo.is_captain(adhoc_team_id, player_id).await? {
-                        debug!("User authorized as ad-hoc team captain");
-                        return Ok(VetoAuthorizationRole::Captain);
-                    }
-                    debug!("User authorized as ad-hoc team member");
-                    return Ok(VetoAuthorizationRole::Player);
+            if let Some(adhoc_repo) = &self.adhoc_repo
+                && adhoc_repo.is_member(adhoc_team_id, player_id).await?
+            {
+                if adhoc_repo.is_captain(adhoc_team_id, player_id).await? {
+                    debug!("User authorized as ad-hoc team captain");
+                    return Ok(VetoAuthorizationRole::Captain);
                 }
+                debug!("User authorized as ad-hoc team member");
+                return Ok(VetoAuthorizationRole::Player);
             }
             return Err(DomainError::NotAuthorized(
                 "Only members of the ad-hoc team can act for this registration".to_string(),

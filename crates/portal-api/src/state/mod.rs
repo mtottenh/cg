@@ -26,20 +26,19 @@ use crate::steam_workshop::{HttpWorkshopClient, WorkshopMetadataProvider};
 use crate::websocket::VetoLobbyManager;
 use crate::websocket::agent_manager::AgentConnectionManager;
 use portal_db::{
-    ActionItemRepository, DbPool, GameRepository, PermissionRepository, PgAgentCertRepository,
-    PgApiKeyRepository, PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository,
-    PgAwardRepository, PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
-    PgDemoPlayerStatsRepository, PgDemoRepository, PgDiscoveredMatchRepository,
-    PgDisputeMessageRepository, PgDisputeRepository, PgEntityChangeRepository,
-    PgEvidenceRepository, PgForfeitRecordRepository, PgGameServerRepository,
-    PgLeagueInvitationRepository, PgLeagueMemberRepository, PgLeagueRepository,
-    PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
+    ActionItemRepository, DbPool, GameRepository, PermissionRepository, PgAdhocTeamRepository,
+    PgAgentCertRepository, PgApiKeyRepository, PgAvailabilityOverrideRepository,
+    PgAvailabilityWindowRepository, PgAwardRepository, PgBanRepository, PgDemoMatchLinkRepository,
+    PgDemoPlayerRepository, PgDemoPlayerStatsRepository, PgDemoRepository,
+    PgDiscoveredMatchRepository, PgDisputeMessageRepository, PgDisputeRepository,
+    PgEntityChangeRepository, PgEvidenceRepository, PgForfeitRecordRepository,
+    PgGameServerRepository, PgLeagueInvitationRepository, PgLeagueMemberRepository,
+    PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
     PgLeagueTeamSeasonRepository, PgMatchLineupRepository, PgMatchStatusLogRepository,
     PgMatchSubstitutionRepository, PgPermissionRepository, PgPlayerGameProfileRepository,
-    PgAdhocTeamRepository, PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository,
-    PgPlayerRatingHistoryRepository, PgPugRepository,
-    PgPlayerRepository, PgProgressionLogRepository, PgRefreshTokenRepository,
+    PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository,
+    PgPlayerRepository, PgProgressionLogRepository, PgPugRepository, PgRefreshTokenRepository,
     PgResultClaimRepository, PgResultReviewRepository, PgSagaExecutionRepository,
     PgScheduleProposalRepository, PgServerBookingRepository, PgServerEventRepository,
     PgServerReservationRepository, PgSteamTrackingRepository, PgSuggestedTimeRepository,
@@ -52,9 +51,8 @@ use portal_db::{
 };
 use portal_domain::services::{
     AwardService, BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
-    PugService,
     LeagueSeasonService, LeagueService, LeagueTeamInvitationService, LeagueTeamService,
-    PermissionService, PlayerGameProfileService, PlayerService, SteamTrackingService,
+    PermissionService, PlayerGameProfileService, PlayerService, PugService, SteamTrackingService,
     SystemSettingsService, TournamentService, UserService,
     game_server::{CertificateAuthority, GameServerRegistryService},
     tournament::{

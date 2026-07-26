@@ -29,11 +29,10 @@ use portal_domain::repositories::pug::CreateWheelSpin;
 #[allow(unused_imports)]
 use portal_domain::repositories::pug::{AdhocTeamRepository as _, PugRepository as _};
 use portal_domain::repositories::tournament::{
-    CreateTournament, CreateTournamentBracket, CreateTournamentMatch,
-    CreateTournamentRegistration, CreateTournamentStage, TournamentBracketRepository as _,
-    TournamentMapPoolRepository as _, TournamentMatchRepository as _,
-    TournamentRegistrationRepository as _, TournamentRepository as _,
-    TournamentStageRepository as _, UpsertTournamentMapPool,
+    CreateTournament, CreateTournamentBracket, CreateTournamentMatch, CreateTournamentRegistration,
+    CreateTournamentStage, TournamentBracketRepository as _, TournamentMapPoolRepository as _,
+    TournamentMatchRepository as _, TournamentRegistrationRepository as _,
+    TournamentRepository as _, TournamentStageRepository as _, UpsertTournamentMapPool,
 };
 use portal_domain::services::{LockPlan, PugService, WheelDraw};
 
@@ -155,7 +154,10 @@ async fn materialize(
             .iter()
             .find(|p| p.is_captain)
             .or_else(|| players.first())
-            .map_or_else(|| fallback.to_string(), |p| format!("team_{}", p.display_name))
+            .map_or_else(
+                || fallback.to_string(),
+                |p| format!("team_{}", p.display_name),
+            )
     };
     let team1_name = team_name(&plan.team1, "Team 1");
     let team2_name = team_name(&plan.team2, "Team 2");
@@ -233,10 +235,12 @@ async fn materialize(
         })
         .await?;
 
-    let adhoc_members =
-        |players: &[portal_domain::entities::PugPlayer]| -> Vec<(PlayerId, bool)> {
-            players.iter().map(|p| (p.player_id, p.is_captain)).collect()
-        };
+    let adhoc_members = |players: &[portal_domain::entities::PugPlayer]| -> Vec<(PlayerId, bool)> {
+        players
+            .iter()
+            .map(|p| (p.player_id, p.is_captain))
+            .collect()
+    };
     let team1 = state
         .adhoc_team_repo
         .create(tournament.id, &team1_name, &adhoc_members(&plan.team1))
@@ -246,8 +250,8 @@ async fn materialize(
         .create(tournament.id, &team2_name, &adhoc_members(&plan.team2))
         .await?;
 
-    let make_registration = |adhoc_id: portal_core::AdhocTeamId, name: &str| {
-        CreateTournamentRegistration {
+    let make_registration =
+        |adhoc_id: portal_core::AdhocTeamId, name: &str| CreateTournamentRegistration {
             tournament_id: tournament.id,
             team_season_id: None,
             player_id: None,
@@ -257,8 +261,7 @@ async fn materialize(
             registered_by: pug.created_by_user_id,
             seed_rating: None,
             status: TournamentRegistrationStatus::Approved,
-        }
-    };
+        };
     let reg1 = state
         .tournament_registration_repo
         .create(make_registration(team1.id, &team1_name))
@@ -337,7 +340,11 @@ async fn materialize(
     state.veto_service.start_session(session.id).await?;
 
     if format.has_team_actions() {
-        let winner = if rand::random::<bool>() { reg1.id } else { reg2.id };
+        let winner = if rand::random::<bool>() {
+            reg1.id
+        } else {
+            reg2.id
+        };
         state
             .veto_service
             .record_coin_flip(session.id, winner, true)
@@ -407,8 +414,8 @@ pub async fn spin_wheel(
     let entries = state.pug_service.wheel_entries(pug_id).await?;
     let segments = PugService::build_segments(&entries, &veto.session.remaining_maps);
     let draw = PugService::draw(segments)?;
-    let segments_json = serde_json::to_value(&draw.segments)
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+    let segments_json =
+        serde_json::to_value(&draw.segments).map_err(|e| DomainError::Internal(e.to_string()))?;
 
     // Audit row first (idempotent on (pug, game_number)); the veto action is
     // the authoritative state change.

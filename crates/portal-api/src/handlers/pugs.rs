@@ -15,7 +15,9 @@ use validator::Validate;
 
 use portal_core::types::{PugMapSelectionMode, PugStatus};
 use portal_core::{GameId, MatchFormat, PlayerId, PugId, SideSelectionMode};
-use portal_domain::entities::pug::{Pug, PugPlayer, PugPlayerAggregates, PugWheelEntry, PugWheelSpin};
+use portal_domain::entities::pug::{
+    Pug, PugPlayer, PugPlayerAggregates, PugWheelEntry, PugWheelSpin,
+};
 use portal_domain::repositories::tournament::TournamentMatchRepository as _;
 
 use crate::dto::common::DataResponse;
@@ -241,7 +243,11 @@ impl From<PugPlayerAggregates> for PugStatsResponse {
     }
 }
 
-fn pug_response(pug: &Pug, viewer: Option<&AuthenticatedUser>, is_participant: bool) -> PugResponse {
+fn pug_response(
+    pug: &Pug,
+    viewer: Option<&AuthenticatedUser>,
+    is_participant: bool,
+) -> PugResponse {
     let my_role = viewer.and_then(|v| {
         if pug.created_by_user_id == v.user_id {
             Some("creator".to_string())
@@ -329,7 +335,11 @@ async fn my_registration_id(
     let match_id = pug.match_id?;
     let viewer = viewer_player?;
     let team = players.iter().find(|p| p.player_id == viewer)?.team?;
-    let match_ = state.tournament_match_repo.find_by_id(match_id).await.ok()??;
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await
+        .ok()??;
     let reg = if team == 1 {
         match_.participant1_registration_id
     } else {
@@ -366,8 +376,7 @@ async fn build_detail(
         .players(pug.id)
         .await
         .map_err(ApiError::from)?;
-    let is_participant = viewer
-        .is_some_and(|v| players.iter().any(|p| p.player_id == v.player_id));
+    let is_participant = viewer.is_some_and(|v| players.iter().any(|p| p.player_id == v.player_id));
     let entries = if pug.map_selection_mode == PugMapSelectionMode::Wheel {
         state
             .pug_service
@@ -387,8 +396,7 @@ async fn build_detail(
     } else {
         Vec::new()
     };
-    let my_reg =
-        my_registration_id(state, pug, &players, viewer.map(|v| v.player_id)).await;
+    let my_reg = my_registration_id(state, pug, &players, viewer.map(|v| v.player_id)).await;
 
     Ok(PugDetailResponse {
         pug: pug_response(pug, viewer, is_participant),
@@ -422,7 +430,10 @@ pub async fn create_pug(
     auth: AuthenticatedUser,
     headers: HeaderMap,
     ValidatedJson(req): ValidatedJson<CreatePugRequest>,
-) -> ApiResult<(axum::http::StatusCode, Json<DataResponse<PugDetailResponse>>)> {
+) -> ApiResult<(
+    axum::http::StatusCode,
+    Json<DataResponse<PugDetailResponse>>,
+)> {
     let request_id = get_request_id(&headers).to_string();
 
     let game_uuid = req
@@ -492,7 +503,11 @@ pub async fn get_pug(
 ) -> ApiResult<Json<DataResponse<PugDetailResponse>>> {
     let request_id = get_request_id(&headers).to_string();
     let pug_id = parse_pug_id(&pug_id)?;
-    let pug = state.pug_service.get(pug_id).await.map_err(ApiError::from)?;
+    let pug = state
+        .pug_service
+        .get(pug_id)
+        .await
+        .map_err(ApiError::from)?;
 
     let viewer = auth.0.as_ref();
     state
@@ -674,7 +689,9 @@ pub async fn join_by_code(
         .join_by_code(&code, auth.player_id)
         .await
         .map_err(ApiError::from)?;
-    state.pug_lobby_manager.notify_changed(pug.id, "player_joined");
+    state
+        .pug_lobby_manager
+        .notify_changed(pug.id, "player_joined");
     let detail = build_detail(&state, &pug, Some(&auth)).await?;
     Ok(Json(DataResponse::new(detail, &request_id)))
 }
@@ -704,7 +721,9 @@ pub async fn rotate_code(
         .rotate_code(pug_id, auth.user_id)
         .await
         .map_err(ApiError::from)?;
-    state.pug_lobby_manager.notify_changed(pug_id, "code_rotated");
+    state
+        .pug_lobby_manager
+        .notify_changed(pug_id, "code_rotated");
     Ok(Json(DataResponse::new(
         JoinCodeResponse { join_code },
         &request_id,
@@ -735,7 +754,9 @@ pub async fn leave_pug(
         .leave(pug_id, auth.player_id, auth.user_id)
         .await
         .map_err(ApiError::from)?;
-    state.pug_lobby_manager.notify_changed(pug_id, "player_left");
+    state
+        .pug_lobby_manager
+        .notify_changed(pug_id, "player_left");
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -762,7 +783,9 @@ pub async fn kick_player(
         .kick(pug_id, auth.user_id, target, Some(auth.player_id))
         .await
         .map_err(ApiError::from)?;
-    state.pug_lobby_manager.notify_changed(pug_id, "player_kicked");
+    state
+        .pug_lobby_manager
+        .notify_changed(pug_id, "player_kicked");
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -793,7 +816,9 @@ pub async fn set_team(
         .set_team(pug_id, auth.user_id, auth.player_id, target, req.team)
         .await
         .map_err(ApiError::from)?;
-    state.pug_lobby_manager.notify_changed(pug_id, "teams_changed");
+    state
+        .pug_lobby_manager
+        .notify_changed(pug_id, "teams_changed");
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -820,7 +845,9 @@ pub async fn set_captain(
         .set_captain(pug_id, auth.user_id, target, req.is_captain)
         .await
         .map_err(ApiError::from)?;
-    state.pug_lobby_manager.notify_changed(pug_id, "captain_changed");
+    state
+        .pug_lobby_manager
+        .notify_changed(pug_id, "captain_changed");
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -844,7 +871,9 @@ pub async fn shuffle_teams(
         .shuffle(pug_id, auth.user_id)
         .await
         .map_err(ApiError::from)?;
-    state.pug_lobby_manager.notify_changed(pug_id, "teams_shuffled");
+    state
+        .pug_lobby_manager
+        .notify_changed(pug_id, "teams_shuffled");
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -868,7 +897,9 @@ pub async fn swap_teams(
         .swap_teams(pug_id, auth.user_id)
         .await
         .map_err(ApiError::from)?;
-    state.pug_lobby_manager.notify_changed(pug_id, "teams_swapped");
+    state
+        .pug_lobby_manager
+        .notify_changed(pug_id, "teams_swapped");
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -918,7 +949,9 @@ pub async fn draft_pick(
         .draft_pick(pug_id, auth.user_id, auth.player_id, target)
         .await
         .map_err(ApiError::from)?;
-    state.pug_lobby_manager.notify_changed(pug_id, "player_drafted");
+    state
+        .pug_lobby_manager
+        .notify_changed(pug_id, "player_drafted");
     Ok(Json(DataResponse::new(
         DraftPickResponse {
             player_id: req.player_id,
@@ -945,7 +978,11 @@ pub async fn nominate_map(
     ValidatedJson(req): ValidatedJson<WheelEntryRequest>,
 ) -> ApiResult<axum::http::StatusCode> {
     let pug_id = parse_pug_id(&pug_id)?;
-    let pug = state.pug_service.get(pug_id).await.map_err(ApiError::from)?;
+    let pug = state
+        .pug_service
+        .get(pug_id)
+        .await
+        .map_err(ApiError::from)?;
     let game_row = state
         .game_repo
         .find_by_id(pug.game_id.as_uuid())
@@ -959,7 +996,9 @@ pub async fn nominate_map(
         .nominate_map(pug_id, auth.player_id, &req.map_id)
         .await
         .map_err(ApiError::from)?;
-    state.pug_lobby_manager.notify_changed(pug_id, "nomination_changed");
+    state
+        .pug_lobby_manager
+        .notify_changed(pug_id, "nomination_changed");
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -1028,7 +1067,7 @@ pub async fn spin_wheel(
             spin_seed: outcome.draw.spin_seed,
             duration_ms: crate::pug_flow::WHEEL_SPIN_DURATION_MS,
             is_complete: outcome.result.veto_complete,
-            selected_maps: outcome.result.session.selected_maps.clone(),
+            selected_maps: outcome.result.session.selected_maps,
         },
         &request_id,
     )))
@@ -1080,10 +1119,17 @@ pub async fn rematch_pug(
     auth: AuthenticatedUser,
     headers: HeaderMap,
     Path(pug_id): Path<String>,
-) -> ApiResult<(axum::http::StatusCode, Json<DataResponse<PugDetailResponse>>)> {
+) -> ApiResult<(
+    axum::http::StatusCode,
+    Json<DataResponse<PugDetailResponse>>,
+)> {
     let request_id = get_request_id(&headers).to_string();
     let pug_id = parse_pug_id(&pug_id)?;
-    let old = state.pug_service.get(pug_id).await.map_err(ApiError::from)?;
+    let old = state
+        .pug_service
+        .get(pug_id)
+        .await
+        .map_err(ApiError::from)?;
 
     if old.created_by_user_id != auth.user_id {
         return Err(ApiError::forbidden("Only the PUG creator can rematch"));

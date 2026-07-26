@@ -107,7 +107,6 @@ where
         self
     }
 
-
     /// Whether `actor` may act on behalf of `registration`.
     ///
     /// The handler-side entry point to [`speaks_for_registration`] — the one

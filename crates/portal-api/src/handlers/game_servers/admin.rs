@@ -71,6 +71,10 @@ pub struct UpdateGameServerRequest {
 }
 
 /// A registered game server.
+// Four bools mirror four independent server facts (enabled, allow_pugs,
+// agent_connected, enrollment_open); packing them into an enum would invent
+// states the DB doesn't have.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GameServerResponse {
     pub id: String,

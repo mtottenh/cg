@@ -415,11 +415,13 @@ impl TournamentRepository for PgTournamentRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tournaments WHERE game_id = $1 AND kind = 'standard'")
-            .bind(game_id.as_uuid())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM tournaments WHERE game_id = $1 AND kind = 'standard'",
+        )
+        .bind(game_id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok((rows.into_iter().map(Tournament::from).collect(), count.0))
     }

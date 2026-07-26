@@ -61,12 +61,13 @@ impl PugLobbyManager {
     /// Broadcast a frame to a lobby's subscribers. Channels nobody listens
     /// to are dropped lazily here rather than via a cleanup task.
     pub fn broadcast(&self, pug_id: PugId, message: PugLobbyBroadcast) {
-        let mut remove = false;
-        if let Some(sender) = self.lobbies.get(&pug_id) {
-            if sender.receiver_count() == 0 || sender.send(message).is_err() {
-                remove = true;
-            }
-        }
+        // NB: the guard's DashMap ref must drop before remove_if re-locks the
+        // shard, hence the boolean instead of removing inside the borrow.
+        let remove = if let Some(sender) = self.lobbies.get(&pug_id) {
+            sender.receiver_count() == 0 || sender.send(message).is_err()
+        } else {
+            false
+        };
         if remove {
             self.lobbies
                 .remove_if(&pug_id, |_, sender| sender.receiver_count() == 0);

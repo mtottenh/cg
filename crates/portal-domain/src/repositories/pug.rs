@@ -48,8 +48,7 @@ pub trait PugRepository: Send + Sync {
 
     async fn find_by_join_code(&self, join_code: &str) -> Result<Option<Pug>, DomainError>;
 
-    async fn find_by_match(&self, match_id: TournamentMatchId)
-    -> Result<Option<Pug>, DomainError>;
+    async fn find_by_match(&self, match_id: TournamentMatchId) -> Result<Option<Pug>, DomainError>;
 
     /// PUGs the player participates in (any status), newest first.
     async fn list_by_participant(
@@ -166,8 +165,7 @@ pub trait PugRepository: Send + Sync {
         map_id: &str,
     ) -> Result<(), DomainError>;
 
-    async fn list_wheel_entries(&self, pug_id: PugId)
-    -> Result<Vec<PugWheelEntry>, DomainError>;
+    async fn list_wheel_entries(&self, pug_id: PugId) -> Result<Vec<PugWheelEntry>, DomainError>;
 
     async fn record_spin(&self, cmd: CreateWheelSpin) -> Result<PugWheelSpin, DomainError>;
 

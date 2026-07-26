@@ -40,13 +40,20 @@ pub async fn ws_upgrade(
     ws.on_upgrade(move |socket| handle_socket(socket, pug_id, state))
 }
 
+#[derive(serde::Deserialize)]
+struct AuthFrame {
+    #[serde(rename = "type")]
+    kind: String,
+    token: String,
+    /// Invite code for share-link viewers who haven't joined yet.
+    code: Option<String>,
+}
+
 async fn handle_socket(socket: WebSocket, raw_pug_id: String, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
     let Ok(pug_uuid) = raw_pug_id.parse::<uuid::Uuid>() else {
-        let _ = sender
-            .send(auth_error("invalid pug id"))
-            .await;
+        let _ = sender.send(auth_error("invalid pug id")).await;
         return;
     };
     let pug_id = PugId::from_uuid(pug_uuid);
@@ -58,20 +65,9 @@ async fn handle_socket(socket: WebSocket, raw_pug_id: String, state: AppState) {
         return;
     };
 
-    #[derive(serde::Deserialize)]
-    struct AuthFrame {
-        #[serde(rename = "type")]
-        kind: String,
-        token: String,
-        /// Invite code for share-link viewers who haven't joined yet.
-        code: Option<String>,
-    }
-    let auth: AuthFrame = match serde_json::from_str(&text) {
-        Ok(frame) => frame,
-        Err(_) => {
-            let _ = sender.send(auth_error("first message must be auth")).await;
-            return;
-        }
+    let Ok(auth) = serde_json::from_str::<AuthFrame>(&text) else {
+        let _ = sender.send(auth_error("first message must be auth")).await;
+        return;
     };
     if auth.kind != "auth" {
         let _ = sender.send(auth_error("first message must be auth")).await;

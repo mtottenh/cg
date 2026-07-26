@@ -75,7 +75,9 @@ pub use player::{
 pub use player_match_history::PlayerMatchHistoryRow;
 pub use player_mm_stats::PlayerMmStatsRow;
 pub use player_rating_history::{PlayerRatingHistoryRow, RatingStatsRow};
-pub use pug::{AdhocTeamMemberRow, AdhocTeamRow, PugPlayerRow, PugRow, PugWheelEntryRow, PugWheelSpinRow};
+pub use pug::{
+    AdhocTeamMemberRow, AdhocTeamRow, PugPlayerRow, PugRow, PugWheelEntryRow, PugWheelSpinRow,
+};
 pub use rbac::{BanRow, NewBan, NewRole, NewUserRole, PermissionRow, RoleRow, UserRoleRow};
 pub use refresh_token::RefreshTokenRow;
 pub use result_review::{NewResultReview, ResultReviewRow};

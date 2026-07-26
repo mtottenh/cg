@@ -3,15 +3,33 @@ set -e
 
 case "$1" in
     purge)
-        # Only on `dpkg --purge portal-api`, not on `apt remove`. Removes
-        # the config; data under /var/lib/portal is kept regardless
-        # because it may contain uploads the operator wants to keep.
-        rm -rf /etc/portal
-        if getent passwd portal >/dev/null; then
-            deluser --quiet --system portal || true
-        fi
-        if getent group portal >/dev/null; then
-            delgroup --quiet --system portal 2>/dev/null || true
+        # Only on `dpkg --purge portal-api`, not on `apt remove`.
+        #
+        # /etc/portal and the `portal` user are SHARED with portal-scanner,
+        # portal-demo-stats and portal-steam-bot when co-hosted, so remove
+        # only what this package owns and take the shared pieces down only
+        # when no other portal package remains. Never deleted by any package:
+        # /var/lib/portal (may hold uploads the operator wants) and
+        # /etc/portal/agent-ca (the gameserver CA private key — operator-
+        # owned material; losing it means re-enrolling every agent).
+        rm -f /etc/portal/api.env
+        rmdir /etc/portal 2>/dev/null || true
+
+        others=""
+        for pkg in portal-scanner portal-demo-stats portal-steam-bot; do
+            if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q ' installed$'; then
+                others="$others $pkg"
+            fi
+        done
+        if [ -n "$others" ]; then
+            echo "portal-api: keeping /etc/portal and the portal user (still used by:$others)"
+        else
+            if getent passwd portal >/dev/null; then
+                deluser --quiet --system portal || true
+            fi
+            if getent group portal >/dev/null; then
+                delgroup --quiet --system portal 2>/dev/null || true
+            fi
         fi
         ;;
 

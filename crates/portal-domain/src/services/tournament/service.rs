@@ -475,8 +475,9 @@ where
             .format_settings
             .clone()
             .unwrap_or_else(|| stage.format_settings.clone());
-        MatchFormatPlan::from_settings(effective_format, Some(&effective_settings))
-            .map_err(|e| DomainError::InvalidState(format!("invalid stage format settings: {e}")))?;
+        MatchFormatPlan::from_settings(effective_format, Some(&effective_settings)).map_err(
+            |e| DomainError::InvalidState(format!("invalid stage format settings: {e}")),
+        )?;
 
         self.stage_repo.update(stage_id, update).await
     }
@@ -902,7 +903,11 @@ where
                     name: "Main Bracket".to_string(),
                     stage_order: 1,
                     format: stage_format,
-                    format_settings: serde_json::json!({}),
+                    // Inherit the tournament's format_settings so per-round
+                    // overrides set at tournament creation (final_format,
+                    // round_formats) reach the auto-created stage; the plan
+                    // parser ignores foreign keys like swiss max_rounds.
+                    format_settings: tournament.format_settings.clone(),
                     advancement_count: None,
                     advancement_rule: portal_core::types::AdvancementRule::TopN,
                     match_format: Some(tournament.default_match_format),

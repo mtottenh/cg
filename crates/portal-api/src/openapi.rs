@@ -1027,7 +1027,11 @@ mod every_route_is_documented {
     /// service-to-service endpoints in the generated browser client.
     /// `veto_ws::ws_upgrade` is a WebSocket upgrade, not an HTTP operation —
     /// OpenAPI has no way to describe it.
-    const EXEMPT: &[&str] = &["internal", "veto_ws"];
+    // `agent` and `matchzy` are game-server plumbing (token/X-API-Key
+    // authenticated service-to-service routes from the MatchZy integration),
+    // deliberately absent from the public spec for the same reason as
+    // `internal` — no browser client should ever call them in a typed way.
+    const EXEMPT: &[&str] = &["internal", "veto_ws", "agent", "matchzy"];
 
     /// Every handler the router serves must appear in `paths(...)`.
     ///

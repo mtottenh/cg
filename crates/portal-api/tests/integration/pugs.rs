@@ -587,3 +587,104 @@ async fn test_pug_captains_draft_alternates_by_roster_size() {
         .await;
     dry.assert_status(StatusCode::BAD_REQUEST);
 }
+
+// ============================================================================
+// LOBBY WEBSOCKET (doorbell frames)
+// ============================================================================
+
+#[tokio::test]
+async fn test_pug_ws_doorbell_on_join_and_rejects_outsiders() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::time::{Duration, timeout};
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let mut app = TestApp::new().await;
+    let game_id = get_cs2_game_id(app.pool()).await;
+    let addr = app.start_server().await;
+
+    let host = pug_user(&app, "pug_ws_host", 9801).await;
+    let guest = pug_user(&app, "pug_ws_guest", 9802).await;
+    let outsider = pug_user(&app, "pug_ws_outsider", 9803).await;
+
+    let detail = create_pug(
+        &app,
+        &host,
+        json!({
+            "game_id": game_id.to_string(),
+            "match_format": "bo1",
+            "map_selection_mode": "wheel",
+            "team_size": 2
+        }),
+    )
+    .await;
+    let id = pug_id(&detail);
+    let code = join_code(&detail);
+
+    async fn next_json(
+        ws: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+              + Unpin),
+    ) -> Value {
+        loop {
+            let frame = timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("ws frame timeout")
+                .expect("ws closed")
+                .expect("ws error");
+            if let Message::Text(text) = frame {
+                return serde_json::from_str(&text).expect("json frame");
+            }
+        }
+    }
+
+    // Host connects and authenticates.
+    let (mut ws, _) = connect_async(format!("ws://{addr}/v1/ws/pug/{id}"))
+        .await
+        .expect("connect");
+    ws.send(Message::Text(
+        json!({"type": "auth", "token": host.token}).to_string().into(),
+    ))
+    .await
+    .unwrap();
+    let hello = next_json(&mut ws).await;
+    assert_eq!(hello["type"], "auth_success");
+
+    // An outsider without the code is refused (private gathering lobby).
+    let (mut outsider_ws, _) = connect_async(format!("ws://{addr}/v1/ws/pug/{id}"))
+        .await
+        .expect("connect");
+    outsider_ws
+        .send(Message::Text(
+            json!({"type": "auth", "token": outsider.token}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+    let refused = next_json(&mut outsider_ws).await;
+    assert_eq!(refused["type"], "auth_error");
+
+    // ...but the same outsider WITH the invite code may watch.
+    let (mut watcher_ws, _) = connect_async(format!("ws://{addr}/v1/ws/pug/{id}"))
+        .await
+        .expect("connect");
+    watcher_ws
+        .send(Message::Text(
+            json!({"type": "auth", "token": outsider.token, "code": code})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let watching = next_json(&mut watcher_ws).await;
+    assert_eq!(watching["type"], "auth_success");
+
+    // A REST mutation rings the doorbell on every connection.
+    app.post_json_with_token(&format!("/v1/pugs/code/{code}/join"), &json!({}), &guest.token)
+        .await
+        .assert_status(StatusCode::OK);
+
+    let ding = next_json(&mut ws).await;
+    assert_eq!(ding["type"], "pug_changed");
+    assert_eq!(ding["reason"], "player_joined");
+    let ding = next_json(&mut watcher_ws).await;
+    assert_eq!(ding["type"], "pug_changed");
+}

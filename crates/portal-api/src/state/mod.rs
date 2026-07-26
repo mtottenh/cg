@@ -296,6 +296,8 @@ pub struct AppState {
     pub veto_authorization_service: AppVetoAuthorizationService,
     /// Veto lobby manager for WebSocket connections.
     pub veto_lobby_manager: Arc<VetoLobbyManager>,
+    /// PUG lobby doorbell broadcaster (gathering-phase + status changes).
+    pub pug_lobby_manager: Arc<crate::websocket::pug_lobby::PugLobbyManager>,
     /// Game-server registry service (MatchZy integration).
     pub game_server_registry: AppGameServerRegistryService,
     /// Match server reservations (MatchZy Phases 2–3).
@@ -875,6 +877,7 @@ impl AppState {
 
         // Create veto lobby manager for WebSocket connections
         let veto_lobby_manager = Arc::new(VetoLobbyManager::new());
+        let pug_lobby_manager = Arc::new(crate::websocket::pug_lobby::PugLobbyManager::new());
 
         // Game-server integration (MatchZy). The CA is optional: unset
         // PORTAL_AGENT_CA_DIR disables enrollment (503) while the registry
@@ -1015,6 +1018,7 @@ impl AppState {
             veto_lobby_chat_service,
             veto_authorization_service,
             veto_lobby_manager,
+            pug_lobby_manager,
             game_server_registry,
             server_reservation_repo,
             server_event_repo,

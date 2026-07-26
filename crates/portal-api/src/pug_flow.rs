@@ -456,6 +456,7 @@ pub async fn spin_wheel(
         }
     }
 
+    state.pug_lobby_manager.notify_changed(pug_id, "wheel_spun");
     if result.veto_complete {
         let _ = state.server_assignment_tx.send(match_id);
     }
@@ -534,6 +535,9 @@ pub async fn on_veto_completed(state: &AppState, match_id: TournamentMatchId) {
             .repo()
             .transition_status(pug.id, PugStatus::MapSelection, PugStatus::AwaitingServer)
             .await;
+        state
+            .pug_lobby_manager
+            .notify_changed(pug.id, "awaiting_server");
     }
 }
 
@@ -547,6 +551,7 @@ pub async fn on_match_live(state: &AppState, match_id: TournamentMatchId) {
             .repo()
             .set_status(pug.id, PugStatus::Live)
             .await;
+        state.pug_lobby_manager.notify_changed(pug.id, "live");
     }
 }
 
@@ -567,6 +572,7 @@ pub async fn on_series_end(
         {
             tracing::warn!(pug_id = %pug.id, error = %e, "failed to record pug result");
         }
+        state.pug_lobby_manager.notify_changed(pug.id, "completed");
     }
 }
 
@@ -627,6 +633,7 @@ pub async fn sweep_pugs(state: &AppState) {
                     .repo()
                     .transition_status(pug.id, PugStatus::Gathering, PugStatus::Expired)
                     .await;
+                state.pug_lobby_manager.notify_changed(pug.id, "expired");
             }
         }
         Err(e) => tracing::warn!(error = %e, "pug expiry sweep failed"),
@@ -649,6 +656,7 @@ pub async fn sweep_pugs(state: &AppState) {
                     .repo()
                     .set_status(pug.id, PugStatus::Cancelled)
                     .await;
+                state.pug_lobby_manager.notify_changed(pug.id, "cancelled");
             }
         }
         Err(e) => tracing::warn!(error = %e, "pug stall sweep failed"),

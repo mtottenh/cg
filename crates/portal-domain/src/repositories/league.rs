@@ -6,7 +6,7 @@ use crate::entities::league::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use portal_core::{DomainError, GameId, LeagueId, LeagueInvitationId, UserId};
+use portal_core::{DomainError, GameId, LeagueId, LeagueInvitationId, PlayerId, UserId};
 
 /// Repository trait for league operations.
 #[cfg_attr(test, mockall::automock)]
@@ -114,6 +114,18 @@ pub trait LeagueMemberRepository: Send + Sync {
 
     /// Check if user is a member of a league.
     async fn is_member(&self, league_id: LeagueId, user_id: UserId) -> Result<bool, DomainError>;
+
+    /// Check league membership by PLAYER id.
+    ///
+    /// Team rosters key on player ids while league membership keys on user
+    /// ids; this resolves the join server-side so team-side callers do not
+    /// lean on the shared-id seed invariant (the P-155 lesson). Backs the
+    /// "league member before team membership" rule (Discord-design §9.3).
+    async fn is_member_by_player(
+        &self,
+        league_id: LeagueId,
+        player_id: PlayerId,
+    ) -> Result<bool, DomainError>;
 
     /// Check if user is an admin of a league.
     async fn is_admin(&self, league_id: LeagueId, user_id: UserId) -> Result<bool, DomainError>;

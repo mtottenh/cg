@@ -39,6 +39,9 @@ where
     /// fifth generic because nothing here dispatches on the concrete type and
     /// the extra type parameter would propagate into every state alias.
     audit_repo: Arc<dyn EntityChangeRepository>,
+    /// League membership, for the "league member before team membership"
+    /// rule (§9.3) — trait object for the same reason as `audit_repo`.
+    league_member_repo: Arc<dyn crate::repositories::league::LeagueMemberRepository>,
 }
 
 impl<TR, TSR, TMR, SR> LeagueTeamService<TR, TSR, TMR, SR>
@@ -55,6 +58,7 @@ where
         member_repo: Arc<TMR>,
         season_repo: Arc<SR>,
         audit_repo: Arc<dyn EntityChangeRepository>,
+        league_member_repo: Arc<dyn crate::repositories::league::LeagueMemberRepository>,
     ) -> Self {
         Self {
             team_repo,
@@ -62,6 +66,7 @@ where
             member_repo,
             season_repo,
             audit_repo,
+            league_member_repo,
         }
     }
 
@@ -164,6 +169,15 @@ where
         // refuses is a terminal season, refused in the same place every other
         // roster path is refused.
         ensure_roster_may_be_founded(&season)?;
+
+        // §9.3: the founder must belong to the league whose team they are
+        // creating.
+        super::ensure_league_member(
+            &self.league_member_repo,
+            season.league_id,
+            creator_player_id,
+        )
+        .await?;
 
         // Check if max teams limit is reached
         if let Some(max_teams) = season.max_teams {
@@ -278,6 +292,14 @@ where
         if !season.can_register_team() {
             return Err(DomainError::RegistrationClosed);
         }
+
+        // §9.3: a returning owner may have left the league since last season.
+        super::ensure_league_member(
+            &self.league_member_repo,
+            season.league_id,
+            registering_player_id,
+        )
+        .await?;
 
         // P-147, second site: `create_with_captain` seats the registering owner
         // as captain of the new seasonal roster. Same explicit trip through the
@@ -460,6 +482,9 @@ where
             lock_override.map(|o| self.audited(o)),
         )
         .await?;
+
+        // §9.3: the seated player must belong to the league.
+        super::ensure_league_member(&self.league_member_repo, season.league_id, player_id).await?;
 
         // Check if player is already a member of this team season
         if self
@@ -896,6 +921,7 @@ where
             member_repo: Arc::clone(&self.member_repo),
             season_repo: Arc::clone(&self.season_repo),
             audit_repo: Arc::clone(&self.audit_repo),
+            league_member_repo: Arc::clone(&self.league_member_repo),
         }
     }
 }

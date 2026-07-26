@@ -124,6 +124,8 @@ pub struct LifecyclePassSummary {
     pub check_in_deadlines_repaired: u32,
     /// Result claims auto-confirmed past their `auto_confirm_at` deadline.
     pub claims_auto_confirmed: u32,
+    /// Pending schedule proposals expired past their deadline.
+    pub proposals_expired: u32,
     /// Failed/stuck `match_completion` sagas successfully re-driven.
     pub sagas_redriven: u32,
     /// Evidence records expired.
@@ -208,6 +210,26 @@ pub async fn run_lifecycle_pass(
         }
         Err(e) => {
             error!(error = %e, "lifecycle: list_checkin_expired failed");
+            summary.errors += 1;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3b: expire dead schedule proposals
+    //
+    // `SchedulingService::expire_proposals` existed with NO caller
+    // (Discord-design §9.2), so a proposal whose deadline passed sat
+    // `pending` forever — still rendered as the match's active proposal,
+    // still blocking a new one (`canPropose` keys off "no active
+    // proposal"), and still listed as a to-do. Exactly the shape of the
+    // other sweep phases.
+    // ------------------------------------------------------------------
+    match state.scheduling_service.expire_proposals().await {
+        Ok(expired) => {
+            summary.proposals_expired = u32::try_from(expired.len()).unwrap_or(u32::MAX);
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: expire_proposals failed");
             summary.errors += 1;
         }
     }

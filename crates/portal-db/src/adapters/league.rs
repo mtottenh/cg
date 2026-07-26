@@ -5,7 +5,9 @@ use crate::entities::{
     LeagueMemberRow, LeagueMemberWithUserRow, LeagueRow, UserLeagueMembershipRow,
 };
 use async_trait::async_trait;
-use portal_core::{DomainError, GameId, LeagueId, LeagueInvitationId, LeagueMemberId, UserId};
+use portal_core::{
+    DomainError, GameId, LeagueId, LeagueInvitationId, LeagueMemberId, PlayerId, UserId,
+};
 use portal_domain::entities::league::{
     League, LeagueAccessType, LeagueInvitation, LeagueInvitationStatus, LeagueInvitationType,
     LeagueMember, LeagueMemberWithUser, LeagueMembershipType, LeagueStatus, UserLeagueMembership,
@@ -505,6 +507,29 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         )
         .bind(league_id.as_uuid())
         .bind(user_id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(exists.0)
+    }
+
+    async fn is_member_by_player(
+        &self,
+        league_id: LeagueId,
+        player_id: PlayerId,
+    ) -> Result<bool, DomainError> {
+        // The players JOIN resolves player -> owning user in SQL rather than
+        // assuming the ids coincide (P-155).
+        let exists: (bool,) = sqlx::query_as(
+            "SELECT EXISTS(
+                 SELECT 1 FROM league_members lm
+                 JOIN players p ON p.user_id = lm.user_id
+                 WHERE lm.league_id = $1 AND p.id = $2
+             )",
+        )
+        .bind(league_id.as_uuid())
+        .bind(player_id.as_uuid())
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;

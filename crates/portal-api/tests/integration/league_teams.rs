@@ -294,6 +294,7 @@ async fn test_list_teams_in_season() {
         .email("team2@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let token2 = create_token_for_user(user2.id);
 
     app.post_json_with_token(
@@ -428,6 +429,7 @@ async fn test_leave_team() {
         .email("leaver@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let token2 = create_token_for_user(user2.id);
 
     // Get user2's player ID
@@ -524,6 +526,7 @@ async fn test_invite_player_to_team() {
         .email("invitee@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
 
     let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
         .bind(user2.id)
@@ -573,6 +576,7 @@ async fn test_accept_team_invitation() {
         .email("accept-invitee@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let token2 = create_token_for_user(user2.id);
 
     let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
@@ -632,6 +636,7 @@ async fn test_apply_to_team() {
         .email("applicant@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let token2 = create_token_for_user(user2.id);
 
     // User2 applies to the team via team_season
@@ -680,6 +685,7 @@ async fn test_team_invitations_distinguish_request_from_invite_and_accept_reques
         .email("reqinv-applicant@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, applicant.id).await;
     let applicant_token = create_token_for_user(applicant.id);
     let applicant_player_id: uuid::Uuid = sqlx::query("SELECT id FROM players WHERE user_id = $1")
         .bind(applicant.id)
@@ -693,6 +699,7 @@ async fn test_team_invitations_distinguish_request_from_invite_and_accept_reques
         .email("reqinv-invitee@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, invitee.id).await;
     let invitee_player_id: uuid::Uuid = sqlx::query("SELECT id FROM players WHERE user_id = $1")
         .bind(invitee.id)
         .fetch_one(app.pool())
@@ -800,6 +807,7 @@ async fn test_decline_invitation() {
         .email("decliner@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let token2 = create_token_for_user(user2.id);
 
     let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
@@ -853,6 +861,7 @@ async fn test_get_my_team_invitations() {
         .email("myinvitations@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let token2 = create_token_for_user(user2.id);
 
     let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
@@ -937,6 +946,7 @@ async fn test_transfer_ownership() {
         .email("newowner@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let token2 = create_token_for_user(user2.id);
 
     let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
@@ -1020,6 +1030,7 @@ async fn test_transfer_ownership_moves_team_settings_authority() {
         .email("authority-old-owner@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, old_owner.id).await;
     let old_token = create_token_for_user(old_owner.id);
 
     let create_response = app
@@ -1044,6 +1055,7 @@ async fn test_transfer_ownership_moves_team_settings_authority() {
         .email("authority-new-owner@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, new_owner.id).await;
     let new_token = create_token_for_user(new_owner.id);
     let new_owner_player_id = new_owner.id;
 
@@ -1244,6 +1256,7 @@ async fn test_promote_to_captain() {
         .email("topromote@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let token2 = create_token_for_user(user2.id);
 
     let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
@@ -1307,6 +1320,7 @@ async fn test_demote_from_captain() {
         .email("todemote@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let token2 = create_token_for_user(user2.id);
 
     let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
@@ -1632,6 +1646,7 @@ async fn test_cancel_invitation() {
         .email("cancel-invitee@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let token2 = create_token_for_user(user2.id);
 
     let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
@@ -1723,6 +1738,7 @@ async fn test_get_player_league_teams() {
         .email("teamless@example.com")
         .build_persisted(app.pool())
         .await;
+    join_all_leagues(&app, user2.id).await;
     let response = app
         .get(&format!("/v1/players/{}/league-teams", user2.id))
         .await;
@@ -1751,6 +1767,21 @@ async fn test_get_player_league_teams() {
 // ============================================================================
 
 /// Create a user + player and return `(player_id, token)`.
+/// §9.3 fixture counterpart: make a directly-built user a member of every
+/// league in this test's isolated database — the state the product's join
+/// flow produces. Refusal tests skip this on purpose.
+async fn join_all_leagues(app: &TestApp, user_id: uuid::Uuid) {
+    sqlx::query(
+        "INSERT INTO league_members (league_id, user_id, membership_type)
+         SELECT id, $1, 'member' FROM leagues
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+}
+
 async fn create_player_with_token(
     app: &TestApp,
     username: &str,
@@ -1761,6 +1792,10 @@ async fn create_player_with_token(
         .email(email)
         .build_persisted(app.pool())
         .await;
+    // §9.3: league membership is now enforced at every roster seat point,
+    // so a fixture player who will touch a team must be a league member —
+    // exactly what the product's join flow produces.
+    join_all_leagues(app, user.id).await;
     let token = create_token_for_user(user.id);
 
     let player_row = sqlx::query("SELECT id FROM players WHERE user_id = $1")
@@ -2615,4 +2650,161 @@ async fn test_a_hard_locked_season_still_accepts_new_teams_while_registration_is
     )
     .await
     .assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// Discord-design §9.3: the "league member before team membership" rule,
+/// enforced for the first time. It had been stated in the project docs since
+/// the Phase-2 join-flow work and enforced nowhere — the web UI merely
+/// funnelled users through league join, and every API path would seat a
+/// non-member. Pinned both ways: the outsider is refused with the guidance
+/// message, and the same person succeeds after joining the league.
+#[tokio::test]
+async fn test_league_membership_is_required_before_joining_a_team() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "member-rule-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "member-rule-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Members Only", "MEM").await;
+
+    // An OUTSIDER: real account, deliberately NOT a league member.
+    let outsider = UserBuilder::new()
+        .username("league_outsider")
+        .email("league_outsider@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let outsider_token = create_token_for_user(outsider.id);
+
+    // Applying is refused with the join-the-league guidance.
+    let refused = app
+        .post_json_with_token(
+            &format!("/v1/league-team-seasons/{team_season_id}/apply"),
+            &json!({ "role": "player" }),
+            &outsider_token,
+        )
+        .await;
+    refused.assert_status(StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = refused.json();
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("league"),
+        "the refusal must name the league rule: {body}"
+    );
+
+    // A captain-sent invite can be CREATED (invitees may join the league
+    // between invite and accept) — but accepting it is refused at seat time.
+    let invited = app
+        .post_json(
+            &format!("/v1/league-team-seasons/{team_season_id}/invitations"),
+            &json!({ "player_id": outsider.id.to_string(), "role": "player" }),
+        )
+        .await;
+    invited.assert_status(StatusCode::CREATED);
+    let invitation_id = invited.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    app.post_json_with_token(
+        &format!("/v1/league-team-invitations/{invitation_id}/accept"),
+        &json!({}),
+        &outsider_token,
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    // Join the league (it is `open`), and the same accept now seats them.
+    app.post_json_with_token(
+        &format!("/v1/leagues/{league_id}/join"),
+        &json!({}),
+        &outsider_token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    app.post_json_with_token(
+        &format!("/v1/league-team-invitations/{invitation_id}/accept"),
+        &json!({}),
+        &outsider_token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
+/// Discord-design §9.4: the applicant can withdraw their OWN pending join
+/// request — cancel used to be captain-only for both directions, so an
+/// application sat pending until a captain noticed. A bystander still
+/// cannot touch it.
+#[tokio::test]
+async fn test_applicant_can_withdraw_their_own_join_request() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    grant_league_admin_permission(&app).await;
+
+    let league = create_test_league(&app, &game_id, "withdraw-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "withdraw-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+    let (_team_id, team_season_id) =
+        create_test_team(&app, season_id, "Withdraw Team", "WDT").await;
+
+    let applicant = UserBuilder::new()
+        .username("withdrawer")
+        .email("withdrawer@example.com")
+        .build_persisted(app.pool())
+        .await;
+    join_all_leagues(&app, applicant.id).await;
+    let applicant_token = create_token_for_user(applicant.id);
+
+    let bystander = UserBuilder::new()
+        .username("bystander")
+        .email("bystander@example.com")
+        .build_persisted(app.pool())
+        .await;
+    join_all_leagues(&app, bystander.id).await;
+    let bystander_token = create_token_for_user(bystander.id);
+
+    let applied = app
+        .post_json_with_token(
+            &format!("/v1/league-team-seasons/{team_season_id}/apply"),
+            &json!({ "role": "player" }),
+            &applicant_token,
+        )
+        .await;
+    applied.assert_status(StatusCode::CREATED);
+    let request_id = applied.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A bystander (league member, not captain, not the applicant) cannot
+    // withdraw someone else's request.
+    app.delete_with_token(
+        &format!("/v1/league-team-invitations/{request_id}"),
+        &bystander_token,
+    )
+    .await
+    .assert_status(StatusCode::FORBIDDEN);
+
+    // The applicant withdraws their own.
+    app.delete_with_token(
+        &format!("/v1/league-team-invitations/{request_id}"),
+        &applicant_token,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM league_team_invitations WHERE id = $1")
+            .bind(request_id.parse::<uuid::Uuid>().unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "cancelled", "withdrawal must persist");
 }

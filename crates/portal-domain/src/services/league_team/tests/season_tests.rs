@@ -263,20 +263,20 @@ async fn test_update_season_forwards_the_roster_lock_with_the_actor() {
         .expect_find_by_id()
         .returning(move |_| Ok(Some(found.clone())));
 
-    let updated = season.clone();
-    season_repo
-        .expect_update()
-        .returning(move |_, _| Ok(updated.clone()));
-
+    // P-198: the lock rides in the SAME repo update as the generic fields —
+    // one atomic statement, not a second call a mid-flight error could
+    // split. The pin is therefore on the update command carrying the lock
+    // and the actor.
     let mut locked = season.clone();
     locked.roster_lock_status = RosterLockStatus::HardLock;
     season_repo
-        .expect_update_roster_lock()
-        .withf(move |_, status, locked_by| {
-            *status == RosterLockStatus::HardLock && *locked_by == Some(actor)
+        .expect_update()
+        .withf(move |_, update| {
+            update.roster_lock_status == Some(RosterLockStatus::HardLock)
+                && update.roster_locked_by == Some(actor)
         })
         .times(1)
-        .returning(move |_, _, _| Ok(locked.clone()));
+        .returning(move |_, _| Ok(locked.clone()));
 
     let service = LeagueSeasonService::new(Arc::new(season_repo), Arc::new(league_repo));
 
@@ -355,21 +355,21 @@ async fn test_update_season_validates_the_lock_against_the_incoming_status() {
         .expect_find_by_id()
         .returning(move |_| Ok(Some(found.clone())));
 
-    let mut updated = season.clone();
-    updated.status = SeasonStatus::Active;
-    season_repo
-        .expect_update()
-        .times(1)
-        .returning(move |_, _| Ok(updated.clone()));
-
+    // P-198/P-199: one atomic update carrying BOTH the status transition and
+    // the lock; the lock is validated against the INCOMING status
+    // (registration -> active is chain-legal, and hard-locking an active
+    // season is P-201's whole point).
     let mut locked = season.clone();
     locked.status = SeasonStatus::Active;
     locked.roster_lock_status = RosterLockStatus::HardLock;
     season_repo
-        .expect_update_roster_lock()
-        .withf(|_, status, _| *status == RosterLockStatus::HardLock)
+        .expect_update()
+        .withf(|_, update| {
+            update.status == Some(SeasonStatus::Active)
+                && update.roster_lock_status == Some(RosterLockStatus::HardLock)
+        })
         .times(1)
-        .returning(move |_, _, _| Ok(locked.clone()));
+        .returning(move |_, _| Ok(locked.clone()));
 
     let service = LeagueSeasonService::new(Arc::new(season_repo), Arc::new(league_repo));
 

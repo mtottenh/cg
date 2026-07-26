@@ -25,12 +25,21 @@ fn create_service(
     MockLeagueTeamMemberRepository,
     MockLeagueSeasonRepository,
 > {
+    // §9.3: the unit fixtures predate the league-membership rule and stage
+    // members-in-good-standing, so the membership check defaults to true
+    // here; the refusal side is pinned by integration tests against the
+    // real join.
+    let mut league_member_repo = crate::repositories::league::MockLeagueMemberRepository::new();
+    league_member_repo
+        .expect_is_member_by_player()
+        .returning(|_, _| Ok(true));
     LeagueTeamInvitationService::new(
         Arc::new(invitation_repo),
         Arc::new(team_repo),
         Arc::new(team_season_repo),
         Arc::new(member_repo),
         Arc::new(season_repo),
+        Arc::new(league_member_repo),
     )
 }
 

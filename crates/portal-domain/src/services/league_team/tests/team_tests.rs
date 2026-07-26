@@ -34,6 +34,13 @@ fn create_service(
         // that expects nothing is correct: any audit write would be an
         // unexpected call and would fail the test.
         Arc::new(MockEntityChangeRepository::new()),
+        // §9.3: fixtures stage members-in-good-standing; the membership
+        // check defaults to true. The refusal side is integration-pinned.
+        Arc::new({
+            let mut m = crate::repositories::league::MockLeagueMemberRepository::new();
+            m.expect_is_member_by_player().returning(|_, _| Ok(true));
+            m
+        }),
     )
 }
 

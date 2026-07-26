@@ -565,12 +565,18 @@ impl AppState {
         // through.
         let entity_change_repo: Arc<dyn portal_domain::repositories::EntityChangeRepository> =
             Arc::new(PgEntityChangeRepository::new(db_pool.clone()));
+        // §9.3: both team services consult league membership at every seat
+        // point — the same Pg repo the league service uses, as a trait object.
+        let league_member_repo_dyn: Arc<
+            dyn portal_domain::repositories::league::LeagueMemberRepository,
+        > = Arc::new(PgLeagueMemberRepository::new(db_pool.clone()));
         let league_team_service = LeagueTeamService::new(
             Arc::clone(&league_team_repo),
             Arc::clone(&league_team_season_repo),
             Arc::clone(&league_team_member_repo),
             Arc::clone(&league_season_repo),
             Arc::clone(&entity_change_repo),
+            Arc::clone(&league_member_repo_dyn),
         );
         let league_team_invitation_service = LeagueTeamInvitationService::new(
             Arc::clone(&league_team_invitation_repo),
@@ -578,6 +584,7 @@ impl AppState {
             Arc::clone(&league_team_season_repo),
             Arc::clone(&league_team_member_repo),
             Arc::clone(&league_season_repo),
+            Arc::clone(&league_member_repo_dyn),
         );
         let league_season_participant_service = LeagueSeasonParticipantService::new(
             Arc::clone(&league_season_participant_repo),

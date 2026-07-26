@@ -165,4 +165,3 @@ async fn check_and_send_warnings(
 fn get_active_match_ids(manager: &Arc<VetoLobbyManager>) -> Vec<TournamentMatchId> {
     manager.active_match_ids()
 }
-

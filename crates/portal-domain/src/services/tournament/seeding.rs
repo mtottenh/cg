@@ -349,7 +349,6 @@ where
             })
             .collect()
     }
-
 }
 
 // Manual Clone implementation

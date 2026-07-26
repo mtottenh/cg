@@ -381,7 +381,8 @@ struct FeedingMatch {
 /// Every playable match in the tournament that advances its winner somewhere,
 /// oldest first (`R1M1`, `R1M2`, … for single elimination).
 async fn feeding_matches(app: &TestApp, tournament_id: &str) -> Vec<FeedingMatch> {
-    let rows: Vec<(Uuid, Uuid, Option<Uuid>, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+    type FeedingRow = (Uuid, Uuid, Option<Uuid>, Option<Uuid>, Option<Uuid>);
+    let rows: Vec<FeedingRow> = sqlx::query_as(
         "SELECT id, winner_progresses_to, loser_progresses_to,
                 participant1_registration_id, participant2_registration_id
          FROM tournament_matches

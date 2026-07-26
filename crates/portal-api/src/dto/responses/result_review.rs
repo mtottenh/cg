@@ -117,6 +117,9 @@ impl From<ResultReview> for ResultReviewResponse {
 }
 
 /// Summary of a result review for list views.
+// Each bool is an independent trigger flag mirroring a DB column, same as the
+// domain entity (which carries the same allow).
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ResultReviewSummaryResponse {
     /// Review ID.

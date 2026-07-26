@@ -964,7 +964,11 @@ mod enum_fields_are_not_stringified {
         // `evidenceTypeMap` and `leagueStatusMap` could be keyed.
         ("EvidenceResponse", "evidence_type", "EvidenceType"),
         ("EvidenceSummaryResponse", "evidence_type", "EvidenceType"),
-        ("DiscoveredEvidenceResponse", "evidence_type", "EvidenceType"),
+        (
+            "DiscoveredEvidenceResponse",
+            "evidence_type",
+            "EvidenceType",
+        ),
         ("LeagueResponse", "status", "LeagueStatus"),
     ];
 

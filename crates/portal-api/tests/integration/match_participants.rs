@@ -164,9 +164,11 @@ async fn test_registration_past_100_is_absent_from_the_largest_page() {
         "per_page is capped at 100 by PaginationParams::limit(); a client cannot ask for more"
     );
 
-    let ids: Vec<&str> = rows.iter().filter_map(|r| r["id"].as_str()).collect();
+    let late_id = f.late_registration_id.to_string();
     assert!(
-        !ids.contains(&f.late_registration_id.to_string().as_str()),
+        !rows
+            .iter()
+            .any(|r| r["id"].as_str() == Some(late_id.as_str())),
         "the subject's registration must NOT be on page 1 — otherwise this fixture \
          does not reproduce the ceiling and the endpoint test proves nothing"
     );

@@ -2327,18 +2327,51 @@ fn urlencoding_lite(s: &str) -> String {
 
 /// Move a season to `status` through the public PATCH endpoint.
 async fn set_season_status(app: &TestApp, season_id: &str, status: &str) {
-    let response = app
-        .patch_json(
-            &format!("/v1/league-seasons/{season_id}"),
-            &json!({ "status": status }),
-        )
-        .await;
-    response.assert_status(StatusCode::OK);
-    let body: serde_json::Value = response.json();
-    assert_eq!(
-        body["data"]["status"], status,
-        "PATCH reported a season status it did not apply"
-    );
+    // P-199: the generic PATCH now enforces the same transition chain as the
+    // dedicated status endpoint, so this fixture can no longer jump a season
+    // straight to its target — that single-PATCH shortcut was exactly the
+    // bypass P-199 closed. Walk the legal chain from wherever the season
+    // stands; each hop asserts, so a broken chain fails loudly here.
+    const CHAIN: [&str; 5] = ["draft", "registration", "active", "playoffs", "completed"];
+
+    let fetched = app.get(&format!("/v1/league-seasons/{season_id}")).await;
+    fetched.assert_status(StatusCode::OK);
+    let fetched: serde_json::Value = fetched.json();
+    let current = fetched["data"]["status"].as_str().unwrap().to_string();
+
+    let hops: Vec<&str> = if status == "cancelled" {
+        // Legal from any non-terminal status in one hop.
+        vec!["cancelled"]
+    } else {
+        let from = CHAIN
+            .iter()
+            .position(|s| *s == current)
+            .unwrap_or_else(|| panic!("season in unexpected status {current}"));
+        let to = CHAIN
+            .iter()
+            .position(|s| *s == status)
+            .unwrap_or_else(|| panic!("unknown target season status {status}"));
+        assert!(
+            to >= from,
+            "cannot walk a season backwards ({current} -> {status})"
+        );
+        CHAIN[from + 1..=to].to_vec()
+    };
+
+    for hop in hops {
+        let response = app
+            .patch_json(
+                &format!("/v1/league-seasons/{season_id}"),
+                &json!({ "status": hop }),
+            )
+            .await;
+        response.assert_status(StatusCode::OK);
+        let body: serde_json::Value = response.json();
+        assert_eq!(
+            body["data"]["status"], hop,
+            "PATCH reported a season status it did not apply"
+        );
+    }
 }
 
 /// Count active members on a seasonal roster.

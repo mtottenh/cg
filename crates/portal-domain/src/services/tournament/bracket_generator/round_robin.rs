@@ -3,7 +3,7 @@
 use super::{BracketGenerator, GeneratedBracket, InitialAssignment};
 use crate::entities::tournament::SeededParticipant;
 use crate::repositories::tournament::CreateTournamentMatch;
-use portal_core::types::{MatchFormat, MatchParticipantSource};
+use portal_core::types::{MatchFormatPlan, MatchParticipantSource};
 use portal_core::{DomainError, TournamentBracketId, TournamentId, TournamentStageId};
 
 impl BracketGenerator {
@@ -21,7 +21,7 @@ impl BracketGenerator {
         stage_id: TournamentStageId,
         bracket_id: TournamentBracketId,
         participants: Vec<SeededParticipant>,
-        match_format: MatchFormat,
+        format_plan: &MatchFormatPlan,
     ) -> Result<GeneratedBracket, DomainError> {
         let n = participants.len();
         if n < 2 {
@@ -43,6 +43,8 @@ impl BracketGenerator {
         for round in 1..=total_rounds {
             let mut round_match = 1;
             let half = circle_size / 2;
+            // Round robin has no final; only per-round overrides apply.
+            let match_format = format_plan.format_for(round, 0);
 
             for i in 0..half {
                 let idx_a = circle[i];
@@ -76,7 +78,7 @@ impl BracketGenerator {
                     participant1_source: Some(MatchParticipantSource::Seed(p1.seed)),
                     participant2_source: Some(MatchParticipantSource::Seed(p2.seed)),
                     match_format,
-                    maps_required: match_format.wins_required(),
+                    maps_required: match_format.game_count(),
                     winner_progresses_to: None,
                     loser_progresses_to: None,
                 });
@@ -118,6 +120,7 @@ impl BracketGenerator {
 mod tests {
     use super::*;
     use crate::services::tournament::bracket_generator::tests::create_test_participants;
+    use portal_core::types::MatchFormat;
     use portal_core::{TournamentBracketId, TournamentId, TournamentStageId};
 
     fn create_rr_result(count: usize) -> GeneratedBracket {
@@ -127,7 +130,7 @@ mod tests {
             TournamentStageId::new(),
             TournamentBracketId::new(),
             participants,
-            MatchFormat::Bo3,
+            &MatchFormatPlan::uniform(MatchFormat::Bo3),
         )
         .unwrap()
     }
@@ -206,7 +209,7 @@ mod tests {
             TournamentStageId::new(),
             TournamentBracketId::new(),
             participants,
-            MatchFormat::Bo3,
+            &MatchFormatPlan::uniform(MatchFormat::Bo3),
         )
         .unwrap();
 
@@ -237,7 +240,7 @@ mod tests {
             TournamentStageId::new(),
             TournamentBracketId::new(),
             participants,
-            MatchFormat::Bo1,
+            &MatchFormatPlan::uniform(MatchFormat::Bo1),
         );
         assert!(matches!(result, Err(DomainError::InsufficientParticipants)));
     }

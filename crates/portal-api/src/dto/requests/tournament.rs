@@ -507,6 +507,14 @@ pub struct CreateTournamentStageRequest {
     #[serde(default)]
     pub match_format: Option<String>,
 
+    /// Map veto format override for this stage (game veto format id).
+    #[serde(default)]
+    pub map_veto_format: Option<String>,
+
+    /// Advancement rule: `top_n`, `top_n_per_group`, `manual`. Defaults to `top_n`.
+    #[serde(default)]
+    pub advancement_rule: Option<String>,
+
     /// Stage start time.
     #[serde(default)]
     pub starts_at: Option<DateTime<Utc>>,
@@ -514,6 +522,28 @@ pub struct CreateTournamentStageRequest {
     /// Stage end time.
     #[serde(default)]
     pub ends_at: Option<DateTime<Utc>>,
+}
+
+fn parse_match_format(
+    value: Option<String>,
+) -> Result<Option<MatchFormat>, crate::error::ApiError> {
+    value
+        .map(|f| {
+            f.parse::<MatchFormat>()
+                .map_err(|_| crate::error::ApiError::bad_request("Invalid match format"))
+        })
+        .transpose()
+}
+
+fn parse_advancement_rule(
+    value: Option<String>,
+) -> Result<Option<portal_core::types::AdvancementRule>, crate::error::ApiError> {
+    value
+        .map(|r| {
+            r.parse::<portal_core::types::AdvancementRule>()
+                .map_err(|_| crate::error::ApiError::bad_request("Invalid advancement rule"))
+        })
+        .transpose()
 }
 
 impl CreateTournamentStageRequest {
@@ -527,13 +557,9 @@ impl CreateTournamentStageRequest {
             .parse()
             .map_err(|_| crate::error::ApiError::bad_request("Invalid stage format"))?;
 
-        let match_format = self
-            .match_format
-            .map(|f| {
-                f.parse::<MatchFormat>()
-                    .map_err(|_| crate::error::ApiError::bad_request("Invalid match format"))
-            })
-            .transpose()?;
+        let match_format = parse_match_format(self.match_format)?;
+        let advancement_rule = parse_advancement_rule(self.advancement_rule)?
+            .unwrap_or(portal_core::types::AdvancementRule::TopN);
 
         Ok(CreateTournamentStageCommand {
             tournament_id,
@@ -542,9 +568,71 @@ impl CreateTournamentStageRequest {
             format,
             format_settings: self.format_settings,
             advancement_count: self.advancement_count,
-            advancement_rule: portal_core::types::AdvancementRule::TopN,
+            advancement_rule,
             match_format,
-            map_veto_format: None,
+            map_veto_format: self.map_veto_format,
+            starts_at: self.starts_at,
+            ends_at: self.ends_at,
+        })
+    }
+}
+
+/// Request to update a tournament stage. All fields optional; absent fields
+/// keep their current value.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct UpdateTournamentStageRequest {
+    /// Stage name.
+    #[validate(length(min = 2, max = 100))]
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// Format-specific settings (e.g. per-round match format overrides:
+    /// `round_formats`, `final_format`, `grand_final_format`). Replaces the
+    /// stored settings object wholesale when present.
+    #[serde(default)]
+    pub format_settings: Option<serde_json::Value>,
+
+    /// Number of participants who advance.
+    #[validate(range(min = 1, max = 256))]
+    #[serde(default)]
+    pub advancement_count: Option<i32>,
+
+    /// Advancement rule: `top_n`, `top_n_per_group`, `manual`.
+    #[serde(default)]
+    pub advancement_rule: Option<String>,
+
+    /// Match format override for this stage.
+    #[serde(default)]
+    pub match_format: Option<String>,
+
+    /// Map veto format override for this stage.
+    #[serde(default)]
+    pub map_veto_format: Option<String>,
+
+    /// Stage start time.
+    #[serde(default)]
+    pub starts_at: Option<DateTime<Utc>>,
+
+    /// Stage end time.
+    #[serde(default)]
+    pub ends_at: Option<DateTime<Utc>>,
+}
+
+impl UpdateTournamentStageRequest {
+    /// Convert to the repository update struct.
+    pub fn into_update(
+        self,
+    ) -> Result<
+        portal_domain::repositories::tournament::UpdateTournamentStage,
+        crate::error::ApiError,
+    > {
+        Ok(portal_domain::repositories::tournament::UpdateTournamentStage {
+            name: self.name,
+            format_settings: self.format_settings,
+            advancement_count: self.advancement_count,
+            advancement_rule: parse_advancement_rule(self.advancement_rule)?,
+            match_format: parse_match_format(self.match_format)?,
+            map_veto_format: self.map_veto_format,
             starts_at: self.starts_at,
             ends_at: self.ends_at,
         })

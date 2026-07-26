@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use portal_core::types::{
-    AdvancementRule, BracketType, MatchFormat, StageFormat, StageStatus, TournamentFormat,
+    AdvancementRule, BracketType, MatchFormatPlan, StageFormat, StageStatus, TournamentFormat,
     TournamentMatchStatus, TournamentRegistrationStatus, TournamentStatus,
 };
 use portal_core::{
@@ -404,36 +404,81 @@ where
     /// Create a stage for a tournament.
     pub async fn create_stage(
         &self,
-        tournament_id: TournamentId,
-        name: String,
-        stage_order: i32,
-        format: StageFormat,
-        format_settings: Option<serde_json::Value>,
-        advancement_count: Option<i32>,
-        match_format: Option<MatchFormat>,
+        cmd: crate::entities::tournament::CreateTournamentStageCommand,
     ) -> Result<TournamentStage, DomainError> {
-        let tournament = self.get_tournament(tournament_id).await?;
+        let tournament = self.get_tournament(cmd.tournament_id).await?;
 
         // Only allow adding stages before tournament starts
         if tournament.has_started() {
             return Err(DomainError::TournamentAlreadyStarted);
         }
 
+        // Reject malformed per-round format overrides at write time, not
+        // when the bracket generates.
+        MatchFormatPlan::from_settings(
+            cmd.match_format.unwrap_or(tournament.default_match_format),
+            cmd.format_settings.as_ref(),
+        )
+        .map_err(|e| DomainError::InvalidState(format!("invalid stage format settings: {e}")))?;
+
         self.stage_repo
             .create(CreateTournamentStage {
-                tournament_id,
-                name,
-                stage_order,
-                format,
-                format_settings: format_settings.unwrap_or_else(|| serde_json::json!({})),
-                advancement_count,
-                advancement_rule: portal_core::types::AdvancementRule::TopN,
-                match_format,
-                map_veto_format: None,
-                starts_at: None,
-                ends_at: None,
+                tournament_id: cmd.tournament_id,
+                name: cmd.name,
+                stage_order: cmd.stage_order,
+                format: cmd.format,
+                format_settings: cmd.format_settings.unwrap_or_else(|| serde_json::json!({})),
+                advancement_count: cmd.advancement_count,
+                advancement_rule: cmd.advancement_rule,
+                match_format: cmd.match_format,
+                map_veto_format: cmd.map_veto_format,
+                starts_at: cmd.starts_at,
+                ends_at: cmd.ends_at,
             })
             .await
+    }
+
+    /// Update a pending stage's configuration.
+    ///
+    /// Allowed after the tournament starts — that is the point for
+    /// groups+playoffs, where the pending playoff stage gets its best-of
+    /// tuned while the groups run — but not once the stage itself has
+    /// activated and generated matches.
+    pub async fn update_stage(
+        &self,
+        tournament_id: TournamentId,
+        stage_id: portal_core::TournamentStageId,
+        update: crate::repositories::tournament::UpdateTournamentStage,
+    ) -> Result<TournamentStage, DomainError> {
+        let tournament = self.get_tournament(tournament_id).await?;
+        let stage = self
+            .stage_repo
+            .find_by_id(stage_id)
+            .await?
+            .filter(|s| s.tournament_id == tournament_id)
+            .ok_or(DomainError::TournamentStageNotFound(stage_id))?;
+
+        if stage.status != StageStatus::Pending {
+            return Err(DomainError::InvalidState(format!(
+                "Cannot edit a stage in {} status — its matches already exist",
+                stage.status
+            )));
+        }
+
+        // Validate the configuration that would result from the merge
+        // (COALESCE semantics: absent fields keep their current value).
+        let effective_format = update
+            .match_format
+            .or(stage.match_format)
+            .unwrap_or(tournament.default_match_format);
+        let effective_settings = update
+            .format_settings
+            .clone()
+            .unwrap_or_else(|| stage.format_settings.clone());
+        MatchFormatPlan::from_settings(effective_format, Some(&effective_settings))
+            .map_err(|e| DomainError::InvalidState(format!("invalid stage format settings: {e}")))?;
+
+        self.stage_repo.update(stage_id, update).await
     }
 
     /// Get stages for a tournament.
@@ -926,7 +971,7 @@ where
             stage.id,
             bracket.id,
             seeded_participants,
-            tournament.default_match_format,
+            &Self::stage_format_plan(tournament, stage)?,
         )?;
 
         // Update bracket with total rounds
@@ -1035,7 +1080,7 @@ where
             lb.id,
             gf.id,
             seeded_participants,
-            tournament.default_match_format,
+            &Self::stage_format_plan(tournament, stage)?,
         )?;
 
         // Update bracket round counts
@@ -1216,7 +1261,7 @@ where
             stage.id,
             bracket.id,
             seeded_participants.clone(),
-            tournament.default_match_format,
+            &Self::stage_format_plan(tournament, stage)?,
         )?;
 
         // Update bracket with total rounds
@@ -1295,7 +1340,7 @@ where
             stage.id,
             bracket.id,
             seeded_participants.clone(),
-            tournament.default_match_format,
+            &Self::stage_format_plan(tournament, stage)?,
         )?;
 
         // Update bracket with total rounds and current round
@@ -1394,6 +1439,15 @@ where
             GroupStageFormat::Swiss => StageFormat::GroupStage,
         };
 
+        // Per-phase formats: the groups config may split best-of between the
+        // group stage and the playoffs; each phase's resolved format is
+        // persisted onto its stage row so later stage-driven generation
+        // (playoff progression) and the API read model see the same truth.
+        let group_plan = config.group_format_plan(tournament.default_match_format);
+        let playoff_default = config
+            .playoff_match_format
+            .unwrap_or(tournament.default_match_format);
+
         // Create Group Stage (stage_order=1)
         let group_stage = self
             .stage_repo
@@ -1410,7 +1464,7 @@ where
                 }),
                 advancement_count: Some(config.advance_per_group as i32),
                 advancement_rule: AdvancementRule::TopNPerGroup,
-                match_format: Some(tournament.default_match_format),
+                match_format: Some(group_plan.default),
                 map_veto_format: tournament.default_map_veto_format.clone(),
                 starts_at: tournament.starts_at,
                 ends_at: None,
@@ -1423,7 +1477,9 @@ where
             PlayoffFormat::DoubleElimination => StageFormat::DoubleElimination,
         };
 
-        // Create Playoff Stage (stage_order=2, pending)
+        // Create Playoff Stage (stage_order=2, pending). Its final/grand-final
+        // overrides go into the stage's format_settings — progression builds
+        // its format plan from the stage row when the playoffs generate.
         let _playoff_stage = self
             .stage_repo
             .create(CreateTournamentStage {
@@ -1431,10 +1487,10 @@ where
                 name: "Playoffs".to_string(),
                 stage_order: 2,
                 format: playoff_stage_format,
-                format_settings: serde_json::json!({}),
+                format_settings: config.playoff_stage_settings(),
                 advancement_count: None,
                 advancement_rule: AdvancementRule::TopN,
-                match_format: Some(tournament.default_match_format),
+                match_format: Some(playoff_default),
                 map_veto_format: tournament.default_map_veto_format.clone(),
                 starts_at: None,
                 ends_at: None,
@@ -1473,7 +1529,7 @@ where
                         group_stage.id,
                         bracket.id,
                         group.clone(),
-                        tournament.default_match_format,
+                        &group_plan,
                     )?;
 
                     self.bracket_repo
@@ -1505,7 +1561,7 @@ where
                         group_stage.id,
                         bracket.id,
                         group.clone(),
-                        tournament.default_match_format,
+                        &group_plan,
                     )?;
 
                     self.bracket_repo
@@ -1690,6 +1746,17 @@ where
             })
             .collect();
 
+        // Later rounds must match the stage's format plan, not the raw
+        // tournament default — the stage may override the best-of.
+        let stage = self
+            .stage_repo
+            .find_by_id(bracket.stage_id)
+            .await?
+            .ok_or_else(|| {
+                DomainError::Internal(format!("Stage {} not found", bracket.stage_id))
+            })?;
+        let format_plan = Self::stage_format_plan(&tournament, &stage)?;
+
         // Generate next round
         let (generated, bye_participant) = BracketGenerator::swiss_next_round(
             tournament_id,
@@ -1698,7 +1765,7 @@ where
             next_round,
             swiss_standings,
             &completed_pairings,
-            tournament.default_match_format,
+            &format_plan,
         )?;
 
         // Create matches
@@ -1739,6 +1806,20 @@ where
     // =========================================================================
     // HELPERS (delegate to shared free functions in helpers module)
     // =========================================================================
+
+    /// Resolve the match-format plan for a stage: the stage's own format
+    /// override (else the tournament default) refined by any per-round /
+    /// final overrides in the stage's `format_settings`.
+    fn stage_format_plan(
+        tournament: &Tournament,
+        stage: &TournamentStage,
+    ) -> Result<MatchFormatPlan, DomainError> {
+        MatchFormatPlan::from_settings(
+            stage.effective_match_format(tournament.default_match_format),
+            Some(&stage.format_settings),
+        )
+        .map_err(|e| DomainError::InvalidState(format!("invalid stage format settings: {e}")))
+    }
 
     /// Build a position → match ID mapping from a list of matches.
     fn build_position_map(

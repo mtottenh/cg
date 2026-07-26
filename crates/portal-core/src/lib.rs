@@ -31,6 +31,7 @@ pub use ids::{
 };
 pub use types::{
     DemoCategory, DemoLinkType, DemoStatus, EvidenceStorage, EvidenceType, MatchFormat,
-    ParseScopeTypeError, PermissionScope, PugMapSelectionMode, PugStatus, ScopeType,
+    MatchFormatPlan, ParseScopeTypeError, PermissionScope, PugMapSelectionMode, PugStatus,
+    ScopeType,
     SideSelectionMode, TournamentKind, VetoActionType, VetoFormatActionConfig, VetoFormatConfig,
 };

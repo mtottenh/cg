@@ -34,7 +34,7 @@ pub use permission::{ParseScopeTypeError, PermissionScope, ScopeType};
 pub use pug::{PugMapSelectionMode, PugStatus};
 pub use status::{EntityStatus, MatchStatus, TournamentStatus};
 pub use tournament::{
-    AdvancementRule, BracketStatus, BracketType, ExceptionType, MatchFormat,
+    AdvancementRule, BracketStatus, BracketType, ExceptionType, MatchFormat, MatchFormatPlan,
     MatchParticipantSource, ProposalStatus, RegistrationType, SchedulingMode, SeedingAlgorithm,
     StageFormat, StageStatus, TournamentFormat, TournamentInvitationStatus, TournamentKind,
     TournamentMatchStatus, TournamentParticipantType, TournamentRegistrationStatus,

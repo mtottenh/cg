@@ -50,8 +50,7 @@ use crate::error::ApiError;
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::state::TournamentState;
 use axum::http::HeaderMap;
-use portal_core::types::MatchFormat;
-use portal_core::{PlayerId, ScopeType, TournamentRegistrationId, VetoFormatConfig};
+use portal_core::{PlayerId, ScopeType, TournamentRegistrationId};
 
 /// Extract the request id from incoming headers, falling back to
 /// `"unknown"` if absent or not ASCII.
@@ -185,18 +184,28 @@ pub(super) async fn auto_create_veto_session(
 ) -> Result<(), ApiError> {
     use portal_domain::repositories::tournament::TournamentMapPoolRepository;
 
-    // Derive veto format from match format
-    let veto_format = match match_.match_format {
-        MatchFormat::Bo1 => VetoFormatConfig::bo1(),
-        MatchFormat::Bo3 => VetoFormatConfig::bo3(),
-        MatchFormat::Bo5 | MatchFormat::Bo7 => VetoFormatConfig::bo5(),
-    };
-
-    // Resolve map pool and side selection mode
     let tournament = state
         .tournament_service
         .get_tournament(match_.tournament_id)
         .await?;
+
+    // Veto format: stage override → tournament default → derived from the
+    // match's own best-of. Standard boN ids re-key to the match format so a
+    // mixed-format bracket vetos each match at its own series length.
+    let stage_veto_override = state
+        .tournament_service
+        .get_stages(match_.tournament_id)
+        .await?
+        .into_iter()
+        .find(|s| s.id == match_.stage_id)
+        .and_then(|s| s.map_veto_format);
+    let veto_format = crate::handlers::veto::resolve_match_veto_format(
+        stage_veto_override.as_deref(),
+        tournament.default_map_veto_format.as_deref(),
+        match_.match_format,
+        &state.plugin_manager,
+    )?
+    .unwrap_or_else(|| crate::handlers::veto::builtin_veto_for(match_.match_format));
 
     let map_pool = if let Ok(Some(pool)) = state
         .tournament_map_pool_repo

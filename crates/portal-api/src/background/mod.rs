@@ -31,9 +31,8 @@
 //! wraps it in the interval/shutdown loop pattern shared with the veto
 //! timeout task.
 
-use crate::handlers::veto::{resolve_side_selection_mode, resolve_veto_format};
-use crate::state::{AppState, VetoState};
-use axum::extract::FromRef;
+use crate::handlers::veto::{resolve_match_veto_format, resolve_side_selection_mode};
+use crate::state::AppState;
 use chrono::{Duration as ChronoDuration, Utc};
 use portal_core::DomainError;
 use portal_core::types::TournamentMatchStatus;
@@ -425,8 +424,12 @@ async fn repair_check_in_deadline(
 }
 
 /// Create + start + coin-flip a veto session for the match if (a) the
-/// tournament configures a default map-veto format and (b) no session exists
-/// yet. Returns whether a session was created.
+/// tournament (or the match's stage) configures a map-veto format and (b) no
+/// session exists yet. Returns whether a session was created.
+///
+/// The configured id gates creation, but standard `boN` ids are re-keyed to
+/// the *match's* best-of — with per-round formats a tournament-wide bo1
+/// default must not run a bo1 veto on the bo3 final.
 async fn ensure_veto_session(
     state: &AppState,
     match_: &TournamentMatch,
@@ -436,9 +439,6 @@ async fn ensure_veto_session(
         .get_tournament(match_.tournament_id)
         .await?;
 
-    let Some(format_id) = tournament.default_map_veto_format.as_deref() else {
-        return Ok(false);
-    };
     let (Some(p1), Some(p2)) = (
         match_.participant1_registration_id,
         match_.participant2_registration_id,
@@ -446,10 +446,23 @@ async fn ensure_veto_session(
         return Ok(false);
     };
 
-    let veto_state = VetoState::from_ref(state);
-    let format = resolve_veto_format(format_id, &veto_state).map_err(|e| {
-        DomainError::Internal(format!("unresolvable veto format {format_id}: {e:?}"))
-    })?;
+    let stage_veto_override = state
+        .tournament_service
+        .get_stages(match_.tournament_id)
+        .await?
+        .into_iter()
+        .find(|s| s.id == match_.stage_id)
+        .and_then(|s| s.map_veto_format);
+    let Some(format) = resolve_match_veto_format(
+        stage_veto_override.as_deref(),
+        tournament.default_map_veto_format.as_deref(),
+        match_.match_format,
+        &state.plugin_manager,
+    )
+    .map_err(|e| DomainError::Internal(format!("unresolvable veto format: {e:?}")))?
+    else {
+        return Ok(false);
+    };
 
     // Map pool: tournament/stage-effective pool, else the game default.
     let map_pool = if let Ok(Some(pool)) = state

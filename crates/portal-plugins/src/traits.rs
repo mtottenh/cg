@@ -297,7 +297,12 @@ pub trait GamePlugin: Send + Sync {
 
     /// Get supported match formats.
     fn supported_match_formats(&self) -> Vec<MatchFormat> {
-        vec![MatchFormat::Bo1, MatchFormat::Bo3, MatchFormat::Bo5]
+        vec![
+            MatchFormat::Bo1,
+            MatchFormat::Bo3,
+            MatchFormat::Bo5,
+            MatchFormat::Bo7,
+        ]
     }
 
     // ========================================================================

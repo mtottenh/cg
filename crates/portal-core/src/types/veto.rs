@@ -252,6 +252,31 @@ impl VetoFormatConfig {
         }
     }
 
+    /// Create a standard Bo7 veto format (six alternating picks, decider).
+    ///
+    /// With the standard seven-map pool every map is in play, so there is
+    /// nothing to ban — the veto only decides play order.
+    #[must_use]
+    pub fn bo7() -> Self {
+        let mut sequence: Vec<VetoFormatActionConfig> = (0..6)
+            .map(|i| VetoFormatActionConfig {
+                team: if i % 2 == 0 { 1 } else { 2 },
+                action_type: VetoActionType::Pick,
+            })
+            .collect();
+        sequence.push(VetoFormatActionConfig {
+            team: 0,
+            action_type: VetoActionType::Decider,
+        });
+        Self {
+            id: "bo7_standard".to_string(),
+            display_name: "Best of 7".to_string(),
+            description: "Six alternating picks, decider — every map is in play".to_string(),
+            sequence,
+            min_map_pool: 7,
+        }
+    }
+
     /// Create a wheel format: `map_count` weighted-random picks, no bans.
     ///
     /// Used by PUGs. The pool is the players' deduped nominations; weights

@@ -4,6 +4,7 @@
 //! and cross-seeding group winners for playoff brackets.
 
 use crate::entities::tournament::SeededParticipant;
+use portal_core::types::{MatchFormat, MatchFormatPlan};
 use portal_core::DomainError;
 use serde::Deserialize;
 
@@ -18,6 +19,14 @@ pub struct GroupsConfig {
     pub group_format: GroupStageFormat,
     /// Format used for the playoff bracket.
     pub playoff_format: PlayoffFormat,
+    /// Best-of for group-stage matches (`None` = tournament default).
+    pub group_match_format: Option<MatchFormat>,
+    /// Best-of for playoff matches (`None` = tournament default).
+    pub playoff_match_format: Option<MatchFormat>,
+    /// Best-of override for the playoff final.
+    pub playoff_final_format: Option<MatchFormat>,
+    /// Best-of override for the playoff grand final (double elimination).
+    pub playoff_grand_final_format: Option<MatchFormat>,
 }
 
 /// Format for the group stage brackets.
@@ -93,12 +102,60 @@ impl GroupsConfig {
             ));
         }
 
+        let parse_format = |key: &str| -> Result<Option<MatchFormat>, DomainError> {
+            match settings.get(key) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(v) => v
+                    .as_str()
+                    .ok_or_else(|| DomainError::InvalidState(format!("{key} must be a string")))?
+                    .parse::<MatchFormat>()
+                    .map(Some)
+                    .map_err(|e| DomainError::InvalidState(format!("{key}: {e}"))),
+            }
+        };
+
         Ok(Self {
             group_count,
             advance_per_group,
             group_format,
             playoff_format,
+            group_match_format: parse_format("group_match_format")?,
+            playoff_match_format: parse_format("playoff_match_format")?,
+            playoff_final_format: parse_format("playoff_final_format")?,
+            playoff_grand_final_format: parse_format("playoff_grand_final_format")?,
         })
+    }
+
+    /// Match-format plan for the group stage.
+    #[must_use]
+    pub fn group_format_plan(&self, tournament_default: MatchFormat) -> MatchFormatPlan {
+        MatchFormatPlan::uniform(self.group_match_format.unwrap_or(tournament_default))
+    }
+
+    /// Match-format plan for the playoff stage.
+    #[must_use]
+    pub fn playoff_format_plan(&self, tournament_default: MatchFormat) -> MatchFormatPlan {
+        MatchFormatPlan {
+            default: self.playoff_match_format.unwrap_or(tournament_default),
+            final_format: self.playoff_final_format,
+            grand_final_format: self.playoff_grand_final_format,
+            ..MatchFormatPlan::default()
+        }
+    }
+
+    /// The playoff-stage `format_settings` keys this config implies, for
+    /// persisting onto the playoff stage row so stage-driven regeneration
+    /// (progression) sees the same overrides.
+    #[must_use]
+    pub fn playoff_stage_settings(&self) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        if let Some(f) = self.playoff_final_format {
+            obj.insert("final_format".into(), f.to_string().into());
+        }
+        if let Some(f) = self.playoff_grand_final_format {
+            obj.insert("grand_final_format".into(), f.to_string().into());
+        }
+        serde_json::Value::Object(obj)
     }
 }
 
@@ -381,6 +438,42 @@ mod tests {
         let config = GroupsConfig::from_format_settings(&settings, 12).unwrap();
         assert_eq!(config.group_format, GroupStageFormat::Swiss);
         assert_eq!(config.playoff_format, PlayoffFormat::DoubleElimination);
+    }
+
+    #[test]
+    fn test_groups_config_match_formats() {
+        // "Groups bo1, playoffs bo3, final bo5."
+        let settings = serde_json::json!({
+            "group_count": 2,
+            "group_match_format": "bo1",
+            "playoff_match_format": "bo3",
+            "playoff_final_format": "bo5"
+        });
+        let config = GroupsConfig::from_format_settings(&settings, 8).unwrap();
+        assert_eq!(config.group_match_format, Some(MatchFormat::Bo1));
+
+        let group_plan = config.group_format_plan(MatchFormat::Bo3);
+        assert_eq!(group_plan.format_for(1, 0), MatchFormat::Bo1);
+
+        let playoff_plan = config.playoff_format_plan(MatchFormat::Bo1);
+        assert_eq!(playoff_plan.format_for(1, 3), MatchFormat::Bo3);
+        assert_eq!(playoff_plan.format_for(3, 3), MatchFormat::Bo5);
+        // DE grand final falls back to the final override.
+        assert_eq!(playoff_plan.grand_final(), MatchFormat::Bo5);
+
+        // Unset formats fall through to the tournament default.
+        let plain = GroupsConfig::from_format_settings(&serde_json::json!({}), 8).unwrap();
+        assert_eq!(
+            plain.group_format_plan(MatchFormat::Bo3).default,
+            MatchFormat::Bo3
+        );
+
+        // Invalid values are rejected, not silently defaulted.
+        assert!(GroupsConfig::from_format_settings(
+            &serde_json::json!({ "group_match_format": "bo2" }),
+            8
+        )
+        .is_err());
     }
 
     #[test]

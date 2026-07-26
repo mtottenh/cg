@@ -3,7 +3,7 @@
 use super::{BracketGenerator, GeneratedBracket, InitialAssignment};
 use crate::entities::tournament::SeededParticipant;
 use crate::repositories::tournament::CreateTournamentMatch;
-use portal_core::types::{MatchFormat, MatchParticipantSource};
+use portal_core::types::{MatchFormatPlan, MatchParticipantSource};
 use portal_core::{
     DomainError, TournamentBracketId, TournamentId, TournamentRegistrationId, TournamentStageId,
 };
@@ -37,8 +37,9 @@ impl BracketGenerator {
         stage_id: TournamentStageId,
         bracket_id: TournamentBracketId,
         participants: Vec<SeededParticipant>,
-        match_format: MatchFormat,
+        format_plan: &MatchFormatPlan,
     ) -> Result<(GeneratedBracket, Option<TournamentRegistrationId>), DomainError> {
+        let match_format = format_plan.format_for(1, 0);
         let n = participants.len();
         if n < 2 {
             return Err(DomainError::InsufficientParticipants);
@@ -81,7 +82,7 @@ impl BracketGenerator {
                 participant1_source: Some(MatchParticipantSource::Seed(p1.seed)),
                 participant2_source: Some(MatchParticipantSource::Seed(p2.seed)),
                 match_format,
-                maps_required: match_format.wins_required(),
+                maps_required: match_format.game_count(),
                 winner_progresses_to: None,
                 loser_progresses_to: None,
             });
@@ -127,8 +128,12 @@ impl BracketGenerator {
         round_number: i32,
         standings: Vec<SwissParticipantStanding>,
         completed_pairings: &[(TournamentRegistrationId, TournamentRegistrationId)],
-        match_format: MatchFormat,
+        format_plan: &MatchFormatPlan,
     ) -> Result<(GeneratedBracket, Option<TournamentRegistrationId>), DomainError> {
+        // Swiss rounds are generated one at a time and the round count is not
+        // fixed up front, so only per-round overrides apply — no final
+        // semantics.
+        let match_format = format_plan.format_for(round_number, 0);
         if standings.len() < 2 {
             return Err(DomainError::InsufficientParticipants);
         }
@@ -246,7 +251,7 @@ impl BracketGenerator {
                 participant1_source: Some(MatchParticipantSource::Seed(p1.seed)),
                 participant2_source: Some(MatchParticipantSource::Seed(p2.seed)),
                 match_format,
-                maps_required: match_format.wins_required(),
+                maps_required: match_format.game_count(),
                 winner_progresses_to: None,
                 loser_progresses_to: None,
             });
@@ -281,6 +286,7 @@ impl BracketGenerator {
 mod tests {
     use super::*;
     use crate::services::tournament::bracket_generator::tests::create_test_participants;
+    use portal_core::types::MatchFormat;
     use portal_core::{
         TournamentBracketId, TournamentId, TournamentRegistrationId, TournamentStageId,
     };
@@ -293,7 +299,7 @@ mod tests {
             TournamentStageId::new(),
             TournamentBracketId::new(),
             participants,
-            MatchFormat::Bo3,
+            &MatchFormatPlan::uniform(MatchFormat::Bo3),
         )
         .unwrap();
 
@@ -322,7 +328,7 @@ mod tests {
             TournamentStageId::new(),
             TournamentBracketId::new(),
             participants,
-            MatchFormat::Bo3,
+            &MatchFormatPlan::uniform(MatchFormat::Bo3),
         )
         .unwrap();
 
@@ -388,7 +394,7 @@ mod tests {
             2,
             standings,
             &completed_pairings,
-            MatchFormat::Bo3,
+            &MatchFormatPlan::uniform(MatchFormat::Bo3),
         )
         .unwrap();
 
@@ -461,7 +467,7 @@ mod tests {
             2,
             standings,
             &completed_pairings,
-            MatchFormat::Bo3,
+            &MatchFormatPlan::uniform(MatchFormat::Bo3),
         )
         .unwrap();
 
@@ -489,7 +495,7 @@ mod tests {
             TournamentStageId::new(),
             TournamentBracketId::new(),
             participants,
-            MatchFormat::Bo1,
+            &MatchFormatPlan::uniform(MatchFormat::Bo1),
         );
         assert!(matches!(result, Err(DomainError::InsufficientParticipants)));
     }

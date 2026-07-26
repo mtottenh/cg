@@ -495,7 +495,7 @@ impl TournamentRepository for PgTournamentRepository {
         let count: (i64,) = sqlx::query_as(
             r"
             SELECT COUNT(*) FROM tournament_registrations
-            WHERE tournament_id = $1 AND status NOT IN ('withdrawn', 'rejected')
+            WHERE tournament_id = $1 AND status NOT IN ('withdrawn', 'disqualified')
             ",
         )
         .bind(id.as_uuid())

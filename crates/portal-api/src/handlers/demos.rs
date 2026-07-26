@@ -826,7 +826,9 @@ pub async fn get_demos_for_match(
     let responses: Vec<DemoMatchLinkWithDemoResponse> = demos_with_data
         .into_iter()
         .map(|d| {
-            let evidence_id = evidence_by_demo.get(&d.demo.id).copied();
+            let evidence_id = evidence_by_demo
+                .get(&(d.demo.id, d.link.game_number))
+                .copied();
             DemoMatchLinkWithDemoResponse::from_domain(
                 d.link,
                 d.demo,
@@ -840,8 +842,17 @@ pub async fn get_demos_for_match(
     Ok(Json(DataResponse::new(responses, request_id)))
 }
 
-/// Map each catalogued demo on this match to the evidence row that references
-/// it, so a demo link can be detached by the id the DELETE route takes.
+/// Map each (catalogued demo, game) pair on this match to the evidence row
+/// that references it, so a demo link can be detached by the id the DELETE
+/// route takes.
+///
+/// Keyed by demo **and** game number (P-203): keying by demo alone collapsed
+/// a demo linked to two games of one series to a single entry, so both links
+/// reported the same evidence id and Unlink on one row deleted the other's
+/// evidence — P-159's defect class living server-side. Both link paths stamp
+/// the same `game_number` onto the link and its evidence row, so the pair
+/// resolves exactly; an evidence row that doesn't match any link's pair maps
+/// to nothing, which renders as "no unlink target" rather than a wrong one.
 ///
 /// Deliberately reads the match's evidence *unfiltered by source* — the pairing
 /// is a fact about the data, not about which rows a particular listing chooses
@@ -850,7 +861,7 @@ pub async fn get_demos_for_match(
 async fn evidence_ids_by_demo(
     state: &DemoState,
     match_id: TournamentMatchId,
-) -> ApiResult<std::collections::HashMap<portal_core::DemoId, uuid::Uuid>> {
+) -> ApiResult<std::collections::HashMap<(portal_core::DemoId, Option<i32>), uuid::Uuid>> {
     let evidence = state.evidence_service.get_match_evidence(match_id).await?;
     Ok(evidence
         .into_iter()
@@ -861,7 +872,7 @@ async fn evidence_ids_by_demo(
                 .and_then(serde_json::Value::as_str)?
                 .parse::<portal_core::DemoId>()
                 .ok()?;
-            Some((demo_id, e.id.as_uuid()))
+            Some(((demo_id, e.game_number), e.id.as_uuid()))
         })
         .collect())
 }
@@ -919,17 +930,22 @@ pub async fn unlink_demo_from_match(
     // them leaves an evidence row with no link — visible and harmless — rather
     // than a link pointing at a deleted evidence row, which is the corruption
     // P-157 names.
-    let evidence_id = evidence_ids_by_demo(&state, match_id)
+    // This route detaches the demo from the match as a whole — every game's
+    // link goes — so collect the paired evidence row of EVERY game the demo
+    // was linked to (the map is keyed (demo, game) since P-203).
+    let evidence_ids: Vec<uuid::Uuid> = evidence_ids_by_demo(&state, match_id)
         .await?
-        .get(&demo_id)
-        .copied();
+        .into_iter()
+        .filter(|((paired_demo, _game), _)| *paired_demo == demo_id)
+        .map(|(_, evidence_id)| evidence_id)
+        .collect();
 
     state
         .demo_service
         .unlink_from_match(demo_id, match_id)
         .await?;
 
-    if let Some(evidence_id) = evidence_id {
+    for evidence_id in evidence_ids {
         // `require_demos_manage` above is the authorization for this route, so
         // the evidence service is told the caller is acting as an admin.
         state

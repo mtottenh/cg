@@ -356,11 +356,18 @@ mod tests {
     /// test -- --ignored` reached a hardcoded live third party. It now demands
     /// the operator name the service, and skips when they have not — a test
     /// must never pick an external host on the author's behalf.
+    ///
+    /// P-206: the opt-in variable is deliberately NOT `CS2_DEMO_SERVICE_URL`.
+    /// That is the production config var, exported in any shell that runs the
+    /// stack — reading it here meant `cargo test -- --ignored` in such a
+    /// shell still issued live outbound requests, with the `#[ignore]`
+    /// attribute as the only guard. A test-only variable nothing else sets
+    /// makes the probe fire only when someone aims it on purpose.
     #[tokio::test]
-    #[ignore = "requires external demo-stats service; set CS2_DEMO_SERVICE_URL"]
+    #[ignore = "manual probe; set PORTAL_TEST_DEMO_SERVICE_URL to a stats service you mean to hit"]
     async fn test_fetch_demo_stats_integration() {
-        let Ok(base_url) = std::env::var("CS2_DEMO_SERVICE_URL") else {
-            println!("CS2_DEMO_SERVICE_URL unset; nothing to probe");
+        let Ok(base_url) = std::env::var("PORTAL_TEST_DEMO_SERVICE_URL") else {
+            println!("PORTAL_TEST_DEMO_SERVICE_URL unset; nothing to probe");
             return;
         };
         let client = Cs2DemoClient::new(validate_base_url(&base_url).unwrap());

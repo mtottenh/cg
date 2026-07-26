@@ -186,9 +186,25 @@ pub struct LeagueTeamSeasonResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rating: Option<i32>,
 
+    /// The parent season's roster lock (P-200). Populated by handlers that
+    /// have the season loaded (the single-team-season GET); absent
+    /// elsewhere. Present, it saves the client a second round-trip to the
+    /// season endpoint just to learn its own roster's lock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roster_lock_status: Option<RosterLockStatus>,
+
     // Timestamps
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl LeagueTeamSeasonResponse {
+    /// Stamp the parent season's roster lock onto the response (P-200).
+    #[must_use]
+    pub const fn with_roster_lock(mut self, lock: RosterLockStatus) -> Self {
+        self.roster_lock_status = Some(lock);
+        self
+    }
 }
 
 impl From<LeagueTeamSeason> for LeagueTeamSeasonResponse {
@@ -206,6 +222,7 @@ impl From<LeagueTeamSeason> for LeagueTeamSeasonResponse {
             matches_drawn: ts.matches_drawn,
             seed: ts.seed,
             rating: ts.rating,
+            roster_lock_status: None,
             created_at: ts.created_at,
             updated_at: ts.updated_at,
         }

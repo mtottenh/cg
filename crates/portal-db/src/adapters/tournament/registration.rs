@@ -158,10 +158,15 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
                 .map_err(|e| DomainError::Internal(e.to_string()))?;
         }
 
+        // P-195: this exclusion list used to be ('withdrawn', 'rejected') —
+        // but 'rejected' is not a TournamentRegistrationStatus value
+        // (rejection writes 'withdrawn'), so it excluded nothing, while a
+        // disqualified registration kept occupying a capacity slot forever.
+        // Terminal statuses that free a slot: withdrawn + disqualified.
         let count: i64 = sqlx::query_scalar(
             r"
             SELECT COUNT(*) FROM tournament_registrations
-            WHERE tournament_id = $1 AND status NOT IN ('withdrawn', 'rejected')
+            WHERE tournament_id = $1 AND status NOT IN ('withdrawn', 'disqualified')
             ",
         )
         .bind(cmd.tournament_id.as_uuid())
@@ -252,7 +257,7 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
             r"
             SELECT COUNT(*) FROM tournament_registrations
             WHERE tournament_id = $1 AND id <> $2
-              AND status NOT IN ('withdrawn', 'rejected')
+              AND status NOT IN ('withdrawn', 'disqualified')
             ",
         )
         .bind(tournament_uuid)

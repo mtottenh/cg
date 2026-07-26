@@ -43,8 +43,15 @@ pub async fn get_team_season(
         .get_team_season(team_season_id)
         .await?;
 
+    // P-200: include the parent season's roster lock so the client does not
+    // need a second round-trip to the season endpoint to learn it.
+    let season = state
+        .league_season_service
+        .get_season(team_season.season_id)
+        .await?;
+
     Ok(Json(DataResponse::new(
-        LeagueTeamSeasonResponse::from(team_season),
+        LeagueTeamSeasonResponse::from(team_season).with_roster_lock(season.roster_lock_status),
         request_id,
     )))
 }

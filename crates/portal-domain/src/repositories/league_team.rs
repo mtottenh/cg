@@ -130,6 +130,12 @@ pub struct UpdateLeagueSeason {
     pub max_teams: Option<i32>,
     pub status: Option<SeasonStatus>,
     pub settings: Option<serde_json::Value>,
+    /// When set, the same UPDATE statement also writes the roster lock —
+    /// a PATCH carrying generic fields and the lock must be ONE atomic
+    /// write, not two sequential ones a mid-flight error can split (P-198).
+    pub roster_lock_status: Option<RosterLockStatus>,
+    /// Who set the lock; only consulted when `roster_lock_status` is set.
+    pub roster_locked_by: Option<UserId>,
 }
 
 // =============================================================================

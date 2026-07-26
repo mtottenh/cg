@@ -164,11 +164,26 @@ where
             )));
         }
 
+        // P-199: `status` used to be written here as a plain field with no
+        // validation, while update_status enforced the transition chain —
+        // two mechanisms disagreeing about the same rule, and a PATCH could
+        // jump a season straight from draft to completed. One rule now;
+        // echoing the current status back is allowed (idempotent PATCH).
+        if let Some(new_status) = cmd.status
+            && new_status != season.status
+        {
+            Self::ensure_status_transition_allowed(season.status, new_status)?;
+        }
+
         let roster_lock_status = cmd.roster_lock_status;
         if let Some(lock) = roster_lock_status {
             Self::ensure_lock_change_allowed(cmd.status.unwrap_or(season.status), lock)?;
         }
 
+        // P-198: one repo call, one UPDATE statement. This used to be the
+        // generic field write followed by update_roster_lock — two
+        // non-transactional writes, so a DB error between them half-applied
+        // the PATCH.
         let updated = self
             .season_repo
             .update(
@@ -187,17 +202,24 @@ where
                     max_teams: cmd.max_teams,
                     status: cmd.status,
                     settings: cmd.settings,
+                    roster_lock_status,
+                    roster_locked_by: roster_lock_status.map(|_| actor),
                 },
             )
             .await?;
 
         info!(season_id = %id, "League season updated");
 
-        let Some(lock) = roster_lock_status else {
-            return Ok(updated);
-        };
+        if let Some(lock) = roster_lock_status {
+            info!(
+                season_id = %id,
+                roster_lock = %lock,
+                locked_by = %actor,
+                "Roster lock status updated"
+            );
+        }
 
-        self.update_roster_lock(id, lock, actor).await
+        Ok(updated)
     }
 
     /// List seasons for a league.
@@ -252,6 +274,38 @@ where
         Ok(())
     }
 
+    /// The season status transition chain, in one place.
+    ///
+    /// Both writers consult this — the dedicated transition endpoint
+    /// (`update_status`) and the generic season PATCH (`update_season`).
+    /// P-199: the PATCH used to write `status` as a plain field with no
+    /// validation, so it bypassed the chain the other endpoint enforced —
+    /// two mechanisms disagreeing about the same rule, the P-15/P-168
+    /// shape one more time.
+    fn ensure_status_transition_allowed(
+        from: SeasonStatus,
+        to: SeasonStatus,
+    ) -> Result<(), DomainError> {
+        let valid = match (&from, &to) {
+            (SeasonStatus::Draft, SeasonStatus::Registration) => true,
+            (SeasonStatus::Registration, SeasonStatus::Active) => true,
+            (SeasonStatus::Active, SeasonStatus::Playoffs) => true,
+            (SeasonStatus::Playoffs, SeasonStatus::Completed) => true,
+            // Direct completion without playoffs
+            (SeasonStatus::Active, SeasonStatus::Completed) => true,
+            (_, SeasonStatus::Cancelled) => !from.is_terminal(),
+            _ => false,
+        };
+
+        if valid {
+            Ok(())
+        } else {
+            Err(DomainError::InvalidState(format!(
+                "cannot transition season from {from} to {to}"
+            )))
+        }
+    }
+
     /// Update roster lock status.
     #[instrument(skip(self))]
     pub async fn update_roster_lock(
@@ -289,23 +343,7 @@ where
     ) -> Result<LeagueSeason, DomainError> {
         let season = self.get_season(id).await?;
 
-        // Validate status transitions
-        let valid_transition = match (&season.status, &status) {
-            (SeasonStatus::Draft, SeasonStatus::Registration) => true,
-            (SeasonStatus::Registration, SeasonStatus::Active) => true,
-            (SeasonStatus::Active, SeasonStatus::Playoffs) => true,
-            (SeasonStatus::Playoffs, SeasonStatus::Completed) => true,
-            (SeasonStatus::Active, SeasonStatus::Completed) => true, // Direct completion without playoffs
-            (_, SeasonStatus::Cancelled) => !season.status.is_terminal(),
-            _ => false,
-        };
-
-        if !valid_transition {
-            return Err(DomainError::InvalidState(format!(
-                "cannot transition season from {} to {}",
-                season.status, status
-            )));
-        }
+        Self::ensure_status_transition_allowed(season.status, status)?;
 
         let updated = self.season_repo.update_status(id, status).await?;
 

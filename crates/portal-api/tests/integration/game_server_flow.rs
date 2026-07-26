@@ -18,7 +18,6 @@ use portal_domain::repositories::{
     CreateGameServer, CreateServerBooking, CreateServerReservation, ServerReservationRepository,
 };
 use portal_domain::services::game_server::hash_token;
-use portal_test::prelude::*;
 use serde_json::json;
 
 async fn state_for(app: &TestApp) -> AppState {
@@ -510,7 +509,6 @@ async fn get_game_id_str(app: &TestApp) -> String {
 
 #[tokio::test]
 async fn test_demo_upload_auth_catalog_and_link() {
-    use portal_domain::repositories::GameServerRepository as _;
 
     let app = TestApp::new().await;
     let state = state_for(&app).await;

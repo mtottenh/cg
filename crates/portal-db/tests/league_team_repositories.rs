@@ -219,6 +219,8 @@ mod league_season_repository {
             max_teams: None,
             status: None,
             settings: None,
+            roster_lock_status: None,
+            roster_locked_by: None,
         };
 
         let updated = repo.update(created.id, update).await.unwrap();

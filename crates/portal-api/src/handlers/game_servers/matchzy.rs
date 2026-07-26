@@ -159,20 +159,24 @@ pub async fn post_demo(
     }
     let size = i64::try_from(body.len()).unwrap_or(i64::MAX);
 
-    let stored = state
-        .demo_upload_storage
-        .store(portal_storage::StoreRequest {
-            data: body,
-            filename: file_name.clone(),
-            content_type: "application/octet-stream".to_string(),
-            prefix: match matchzy_id {
-                Some(id) => format!("matchzy/{id}"),
-                None => "matchzy/unmatched".to_string(),
-            },
-            owner_id: Some(server.id.to_string()),
-        })
-        .await
-        .map_err(|e| ApiError::internal(format!("demo store failed: {e}")))?;
+    let stored = crate::observability::track_s3(
+        "demos",
+        "put",
+        state
+            .demo_upload_storage
+            .store(portal_storage::StoreRequest {
+                data: body,
+                filename: file_name.clone(),
+                content_type: "application/octet-stream".to_string(),
+                prefix: match matchzy_id {
+                    Some(id) => format!("matchzy/{id}"),
+                    None => "matchzy/unmatched".to_string(),
+                },
+                owner_id: Some(server.id.to_string()),
+            }),
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("demo store failed: {e}")))?;
 
     // Catalog + auto-link into the existing demo pipeline (§6.5).
     let demo = match state
@@ -269,17 +273,21 @@ pub async fn post_backup(
     let map_number: Option<i32> = header("matchzy-mapnumber").and_then(|v| v.parse().ok());
     let round_number: Option<i32> = header("matchzy-roundnumber").and_then(|v| v.parse().ok());
 
-    let stored = state
-        .demo_upload_storage
-        .store(portal_storage::StoreRequest {
-            data: body,
-            filename: file_name.clone(),
-            content_type: "application/json".to_string(),
-            prefix: format!("matchzy-backups/{matchzy_id}"),
-            owner_id: None,
-        })
-        .await
-        .map_err(|e| ApiError::internal(format!("backup store failed: {e}")))?;
+    let stored = crate::observability::track_s3(
+        "demos",
+        "put",
+        state
+            .demo_upload_storage
+            .store(portal_storage::StoreRequest {
+                data: body,
+                filename: file_name.clone(),
+                content_type: "application/json".to_string(),
+                prefix: format!("matchzy-backups/{matchzy_id}"),
+                owner_id: None,
+            }),
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("backup store failed: {e}")))?;
 
     let Some(server_id) = reservation.server_id else {
         return Err(ApiError::bad_request("reservation has no server"));
@@ -339,11 +347,10 @@ pub async fn get_backup(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found("backup not found"))?;
 
-    let bytes = state
-        .demo_upload_storage
-        .read(&key)
-        .await
-        .map_err(|e| ApiError::internal(format!("backup read failed: {e}")))?;
+    let bytes =
+        crate::observability::track_s3("demos", "get", state.demo_upload_storage.read(&key))
+            .await
+            .map_err(|e| ApiError::internal(format!("backup read failed: {e}")))?;
     Ok(axum::response::Response::builder()
         .header("content-type", "application/json")
         .body(axum::body::Body::from(bytes))

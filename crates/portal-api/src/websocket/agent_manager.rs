@@ -231,6 +231,13 @@ impl AgentConnectionManager {
         self.agents.contains_key(&server_id)
     }
 
+    /// Number of currently connected agents (metrics gauge source; bounded
+    /// by the admin-curated `game_servers` registry).
+    #[must_use]
+    pub fn connected_count(&self) -> usize {
+        self.agents.len()
+    }
+
     /// Forcibly drop a server's connection regardless of which socket holds
     /// it (revocation path). Closing the outbound channel ends the WS task.
     pub fn disconnect(&self, server_id: GameServerId) {

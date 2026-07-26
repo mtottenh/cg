@@ -76,6 +76,7 @@ rand = "0.9"
 
 # Tracing
 tracing = { workspace = true }
+metrics = { workspace = true }
 
 [dev-dependencies]
 portal-test = { path = "../portal-test" }

@@ -137,6 +137,17 @@ pub struct MarkFailedRequest {
     pub error: String,
 }
 
+/// Count a portal-API error by status class (4xx / 5xx / transport).
+fn record_api_error(status: Option<reqwest::StatusCode>) {
+    let class = match status {
+        Some(s) if s.is_client_error() => "4xx",
+        Some(s) if s.is_server_error() => "5xx",
+        Some(_) => "other",
+        None => "transport",
+    };
+    metrics::counter!("portal_scanner_api_errors_total", "status_class" => class).increment(1);
+}
+
 impl PortalApiClient {
     /// Create a new API client.
     pub fn new(base_url: String, api_key: String) -> Self {
@@ -157,10 +168,12 @@ impl PortalApiClient {
             .json(request)
             .send()
             .await
+            .inspect_err(|_| record_api_error(None))
             .context("batch catalog request failed")?;
 
         if !resp.status().is_success() {
             let status = resp.status();
+            record_api_error(Some(status));
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("batch catalog failed ({status}): {body}");
         }
@@ -179,10 +192,12 @@ impl PortalApiClient {
             .header("X-API-Key", &self.api_key)
             .send()
             .await
+            .inspect_err(|_| record_api_error(None))
             .context("get pending demos request failed")?;
 
         if !resp.status().is_success() {
             let status = resp.status();
+            record_api_error(Some(status));
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("get pending demos failed ({status}): {body}");
         }
@@ -202,10 +217,12 @@ impl PortalApiClient {
             .json(request)
             .send()
             .await
+            .inspect_err(|_| record_api_error(None))
             .context("submit stats request failed")?;
 
         if !resp.status().is_success() {
             let status = resp.status();
+            record_api_error(Some(status));
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("submit stats for {demo_id} failed ({status}): {body}");
         }
@@ -226,10 +243,12 @@ impl PortalApiClient {
             })
             .send()
             .await
+            .inspect_err(|_| record_api_error(None))
             .context("mark failed request failed")?;
 
         if !resp.status().is_success() {
             let status = resp.status();
+            record_api_error(Some(status));
             let body = resp.text().await.unwrap_or_default();
             warn!(demo_id, "mark stats failed returned ({status}): {body}");
         }

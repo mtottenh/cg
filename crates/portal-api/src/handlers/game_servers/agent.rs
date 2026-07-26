@@ -168,6 +168,7 @@ async fn handle_socket(state: GameServerState, server: GameServer, socket: WebSo
                         if sink.send(Message::Text(text.into())).await.is_err() {
                             break;
                         }
+                        crate::observability::record_ws_message("gameserver-agent", "out");
                     }
                     None => break,
                 }
@@ -176,6 +177,7 @@ async fn handle_socket(state: GameServerState, server: GameServer, socket: WebSo
             msg = stream.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        crate::observability::record_ws_message("gameserver-agent", "in");
                         handle_agent_message(&state, server_id, &session, text.as_str()).await;
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Binary(_))) => {}
@@ -209,6 +211,9 @@ async fn handle_agent_message(
                     "ignoring unknown agent frame type");
                 return;
             }
+            // Portal-side agent aggregation (observability-design.md §4.6):
+            // alerts about agents come from here, never from scraping them.
+            crate::observability::record_agent_heartbeat(&server_id.to_string());
             let gamestate = hb.get5_status.as_ref().and_then(|s| {
                 s.get("gamestate")
                     .and_then(|g| g.as_str())

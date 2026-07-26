@@ -201,6 +201,7 @@ pub async fn complete_upload(
     }
 
     let evidence = state.evidence_service.complete_upload(evidence_id).await?;
+    crate::observability::record_evidence(&evidence.evidence_type.to_string(), "uploaded");
 
     Ok(Json(DataResponse::new(
         EvidenceResponse::from(evidence),
@@ -267,6 +268,7 @@ pub async fn add_link_evidence(
             acting_as_admin,
         )
         .await?;
+    crate::observability::record_evidence(&evidence.evidence_type.to_string(), "linked");
 
     Ok((
         StatusCode::CREATED,
@@ -763,6 +765,7 @@ pub async fn link_discovered_evidence(
             EvidenceSource::ManualUpload,
         )
         .await?;
+    crate::observability::record_evidence(&evidence.evidence_type.to_string(), "linked");
 
     Ok((
         StatusCode::CREATED,
@@ -1643,6 +1646,7 @@ pub async fn link_demo(
             EvidenceSource::ManualUpload,
         )
         .await?;
+    crate::observability::record_evidence(&evidence.evidence_type.to_string(), "linked");
 
     Ok((
         StatusCode::CREATED,

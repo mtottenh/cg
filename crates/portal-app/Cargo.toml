@@ -35,6 +35,11 @@ dotenvy = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# Metrics exporter (the listener lives in the binary; the library crates
+# only use the `metrics` facade)
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+
 # Error handling
 anyhow = { workspace = true }
 

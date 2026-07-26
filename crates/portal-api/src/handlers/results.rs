@@ -336,6 +336,7 @@ pub async fn confirm_result(
         .match_completion_saga
         .execute_completion(saga_input)
         .await;
+    crate::observability::record_saga("match-completion", &saga_result);
 
     match saga_result {
         Ok(result) if result.is_paused() => {

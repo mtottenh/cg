@@ -233,6 +233,9 @@ pub fn try_create_app(state: AppState) -> Result<Router, AppConfigError> {
         // gets to make its span — giving the span access to the id.
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT_BYTES))
         .layer(TraceLayer::new_for_http().make_span_with(make_http_span))
+        // RED metrics outside TraceLayer so the histogram covers the whole
+        // matched pipeline (a no-op unless the binary installed a recorder).
+        .layer(middleware::from_fn(crate::observability::track_http))
         .layer(middleware::from_fn(request_id_middleware))
         .layer(cors)
         // State

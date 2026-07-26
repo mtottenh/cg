@@ -486,10 +486,12 @@ async fn resume_saga_after_review(
         result_claim_id: None,
     };
 
-    state
+    let saga_result = state
         .match_completion_saga
         .continue_after_review(match_id, saga_input)
-        .await?;
+        .await;
+    crate::observability::record_saga("match-completion-review", &saga_result);
+    saga_result?;
 
     Ok(())
 }

@@ -153,6 +153,7 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
             msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        crate::observability::record_ws_message("lobby", "in");
                         if let Err(err) = handle_client_message(
                             &text,
                             &connection,
@@ -182,12 +183,14 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
             broadcast = broadcast_rx.recv() => {
                 match broadcast {
                     Ok(msg) => {
-                        if let Some(server_msg) = filter_broadcast_for_connection(&msg, &connection)
-                            && sender.send(Message::Text(
+                        if let Some(server_msg) = filter_broadcast_for_connection(&msg, &connection) {
+                            if sender.send(Message::Text(
                                 serde_json::to_string(&server_msg).unwrap().into()
                             )).await.is_err() {
                                 break;
                             }
+                            crate::observability::record_ws_message("lobby", "out");
+                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(%connection_id, lagged = n, "Broadcast receiver lagged");

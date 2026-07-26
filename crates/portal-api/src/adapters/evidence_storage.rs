@@ -146,10 +146,13 @@ impl EvidenceS3Client for S3EvidenceStorageAdapter {
         content_type: &str,
         ttl: Duration,
     ) -> Result<String, DomainError> {
-        self.s3
-            .presign_put(bucket, key, content_type, ttl)
-            .await
-            .map_err(|e| DomainError::Internal(format!("S3 presign_put failed: {e}")))
+        crate::observability::track_s3(
+            "evidence",
+            "presign-put",
+            self.s3.presign_put(bucket, key, content_type, ttl),
+        )
+        .await
+        .map_err(|e| DomainError::Internal(format!("S3 presign_put failed: {e}")))
     }
 
     async fn presign_get(
@@ -158,22 +161,23 @@ impl EvidenceS3Client for S3EvidenceStorageAdapter {
         key: &str,
         ttl: Duration,
     ) -> Result<String, DomainError> {
-        self.s3
-            .presign_get(bucket, key, ttl)
-            .await
-            .map_err(|e| DomainError::Internal(format!("S3 presign_get failed: {e}")))
+        crate::observability::track_s3(
+            "evidence",
+            "presign-get",
+            self.s3.presign_get(bucket, key, ttl),
+        )
+        .await
+        .map_err(|e| DomainError::Internal(format!("S3 presign_get failed: {e}")))
     }
 
     async fn object_exists(&self, bucket: &str, key: &str) -> Result<bool, DomainError> {
-        self.s3
-            .object_exists(bucket, key)
+        crate::observability::track_s3("evidence", "head", self.s3.object_exists(bucket, key))
             .await
             .map_err(|e| DomainError::Internal(format!("S3 object_exists failed: {e}")))
     }
 
     async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), DomainError> {
-        self.s3
-            .delete_object(bucket, key)
+        crate::observability::track_s3("evidence", "delete", self.s3.delete_object(bucket, key))
             .await
             .map_err(|e| DomainError::Internal(format!("S3 delete_object failed: {e}")))
     }

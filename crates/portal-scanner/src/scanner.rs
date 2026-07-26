@@ -17,14 +17,21 @@ pub async fn scan_and_process(
 ) -> Result<()> {
     // 1. List demo files from S3
     let objects =
-        s3_scanner::list_demo_files(s3_client, &config.s3_bucket, &config.s3_prefix).await?;
+        match s3_scanner::list_demo_files(s3_client, &config.s3_bucket, &config.s3_prefix).await {
+            Ok(objects) => objects,
+            Err(e) => {
+                metrics::counter!("portal_scanner_s3_errors_total").increment(1);
+                return Err(e);
+            }
+        };
+    metrics::counter!("portal_scanner_objects_seen_total").increment(objects.len() as u64);
 
     if objects.is_empty() {
-        info!("No demo files found in S3");
+        debug!("No demo files found in S3");
         return Ok(());
     }
 
-    info!(count = objects.len(), "Found demo files in S3");
+    debug!(count = objects.len(), "Found demo files in S3");
 
     // 2. Batch catalog (up to 500 at a time)
     for chunk in objects.chunks(500) {
@@ -48,12 +55,18 @@ pub async fn scan_and_process(
 
         match api_client.batch_catalog(&request).await {
             Ok(result) => {
-                info!(
-                    created = result.created.len(),
-                    existing = result.existing.len(),
-                    errors = result.errors.len(),
-                    "Batch catalog complete"
-                );
+                metrics::counter!("portal_scanner_objects_new_total")
+                    .increment(result.created.len() as u64);
+                metrics::counter!("portal_scanner_registered_total", "outcome" => "ok")
+                    .increment(1);
+                if !result.created.is_empty() || !result.errors.is_empty() {
+                    info!(
+                        created = result.created.len(),
+                        existing = result.existing.len(),
+                        errors = result.errors.len(),
+                        "Batch catalog complete"
+                    );
+                }
 
                 // 3. Fetch stats for newly created demos
                 for demo in &result.created {
@@ -75,6 +88,8 @@ pub async fn scan_and_process(
                 }
             }
             Err(e) => {
+                metrics::counter!("portal_scanner_registered_total", "outcome" => "error")
+                    .increment(1);
                 error!(error = %e, "Batch catalog failed");
             }
         }
@@ -89,6 +104,7 @@ pub async fn process_pending(
     demo_client: &portal_plugins::Cs2DemoClient,
 ) -> Result<()> {
     let pending = api_client.get_pending_demos(50).await?;
+    metrics::gauge!("portal_scanner_pending_demos").set(pending.len() as f64);
 
     if pending.is_empty() {
         return Ok(());

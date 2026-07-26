@@ -66,10 +66,14 @@ where
             .find_by_hash(&key_hash)
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?
-            .ok_or_else(|| ApiError::unauthorized("Invalid API key"))?;
+            .ok_or_else(|| {
+                crate::observability::record_auth_failure("bad-api-key");
+                ApiError::unauthorized("Invalid API key")
+            })?;
 
         // Check validity
         if !api_key.is_valid() {
+            crate::observability::record_auth_failure("bad-api-key");
             return Err(ApiError::unauthorized("API key is inactive or expired"));
         }
 

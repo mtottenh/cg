@@ -250,6 +250,9 @@ pub async fn run_lifecycle_pass(
     if sweep_evidence {
         match state.evidence_service.process_expired().await {
             Ok(expired) => {
+                for _ in &expired {
+                    crate::observability::record_evidence("any", "expired");
+                }
                 summary.evidence_expired = u32::try_from(expired.len()).unwrap_or(u32::MAX);
             }
             Err(e) => {
@@ -613,11 +616,12 @@ async fn redrive_stuck_completion_sagas(
         }
 
         let match_id = input.match_id;
-        match state
+        let saga_result = state
             .match_completion_saga
             .execute_completion(input.clone())
-            .await
-        {
+            .await;
+        crate::observability::record_saga("match-completion", &saga_result);
+        match saga_result {
             Ok(result) if result.is_paused() => {
                 // Waiting on a result review — not our problem to retry.
                 info!(%saga_id, %match_id, "lifecycle: saga re-drive paused for review");
@@ -732,7 +736,7 @@ async fn run_completion_saga_for_claim(
         )
     };
 
-    state
+    let saga_result = state
         .match_completion_saga
         .execute_completion(MatchCompletionInput {
             match_id: claim.match_id,
@@ -744,8 +748,9 @@ async fn run_completion_saga_for_claim(
             saga_id: None,
             result_claim_id: Some(claim.id),
         })
-        .await
-        .map(|_| ())
+        .await;
+    crate::observability::record_saga("match-completion", &saga_result);
+    saga_result.map(|_| ())
 }
 
 /// Forfeit whichever side failed to check in before the deadline.

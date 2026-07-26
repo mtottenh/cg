@@ -79,10 +79,17 @@ impl AuthenticatedUser {
             tracing::debug!("JWT validation failed: {:?}", e);
             match e {
                 portal_core::DomainError::TokenExpired => {
+                    crate::observability::record_auth_failure("expired");
                     ApiError::unauthorized("Token has expired")
                 }
-                portal_core::DomainError::InvalidToken => ApiError::unauthorized("Invalid token"),
-                _ => ApiError::unauthorized("Authentication failed"),
+                portal_core::DomainError::InvalidToken => {
+                    crate::observability::record_auth_failure("bad-token");
+                    ApiError::unauthorized("Invalid token")
+                }
+                _ => {
+                    crate::observability::record_auth_failure("error");
+                    ApiError::unauthorized("Authentication failed")
+                }
             }
         })?;
 

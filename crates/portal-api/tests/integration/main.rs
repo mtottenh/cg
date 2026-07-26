@@ -25,6 +25,7 @@ mod partial_write_recovery;
 mod player_game_profiles;
 mod players;
 mod progression;
+mod pugs;
 mod registration_identity;
 mod result_review;
 mod results;

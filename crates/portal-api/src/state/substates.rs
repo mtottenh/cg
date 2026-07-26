@@ -395,6 +395,12 @@ pub struct LeagueTeamState {
     /// Player service (invitation lists resolve invited players' display
     /// names/avatars).
     pub player_service: AppPlayerService,
+    /// League service (roster additions resolve the league's entry
+    /// requirements).
+    pub league_service: AppLeagueService,
+    /// Eligibility service (roster additions enforce league entry
+    /// requirements + the team-total cap).
+    pub eligibility_service: AppEligibilityService,
 }
 
 impl FromRef<AppState> for LeagueTeamState {
@@ -405,6 +411,8 @@ impl FromRef<AppState> for LeagueTeamState {
             league_season_service: s.league_season_service.clone(),
             league_season_participant_service: s.league_season_participant_service.clone(),
             player_service: s.player_service.clone(),
+            league_service: s.league_service.clone(),
+            eligibility_service: s.eligibility_service.clone(),
         }
     }
 }

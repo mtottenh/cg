@@ -34,8 +34,75 @@ use axum::http::HeaderMap;
 use crate::error::ApiError;
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::state::LeagueTeamState;
-use portal_core::{LeagueTeamSeasonId, ScopeType};
+use portal_core::{LeagueTeamSeasonId, PlayerId, ScopeType};
+use portal_domain::entities::eligibility::EligibilityRestrictions;
 use portal_domain::services::RosterLockOverride;
+
+/// Enforce the league's entry requirements on a roster addition.
+///
+/// Two checks, both against the league that owns the team's season:
+///
+/// 1. The joining player must meet the per-player entry rules. League join
+///    and application already check these, but team invitations reach
+///    players a league admin invited directly (bypassing the join check), so
+///    this is the backstop that keeps rating-gated leagues honest.
+/// 2. The prospective roster (current members + the addition) must stay
+///    under the league's team-total rating cap — the one aggregate a later
+///    addition can never repair. Average caps and minimum bounds bind at
+///    tournament registration instead, where the roster is final
+///    (see `EligibilityRestrictions::team_total_cap_only`).
+pub(crate) async fn check_roster_addition(
+    state: &LeagueTeamState,
+    team_season_id: LeagueTeamSeasonId,
+    joining_player: PlayerId,
+) -> Result<(), ApiError> {
+    let team_season = state
+        .league_team_service
+        .get_team_season(team_season_id)
+        .await?;
+    let season = state
+        .league_season_service
+        .get_season(team_season.season_id)
+        .await?;
+    let league = state.league_service.get_league(season.league_id).await?;
+
+    let restrictions = EligibilityRestrictions::from_settings(&league.settings);
+    if !restrictions.has_restrictions() {
+        return Ok(());
+    }
+
+    let mut violations = state
+        .eligibility_service
+        .check_players(&restrictions, league.game_id, &[joining_player])
+        .await?;
+
+    let total_cap = restrictions.team_total_cap_only();
+    if total_cap.has_restrictions() {
+        let mut roster: Vec<PlayerId> = state
+            .league_team_service
+            .get_members(team_season_id)
+            .await?
+            .iter()
+            .map(|m| m.player_id)
+            .collect();
+        roster.push(joining_player);
+        violations.extend(
+            state
+                .eligibility_service
+                .check_team(&total_cap, league.game_id, &roster)
+                .await?,
+        );
+    }
+
+    if violations.is_empty() {
+        return Ok(());
+    }
+    let messages: Vec<String> = violations.iter().map(|v| v.message.clone()).collect();
+    Err(ApiError::bad_request(format!(
+        "League entry requirements not met: {}",
+        messages.join("; ")
+    )))
+}
 
 /// Roster-lock override carried in the query string.
 ///

@@ -12,7 +12,7 @@
 //! (different services for different operations) rather than by module
 //! boundary, so everything registration-shaped lives together here.
 
-use super::{check_eligibility_for_players, get_request_id, require_registration_actor};
+use super::{check_eligibility_for_players, check_eligibility_for_team, get_request_id, require_registration_actor};
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{
     CreateTournamentInvitationRequest, DisqualifyRequest, RegisterPlayerRequest,
@@ -348,7 +348,8 @@ pub async fn register_team(
         .get_members(team_season_id)
         .await?;
     let player_ids: Vec<PlayerId> = members.iter().map(|m| m.player_id).collect();
-    check_eligibility_for_players(&state, &tournament, &player_ids).await?;
+    // Whole-roster check: per-player rules plus team aggregate bounds.
+    check_eligibility_for_team(&state, &tournament, &player_ids).await?;
 
     let registration = state
         .tournament_service

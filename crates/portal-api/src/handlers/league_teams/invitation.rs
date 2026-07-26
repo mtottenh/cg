@@ -237,6 +237,15 @@ pub async fn accept_invitation(
 ) -> ApiResult<Json<DataResponse<LeagueTeamMemberResponse>>> {
     let request_id = get_request_id(&headers);
 
+    // League entry requirements: the joining player + the team-total cap.
+    // Resolved from the invitation BEFORE accepting, so an ineligible accept
+    // leaves the invitation pending rather than half-consumed.
+    let invitation = state
+        .league_team_invitation_service
+        .get_invitation_with_team(invitation_id)
+        .await?;
+    super::check_roster_addition(&state, invitation.team_season_id, auth.player_id).await?;
+
     let member = state
         .league_team_invitation_service
         .accept_invitation(invitation_id, auth.player_id)

@@ -84,18 +84,23 @@ impl EligibilityRestrictions {
             .unwrap_or_default()
     }
 
-    /// A copy with the minimum-side team bounds removed.
+    /// Only the team-total rating cap, for enforcement during roster
+    /// assembly.
     ///
-    /// Used while a roster is still being assembled: a two-player team must
-    /// not be rejected for failing a five-player minimum it hasn't had the
-    /// chance to reach, while the maximum bounds must still stop additions
-    /// that push the roster over a cap.
+    /// The total is the one aggregate that grows monotonically with every
+    /// addition — once a roster is over a total cap, no later addition can
+    /// repair it, so rejecting the offending addition is always correct.
+    /// Average caps and all minimum bounds CAN be satisfied by later
+    /// additions (a high-rated pickup lowers nothing, but a low-rated one
+    /// lowers the average; a thin roster hasn't reached its floor *yet*), so
+    /// enforcing them mid-build would reject legal end states. They bind at
+    /// commitment points instead: season registration and tournament
+    /// registration.
     #[must_use]
-    pub fn without_team_minimums(&self) -> Self {
+    pub fn team_total_cap_only(&self) -> Self {
         Self {
-            min_team_total_rating: None,
-            min_team_average_rating: None,
-            ..self.clone()
+            max_team_total_rating: self.max_team_total_rating,
+            ..Self::default()
         }
     }
 

@@ -136,21 +136,30 @@ pub(super) async fn require_registration_actor(
 /// player-register handlers in `registration.rs` and nowhere else —
 /// keeping it out of the public surface avoids leaking an internal
 /// enforcement path.
-pub(super) async fn check_eligibility_for_players(
+/// Resolve the restrictions that actually bind a tournament: its own,
+/// composed strictest-wins with its league's entry requirements when it
+/// belongs to a league. A league tournament may tighten league rules but
+/// never loosen them — previously a league's rating floor simply did not
+/// apply to its tournaments at all.
+pub(super) async fn effective_restrictions(
     state: &TournamentState,
     tournament: &portal_domain::entities::Tournament,
-    player_ids: &[PlayerId],
-) -> Result<(), ApiError> {
-    let restrictions = tournament.eligibility_restrictions();
-    let violations = state
-        .eligibility_service
-        .check_players(&restrictions, tournament.game_id, player_ids)
-        .await?;
+) -> Result<portal_domain::entities::eligibility::EligibilityRestrictions, ApiError> {
+    let own = tournament.eligibility_restrictions();
+    let Some(league_id) = tournament.league_id else {
+        return Ok(own);
+    };
+    let league = state.league_service.get_league(league_id).await?;
+    let league_restrictions =
+        portal_domain::entities::eligibility::EligibilityRestrictions::from_settings(
+            &league.settings,
+        );
+    Ok(own.intersect(&league_restrictions))
+}
 
-    if violations.is_empty() {
-        return Ok(());
-    }
-
+fn eligibility_error(
+    violations: &[portal_domain::entities::eligibility::EligibilityViolation],
+) -> ApiError {
     let messages: Vec<String> = violations
         .iter()
         .map(|v| {
@@ -161,10 +170,49 @@ pub(super) async fn check_eligibility_for_players(
             }
         })
         .collect();
-    Err(ApiError::bad_request(format!(
+    ApiError::bad_request(format!(
         "Eligibility check failed: {}",
         messages.join("; ")
-    )))
+    ))
+}
+
+pub(super) async fn check_eligibility_for_players(
+    state: &TournamentState,
+    tournament: &portal_domain::entities::Tournament,
+    player_ids: &[PlayerId],
+) -> Result<(), ApiError> {
+    let restrictions = effective_restrictions(state, tournament).await?;
+    let violations = state
+        .eligibility_service
+        .check_players(&restrictions, tournament.game_id, player_ids)
+        .await?;
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(eligibility_error(&violations))
+    }
+}
+
+/// Check a registering team's full roster: per-player restrictions on every
+/// member plus the team-aggregate rating bounds (min and max, total and
+/// average).
+pub(super) async fn check_eligibility_for_team(
+    state: &TournamentState,
+    tournament: &portal_domain::entities::Tournament,
+    player_ids: &[PlayerId],
+) -> Result<(), ApiError> {
+    let restrictions = effective_restrictions(state, tournament).await?;
+    let violations = state
+        .eligibility_service
+        .check_team(&restrictions, tournament.game_id, player_ids)
+        .await?;
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(eligibility_error(&violations))
+    }
 }
 
 /// Auto-create and start a veto session when a match transitions to PickBan.

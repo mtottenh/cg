@@ -271,18 +271,23 @@ mod tests {
     }
 
     #[test]
-    fn without_team_minimums_keeps_caps() {
-        let r = team_restrictions().without_team_minimums();
-        // A two-player roster being assembled: min bounds must not fire...
+    fn team_total_cap_only_for_roster_building() {
+        let r = team_restrictions().team_total_cap_only();
+        // A two-player roster being assembled: floors and the average cap
+        // must not fire (later additions can still satisfy them)...
         let building = vec![player(1500), player(1500)];
         assert!(check_team_eligibility(&r, &building).is_empty());
-        // ...but the caps still do.
-        let heavy = vec![player(4000), player(4000), player(4000)];
-        let keys: Vec<_> = check_team_eligibility(&r, &heavy)
+        // ...and a high-rated pair whose average busts the cap is fine too —
+        // low-rated additions can still pull the average down.
+        let top_heavy = vec![player(4000), player(4000)];
+        assert!(check_team_eligibility(&r, &top_heavy).is_empty());
+        // But the total cap is monotone: once over, no addition repairs it.
+        let over_total = vec![player(4000), player(4000), player(4000)];
+        let keys: Vec<_> = check_team_eligibility(&r, &over_total)
             .iter()
             .map(|v| v.restriction.clone())
             .collect();
-        assert!(keys.contains(&"max_team_total_rating".to_string()), "{keys:?}");
+        assert_eq!(keys, vec!["max_team_total_rating".to_string()]);
     }
 
     #[test]

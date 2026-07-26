@@ -265,10 +265,11 @@ impl LineupEnforcer {
             });
         }
 
-        // Elo / eligibility caps (§5a) on who actually played.
+        // Elo / eligibility caps (§5a) on who actually played. The played
+        // lineup is a roster, so team-aggregate bounds apply here too.
         let elo_violations = self
             .eligibility_service
-            .check_players_from_settings(settings, game_id, &player_ids)
+            .check_team_from_settings(settings, game_id, &player_ids)
             .await?;
         for v in elo_violations {
             out.push(UnrecognizedPlayer {

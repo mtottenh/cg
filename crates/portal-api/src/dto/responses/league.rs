@@ -1,6 +1,8 @@
 //! League response DTOs.
 
+use super::tournament::EligibilityRestrictionsResponse;
 use chrono::{DateTime, Utc};
+use portal_domain::entities::eligibility::EligibilityRestrictions;
 use portal_domain::entities::league::{
     League, LeagueInvitation, LeagueMemberWithUser, LeagueStatus, UserLeagueMembership,
 };
@@ -26,6 +28,10 @@ pub struct LeagueResponse {
     /// League configuration including entry requirements.
     /// Entry requirements are stored under the `"eligibility"` key.
     pub settings: serde_json::Value,
+    /// Entry requirements, projected as the same typed shape tournaments
+    /// expose — clients no longer need to spelunk `settings` JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eligibility_restrictions: Option<EligibilityRestrictionsResponse>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -33,6 +39,10 @@ pub struct LeagueResponse {
 
 impl From<League> for LeagueResponse {
     fn from(league: League) -> Self {
+        let restrictions = EligibilityRestrictions::from_settings(&league.settings);
+        let eligibility_restrictions = restrictions
+            .has_restrictions()
+            .then(|| EligibilityRestrictionsResponse::from(restrictions));
         Self {
             id: league.id.to_string(),
             game_id: league.game_id.to_string(),
@@ -43,6 +53,7 @@ impl From<League> for LeagueResponse {
             access_type: league.access_type.as_str().to_string(),
             status: league.status,
             settings: league.settings,
+            eligibility_restrictions,
             created_by: league.created_by.to_string(),
             created_at: league.created_at,
             updated_at: league.updated_at,

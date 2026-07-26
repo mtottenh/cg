@@ -589,7 +589,7 @@ use utoipa_swagger_ui::SwaggerUi;
             TournamentResponse,
             TournamentSummaryResponse,
             crate::dto::responses::tournament::EligibilityRestrictionsResponse,
-            crate::dto::requests::tournament::EligibilityRestrictionsInput,
+            crate::dto::requests::eligibility::EligibilityRestrictionsInput,
             TournamentStageResponse,
             TournamentBracketResponse,
             TournamentRegistrationResponse,

@@ -11,6 +11,8 @@ use portal_core::{
 use portal_domain::entities::tournament::{
     CreateTournamentCommand, CreateTournamentStageCommand, UpdateTournamentCommand,
 };
+
+use super::eligibility::{EligibilityRestrictionsInput, merge_eligibility_into_settings};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
@@ -173,64 +175,9 @@ pub struct CreateTournamentRequest {
     ///
     /// Controls which players/teams are allowed to register based on
     /// their in-game rating, peak rating, rank tier, etc.
+    #[validate(nested)]
     #[serde(default)]
     pub eligibility_restrictions: Option<EligibilityRestrictionsInput>,
-}
-
-/// Typed input for eligibility restrictions.
-///
-/// All fields are optional — only specified fields are enforced.
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-pub struct EligibilityRestrictionsInput {
-    /// Max current rating for any individual player.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_rating_per_player: Option<i32>,
-
-    /// Min current rating for any individual player.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_rating_per_player: Option<i32>,
-
-    /// Max peak (all-time high) rating for any player (anti-smurf).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_peak_rating_per_player: Option<i32>,
-
-    /// Max average rating for any player (computed from history).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_avg_rating_per_player: Option<i32>,
-
-    /// Max sum of all team members' current ratings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_team_total_rating: Option<i32>,
-
-    /// Max average of team members' current ratings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_team_average_rating: Option<i32>,
-
-    /// Only allow players in certain rank tiers (e.g., `["silver", "gold"]`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_rank_tiers: Vec<String>,
-
-    /// Min matches played to be eligible.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_matches_played: Option<i32>,
-}
-
-/// Merge an optional typed eligibility input into the settings JSON.
-fn merge_eligibility_into_settings(
-    settings: Option<serde_json::Value>,
-    eligibility: Option<EligibilityRestrictionsInput>,
-) -> Option<serde_json::Value> {
-    let Some(eligibility) = eligibility else {
-        return settings;
-    };
-
-    let eligibility_json = serde_json::to_value(eligibility).unwrap_or_default();
-
-    let mut settings = settings.unwrap_or_else(|| serde_json::json!({}));
-    if let Some(obj) = settings.as_object_mut() {
-        obj.insert("eligibility".to_string(), eligibility_json);
-    }
-    Some(settings)
 }
 
 fn default_registration_type() -> String {

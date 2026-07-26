@@ -6,6 +6,7 @@ pub mod award;
 pub mod ban;
 pub mod demo;
 pub mod dispute;
+pub mod eligibility;
 pub mod evidence;
 pub mod forfeit;
 pub mod game;
@@ -84,7 +85,7 @@ pub use tournament::{
     AdminScheduleRequest, AutoSeedRequest, CancelScheduleProposalRequest, CheckInRequest,
     CounterProposeRequest, CreateTournamentInvitationRequest, CreateTournamentRequest,
     CreateTournamentStageRequest, DeclareLineupRequest, DisputeMatchRequest, DisqualifyRequest,
-    EligibilityRestrictionsInput, ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest,
+    ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest,
     MatchCheckInRequest, ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest,
     RejectRegistrationRequest, RejectScheduleProposalRequest, ResolveDisputeRequest,
     SeedAssignment, SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
@@ -94,4 +95,5 @@ pub use veto::{
     CreateVetoSessionRequest, GetVetoStateQuery, PerformVetoActionRequest, RecordCoinFlipRequest,
     SelectSideRequest, StartVetoSessionRequest,
 };
+pub use eligibility::EligibilityRestrictionsInput;
 pub use veto_delegate::CreateVetoDelegateRequest;

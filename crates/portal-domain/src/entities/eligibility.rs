@@ -28,9 +28,17 @@ pub struct EligibilityRestrictions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_team_total_rating: Option<i32>,
 
+    /// Minimum total rating across all team members.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_team_total_rating: Option<i32>,
+
     /// Maximum average rating across all team members.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_team_average_rating: Option<i32>,
+
+    /// Minimum average rating across all team members.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_team_average_rating: Option<i32>,
 
     /// Allowed rank tier IDs (empty means all tiers are allowed).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -44,14 +52,25 @@ pub struct EligibilityRestrictions {
 impl EligibilityRestrictions {
     /// Check if any restrictions are configured.
     pub fn has_restrictions(&self) -> bool {
+        self.has_player_restrictions() || self.has_team_restrictions()
+    }
+
+    /// Check if any per-player restrictions are configured.
+    pub fn has_player_restrictions(&self) -> bool {
         self.max_rating_per_player.is_some()
             || self.min_rating_per_player.is_some()
             || self.max_peak_rating_per_player.is_some()
             || self.max_avg_rating_per_player.is_some()
-            || self.max_team_total_rating.is_some()
-            || self.max_team_average_rating.is_some()
             || !self.allowed_rank_tiers.is_empty()
             || self.min_matches_played.is_some()
+    }
+
+    /// Check if any team-aggregate restrictions are configured.
+    pub fn has_team_restrictions(&self) -> bool {
+        self.max_team_total_rating.is_some()
+            || self.min_team_total_rating.is_some()
+            || self.max_team_average_rating.is_some()
+            || self.min_team_average_rating.is_some()
     }
 
     /// Parse eligibility restrictions from a settings JSON value.
@@ -63,6 +82,96 @@ impl EligibilityRestrictions {
             .get("eligibility")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default()
+    }
+
+    /// A copy with the minimum-side team bounds removed.
+    ///
+    /// Used while a roster is still being assembled: a two-player team must
+    /// not be rejected for failing a five-player minimum it hasn't had the
+    /// chance to reach, while the maximum bounds must still stop additions
+    /// that push the roster over a cap.
+    #[must_use]
+    pub fn without_team_minimums(&self) -> Self {
+        Self {
+            min_team_total_rating: None,
+            min_team_average_rating: None,
+            ..self.clone()
+        }
+    }
+
+    /// Compose two restriction sets, keeping the stricter bound on every
+    /// axis. Used to enforce a league's entry requirements on tournaments
+    /// inside it: the tournament may tighten league rules, never loosen
+    /// them.
+    ///
+    /// Maxima take the smaller value, minima the larger; `allowed_rank_tiers`
+    /// intersects when both sides restrict (an empty list means
+    /// unrestricted).
+    #[must_use]
+    pub fn intersect(&self, other: &Self) -> Self {
+        fn tighter_max(a: Option<i32>, b: Option<i32>) -> Option<i32> {
+            match (a, b) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (x, None) | (None, x) => x,
+            }
+        }
+        fn tighter_min(a: Option<i32>, b: Option<i32>) -> Option<i32> {
+            match (a, b) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (x, None) | (None, x) => x,
+            }
+        }
+
+        let allowed_rank_tiers = match (
+            self.allowed_rank_tiers.is_empty(),
+            other.allowed_rank_tiers.is_empty(),
+        ) {
+            (true, _) => other.allowed_rank_tiers.clone(),
+            (_, true) => self.allowed_rank_tiers.clone(),
+            (false, false) => self
+                .allowed_rank_tiers
+                .iter()
+                .filter(|t| other.allowed_rank_tiers.contains(t))
+                .cloned()
+                .collect(),
+        };
+
+        Self {
+            max_rating_per_player: tighter_max(
+                self.max_rating_per_player,
+                other.max_rating_per_player,
+            ),
+            min_rating_per_player: tighter_min(
+                self.min_rating_per_player,
+                other.min_rating_per_player,
+            ),
+            max_peak_rating_per_player: tighter_max(
+                self.max_peak_rating_per_player,
+                other.max_peak_rating_per_player,
+            ),
+            max_avg_rating_per_player: tighter_max(
+                self.max_avg_rating_per_player,
+                other.max_avg_rating_per_player,
+            ),
+            max_team_total_rating: tighter_max(
+                self.max_team_total_rating,
+                other.max_team_total_rating,
+            ),
+            min_team_total_rating: tighter_min(
+                self.min_team_total_rating,
+                other.min_team_total_rating,
+            ),
+            max_team_average_rating: tighter_max(
+                self.max_team_average_rating,
+                other.max_team_average_rating,
+            ),
+            min_team_average_rating: tighter_min(
+                self.min_team_average_rating,
+                other.min_team_average_rating,
+            ),
+            allowed_rank_tiers,
+            min_matches_played: tighter_min(self.min_matches_played, other.min_matches_played),
+        }
     }
 }
 

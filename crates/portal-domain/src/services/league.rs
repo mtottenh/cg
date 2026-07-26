@@ -128,6 +128,19 @@ where
             }
         }
 
+        // Merge-not-replace: a partial settings write (e.g. only the
+        // eligibility key) must not erase other stored keys.
+        let settings = match cmd.settings {
+            Some(incoming) => {
+                let league = self.get_league(league_id).await?;
+                Some(crate::services::settings_merge::shallow_merge(
+                    &league.settings,
+                    incoming,
+                ))
+            }
+            None => None,
+        };
+
         let league = self
             .league_repo
             .update(
@@ -139,7 +152,7 @@ where
                     logo_url: cmd.logo_url,
                     access_type: cmd.access_type.map(|a| a.as_str().to_string()),
                     status: cmd.status.map(|s| s.as_str().to_string()),
-                    settings: cmd.settings,
+                    settings,
                 },
             )
             .await?;

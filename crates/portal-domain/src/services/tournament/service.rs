@@ -256,7 +256,14 @@ where
                     default_map_veto_format: cmd.default_map_veto_format,
                     prize_pool: cmd.prize_pool,
                     rules_url: cmd.rules_url,
-                    settings: cmd.settings,
+                    // Merge-not-replace: a PATCH sending only one settings key
+                    // (e.g. eligibility) must not erase the others.
+                    settings: cmd.settings.map(|incoming| {
+                        crate::services::settings_merge::shallow_merge(
+                            &tournament.settings,
+                            incoming,
+                        )
+                    }),
                     withdrawal_policy: cmd.withdrawal_policy,
                 },
             )

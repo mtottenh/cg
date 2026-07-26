@@ -11,6 +11,7 @@ use portal_api::adapters::{EvidenceStorageBackend, S3EvidenceStorageAdapter};
 use portal_api::app::create_app;
 use portal_api::state::AppState;
 use portal_api::steam_openid::SteamOpenIdVerifier;
+use portal_api::steam_workshop::WorkshopMetadataProvider;
 use portal_db::DbPool;
 use portal_test::database::TestDb;
 use serde::de::DeserializeOwned;
@@ -78,6 +79,25 @@ impl TestApp {
         let state = AppState::new(db.pool.clone(), "test-jwt-secret")
             .await
             .with_steam_verifier(verifier);
+        let app = Self::with_connect_info(create_app(state));
+
+        Self {
+            app,
+            db,
+            server_addr: None,
+        }
+    }
+
+    /// Create a test application with an injected Steam Workshop metadata
+    /// double, so the workshop lookup endpoint can be exercised without
+    /// network access.
+    pub async fn new_with_workshop_metadata(provider: Arc<dyn WorkshopMetadataProvider>) -> Self {
+        Self::init_tracing();
+
+        let db = TestDb::new().await;
+        let state = AppState::new(db.pool.clone(), "test-jwt-secret")
+            .await
+            .with_workshop_metadata(provider);
         let app = Self::with_connect_info(create_app(state));
 
         Self {

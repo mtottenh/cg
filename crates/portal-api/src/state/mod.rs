@@ -22,6 +22,7 @@ use crate::adapters::{
 };
 use crate::adapters::{EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceStorageAdapter};
 use crate::steam_openid::{HttpSteamOpenIdVerifier, SteamAuthConfig, SteamOpenIdVerifier};
+use crate::steam_workshop::{HttpWorkshopClient, WorkshopMetadataProvider};
 use crate::websocket::VetoLobbyManager;
 use crate::websocket::agent_manager::AgentConnectionManager;
 use portal_db::{
@@ -387,6 +388,8 @@ pub struct AppState {
     pub steam_verifier: Arc<dyn SteamOpenIdVerifier>,
     /// Steam sign-in configuration (public/frontend URLs, optional API key).
     pub steam_auth_config: SteamAuthConfig,
+    /// Steam Workshop metadata lookup (outbound GetPublishedFileDetails seam).
+    pub workshop_metadata: Arc<dyn WorkshopMetadataProvider>,
 }
 
 /// Token expiry configuration.
@@ -1029,6 +1032,7 @@ impl AppState {
             token_config: TokenConfig::default(),
             steam_verifier: Arc::new(HttpSteamOpenIdVerifier::new()),
             steam_auth_config: SteamAuthConfig::from_env(),
+            workshop_metadata: Arc::new(HttpWorkshopClient::steam_default()),
         }
     }
 
@@ -1046,6 +1050,16 @@ impl AppState {
     #[must_use]
     pub fn with_steam_verifier(mut self, verifier: Arc<dyn SteamOpenIdVerifier>) -> Self {
         self.steam_verifier = verifier;
+        self
+    }
+
+    /// Replace the Steam Workshop metadata provider.
+    ///
+    /// Integration tests inject a double here so the workshop lookup
+    /// endpoint can be exercised without any network access.
+    #[must_use]
+    pub fn with_workshop_metadata(mut self, provider: Arc<dyn WorkshopMetadataProvider>) -> Self {
+        self.workshop_metadata = provider;
         self
     }
 

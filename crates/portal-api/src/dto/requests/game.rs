@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
 
+/// URL, or empty. PATCH bodies use `""` as the "clear this field" sentinel
+/// (matching `engine_name`/`external_id`), which a plain `url` rule rejects.
+fn validate_url_or_empty(value: &str) -> Result<(), validator::ValidationError> {
+    if value.is_empty() || validator::ValidateUrl::validate_url(&value) {
+        Ok(())
+    } else {
+        Err(validator::ValidationError::new("url"))
+    }
+}
+
 /// Request to update a game's settings.
 #[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
 pub struct UpdateGameRequest {
@@ -65,6 +75,11 @@ pub struct AddMapRequest {
     #[schema(example = json!(["competitive"]))]
     pub game_modes: Vec<String>,
 
+    /// Engine-level map name (what the server and demo headers call the
+    /// map). Omit when it equals `id`; set for workshop maps.
+    #[validate(length(min = 1, max = 64))]
+    pub engine_name: Option<String>,
+
     /// External identifier (e.g., Steam Workshop ID).
     #[validate(length(max = 128))]
     pub external_id: Option<String>,
@@ -88,12 +103,17 @@ pub struct UpdateMapRequest {
     /// Game modes this map supports.
     pub game_modes: Option<Vec<String>>,
 
-    /// External identifier (e.g., Steam Workshop ID).
+    /// Engine-level map name. Empty string clears the override (falls
+    /// back to the map id).
+    #[validate(length(max = 64))]
+    pub engine_name: Option<String>,
+
+    /// External identifier (e.g., Steam Workshop ID). Empty string clears.
     #[validate(length(max = 128))]
     pub external_id: Option<String>,
 
-    /// External URL (e.g., Steam Workshop URL).
-    #[validate(url)]
+    /// External URL (e.g., Steam Workshop URL). Empty string clears.
+    #[validate(custom(function = "validate_url_or_empty"))]
     pub external_url: Option<String>,
 }
 

@@ -1411,3 +1411,157 @@ async fn test_rank_tiers_can_be_cleared_back_to_plugin_defaults() {
         "clearing the override must fall back to the plugin's tiers"
     );
 }
+
+// ============================================================================
+// WORKSHOP MAP TESTS
+// ============================================================================
+
+/// Stub workshop metadata provider: one known CS2 map, everything else 404s.
+struct StubWorkshopProvider;
+
+#[async_trait::async_trait]
+impl portal_api::steam_workshop::WorkshopMetadataProvider for StubWorkshopProvider {
+    async fn published_file_details(
+        &self,
+        file_id: u64,
+    ) -> Result<Option<portal_api::steam_workshop::WorkshopFileDetails>, String> {
+        if file_id != 3437809122 {
+            return Ok(None);
+        }
+        Ok(Some(portal_api::steam_workshop::WorkshopFileDetails {
+            workshop_id: file_id.to_string(),
+            title: Some("Cache".to_string()),
+            preview_url: Some("https://img.example/cache.jpg".to_string()),
+            filename: Some("de_cache.vpk".to_string()),
+            file_size_bytes: Some(734_003_200),
+            time_updated: Some(1_750_000_000),
+            consumer_app_id: Some(730),
+            visibility: Some(0),
+            banned: false,
+        }))
+    }
+}
+
+#[tokio::test]
+async fn test_workshop_lookup_returns_prefill_metadata() {
+    let app = TestApp::new_with_workshop_metadata(std::sync::Arc::new(StubWorkshopProvider)).await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app.get_auth("/v1/games/cs2/workshop-maps/3437809122").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let data = &body["data"];
+    assert_eq!(data["workshop_id"], "3437809122");
+    assert_eq!(data["title"], "Cache");
+    assert_eq!(data["engine_name_hint"], "de_cache");
+    assert_eq!(data["consumer_app_id"], 730);
+    assert_eq!(data["visibility"], 0);
+    assert_eq!(data["banned"], false);
+    assert_eq!(
+        data["workshop_url"],
+        "https://steamcommunity.com/sharedfiles/filedetails/?id=3437809122"
+    );
+
+    // Unknown item → 404; non-numeric id → 400.
+    let response = app.get_auth("/v1/games/cs2/workshop-maps/999").await;
+    response.assert_status(StatusCode::NOT_FOUND);
+    let response = app.get_auth("/v1/games/cs2/workshop-maps/de_cache").await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_workshop_lookup_requires_games_admin() {
+    let app = TestApp::new_with_workshop_metadata(std::sync::Arc::new(StubWorkshopProvider)).await;
+    // No admin grant.
+    let response = app.get_auth("/v1/games/cs2/workshop-maps/3437809122").await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_map_engine_name_roundtrip_and_clear() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Add a workshop map whose engine name differs from the portal id.
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_cache_ws",
+                "display_name": "Cache (Workshop)",
+                "game_modes": ["competitive"],
+                "engine_name": "de_cache",
+                "external_id": "3437809122",
+                "external_url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3437809122"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let added = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "de_cache_ws")
+        .unwrap()
+        .clone();
+    assert_eq!(added["engine_name"], "de_cache");
+
+    // The stored catalog serves it back on public reads.
+    let response = app.get("/v1/games/cs2/maps").await;
+    let body: serde_json::Value = response.json();
+    let served = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "de_cache_ws")
+        .unwrap()
+        .clone();
+    assert_eq!(served["engine_name"], "de_cache");
+
+    // Patching with an empty engine_name clears the override.
+    let response = app
+        .patch_json(
+            "/v1/games/cs2/maps/catalog/de_cache_ws",
+            &json!({ "engine_name": "" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body["data"].get("engine_name").is_none() || body["data"]["engine_name"].is_null(),
+        "empty engine_name must clear the override, got: {}",
+        body["data"]
+    );
+}
+
+#[tokio::test]
+async fn test_add_map_engine_name_equal_to_id_is_normalized_away() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_season",
+                "display_name": "Season",
+                "game_modes": ["competitive"],
+                "engine_name": "de_season"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let added = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "de_season")
+        .unwrap()
+        .clone();
+    assert!(
+        added.get("engine_name").is_none() || added["engine_name"].is_null(),
+        "engine_name equal to the id is noise and must not be stored"
+    );
+}

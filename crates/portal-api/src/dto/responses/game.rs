@@ -156,13 +156,93 @@ pub struct MapInfoResponse {
     #[schema(example = json!(["competitive", "casual"]))]
     pub game_modes: Vec<String>,
 
+    /// Engine-level map name (what the server and demo headers call the
+    /// map). Absent means it equals `id`; set for workshop maps whose
+    /// in-VPK name differs from the portal id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "de_cache")]
+    pub engine_name: Option<String>,
+
     /// External identifier (e.g., Steam Workshop ID).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
 
     /// External URL (e.g., full Steam Workshop URL).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_url: Option<String>,
+}
+
+impl MapInfoResponse {
+    /// The engine-level map name, falling back to the portal id.
+    #[must_use]
+    pub fn resolved_engine_name(&self) -> &str {
+        self.engine_name.as_deref().unwrap_or(&self.id)
+    }
+}
+
+/// Steam Workshop item details, for prefilling the admin map form.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct WorkshopMapDetailsResponse {
+    /// Workshop item id (decimal digits).
+    #[schema(example = "3437809122")]
+    pub workshop_id: String,
+
+    /// Item title (suggested display name).
+    pub title: Option<String>,
+
+    /// Preview image URL (suggested map image).
+    pub preview_url: Option<String>,
+
+    /// Engine-level map-name hint derived from the item's upload filename
+    /// (e.g. `de_cache.vpk` → `de_cache`). A hint, not a guarantee — the
+    /// admin should correct it if demo validation later reports otherwise.
+    #[schema(example = "de_cache")]
+    pub engine_name_hint: Option<String>,
+
+    /// Item size in bytes (drives the download-stall expectation).
+    pub file_size_bytes: Option<i64>,
+
+    /// When the author last updated the item.
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+
+    /// App the item belongs to (CS2 = 730) — mismatches mean the pasted
+    /// id is not a CS2 map.
+    pub consumer_app_id: Option<i64>,
+
+    /// 0 = public, 1 = friends-only, 2 = private, 3 = unlisted. Servers
+    /// can only download public/unlisted items.
+    pub visibility: Option<i64>,
+
+    /// Whether Steam has banned the item.
+    pub banned: bool,
+
+    /// Canonical steamcommunity URL for the item.
+    pub workshop_url: String,
+}
+
+impl From<crate::steam_workshop::WorkshopFileDetails> for WorkshopMapDetailsResponse {
+    fn from(d: crate::steam_workshop::WorkshopFileDetails) -> Self {
+        Self {
+            workshop_url: format!(
+                "https://steamcommunity.com/sharedfiles/filedetails/?id={}",
+                d.workshop_id
+            ),
+            engine_name_hint: d
+                .filename
+                .as_deref()
+                .and_then(crate::steam_workshop::engine_name_hint),
+            updated_at: d
+                .time_updated
+                .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0)),
+            workshop_id: d.workshop_id,
+            title: d.title,
+            preview_url: d.preview_url,
+            file_size_bytes: d.file_size_bytes,
+            consumer_app_id: d.consumer_app_id,
+            visibility: d.visibility,
+            banned: d.banned,
+        }
+    }
 }
 
 /// Rank tier definition.
@@ -220,6 +300,7 @@ impl From<portal_plugins::MapInfo> for MapInfoResponse {
             display_name: info.display_name,
             image_url: info.image_url,
             game_modes: info.game_modes,
+            engine_name: info.engine_name,
             external_id: info.external_id,
             external_url: info.external_url,
         }

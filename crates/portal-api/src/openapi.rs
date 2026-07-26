@@ -71,7 +71,7 @@ use crate::dto::responses::{
     TournamentResponse, TournamentStageResponse, TournamentSummaryResponse, UploadInfoResponse,
     UserLeagueMembershipResponse, UserResponse, UserRoleAssignmentResponse,
     ValidationResultResponse, VetoActionResponse, VetoActionResultResponse, VetoFormatResponse,
-    VetoSessionResponse, VetoSessionStateResponse, WithdrawalResponse,
+    VetoSessionResponse, VetoSessionStateResponse, WithdrawalResponse, WorkshopMapDetailsResponse,
 };
 use crate::error::{ApiError, FieldErrorDto};
 use crate::handlers::{
@@ -142,6 +142,7 @@ use utoipa_swagger_ui::SwaggerUi;
         games::disable_game,
         games::add_map,
         games::update_map,
+        games::get_workshop_map_details,
         games::remove_map,
         games::set_rank_tiers,
         games::update_team_size,
@@ -457,6 +458,7 @@ use utoipa_swagger_ui::SwaggerUi;
             GameDetailResponse,
             TeamSizeConfig,
             MapInfoResponse,
+            WorkshopMapDetailsResponse,
             RankTierResponse,
             MapPickBanFormatResponse,
             UpdateGameRequest,

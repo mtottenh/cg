@@ -18,7 +18,8 @@ pub use demo_client::{Cs2DemoClient, validate_base_url as validate_demo_service_
 pub use demo_stats::Cs2DemoStats;
 pub use evidence_validator::Cs2EvidenceValidator;
 pub use matchzy::{
-    MatchzyConfigInput, MatchzyTeam, build_matchzy_config, validate_input as validate_matchzy_input,
+    MatchzyConfigInput, MatchzyMapRef, MatchzyTeam, build_matchzy_config, matchzy_map_tokens,
+    validate_input as validate_matchzy_input, workshop_numeric_id,
 };
 
 use serde_json::{Value, json};
@@ -87,6 +88,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Dust II".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_dust2_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -95,6 +97,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Mirage".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_mirage_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -103,6 +106,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Inferno".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_inferno_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -111,6 +115,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Nuke".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_nuke_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -119,6 +124,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Ancient".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_ancient_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -127,6 +133,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Anubis".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_anubis_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -135,6 +142,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Vertigo".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_vertigo_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },

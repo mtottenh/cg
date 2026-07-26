@@ -25,7 +25,8 @@ use portal_domain::services::game_server::{
     derive_map_sides, generate_connect_password, generate_reservation_token, hash_token,
 };
 use portal_plugins::games::cs2::{
-    MatchzyConfigInput, MatchzyTeam, build_matchzy_config, validate_matchzy_input,
+    MatchzyConfigInput, MatchzyMapRef, MatchzyTeam, build_matchzy_config, matchzy_map_tokens,
+    validate_matchzy_input, workshop_numeric_id,
 };
 
 use crate::state::AppState;
@@ -436,7 +437,10 @@ pub async fn cancel_assignment(
 // =============================================================================
 
 /// Build the MatchZy config. `Err` carries a user-actionable reason.
-async fn build_config(
+///
+/// `pub` so integration tests can exercise config generation (catalog →
+/// maplist token translation) without a live agent connection.
+pub async fn build_config(
     state: &AppState,
     match_: &TournamentMatch,
     reservation: &ServerReservation,
@@ -506,19 +510,55 @@ async fn build_config(
     };
     // §6.3/§12-Q3: team size comes from the admin-editable game config —
     // roster size must not widen the server (an 8-man roster is still 5v5).
-    let players_per_team = state
+    let game_row = state
         .game_repo
         .find_by_id(tournament.game_id.as_uuid())
         .await
         .ok()
-        .flatten()
+        .flatten();
+    let players_per_team = game_row
+        .as_ref()
         .and_then(|game| u32::try_from(game.team_size_default).ok())
         .unwrap_or(5);
+
+    // Resolve portal map ids to MatchZy tokens through the game's map
+    // catalog: workshop item id when the map is workshop-hosted, else the
+    // engine-level name. Ids missing from the catalog (edited after the
+    // veto) pass through unchanged — for stock maps the id IS the name.
+    let catalog = game_row
+        .as_ref()
+        .map(|game| {
+            let plugin = state.plugin_manager.get(&game.plugin_id);
+            crate::handlers::games::load_available_maps(game, &plugin)
+        })
+        .unwrap_or_default();
+    let mut map_refs = Vec::with_capacity(maplist.len());
+    for map_id in &maplist {
+        let map_ref = match catalog.iter().find(|m| &m.id == map_id) {
+            Some(m) => MatchzyMapRef {
+                portal_id: m.id.clone(),
+                engine_name: m.engine_name.clone(),
+                workshop_id: match m.external_id.as_deref() {
+                    Some(ext) => Some(workshop_numeric_id(ext).ok_or_else(|| {
+                        format!("map \"{}\" has an unparseable workshop id: {ext}", m.id)
+                    })?),
+                    None => None,
+                },
+            },
+            None => MatchzyMapRef {
+                portal_id: map_id.clone(),
+                engine_name: None,
+                workshop_id: None,
+            },
+        };
+        map_refs.push(map_ref);
+    }
+    let matchzy_maplist = matchzy_map_tokens(&map_refs)?;
 
     let base = state.public_base_url.trim_end_matches('/');
     let input = MatchzyConfigInput {
         matchzy_id: reservation.matchzy_id,
-        maplist: maplist.clone(),
+        maplist: matchzy_maplist,
         map_sides,
         team1,
         team2,

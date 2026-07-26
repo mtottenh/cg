@@ -339,12 +339,25 @@ pub struct MapInfo {
     pub display_name: String,
     pub image_url: Option<String>,
     pub game_modes: Vec<String>,
+    /// Engine-level map name — what the game server and demo headers call
+    /// the map. `None` means it equals `id` (true for every stock map);
+    /// workshop maps carry the name from inside the author's VPK here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_name: Option<String>,
     /// External identifier (e.g., Steam Workshop ID).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
     /// External URL (e.g., full Steam Workshop URL).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_url: Option<String>,
+}
+
+impl MapInfo {
+    /// The engine-level map name, falling back to the portal id.
+    #[must_use]
+    pub fn resolved_engine_name(&self) -> &str {
+        self.engine_name.as_deref().unwrap_or(&self.id)
+    }
 }
 
 /// Rank tier definition.
@@ -677,6 +690,8 @@ mod evidence_plugin_default_tests {
             map_id: Some("de_inferno".to_string()),
             participant1_score: 16,
             participant2_score: 10,
+            expected_map_names: vec![],
+            map_name_advisory: false,
         };
 
         let result = plugin.validate_evidence(&storage, &claimed).await;

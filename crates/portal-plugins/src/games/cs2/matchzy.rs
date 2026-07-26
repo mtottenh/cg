@@ -18,6 +18,72 @@
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+/// A maplist entry resolved against the game's map catalog.
+#[derive(Debug, Clone)]
+pub struct MatchzyMapRef {
+    /// Portal map id (the veto/pool identifier).
+    pub portal_id: String,
+    /// Engine-level map name when it differs from the portal id.
+    pub engine_name: Option<String>,
+    /// Steam Workshop item id (decimal digits) for workshop-hosted maps.
+    pub workshop_id: Option<String>,
+}
+
+/// Extract the numeric workshop item id from a catalog `external_id` —
+/// accepts bare digits or a steamcommunity `filedetails/?id=…` URL.
+#[must_use]
+pub fn workshop_numeric_id(external_id: &str) -> Option<String> {
+    let trimmed = external_id.trim();
+    if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(trimmed.to_string());
+    }
+    let (_, after) = trimmed.split_once("id=")?;
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    (!digits.is_empty()).then_some(digits)
+}
+
+/// Resolve maplist entries to the tokens MatchZy understands.
+///
+/// Verified v0.8.15 `ChangeMap` contract: a token that parses as an
+/// integer is loaded via `host_workshop_map <id>` (on-demand Steam CDN
+/// download); anything else goes through `changelevel <name>`, which
+/// SILENTLY does nothing unless the map is valid on the server. So the
+/// token is the workshop id when present, else the engine-level name —
+/// and anything unexpressible is an error here rather than a match that
+/// hangs on the wrong map.
+pub fn matchzy_map_tokens(maps: &[MatchzyMapRef]) -> Result<Vec<String>, String> {
+    maps.iter()
+        .map(|m| {
+            if let Some(ws) = &m.workshop_id {
+                if ws.is_empty() || !ws.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(format!(
+                        "map \"{}\" has a non-numeric workshop id: {ws:?}",
+                        m.portal_id
+                    ));
+                }
+                return Ok(ws.clone());
+            }
+            let name = m.engine_name.as_deref().unwrap_or(&m.portal_id);
+            let name_ok = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+            if !name_ok {
+                return Err(format!(
+                    "map \"{}\" has an invalid engine name: {name:?}",
+                    m.portal_id
+                ));
+            }
+            Ok(name.to_string())
+        })
+        .collect()
+}
+
+/// A maplist token MatchZy will treat as a workshop item id.
+fn is_workshop_token(token: &str) -> bool {
+    !token.is_empty() && token.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// One team's identity and roster for the config.
 #[derive(Debug, Clone)]
 pub struct MatchzyTeam {
@@ -34,7 +100,9 @@ pub struct MatchzyTeam {
 pub struct MatchzyConfigInput {
     /// The integer `matchid` (reservation `matchzy_id`).
     pub matchzy_id: i64,
-    /// Picked maps in play order — length defines `num_maps`.
+    /// Picked maps in play order as MatchZy tokens (see
+    /// [`matchzy_map_tokens`]: workshop item id, or engine-level name) —
+    /// length defines `num_maps`.
     pub maplist: Vec<String>,
     /// Full-length side assignments (`team1_ct` / `team2_ct` / … / `knife`).
     pub map_sides: Vec<String>,
@@ -114,6 +182,12 @@ pub fn build_matchzy_config(input: &MatchzyConfigInput) -> Value {
         "matchzy_kick_when_no_match_loaded".to_string(),
         "true".to_string(),
     );
+    // Workshop maps download from the Steam CDN at changelevel time; widen
+    // the between-maps window so multi-hundred-MB maps arrive before the
+    // next map is expected live (Get5 applies the same +20s buffer).
+    if input.maplist.iter().any(|t| is_workshop_token(t)) {
+        cvars.insert("mp_match_restart_delay".to_string(), "45".to_string());
+    }
     // Tournament overrides win over the defaults above — except the
     // security-relevant keys, which are portal-owned.
     for (key, value) in &input.extra_cvars {
@@ -279,5 +353,91 @@ mod tests {
         let mut i = input();
         i.team1.players.clear();
         assert!(validate_input(&i).unwrap_err().contains("no players"));
+    }
+
+    fn map_ref(portal_id: &str) -> MatchzyMapRef {
+        MatchzyMapRef {
+            portal_id: portal_id.into(),
+            engine_name: None,
+            workshop_id: None,
+        }
+    }
+
+    #[test]
+    fn map_tokens_prefer_workshop_id_then_engine_name_then_portal_id() {
+        let refs = vec![
+            MatchzyMapRef {
+                workshop_id: Some("3070244462".into()),
+                engine_name: Some("de_cache".into()),
+                ..map_ref("cache_workshop")
+            },
+            MatchzyMapRef {
+                engine_name: Some("de_mirage".into()),
+                ..map_ref("mirage_comp")
+            },
+            map_ref("de_nuke"),
+        ];
+        assert_eq!(
+            matchzy_map_tokens(&refs).unwrap(),
+            vec!["3070244462", "de_mirage", "de_nuke"]
+        );
+    }
+
+    #[test]
+    fn map_tokens_reject_unexpressible_entries() {
+        let mut bad_ws = map_ref("m");
+        bad_ws.workshop_id = Some("12ab34".into());
+        assert!(
+            matchzy_map_tokens(&[bad_ws])
+                .unwrap_err()
+                .contains("non-numeric workshop id")
+        );
+
+        let mut bad_name = map_ref("m");
+        bad_name.engine_name = Some("de_cache; say pwned".into());
+        assert!(
+            matchzy_map_tokens(&[bad_name])
+                .unwrap_err()
+                .contains("invalid engine name")
+        );
+    }
+
+    #[test]
+    fn workshop_numeric_id_accepts_digits_and_filedetails_urls() {
+        assert_eq!(
+            workshop_numeric_id("3070244462").as_deref(),
+            Some("3070244462")
+        );
+        assert_eq!(
+            workshop_numeric_id(" 3070244462 ").as_deref(),
+            Some("3070244462")
+        );
+        assert_eq!(
+            workshop_numeric_id(
+                "https://steamcommunity.com/sharedfiles/filedetails/?id=3070244462&searchtext=x"
+            )
+            .as_deref(),
+            Some("3070244462")
+        );
+        assert_eq!(workshop_numeric_id("de_cache"), None);
+        assert_eq!(workshop_numeric_id(""), None);
+    }
+
+    #[test]
+    fn workshop_maplist_widens_restart_delay_unless_overridden() {
+        let mut i = input();
+        i.maplist = vec!["3070244462".into(), "de_nuke".into(), "de_ancient".into()];
+        let config = build_matchzy_config(&i);
+        assert_eq!(config["cvars"]["mp_match_restart_delay"], "45");
+
+        // Tournament override wins.
+        i.extra_cvars
+            .insert("mp_match_restart_delay".into(), "60".into());
+        let config = build_matchzy_config(&i);
+        assert_eq!(config["cvars"]["mp_match_restart_delay"], "60");
+
+        // No workshop maps → no forced delay.
+        let config = build_matchzy_config(&input());
+        assert!(config["cvars"].get("mp_match_restart_delay").is_none());
     }
 }

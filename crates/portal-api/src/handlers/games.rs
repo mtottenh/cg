@@ -7,6 +7,7 @@ use crate::dto::requests::{
 };
 use crate::dto::responses::{
     GameDetailResponse, GameSummaryResponse, MapInfoResponse, RankTierResponse, TeamSizeConfig,
+    WorkshopMapDetailsResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, OptionalAuthenticatedUser, ValidatedJson};
@@ -819,8 +820,10 @@ pub async fn add_map(
         )));
     }
 
-    // Append new map
+    // Append new map. An engine_name equal to the id is noise — store None
+    // so "absent = same as id" stays the single representation.
     maps.push(MapInfoResponse {
+        engine_name: req.engine_name.filter(|n| n != &req.id),
         id: req.id,
         display_name: req.display_name,
         image_url: req.image_url,
@@ -898,11 +901,20 @@ pub async fn update_map(
     if let Some(game_modes) = req.game_modes {
         map.game_modes = game_modes;
     }
+    if let Some(engine_name) = req.engine_name {
+        // Empty string (or the id itself) clears the override back to
+        // "absent = same as id".
+        map.engine_name = Some(engine_name)
+            .filter(|n| !n.is_empty())
+            .filter(|n| n != &map.id);
+    }
+    // Empty string clears — `Some("")` would read as "is a workshop map"
+    // downstream and then fail token translation.
     if let Some(external_id) = req.external_id {
-        map.external_id = Some(external_id);
+        map.external_id = Some(external_id).filter(|x| !x.is_empty());
     }
     if let Some(external_url) = req.external_url {
-        map.external_url = Some(external_url);
+        map.external_url = Some(external_url).filter(|x| !x.is_empty());
     }
 
     let updated_map = map.clone();
@@ -977,6 +989,67 @@ pub async fn remove_map(
     let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Look up Steam Workshop metadata for a map (admin only).
+///
+/// Validates an admin-pasted workshop item id and returns prefill data
+/// for the map-catalog form (title, preview image, engine-name hint,
+/// size, app, visibility). Read-only pass-through to Steam's keyless
+/// `GetPublishedFileDetails` endpoint — nothing is stored.
+#[utoipa::path(
+    get,
+    path = "/v1/games/{game_id}/workshop-maps/{workshop_id}",
+    params(
+        ("game_id" = String, Path, description = "Game ID (slug)"),
+        ("workshop_id" = String, Path, description = "Workshop item id (decimal digits)")
+    ),
+    responses(
+        (status = 200, description = "Workshop item details", body = DataResponse<WorkshopMapDetailsResponse>),
+        (status = 400, description = "Not a workshop item id", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden - admin role required", body = ApiError),
+        (status = 404, description = "Game or workshop item not found", body = ApiError),
+        (status = 503, description = "Steam Web API unreachable", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "games"
+)]
+pub async fn get_workshop_map_details(
+    State(state): State<GamesState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path((game_id, workshop_id)): Path<(String, String)>,
+) -> ApiResult<Json<DataResponse<WorkshopMapDetailsResponse>>> {
+    let request_id = get_request_id(&headers);
+    require_games_admin(&state, &auth).await?;
+
+    // The lookup is game-scoped for route cohesion; the game must exist.
+    let _ = state
+        .game_repo
+        .find_by_id_or_slug(&game_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
+
+    // Liberal in what we accept: bare digits or a pasted filedetails URL
+    // fragment still containing `id=`.
+    let numeric_id = portal_plugins::games::cs2::workshop_numeric_id(&workshop_id)
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .ok_or_else(|| {
+            ApiError::bad_request("workshop_id must be a numeric Steam Workshop item id")
+        })?;
+
+    let details = state
+        .workshop_metadata
+        .published_file_details(numeric_id)
+        .await
+        .map_err(ApiError::service_unavailable)?
+        .ok_or_else(|| ApiError::not_found(format!("Workshop item not found: {numeric_id}")))?;
+
+    Ok(Json(DataResponse::new(
+        WorkshopMapDetailsResponse::from(details),
+        request_id,
+    )))
 }
 
 // ============================================================================

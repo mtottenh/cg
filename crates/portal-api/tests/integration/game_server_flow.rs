@@ -693,3 +693,125 @@ async fn test_console_passthrough_requires_agent_and_permission() {
         .await;
     response.assert_status(StatusCode::CONFLICT);
 }
+
+/// Workshop + engine-renamed maps must reach MatchZy as tokens it can act
+/// on (workshop item id / engine name), while every portal-side record
+/// (match game rows) keeps the portal map id.
+#[tokio::test]
+async fn test_workshop_maps_emit_matchzy_tokens_in_config() {
+    use portal_domain::repositories::TournamentMatchGameRepository;
+    use portal_domain::repositories::TournamentMatchRepository;
+
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, reg1, reg2) =
+        create_tournament_with_matches(&app, "ws-tokens").await;
+    let game_id = get_game_id_str(&app).await;
+    seed_available_server(&state, &game_id, "Workshop box").await;
+
+    // Grant games admin to the dev user (map catalog writes).
+    let dev_user_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    let role_row = sqlx::query("SELECT id FROM roles WHERE name = 'platform_admin'")
+        .fetch_one(app.pool())
+        .await
+        .expect("platform_admin role exists");
+    let role_id: uuid::Uuid = sqlx::Row::get(&role_row, "id");
+    sqlx::query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(dev_user_id)
+        .bind(role_id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    // Catalog: a workshop map (URL-form external id) and an engine-renamed
+    // stock-alike map.
+    let response = app
+        .post_json(
+            &format!("/v1/games/{game_id}/maps/catalog"),
+            &json!({
+                "id": "de_cache_ws",
+                "display_name": "Cache (Workshop)",
+                "game_modes": ["competitive"],
+                "engine_name": "de_cache",
+                "external_id": "https://steamcommunity.com/sharedfiles/filedetails/?id=3437809122",
+                "external_url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3437809122"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let response = app
+        .post_json(
+            &format!("/v1/games/{game_id}/maps/catalog"),
+            &json!({
+                "id": "mirage_renamed",
+                "display_name": "Mirage (Renamed)",
+                "game_modes": ["competitive"],
+                "engine_name": "de_mirage"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Tournament pool in play order; bo3 match takes the first three.
+    let response = app
+        .put_json(
+            &format!("/v1/tournaments/{tournament_id}/map-pool"),
+            &json!({ "map_ids": ["de_cache_ws", "mirage_renamed", "de_nuke"] }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // Both solo participants need linked Steam IDs for the roster.
+    for (i, reg) in [&reg1, &reg2].into_iter().enumerate() {
+        sqlx::query(
+            "UPDATE players SET steam_id = $1 WHERE id = \
+             (SELECT player_id FROM tournament_registrations WHERE id = $2)",
+        )
+        .bind(format!("7656119800000000{i}"))
+        .bind(uuid::Uuid::parse_str(reg).unwrap())
+        .execute(app.pool())
+        .await
+        .unwrap();
+    }
+
+    let (reservation, _token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id.parse().unwrap())
+        .await
+        .unwrap()
+        .expect("match exists");
+
+    let config = portal_api::game_server_flow::build_config(
+        &state,
+        &match_,
+        &reservation,
+        "cgm_test_event_token",
+    )
+    .await
+    .expect("config builds");
+
+    // MatchZy sees actionable tokens (the no-veto path takes
+    // `maps_required` maps from the pool in listed order)…
+    assert_eq!(
+        config["num_maps"].as_u64().unwrap(),
+        config["maplist"].as_array().unwrap().len() as u64
+    );
+    assert_eq!(config["maplist"][0], "3437809122");
+    assert_eq!(config["maplist"][1], "de_mirage");
+    // …no-veto matches knife for sides on every map…
+    assert_eq!(config["map_sides"][0], "knife");
+    // …and the workshop download buffer is applied.
+    assert_eq!(config["cvars"]["mp_match_restart_delay"], "45");
+
+    // Portal-side game rows keep the PORTAL map ids — events pair by map
+    // number, stats/UI resolve names through the catalog.
+    let game1 = state
+        .tournament_match_game_repo
+        .find_by_number(match_.id, 1)
+        .await
+        .unwrap()
+        .expect("game row 1 materialized");
+    assert_eq!(game1.map_id.as_deref(), Some("de_cache_ws"));
+}

@@ -30,15 +30,34 @@ impl Cs2EvidenceValidator {
         let mut errors = Vec::new();
         let mut confidence = 1.0f32;
 
-        // 1. Verify map matches (if claimed)
-        if let Some(claimed_map) = &claimed_result.map_id
-            && !Self::maps_match(&stats.map, claimed_map)
-        {
-            errors.push(format!(
-                "Map mismatch: demo has '{}', claimed '{}'",
-                stats.map, claimed_map
-            ));
-            confidence *= 0.0; // Fatal mismatch
+        // 1. Verify map matches (if claimed). The demo names any of: the
+        // claimed portal map id, or an expected engine-level name (workshop
+        // maps — the portal id is admin-chosen, the demo header carries the
+        // in-VPK name).
+        if let Some(claimed_map) = &claimed_result.map_id {
+            let name_matches = Self::maps_match(&stats.map, claimed_map)
+                || claimed_result
+                    .expected_map_names
+                    .iter()
+                    .any(|expected| Self::maps_match(&stats.map, expected));
+            if !name_matches {
+                if claimed_result.map_name_advisory {
+                    // Unconfirmed workshop engine name: the likelier fault is
+                    // the catalog, not the demo — degrade, don't destroy, and
+                    // tell the admin exactly what to fix.
+                    warnings.push(format!(
+                        "Demo map '{}' does not match '{claimed_map}' — if this demo is on the right map, set the catalog engine name to '{}'",
+                        stats.map, stats.map
+                    ));
+                    confidence *= 0.7;
+                } else {
+                    errors.push(format!(
+                        "Map mismatch: demo has '{}', claimed '{claimed_map}'",
+                        stats.map
+                    ));
+                    confidence *= 0.0; // Fatal mismatch
+                }
+            }
         }
 
         // 2. Verify players participated
@@ -367,6 +386,8 @@ mod tests {
             map_id: Some("de_dust2".to_string()),
             participant1_score: 16,
             participant2_score: 10,
+            expected_map_names: vec![],
+            map_name_advisory: false,
         };
 
         let p1_ids = vec!["76561198000000001".to_string()];
@@ -393,6 +414,8 @@ mod tests {
             map_id: Some("de_dust2".to_string()),
             participant1_score: 16,
             participant2_score: 14, // Wrong score
+            expected_map_names: vec![],
+            map_name_advisory: false,
         };
 
         let p1_ids = vec!["76561198000000001".to_string()];
@@ -413,6 +436,81 @@ mod tests {
             map_id: Some("de_mirage".to_string()), // Wrong map
             participant1_score: 16,
             participant2_score: 10,
+            expected_map_names: vec![],
+            map_name_advisory: false,
+        };
+
+        let p1_ids = vec!["76561198000000001".to_string()];
+        let p2_ids = vec!["76561198000000002".to_string()];
+
+        let result = Cs2EvidenceValidator::validate(&stats, &claimed, &p1_ids, &p2_ids);
+
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.contains("Map mismatch")));
+    }
+
+    #[test]
+    fn test_workshop_map_matches_via_expected_engine_name() {
+        // Workshop map: the portal id is admin-chosen, the demo header
+        // carries the in-VPK name — supplied via expected_map_names.
+        let stats = create_test_stats(); // demo map: de_dust2
+        let claimed = GameResult {
+            game_number: 1,
+            map_id: Some("dust2_workshop_remake".to_string()),
+            participant1_score: 16,
+            participant2_score: 10,
+            expected_map_names: vec!["de_dust2".to_string()],
+            map_name_advisory: true,
+        };
+
+        let p1_ids = vec!["76561198000000001".to_string()];
+        let p2_ids = vec!["76561198000000002".to_string()];
+
+        let result = Cs2EvidenceValidator::validate(&stats, &claimed, &p1_ids, &p2_ids);
+
+        assert!(result.is_valid);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_workshop_map_advisory_mismatch_warns_not_fails() {
+        // Unmatched name on a workshop map: degraded confidence + a warning
+        // that names the observed demo map, never a fatal error.
+        let stats = create_test_stats();
+        let claimed = GameResult {
+            game_number: 1,
+            map_id: Some("aim_botz_tournament".to_string()),
+            participant1_score: 16,
+            participant2_score: 10,
+            expected_map_names: vec!["aim_botz".to_string()], // wrong hint
+            map_name_advisory: true,
+        };
+
+        let p1_ids = vec!["76561198000000001".to_string()];
+        let p2_ids = vec!["76561198000000002".to_string()];
+
+        let result = Cs2EvidenceValidator::validate(&stats, &claimed, &p1_ids, &p2_ids);
+
+        assert!(result.is_valid);
+        assert!(result.errors.is_empty());
+        assert!(result.confidence < 1.0);
+        // The warning tells the admin what engine name the demo actually has.
+        assert!(result.warnings.iter().any(|w| w.contains("de_dust2")));
+    }
+
+    #[test]
+    fn test_expected_names_without_advisory_stay_fatal() {
+        // A confirmed engine name that still mismatches is a real map
+        // mismatch — advisory only softens the unconfirmed-workshop case.
+        let stats = create_test_stats();
+        let claimed = GameResult {
+            game_number: 1,
+            map_id: Some("de_mirage".to_string()),
+            participant1_score: 16,
+            participant2_score: 10,
+            expected_map_names: vec!["de_mirage_alt".to_string()],
+            map_name_advisory: false,
         };
 
         let p1_ids = vec!["76561198000000001".to_string()];
@@ -432,6 +530,8 @@ mod tests {
             map_id: Some("de_dust2".to_string()),
             participant1_score: 16,
             participant2_score: 10,
+            expected_map_names: vec![],
+            map_name_advisory: false,
         };
 
         // Include a player not in the demo
@@ -457,6 +557,8 @@ mod tests {
             map_id: Some("dust2".to_string()), // Without de_ prefix
             participant1_score: 16,
             participant2_score: 10,
+            expected_map_names: vec![],
+            map_name_advisory: false,
         };
 
         let p1_ids = vec!["76561198000000001".to_string()];
@@ -476,6 +578,8 @@ mod tests {
             map_id: None, // No map claimed
             participant1_score: 16,
             participant2_score: 10,
+            expected_map_names: vec![],
+            map_name_advisory: false,
         };
 
         let p1_ids = vec!["76561198000000001".to_string()];
@@ -576,6 +680,8 @@ mod tests {
                 map_id: Some("de_dust2".to_string()),
                 participant1_score: claimed_alpha,
                 participant2_score: claimed_beta,
+                expected_map_names: vec![],
+                map_name_advisory: false,
             };
             let p1 = vec!["76561198000000001".to_string()];
             let p2 = vec!["76561198000000002".to_string()];
@@ -603,6 +709,8 @@ mod tests {
                 map_id: Some("de_dust2".to_string()),
                 participant1_score: alpha_score,
                 participant2_score: beta_score,
+                expected_map_names: vec![],
+                map_name_advisory: false,
             };
             let p1 = vec!["76561198000000001".to_string()];
             let p2 = vec!["76561198000000002".to_string()];

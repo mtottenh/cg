@@ -2,7 +2,7 @@
 //!
 //! Handlers for managing match evidence (demos, screenshots, videos, links).
 
-use crate::adapters::EvidencePluginAdapter;
+use crate::adapters::{EvidencePluginAdapter, MapValidationInfo};
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AddLinkEvidenceRequest, DiscoverEvidenceQuery, InitiateUploadRequest,
@@ -867,7 +867,8 @@ pub async fn validate_evidence(
         use portal_domain::services::tournament::EvidencePluginClient;
 
         let adapter = EvidencePluginAdapter::new(plugin)
-            .ok_or_else(|| ApiError::bad_request("Game plugin does not support evidence"))?;
+            .ok_or_else(|| ApiError::bad_request("Game plugin does not support evidence"))?
+            .with_map_catalog(map_catalog_for_tournament(&state, match_.tournament_id).await);
         let result = DomainGameResult {
             game_number: 1,
             map_id: String::new(),
@@ -1203,6 +1204,41 @@ async fn resolve_evidence_plugin(
     Ok((match_, plugin))
 }
 
+/// portal map id → validation facts from the game's stored map catalog.
+///
+/// Workshop maps only ever exist in the DB catalog (admins add them there),
+/// and plugin-default stock maps need no mapping (their id IS the engine
+/// name), so this reads only the game row's `available_maps`. Best-effort:
+/// any failure yields an empty map, which preserves the legacy exact check.
+async fn map_catalog_for_tournament(
+    state: &EvidenceState,
+    tournament_id: portal_core::TournamentId,
+) -> std::collections::HashMap<String, MapValidationInfo> {
+    let Ok(tournament) = state.tournament_service.get_tournament(tournament_id).await else {
+        return std::collections::HashMap::default();
+    };
+    let Ok(Some(game)) = state
+        .game_repo
+        .find_by_id(tournament.game_id.as_uuid())
+        .await
+    else {
+        return std::collections::HashMap::default();
+    };
+    let maps: Vec<crate::dto::responses::MapInfoResponse> =
+        serde_json::from_value(game.available_maps).unwrap_or_default();
+    maps.into_iter()
+        .map(|m| {
+            (
+                m.id,
+                MapValidationInfo {
+                    engine_name: m.engine_name,
+                    is_workshop: m.external_id.is_some(),
+                },
+            )
+        })
+        .collect()
+}
+
 /// Build a [`MatchEvidenceContext`] for a match.
 ///
 /// Resolves participant registration IDs to build participant contexts
@@ -1333,12 +1369,25 @@ pub async fn validate_demo(
         .unwrap_or_default();
 
     // Build claimed result from request
-    let claimed_result = GameResult {
+    let mut claimed_result = GameResult {
         game_number: req.game_number.unwrap_or(1),
         map_id: req.map_id,
         participant1_score: req.participant1_score,
         participant2_score: req.participant2_score,
+        expected_map_names: vec![],
+        map_name_advisory: false,
     };
+    // Resolve engine-name/workshop facts for the claimed map so a demo on a
+    // workshop map is checked against its real in-VPK name, not the portal id.
+    if let Some(map_id) = claimed_result.map_id.clone()
+        && let Ok(Some(match_)) = state.tournament_match_repo.find_by_id(match_id).await
+    {
+        let catalog = map_catalog_for_tournament(&state, match_.tournament_id).await;
+        if let Some(info) = catalog.get(&map_id) {
+            claimed_result.expected_map_names = info.engine_name.clone().into_iter().collect();
+            claimed_result.map_name_advisory = info.is_workshop;
+        }
+    }
 
     // Validate using CS2 plugin
     let cs2_plugin = create_cs2_plugin(&state);

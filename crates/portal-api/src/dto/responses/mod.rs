@@ -62,7 +62,7 @@ pub use forfeit::{
 };
 pub use game::{
     GameDetailResponse, GameSummaryResponse, MapInfoResponse, MapPickBanFormatResponse,
-    RankTierResponse, TeamSizeConfig,
+    RankTierResponse, TeamSizeConfig, WorkshopMapDetailsResponse,
 };
 pub use league::{
     LeagueInvitationResponse, LeagueMemberBasicResponse, LeagueMemberResponse, LeagueResponse,

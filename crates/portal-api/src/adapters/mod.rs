@@ -7,7 +7,7 @@ pub mod stats_updater;
 pub mod veto_plugin;
 
 pub use demo_validator::{DemoValidatorAdapter, LineupEnforcer};
-pub use evidence_plugin::EvidencePluginAdapter;
+pub use evidence_plugin::{EvidencePluginAdapter, MapValidationInfo};
 pub use evidence_storage::{
     EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceStorageAdapter,
 };

@@ -30,6 +30,7 @@ pub mod openapi;
 pub mod routes;
 pub mod state;
 pub mod steam_openid;
+pub mod steam_workshop;
 pub mod websocket;
 
 pub use app::{AppConfigError, create_app, try_create_app};

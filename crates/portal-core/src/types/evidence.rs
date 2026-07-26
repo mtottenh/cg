@@ -240,4 +240,16 @@ pub struct GameMatchResult {
     pub participant1_score: i32,
     /// Participant 2 score.
     pub participant2_score: i32,
+    /// Additional acceptable engine-level map names for `map_id` — a demo
+    /// naming any of these (or `map_id` itself) passes the map check.
+    /// Workshop maps live here: the portal map id is admin-chosen while
+    /// the demo header carries the name from inside the author's VPK.
+    #[serde(default)]
+    pub expected_map_names: Vec<String>,
+    /// When true, a map-name mismatch is advisory (warning + confidence
+    /// penalty) instead of fatal — used for workshop maps whose engine
+    /// name has not been confirmed, where a mismatch more likely means
+    /// "catalog engine_name is wrong" than "wrong demo".
+    #[serde(default)]
+    pub map_name_advisory: bool,
 }

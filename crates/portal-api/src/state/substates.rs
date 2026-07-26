@@ -213,6 +213,8 @@ pub struct GamesState {
     pub plugin_manager: Arc<PluginManager>,
     /// Permission repository (admin.games.manage check).
     pub permission_repo: PermissionRepository,
+    /// Steam Workshop metadata lookup (admin map-catalog prefill).
+    pub workshop_metadata: Arc<dyn crate::steam_workshop::WorkshopMetadataProvider>,
 }
 
 impl FromRef<AppState> for GamesState {
@@ -221,6 +223,7 @@ impl FromRef<AppState> for GamesState {
             game_repo: s.game_repo.clone(),
             plugin_manager: Arc::clone(&s.plugin_manager),
             permission_repo: s.permission_repo.clone(),
+            workshop_metadata: Arc::clone(&s.workshop_metadata),
         }
     }
 }

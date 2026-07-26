@@ -17,7 +17,7 @@ use portal_core::{
     DomainError, ResultClaimId, ResultReviewId, SagaId, TournamentMatchId, TournamentRegistrationId,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{error, info, instrument, warn};
+use tracing::{info, instrument, warn};
 
 use crate::entities::demo_validation::{DemoValidationResult, UnrecognizedPlayer};
 use crate::entities::result_review::{ResultReview, ResultReviewStatus};
@@ -268,16 +268,12 @@ where
                 Ok(SagaResult::paused(execution))
             }
             Err(e) => {
-                // Attempt compensation if needed
-                if self.should_compensate(&execution)
-                    && let Err(comp_err) = self.compensate(&saga_coordinator, &mut execution).await
-                {
-                    error!(
-                        saga_id = %execution.id,
-                        error = %comp_err,
-                        "Compensation failed"
-                    );
-                }
+                // No compensation step: undoing a confirmed result would be
+                // wrong, and every step here is idempotent — recovery is the
+                // lifecycle re-drive pass, which retries this Failed row and
+                // raises a progression-stall review if it has to give up
+                // (P-180). The old compensate() undid nothing and stamped the
+                // audit trail "compensated" anyway.
                 saga_coordinator
                     .fail_saga(&mut execution, &e.to_string())
                     .await?;
@@ -372,15 +368,7 @@ where
                 Ok(SagaResult::success(execution, output))
             }
             Err(e) => {
-                if self.should_compensate(&execution)
-                    && let Err(comp_err) = self.compensate(&saga_coordinator, &mut execution).await
-                {
-                    error!(
-                        saga_id = %execution.id,
-                        error = %comp_err,
-                        "Compensation failed"
-                    );
-                }
+                // No compensation — see execute_completion's failure arm.
                 saga_coordinator
                     .fail_saga(&mut execution, &e.to_string())
                     .await?;
@@ -1148,50 +1136,6 @@ where
                     .await;
             }
         }
-    }
-
-    // =========================================================================
-    // COMPENSATION
-    // =========================================================================
-
-    /// Check if compensation should be attempted.
-    fn should_compensate(&self, execution: &SagaExecution) -> bool {
-        // Only compensate if we got past the validation step
-        execution.current_step > 0
-    }
-
-    /// Compensate for failed saga.
-    async fn compensate(
-        &self,
-        saga_coordinator: &SagaCoordinator<SR>,
-        execution: &mut SagaExecution,
-    ) -> Result<(), DomainError> {
-        saga_coordinator.start_compensation(execution).await?;
-
-        // Compensation is complex for match completion - we'd need to:
-        // 1. Revert match status
-        // 2. Remove participant from next match
-        // 3. Revert standings updates
-        //
-        // For now, we just mark compensation as needed for manual review
-        warn!(
-            saga_id = %execution.id,
-            "Match completion saga requires manual compensation review"
-        );
-
-        // Delete progression logs for this saga
-        if let Ok(logs) = self.progression_log_repo.find_by_saga(execution.id).await {
-            info!(
-                saga_id = %execution.id,
-                log_count = logs.len(),
-                "Found progression logs for compensation"
-            );
-            // Note: actual deletion would depend on business requirements
-        }
-
-        saga_coordinator.complete_compensation(execution).await?;
-
-        Ok(())
     }
 
     // =========================================================================

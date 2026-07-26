@@ -157,15 +157,12 @@ where
             ));
         }
 
-        // Get all approved (but not checked-in) registrations
-        let (registrations, _) = self
+        // Get all approved (but not checked-in) registrations. Exhaustive
+        // fetch (P-188): with a capped page, anyone past the cap was never
+        // marked no-show and kept a live registration they never confirmed.
+        let registrations = self
             .registration_repo
-            .list_by_tournament(
-                tournament_id,
-                Some(TournamentRegistrationStatus::Approved),
-                1000, // Get all (reasonable limit)
-                0,
-            )
+            .list_all_by_tournament(tournament_id, Some(TournamentRegistrationStatus::Approved))
             .await?;
 
         let mut no_shows = Vec::new();

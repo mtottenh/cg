@@ -1644,15 +1644,16 @@ where
             })
             .collect();
 
-        // Get registrations to look up names/logos
-        let (registrations, _) = self
+        // Get registrations to look up names/logos. Exhaustive fetch
+        // (P-186): with a capped page, any approved participant past the
+        // cap fell out of reg_map and the filter_map below silently
+        // dropped them from the pairing — data loss, not display. With
+        // every approved row present, the residual drops below are
+        // legitimate by construction: a standing whose registration is no
+        // longer approved (disqualified, withdrawn) must not be paired.
+        let registrations = self
             .registration_repo
-            .list_by_tournament(
-                tournament_id,
-                Some(TournamentRegistrationStatus::Approved),
-                1000,
-                0,
-            )
+            .list_all_by_tournament(tournament_id, Some(TournamentRegistrationStatus::Approved))
             .await?;
 
         let reg_map: std::collections::HashMap<

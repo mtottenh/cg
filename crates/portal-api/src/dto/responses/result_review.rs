@@ -39,6 +39,9 @@ pub struct ResultReviewResponse {
     pub score_mismatch: bool,
     /// Whether there's a winner mismatch.
     pub winner_mismatch: bool,
+    /// The completion saga permanently failed and bracket progression may be
+    /// half-applied — an admin must verify/repair via revert/reapply (P-180).
+    pub progression_stalled: bool,
     /// Demo link ID (if applicable).
     pub demo_link_id: Option<String>,
     /// Demo validation result (if applicable).
@@ -83,6 +86,7 @@ impl From<ResultReview> for ResultReviewResponse {
             roster_mismatch: review.roster_mismatch,
             score_mismatch: review.score_mismatch,
             winner_mismatch: review.winner_mismatch,
+            progression_stalled: review.progression_stalled,
             demo_link_id: review.demo_link_id.map(|id| id.to_string()),
             validation_result: review
                 .validation_result
@@ -129,6 +133,9 @@ pub struct ResultReviewSummaryResponse {
     pub score_mismatch: bool,
     /// Whether there's a winner mismatch.
     pub winner_mismatch: bool,
+    /// The completion saga permanently failed — progression may be
+    /// half-applied (P-180).
+    pub progression_stalled: bool,
     /// When the review was created.
     pub created_at: DateTime<Utc>,
 }
@@ -142,6 +149,7 @@ impl From<ResultReview> for ResultReviewSummaryResponse {
             roster_mismatch: review.roster_mismatch,
             score_mismatch: review.score_mismatch,
             winner_mismatch: review.winner_mismatch,
+            progression_stalled: review.progression_stalled,
             created_at: review.created_at,
         }
     }

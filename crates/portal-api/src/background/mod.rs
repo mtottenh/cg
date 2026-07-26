@@ -541,6 +541,28 @@ async fn redrive_stuck_completion_sagas(
     for mut execution in candidates {
         let saga_id = execution.id;
 
+        let input =
+            match serde_json::from_value::<MatchCompletionInput>(execution.input_data.clone()) {
+                Ok(input) => MatchCompletionInput {
+                    // A fresh execution record tracks the re-drive; the old
+                    // row stays as the audit trail of the failure.
+                    saga_id: None,
+                    ..input
+                },
+                Err(e) => {
+                    // Cannot raise a stall review without the claim/captains
+                    // the input carries; the error log is the only trace.
+                    // (Rare by construction: the row was written by our own
+                    // serializer.)
+                    error!(%saga_id, error = %e, "lifecycle: unreadable saga input, retiring");
+                    if let Err(e) = coordinator.record_retry(&mut execution, true).await {
+                        error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
+                    }
+                    summary.errors += 1;
+                    continue;
+                }
+            };
+
         // Never re-run a saga that already applied its standings deltas.
         // Burn its remaining retries so it stops being a candidate, and
         // leave it for the admin progression endpoints. Note the step also
@@ -560,6 +582,7 @@ async fn redrive_stuck_completion_sagas(
                 %saga_id,
                 "lifecycle: skipping saga re-drive — standings already applied"
             );
+            raise_progression_stall(state, &input, saga_id).await;
             if let Err(e) = coordinator.record_retry(&mut execution, true).await {
                 error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
                 summary.errors += 1;
@@ -567,26 +590,12 @@ async fn redrive_stuck_completion_sagas(
             continue;
         }
 
-        let input =
-            match serde_json::from_value::<MatchCompletionInput>(execution.input_data.clone()) {
-                Ok(input) => MatchCompletionInput {
-                    // A fresh execution record tracks the re-drive; the old
-                    // row stays as the audit trail of the failure.
-                    saga_id: None,
-                    ..input
-                },
-                Err(e) => {
-                    error!(%saga_id, error = %e, "lifecycle: unreadable saga input, retiring");
-                    if let Err(e) = coordinator.record_retry(&mut execution, true).await {
-                        error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
-                    }
-                    summary.errors += 1;
-                    continue;
-                }
-            };
-
         let match_id = input.match_id;
-        match state.match_completion_saga.execute_completion(input).await {
+        match state
+            .match_completion_saga
+            .execute_completion(input.clone())
+            .await
+        {
             Ok(result) if result.is_paused() => {
                 // Waiting on a result review — not our problem to retry.
                 info!(%saga_id, %match_id, "lifecycle: saga re-drive paused for review");
@@ -609,8 +618,63 @@ async fn redrive_stuck_completion_sagas(
                 if let Err(e) = coordinator.record_retry(&mut execution, false).await {
                     error!(%saga_id, error = %e, "lifecycle: failed to bump saga retry count");
                 }
+                // That bump may have been the last retry — after it, this
+                // row never re-enters find_retryable, so the give-up must
+                // be operator-visible (P-180).
+                if execution.retry_count >= execution.max_retries {
+                    raise_progression_stall(state, &input, saga_id).await;
+                }
             }
         }
+    }
+}
+
+/// P-180: a completion saga leaving the retry pool with bracket progression
+/// possibly half-applied must be operator-visible, not a log line — the old
+/// `compensate()` stamped such rows "compensated" having undone nothing,
+/// and the bracket sat stalled until someone happened to look. Raises a
+/// `progression_stalled` review in the admin queue (idempotent per match).
+///
+/// Completions with no result claim (forfeit-driven) cannot carry a review
+/// row — `result_reviews.result_claim_id` is NOT NULL — so those still only
+/// log, at error level.
+async fn raise_progression_stall(
+    state: &AppState,
+    input: &MatchCompletionInput,
+    saga_id: portal_core::SagaId,
+) {
+    let Some(claim_id) = input.result_claim_id else {
+        error!(
+            %saga_id,
+            match_id = %input.match_id,
+            "lifecycle: completion saga permanently failed with no result claim — \
+             bracket may be stalled; verify via admin match tools"
+        );
+        return;
+    };
+    match state
+        .result_review_service
+        .create_for_progression_stall(
+            claim_id,
+            input.match_id,
+            input.winner_registration_id,
+            input.loser_registration_id,
+        )
+        .await
+    {
+        Ok(Some(review)) => warn!(
+            %saga_id,
+            review_id = %review.id,
+            match_id = %input.match_id,
+            "lifecycle: raised progression-stall review"
+        ),
+        Ok(None) => {}
+        Err(e) => error!(
+            %saga_id,
+            error = %e,
+            match_id = %input.match_id,
+            "lifecycle: failed to raise progression-stall review"
+        ),
     }
 }
 

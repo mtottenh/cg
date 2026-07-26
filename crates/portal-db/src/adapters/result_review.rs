@@ -36,6 +36,7 @@ impl From<ResultReviewRow> for ResultReview {
             roster_mismatch: row.roster_mismatch,
             score_mismatch: row.score_mismatch,
             winner_mismatch: row.winner_mismatch,
+            progression_stalled: row.progression_stalled,
             demo_link_id: row.demo_link_id.map(DemoMatchLinkId::from),
             validation_result,
             unrecognized_players,
@@ -69,6 +70,7 @@ impl From<ResultReviewRow> for ResultReview {
 /// `result_review_status` to TEXT so SQLx can decode it into `String`.
 const SELECT_COLUMNS: &str = r"
     id, result_claim_id, match_id, roster_mismatch, score_mismatch, winner_mismatch,
+    progression_stalled,
     demo_link_id, validation_result, unrecognized_players, status::TEXT as status,
     captain1_registration_id, captain1_acknowledged, captain1_acknowledged_at,
     captain1_acknowledged_by_user_id, captain2_registration_id, captain2_acknowledged,
@@ -108,12 +110,13 @@ impl ResultReviewRepository for PgResultReviewRepository {
             r"
             INSERT INTO result_reviews (
                 id, result_claim_id, match_id, roster_mismatch, score_mismatch, winner_mismatch,
+                progression_stalled,
                 demo_link_id, validation_result, unrecognized_players, status,
                 captain1_registration_id, captain1_acknowledged, captain1_acknowledged_at,
                 captain1_acknowledged_by_user_id, captain2_registration_id, captain2_acknowledged,
                 captain2_acknowledged_at, captain2_acknowledged_by_user_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::result_review_status, $11, $12, $13, $14, $15, $16, $17, $18)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::result_review_status, $12, $13, $14, $15, $16, $17, $18, $19)
             ",
         )
         .bind(review.id.as_uuid())
@@ -122,6 +125,7 @@ impl ResultReviewRepository for PgResultReviewRepository {
         .bind(review.roster_mismatch)
         .bind(review.score_mismatch)
         .bind(review.winner_mismatch)
+        .bind(review.progression_stalled)
         .bind(review.demo_link_id.map(|id| id.as_uuid()))
         .bind(validation_result_json)
         .bind(serde_json::to_value(&unrecognized_players_json).unwrap_or_default())

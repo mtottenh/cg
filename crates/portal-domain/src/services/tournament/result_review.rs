@@ -105,6 +105,49 @@ where
         Ok(Some(review))
     }
 
+    /// Raise an admin review for a permanently failed completion saga (P-180).
+    ///
+    /// Called by the lifecycle re-drive pass when it gives up on a saga —
+    /// the match is completed but bracket progression may be half-applied,
+    /// and without this row the stall is invisible from the portal.
+    ///
+    /// Idempotent per match: if any review already exists for the match
+    /// (pending or resolved), no second row is raised — the re-drive pass
+    /// runs on a timer and must not spam the queue.
+    #[instrument(skip(self))]
+    pub async fn create_for_progression_stall(
+        &self,
+        result_claim_id: ResultClaimId,
+        match_id: TournamentMatchId,
+        captain1_registration_id: TournamentRegistrationId,
+        captain2_registration_id: TournamentRegistrationId,
+    ) -> Result<Option<ResultReview>, DomainError> {
+        if let Some(existing) = self.review_repo.find_by_match_id(match_id).await? {
+            info!(
+                review_id = %existing.id,
+                match_id = %match_id,
+                "Progression stall not raised — match already has a review"
+            );
+            return Ok(None);
+        }
+
+        let review = ResultReview::for_progression_stall(
+            result_claim_id,
+            match_id,
+            captain1_registration_id,
+            captain2_registration_id,
+        );
+        self.review_repo.insert(&review).await?;
+
+        info!(
+            review_id = %review.id,
+            match_id = %match_id,
+            "Raised progression-stall review for permanently failed completion saga"
+        );
+
+        Ok(Some(review))
+    }
+
     /// Captain acknowledges the roster mismatch.
     ///
     /// When both captains acknowledge, status transitions to `Acknowledged`.

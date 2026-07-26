@@ -930,6 +930,120 @@ async fn test_lifecycle_redrives_failed_completion_saga() {
     );
 }
 
+/// P-180: a saga the re-drive pass permanently gives up on must raise an
+/// operator-visible review, not vanish into logs. The old `compensate()`
+/// stamped such rows "compensated" having undone nothing, and a bracket
+/// with half-applied progression sat stalled until someone happened to
+/// look at it.
+///
+/// Stages the give-up the re-drive pass refuses to retry: a `failed` saga
+/// whose history says the standings deltas already applied (re-running
+/// would double-count points). The pass must retire it AND leave a
+/// `progression_stalled` review in the admin queue — idempotently, since
+/// the pass runs on a timer.
+#[tokio::test]
+async fn test_permanently_failed_saga_raises_progression_stall_review() {
+    use portal_api::background::{LifecycleConfig, run_lifecycle_pass};
+    use portal_api::state::AppState;
+
+    let app = TestApp::new().await;
+    let t = create_4player_tournament(&app, "saga-stall-review").await;
+
+    let claim_id = submit_claim(&app, &t.test_match_id, &t.dev_reg_id, t.dev_is_p1, &[]).await;
+    confirm_claim_as_user(
+        &app,
+        &t.test_match_id,
+        &claim_id,
+        t.opponent_user_id,
+        t.opponent_user_id,
+    )
+    .await;
+
+    let test_match_uuid: Uuid = t.test_match_id.parse().unwrap();
+
+    // Re-stage the saga as failed with standings already applied — the one
+    // shape the re-drive pass must never re-run.
+    let staged_history = json!([{
+        "step": 5,
+        "name": "update_standings",
+        "status": "completed",
+        "started_at": chrono::Utc::now().to_rfc3339(),
+        "completed_at": chrono::Utc::now().to_rfc3339(),
+        "output": {"standings_updated": true},
+        "error": null,
+        "retry_count": 0
+    }]);
+    let updated = sqlx::query(
+        "UPDATE saga_executions
+         SET status = 'failed', step_history = $2, retry_count = 0,
+             last_error = 'simulated failure after standings applied'
+         WHERE match_id = $1 AND saga_type = 'match_completion'
+         RETURNING id",
+    )
+    .bind(test_match_uuid)
+    .bind(staged_history)
+    .fetch_all(app.pool())
+    .await
+    .unwrap();
+    assert!(
+        !updated.is_empty(),
+        "the confirm should have produced a match_completion saga to re-stage"
+    );
+
+    let state = AppState::new(app.pool().clone(), TEST_JWT_SECRET).await;
+    let cfg = LifecycleConfig {
+        tick_interval: std::time::Duration::from_secs(30),
+        check_in_lead: chrono::Duration::minutes(15),
+        check_in_grace: chrono::Duration::minutes(10),
+        evidence_stale_max_age: chrono::Duration::hours(24),
+        evidence_sweep_every: 20,
+        saga_stuck_after: chrono::Duration::minutes(10),
+        batch_limit: 100,
+    };
+    let summary = run_lifecycle_pass(&state, &cfg, false).await;
+    assert_eq!(
+        summary.sagas_redriven, 0,
+        "a standings-applied saga must be retired, not re-driven (summary: {summary:?})"
+    );
+
+    // The give-up is operator-visible: a progression-stalled review is in
+    // the admin queue for this match.
+    let review = sqlx::query(
+        "SELECT progression_stalled, status::TEXT as status
+         FROM result_reviews WHERE match_id = $1",
+    )
+    .bind(test_match_uuid)
+    .fetch_all(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        review.len(),
+        1,
+        "retiring the saga must raise exactly one review"
+    );
+    assert!(
+        review[0].get::<bool, _>("progression_stalled"),
+        "the review must carry the progression_stalled flag"
+    );
+    assert_eq!(
+        review[0].get::<String, _>("status"),
+        "pending_admin_review",
+        "a stall review is admin work, not a captain acknowledgment"
+    );
+
+    // The saga left the retry pool AND a second pass does not raise a
+    // second review.
+    let summary = run_lifecycle_pass(&state, &cfg, false).await;
+    assert_eq!(summary.sagas_redriven, 0);
+    let count: i64 = sqlx::query("SELECT COUNT(*) AS n FROM result_reviews WHERE match_id = $1")
+        .bind(test_match_uuid)
+        .fetch_one(app.pool())
+        .await
+        .unwrap()
+        .get("n");
+    assert_eq!(count, 1, "the stall review must be idempotent per match");
+}
+
 // ============================================================================
 // TEST: claim-path dispute creates a real dispute record
 // ============================================================================

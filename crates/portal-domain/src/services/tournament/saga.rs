@@ -271,39 +271,11 @@ where
         Ok(())
     }
 
-    /// Start compensation.
-    #[instrument(skip(self, execution))]
-    pub async fn start_compensation(
-        &self,
-        execution: &mut SagaExecution,
-    ) -> Result<(), DomainError> {
-        execution.start_compensation();
-        self.saga_repo.update(execution).await?;
-
-        info!(
-            saga_id = %execution.id,
-            "Starting saga compensation"
-        );
-
-        Ok(())
-    }
-
-    /// Complete compensation.
-    #[instrument(skip(self, execution))]
-    pub async fn complete_compensation(
-        &self,
-        execution: &mut SagaExecution,
-    ) -> Result<(), DomainError> {
-        execution.complete_compensation();
-        self.saga_repo.update(execution).await?;
-
-        info!(
-            saga_id = %execution.id,
-            "Saga compensation completed"
-        );
-
-        Ok(())
-    }
+    // No start_compensation/complete_compensation: the one saga in the
+    // system recovers by re-drive (idempotent steps), and the deleted pair
+    // existed only to stamp "compensated" onto rows nothing had undone
+    // (P-180). `SagaStatus::Compensating`/`Compensated` remain parseable
+    // for rows written before the deletion.
 
     /// Find pending sagas that need processing.
     #[instrument(skip(self))]

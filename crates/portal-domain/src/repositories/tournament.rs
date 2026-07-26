@@ -417,7 +417,7 @@ pub trait TournamentRegistrationRepository: Send + Sync {
     /// seeding / bracket-generation assumptions built on it.
     ///
     /// Returns [`DomainError::TournamentFull`] when the tournament is at
-    /// capacity. `withdrawn` / `rejected` rows do not count, matching
+    /// capacity. `withdrawn` / `disqualified` rows do not count, matching
     /// [`TournamentRepository::count_registrations`].
     ///
     /// `replace_terminal` optionally names a terminal (withdrawn /
@@ -484,6 +484,35 @@ pub trait TournamentRegistrationRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<TournamentRegistration>, i64), DomainError>;
+
+    /// List EVERY registration matching the filter, paging to exhaustion.
+    ///
+    /// Call sites that mean "all of them" — Swiss pairing, seeding,
+    /// no-show processing — must use this, never a single page with a
+    /// "reasonable limit": a capped page silently drops every participant
+    /// past the cap, and each of those sites turned that into data loss
+    /// (P-186/P-187/P-188 — a participant past row 1000 was dropped from
+    /// the pairing, never seeded, never marked no-show).
+    async fn list_all_by_tournament(
+        &self,
+        tournament_id: TournamentId,
+        status_filter: Option<TournamentRegistrationStatus>,
+    ) -> Result<Vec<TournamentRegistration>, DomainError> {
+        const PAGE: i64 = 500;
+        let mut all = Vec::new();
+        let mut offset = 0;
+        loop {
+            let (page, _total) = self
+                .list_by_tournament(tournament_id, status_filter, PAGE, offset)
+                .await?;
+            let fetched = page.len() as i64;
+            all.extend(page);
+            if fetched < PAGE {
+                return Ok(all);
+            }
+            offset += PAGE;
+        }
+    }
 
     /// List checked-in registrations (for bracket generation).
     async fn list_checked_in(

@@ -13,7 +13,7 @@
 //!
 //! ## String-based Slugs
 //!
-//! Some entities also have human-readable slugs (like `GameSlug` for "cs2", "aoe4"):
+//! Some entities also have human-readable slugs (like `GameSlug` for "cs2", "aoe2"):
 //! - Wraps a String internally
 //! - Used for URL-friendly identifiers
 //! - Distinct from UUIDs to prevent mixing identifier types
@@ -574,7 +574,7 @@ define_id!(
 // =============================================================================
 
 define_slug!(
-    /// Human-readable game identifier (e.g., "cs2", "aoe4").
+    /// Human-readable game identifier (e.g., "cs2", "aoe2").
     ///
     /// Used in URLs and API calls for readability. The actual game entity
     /// is identified by `GameId` (UUID).

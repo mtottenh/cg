@@ -42,10 +42,39 @@ enum GameServerSubcommand {
     /// List registered game servers
     List,
 
+    /// Register a game server (idempotent by name: an existing server with
+    /// this name is reused and its id printed — built for Ansible)
+    Create {
+        /// Display name; doubles as the idempotency key
+        #[arg(long)]
+        name: String,
+        /// Game slug the server hosts (resolved against the games table)
+        #[arg(long, default_value = "cs2")]
+        game_slug: String,
+        /// Public IPv4/IPv6 address players connect to
+        #[arg(long)]
+        ip: String,
+        /// Game port (also the RCON port on the server host)
+        #[arg(long, default_value_t = 27015)]
+        port: u16,
+        /// GOTV port, if GOTV is enabled
+        #[arg(long)]
+        gotv_port: Option<u16>,
+        /// Region label used by allocation
+        #[arg(long, default_value = "eu")]
+        region: String,
+        /// Print only the server id (for scripting)
+        #[arg(long)]
+        quiet: bool,
+    },
+
     /// Mint a one-time enrollment token for a server (invalidates any previous)
     EnrollToken {
         /// Game server ID (UUID)
         id: String,
+        /// Print only the token (for scripting)
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Revoke a server's agent certificates
@@ -64,7 +93,16 @@ impl GameServerCommand {
                 force,
             } => ca_init(dir, common_name, *force),
             GameServerSubcommand::List => list_servers(pool, format).await,
-            GameServerSubcommand::EnrollToken { id } => enroll_token(pool, id).await,
+            GameServerSubcommand::Create {
+                name,
+                game_slug,
+                ip,
+                port,
+                gotv_port,
+                region,
+                quiet,
+            } => create(pool, name, game_slug, ip, *port, *gotv_port, region, *quiet).await,
+            GameServerSubcommand::EnrollToken { id, quiet } => enroll_token(pool, id, *quiet).await,
             GameServerSubcommand::Revoke { id } => revoke(pool, id).await,
         }
     }
@@ -161,7 +199,68 @@ fn format_uuid_short(id: &uuid::Uuid) -> String {
     id.to_string()
 }
 
-async fn enroll_token(pool: &PgPool, id: &str) -> Result<()> {
+/// Register a server, reusing an existing row with the same name. Names
+/// carry no uniqueness constraint in the schema, so this is a tooling-level
+/// convention: our Ansible inventory names are unique, and idempotent
+/// converges must not mint duplicate registry rows.
+#[allow(clippy::too_many_arguments)]
+async fn create(
+    pool: &PgPool,
+    name: &str,
+    game_slug: &str,
+    ip: &str,
+    port: u16,
+    gotv_port: Option<u16>,
+    region: &str,
+    quiet: bool,
+) -> Result<()> {
+    if let Some((id,)) =
+        sqlx::query_as::<_, (uuid::Uuid,)>("SELECT id FROM game_servers WHERE name = $1")
+            .fetch_optional(pool)
+            .await
+            .context("looking up game server by name")?
+    {
+        if !quiet {
+            info(&format!("server {name:?} already registered"));
+        }
+        println!("{id}");
+        return Ok(());
+    }
+
+    let game_id: uuid::Uuid =
+        sqlx::query_as::<_, (uuid::Uuid,)>("SELECT id FROM games WHERE slug = $1")
+            .fetch_optional(pool)
+            .await
+            .context("resolving game slug")?
+            .map(|(id,)| id)
+            .with_context(|| {
+                format!("no game with slug {game_slug:?} — seed the games table first")
+            })?;
+
+    let id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO game_servers (id, name, game_id, ip_address, port, gotv_port, region) \
+         VALUES ($1, $2, $3, $4::inet, $5, $6, $7)",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(game_id)
+    .bind(ip)
+    .bind(i32::from(port))
+    .bind(gotv_port.map(i32::from))
+    .bind(region)
+    .execute(pool)
+    .await
+    .context("inserting game server")?;
+
+    if !quiet {
+        success(&format!("registered game server {name:?}"));
+    }
+    println!("{id}");
+    Ok(())
+}
+
+async fn enroll_token(pool: &PgPool, id: &str, quiet: bool) -> Result<()> {
     let server_id: uuid::Uuid = id.parse().context("invalid server id")?;
 
     let token = generate_enrollment_token();
@@ -182,6 +281,10 @@ async fn enroll_token(pool: &PgPool, id: &str) -> Result<()> {
         bail!("no game server with id {id}");
     }
 
+    if quiet {
+        println!("{token}");
+        return Ok(());
+    }
     success("Enrollment token minted (shown once, valid 24h):");
     println!("{token}");
     info(&format!(

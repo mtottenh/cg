@@ -131,7 +131,7 @@ pub async fn list_games(
     get,
     path = "/v1/games/{game_id}",
     params(
-        ("game_id" = String, Path, description = "Game ID (e.g., cs2, aoe4)")
+        ("game_id" = String, Path, description = "Game ID (e.g., cs2, aoe2)")
     ),
     responses(
         (status = 200, description = "Game details", body = DataResponse<GameDetailResponse>),

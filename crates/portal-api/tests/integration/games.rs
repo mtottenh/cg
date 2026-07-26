@@ -1018,7 +1018,7 @@ async fn test_list_games_include_inactive_returns_disabled_games() {
     let app = TestApp::new().await;
     grant_games_admin_permission(&app).await;
 
-    // Precondition: aoe4 is seeded active and visible on the default list.
+    // Precondition: aoe2 is seeded active and visible on the default list.
     let listed = app.get("/v1/games").await;
     listed.assert_status(StatusCode::OK);
     let listed: serde_json::Value = listed.json();
@@ -1027,10 +1027,10 @@ async fn test_list_games_include_inactive_returns_disabled_games() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|g| g["slug"] == "aoe4"),
+            .any(|g| g["slug"] == "aoe2"),
     );
 
-    let response = app.post_auth("/v1/games/aoe4/disable").await;
+    let response = app.post_auth("/v1/games/aoe2/disable").await;
     response.assert_status(StatusCode::OK);
 
     // The default list still hides it — the public catalog is unchanged.
@@ -1042,7 +1042,7 @@ async fn test_list_games_include_inactive_returns_disabled_games() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|g| g["slug"] == "aoe4"),
+            .any(|g| g["slug"] == "aoe2"),
         "the default catalog must stay active-only"
     );
 
@@ -1051,16 +1051,16 @@ async fn test_list_games_include_inactive_returns_disabled_games() {
     let listed = app.get_auth("/v1/games?include_inactive=true").await;
     listed.assert_status(StatusCode::OK);
     let listed: serde_json::Value = listed.json();
-    let aoe4 = listed["data"]
+    let aoe2 = listed["data"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|g| g["slug"] == "aoe4")
+        .find(|g| g["slug"] == "aoe2")
         .expect("P-88: a disabled game must be reachable from the admin catalog");
-    assert_eq!(aoe4["status"], "maintenance");
+    assert_eq!(aoe2["status"], "maintenance");
 
     // And it can be re-enabled from there, which is the whole point.
-    let response = app.post_auth("/v1/games/aoe4/enable").await;
+    let response = app.post_auth("/v1/games/aoe2/enable").await;
     response.assert_status(StatusCode::OK);
     let listed = app.get("/v1/games").await;
     let listed: serde_json::Value = listed.json();
@@ -1069,7 +1069,7 @@ async fn test_list_games_include_inactive_returns_disabled_games() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|g| g["slug"] == "aoe4"),
+            .any(|g| g["slug"] == "aoe2"),
     );
 }
 
@@ -1103,7 +1103,7 @@ async fn test_list_games_include_inactive_requires_admin() {
 
 /// P-90: `sort_order` was writable through `PATCH /v1/games/{id}` but appeared
 /// in no response, so the admin edit modal could not seed its "Sort Order"
-/// field and hardcoded `0` — a number that was never the truth (cs2 is 1, aoe4
+/// field and hardcoded `0` — a number that was never the truth (cs2 is 1, aoe2
 /// is 2). To avoid writing that fabricated `0` over the real value the modal
 /// then only sent the field when it was non-zero, which made `0` unsettable for
 /// every game.
@@ -1115,24 +1115,24 @@ async fn test_game_responses_expose_sort_order_and_zero_is_settable() {
     let app = TestApp::new().await;
     grant_games_admin_permission(&app).await;
 
-    // The migration seeds cs2 = 1, aoe4 = 2 (0003_create_games.sql:68-70).
+    // The migration seeds cs2 = 1, aoe2 = 2 (0003_create_games.sql:68-70).
     let listed = app.get("/v1/games").await;
     listed.assert_status(StatusCode::OK);
     let listed: serde_json::Value = listed.json();
     let games = listed["data"].as_array().unwrap();
     let cs2 = games.iter().find(|g| g["slug"] == "cs2").unwrap();
-    let aoe4 = games.iter().find(|g| g["slug"] == "aoe4").unwrap();
+    let aoe2 = games.iter().find(|g| g["slug"] == "aoe2").unwrap();
     assert_eq!(cs2["sort_order"], 1);
-    assert_eq!(aoe4["sort_order"], 2);
+    assert_eq!(aoe2["sort_order"], 2);
 
-    let detail = app.get("/v1/games/aoe4").await;
+    let detail = app.get("/v1/games/aoe2").await;
     detail.assert_status(StatusCode::OK);
     let detail: serde_json::Value = detail.json();
     assert_eq!(detail["data"]["sort_order"], 2);
 
     // Zero is a legal sort order and must round-trip.
     let response = app
-        .patch_json("/v1/games/aoe4", &json!({ "sort_order": 0 }))
+        .patch_json("/v1/games/aoe2", &json!({ "sort_order": 0 }))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
@@ -1141,7 +1141,7 @@ async fn test_game_responses_expose_sort_order_and_zero_is_settable() {
         "P-90: sort_order 0 must be settable"
     );
 
-    let detail = app.get("/v1/games/aoe4").await;
+    let detail = app.get("/v1/games/aoe2").await;
     let detail: serde_json::Value = detail.json();
     assert_eq!(detail["data"]["sort_order"], 0, "and it must persist");
 }

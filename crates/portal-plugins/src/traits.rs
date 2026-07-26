@@ -58,7 +58,7 @@ pub trait GamePlugin: Send + Sync {
     // Identity & Metadata
     // ========================================================================
 
-    /// Get the plugin identifier (e.g., "cs2", "aoe4").
+    /// Get the plugin identifier (e.g., "cs2", "aoe2").
     fn id(&self) -> &str;
 
     /// Get the game display name (e.g., "Counter-Strike 2").

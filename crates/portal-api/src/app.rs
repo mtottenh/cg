@@ -208,12 +208,19 @@ fn make_http_span(req: &Request<Body>) -> tracing::Span {
 pub fn try_create_app(state: AppState) -> Result<Router, AppConfigError> {
     let cors = build_cors_layer()?;
 
-    // Uploads sub-router: PUT writes files, everything else served by ServeDir.
+    // Uploads sub-router: PUT writes files, GET/HEAD served by ServeDir on
+    // the SAME wildcard route. ServeDir must not be a router-level fallback
+    // here: `route("/{*path}", put(...))` matches every uploads path, so a
+    // GET reached the route's method filter and died with 405 before any
+    // fallback ran — every locally-stored avatar/banner 405'd in prod.
     // Override the global body limit because file uploads are larger than
     // ordinary API requests.
     let uploads_router = Router::new()
-        .route("/{*path}", axum::routing::put(local_evidence_upload))
-        .fallback_service(ServeDir::new(&state.uploads_path))
+        .route(
+            "/{*path}",
+            axum::routing::put(local_evidence_upload)
+                .get_service(ServeDir::new(&state.uploads_path)),
+        )
         .layer(DefaultBodyLimit::max(LOCAL_UPLOADS_BODY_LIMIT_BYTES));
 
     Ok(Router::new()

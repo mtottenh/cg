@@ -159,6 +159,10 @@ where
     }
 
     /// Start the veto session (begin coin flip phase).
+    ///
+    /// Formats with no team-performed actions (wheel formats) have nothing to
+    /// coin-flip for: they skip straight to `in_progress` with no team turn
+    /// and no action deadline — spins are human-triggered, not timed.
     #[instrument(skip(self))]
     pub async fn start_session(
         &self,
@@ -171,6 +175,27 @@ where
                 "Cannot start veto session in {} status",
                 session.status
             )));
+        }
+
+        let format = self.get_format(&session.veto_format_id)?;
+        if !format.has_team_actions() {
+            let session = self
+                .session_repo
+                .update(
+                    session_id,
+                    UpdateVetoSession {
+                        current_action_number: Some(1),
+                        current_team_turn: Some(None),
+                        status: Some(VetoStatus::InProgress),
+                        action_deadline: Some(None),
+                        started_at: Some(Utc::now()),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+
+            info!(session_id = %session_id, "Wheel session started, awaiting first spin");
+            return Ok(session);
         }
 
         let session = self
@@ -383,6 +408,60 @@ where
         Ok(result)
     }
 
+    /// Record a wheel spin result as the current veto action.
+    ///
+    /// The caller (PUG service) owns the weighted RNG — nominations and their
+    /// weights live in the PUG layer — and passes in the winning map. This
+    /// method verifies the session's current action is a `random` action and
+    /// records it as an auto action (`wheel_spin`), advancing the session
+    /// exactly like any other veto action. Turn checks don't apply: `random`
+    /// actions belong to team 0.
+    #[instrument(skip(self))]
+    pub async fn perform_wheel_action(
+        &self,
+        session_id: VetoSessionId,
+        map_id: &str,
+    ) -> Result<VetoActionResult, DomainError> {
+        let session = self.get_session(session_id).await?;
+
+        if !session.status.can_act() {
+            return Err(DomainError::InvalidState(format!(
+                "Cannot spin the wheel in {} status",
+                session.status
+            )));
+        }
+
+        if !session.is_map_available(map_id) {
+            return Err(DomainError::InvalidMatchResult(format!(
+                "Map '{map_id}' is not available for selection"
+            )));
+        }
+
+        let format = self.get_format(&session.veto_format_id)?;
+        let action_index = (session.current_action_number as usize).saturating_sub(1);
+        let format_action = format
+            .get_action(action_index)
+            .ok_or_else(|| DomainError::InvalidState("Action index out of bounds".to_string()))?;
+
+        if !matches!(format_action.action_type, VetoActionType::Random) {
+            return Err(DomainError::InvalidState(
+                "The current veto action is not a wheel spin".to_string(),
+            ));
+        }
+
+        self.record_action_internal(
+            &session,
+            &format,
+            format_action,
+            map_id,
+            None,
+            None,
+            true,
+            Some("wheel_spin"),
+        )
+        .await
+    }
+
     /// Process a timeout for the current action.
     ///
     /// Automatically selects a random available map for the team.
@@ -585,6 +664,11 @@ where
             .ok_or(DomainError::VetoSessionNotFound(id))
     }
 
+    /// Public format resolution for orchestrators (PUG flow).
+    pub fn resolve_format(&self, format_id: &str) -> Result<VetoFormat, DomainError> {
+        self.get_format(format_id)
+    }
+
     fn get_format(&self, format_id: &str) -> Result<VetoFormat, DomainError> {
         // Try injected provider first (plugin-backed)
         if let Some(provider) = &self.format_provider
@@ -598,6 +682,9 @@ where
             "bo1_veto" | "bo1_standard" => Ok(VetoFormat::bo1()),
             "bo3_veto" | "bo3_standard" => Ok(VetoFormat::bo3()),
             "bo5_veto" | "bo5_standard" => Ok(VetoFormat::bo5()),
+            "wheel_bo1" => Ok(VetoFormat::wheel_bo1()),
+            "wheel_bo3" => Ok(VetoFormat::wheel_bo3()),
+            "wheel_bo5" => Ok(VetoFormat::wheel_bo5()),
             _ => Err(DomainError::InvalidMatchResult(format!(
                 "Unknown veto format: {format_id}"
             ))),
@@ -643,9 +730,12 @@ where
         // action row).
         let map_id = action.map_id.clone();
 
-        // Auto-assign random side in CoinFlip mode for pick actions
+        // Auto-assign random side in CoinFlip mode for pick and wheel actions
         if session.side_selection_mode == SideSelectionMode::CoinFlip
-            && matches!(format_action.action_type, VetoActionType::Pick)
+            && matches!(
+                format_action.action_type,
+                VetoActionType::Pick | VetoActionType::Random
+            )
             && !action.has_side_selection()
         {
             // Use injected side provider for game-agnostic random side,
@@ -661,12 +751,27 @@ where
                         "t".to_string()
                     }
                 });
-            let selector = performed_by
-                .unwrap_or_else(|| session.first_action_registration_id.unwrap_or_default());
-            action = self
-                .action_repo
-                .update_side_selection(action.id, side, selector)
-                .await?;
+            // Wheel actions have no performer: attribute the random side to
+            // participant 1 ("participant 1 starts on <side>"), which is the
+            // frame the MatchZy map_sides derivation already uses.
+            let selector = match performed_by {
+                Some(reg) => Some(reg),
+                None => match session.first_action_registration_id {
+                    Some(reg) => Some(reg),
+                    None => {
+                        self.match_repo
+                            .find_by_id(session.match_id)
+                            .await?
+                            .and_then(|m| m.participant1_registration_id)
+                    }
+                },
+            };
+            if let Some(selector) = selector {
+                action = self
+                    .action_repo
+                    .update_side_selection(action.id, side, selector)
+                    .await?;
+            }
         }
 
         // Update session state
@@ -676,7 +781,7 @@ where
         let mut selected = session.selected_maps.clone();
         if matches!(
             format_action.action_type,
-            VetoActionType::Pick | VetoActionType::Decider
+            VetoActionType::Pick | VetoActionType::Decider | VetoActionType::Random
         ) && !selected.contains(&map_id)
         {
             selected.push(map_id.clone());
@@ -685,16 +790,23 @@ where
         let next_action_number = session.current_action_number + 1;
         let veto_complete = format.is_complete_at(next_action_number as usize);
 
-        // Determine next team turn
+        // Determine next team turn. `random` (wheel) actions belong to no
+        // team and are human-triggered, so they get no turn and no deadline.
         let (next_team, next_status, deadline) = if veto_complete {
             (None, VetoStatus::Completed, None)
         } else {
             let next_format_action = format.get_action(next_action_number as usize - 1);
+            let next_is_random = next_format_action
+                .is_some_and(|a| matches!(a.action_type, VetoActionType::Random));
             let next_team = self
                 .determine_next_team(session, next_format_action)
                 .await?;
-            let deadline = Utc::now() + Duration::seconds(i64::from(session.timeout_seconds));
-            (Some(next_team), VetoStatus::InProgress, Some(deadline))
+            let deadline = if next_is_random {
+                None
+            } else {
+                Some(Utc::now() + Duration::seconds(i64::from(session.timeout_seconds)))
+            };
+            (next_team, VetoStatus::InProgress, deadline)
         };
 
         let update = UpdateVetoSession {
@@ -741,7 +853,18 @@ where
         &self,
         session: &VetoSession,
         next_action: Option<&VetoFormatAction>,
-    ) -> Result<TournamentRegistrationId, DomainError> {
+    ) -> Result<Option<TournamentRegistrationId>, DomainError> {
+        let next_action = next_action
+            .ok_or_else(|| DomainError::InvalidState("No next action".to_string()))?;
+
+        // Team-0 actions (decider, wheel spins) have no owning team. Wheel
+        // sessions never run a coin flip, so `first_action` may be unset —
+        // in that case there is simply no turn. Standard formats keep the
+        // historical behavior of parking the turn on the first-action team.
+        if next_action.team == 0 {
+            return Ok(session.first_action_registration_id);
+        }
+
         let match_ = self
             .match_repo
             .find_by_id(session.match_id)
@@ -761,21 +884,12 @@ where
 
         let second_action = if first_action == team1 { team2 } else { team1 };
 
-        match next_action {
-            Some(action) => {
-                match action.team {
-                    0 => {
-                        // Decider - automatic, no team turn
-                        Ok(first_action) // Default to first action team
-                    }
-                    1 => Ok(first_action),
-                    2 => Ok(second_action),
-                    _ => Err(DomainError::InvalidMatchResult(
-                        "Invalid team number in format".to_string(),
-                    )),
-                }
-            }
-            None => Err(DomainError::InvalidState("No next action".to_string())),
+        match next_action.team {
+            1 => Ok(Some(first_action)),
+            2 => Ok(Some(second_action)),
+            _ => Err(DomainError::InvalidMatchResult(
+                "Invalid team number in format".to_string(),
+            )),
         }
     }
 
@@ -814,6 +928,15 @@ where
                             .position(|m| m == map_id)
                             .map(|i| i as u32 + 1);
                         (MapVetoStatus::Decider, None, None, game_num)
+                    }
+                    // Wheel selections render like picks (nobody performed them)
+                    Some(a) if a.is_random() => {
+                        let game_num = session
+                            .selected_maps
+                            .iter()
+                            .position(|m| m == map_id)
+                            .map(|i| i as u32 + 1);
+                        (MapVetoStatus::Picked, None, None, game_num)
                     }
                     _ if session.remaining_maps.contains(map_id) => {
                         (MapVetoStatus::Available, None, None, None)

@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::types::{
     AdvancementRule, BracketStatus, BracketType, MatchFormat, MatchParticipantSource,
-    RegistrationType, SchedulingMode, StageFormat, StageStatus, TournamentFormat,
+    RegistrationType, SchedulingMode, StageFormat, StageStatus, TournamentFormat, TournamentKind,
     TournamentMatchStatus, TournamentParticipantType, TournamentRegistrationStatus,
     TournamentStatus, WithdrawalPolicy,
 };
@@ -145,6 +145,8 @@ pub struct CreateTournament {
     pub format: TournamentFormat,
     pub format_settings: serde_json::Value,
     pub participant_type: TournamentParticipantType,
+    /// standard (default) or pug (hidden container).
+    pub kind: TournamentKind,
     pub team_size: Option<i32>,
     pub min_participants: i32,
     pub max_participants: i32,

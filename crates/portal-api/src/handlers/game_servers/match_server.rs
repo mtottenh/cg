@@ -8,6 +8,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::game_server_flow;
 use crate::state::AppState;
+use portal_domain::repositories::pug::AdhocTeamRepository as _;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -97,6 +98,19 @@ pub(super) async fn is_participant(
             continue;
         };
         if reg.player_id == Some(user.player_id) {
+            return Ok(true);
+        }
+        // Ad-hoc rosters (PUG containers)
+        if let Some(adhoc_uuid) = reg.adhoc_team_id
+            && state
+                .adhoc_team_repo
+                .is_member(
+                    portal_core::AdhocTeamId::from_uuid(adhoc_uuid),
+                    user.player_id,
+                )
+                .await
+                .unwrap_or(false)
+        {
             return Ok(true);
         }
         if let Some(team_season_id) = reg.team_season_id

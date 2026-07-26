@@ -132,6 +132,16 @@ where
             .find_by_id(match_.tournament_id)
             .await?
             .ok_or(DomainError::TournamentNotFound(match_.tournament_id))?;
+
+        // Stats separation: PUG results never touch player_game_profiles or
+        // ratings. The player_match_stats_applied ledger stays empty for
+        // PUGs, so a future scoped backfill remains possible. PUG stats are
+        // served from demo_players rows via demos.category = 'pug'.
+        if tournament.kind == portal_core::types::TournamentKind::Pug {
+            tracing::debug!(%match_id, "skipping profile stats for PUG match");
+            return Ok(());
+        }
+
         let game_id = tournament.game_id;
 
         // 3. Look up the plugin for this game

@@ -25,6 +25,7 @@ pub mod steam_tracking;
 pub mod tournaments;
 pub mod uploads;
 pub mod users;
+pub mod pugs;
 pub mod veto;
 pub mod veto_delegates;
 pub mod veto_ws;

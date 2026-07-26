@@ -37,7 +37,8 @@ use portal_db::{
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
     PgLeagueTeamSeasonRepository, PgMatchLineupRepository, PgMatchStatusLogRepository,
     PgMatchSubstitutionRepository, PgPermissionRepository, PgPlayerGameProfileRepository,
-    PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository,
+    PgAdhocTeamRepository, PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository,
+    PgPlayerRatingHistoryRepository, PgPugRepository,
     PgPlayerRepository, PgProgressionLogRepository, PgRefreshTokenRepository,
     PgResultClaimRepository, PgResultReviewRepository, PgSagaExecutionRepository,
     PgScheduleProposalRepository, PgServerBookingRepository, PgServerEventRepository,
@@ -51,6 +52,7 @@ use portal_db::{
 };
 use portal_domain::services::{
     AwardService, BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
+    PugService,
     LeagueSeasonService, LeagueService, LeagueTeamInvitationService, LeagueTeamService,
     PermissionService, PlayerGameProfileService, PlayerService, SteamTrackingService,
     SystemSettingsService, TournamentService, UserService,
@@ -344,6 +346,18 @@ pub struct AppState {
     pub entity_change_repo: Arc<dyn portal_domain::repositories::EntityChangeRepository>,
     /// Tournament map pool repository for veto auto-creation.
     pub tournament_map_pool_repo: Arc<PgTournamentMapPoolRepository>,
+    /// Tournament repository (PUG materializer + kind lookups).
+    pub tournament_repo: Arc<PgTournamentRepository>,
+    /// Tournament stage repository (PUG materializer).
+    pub tournament_stage_repo: Arc<PgTournamentStageRepository>,
+    /// Tournament bracket repository (PUG materializer).
+    pub tournament_bracket_repo: Arc<PgTournamentBracketRepository>,
+    /// Tournament registration repository (PUG materializer).
+    pub tournament_registration_repo: Arc<PgTournamentRegistrationRepository>,
+    /// PUG lobby service.
+    pub pug_service: PugService,
+    /// Ad-hoc team repository (PUG rosters; speaks-for checks).
+    pub adhoc_team_repo: Arc<PgAdhocTeamRepository>,
     /// Permission service for high-level authorization checks (`is_admin`, etc).
     pub permission_service: AppPermissionService,
     /// Permission repository for low-level/scoped permission checks.
@@ -633,11 +647,17 @@ impl AppState {
         );
 
         // Create Phase 2 tournament services
+        // PUG lobby + ad-hoc team repositories (PUG containers)
+        let pug_repo = Arc::new(PgPugRepository::new(db_pool.clone()));
+        let adhoc_team_repo = Arc::new(PgAdhocTeamRepository::new(db_pool.clone()));
+        let pug_service = PugService::new(pug_repo);
+
         let registration_service = RegistrationService::new(
             Arc::clone(&tournament_repo),
             Arc::clone(&tournament_registration_repo),
             Arc::clone(&league_team_member_repo),
-        );
+        )
+        .with_adhoc_repo(adhoc_team_repo.clone());
         let checkin_service = CheckInService::new(
             Arc::clone(&tournament_repo),
             Arc::clone(&tournament_registration_repo),
@@ -671,7 +691,8 @@ impl AppState {
             Arc::clone(&league_team_member_repo),
         )
         // P-84: admin scheduling is audited through the lifecycle service.
-        .with_match_transitioner(Arc::new(match_lifecycle_service.clone()));
+        .with_match_transitioner(Arc::new(match_lifecycle_service.clone()))
+        .with_adhoc_repo(adhoc_team_repo.clone());
 
         // Create availability repositories and service
         let availability_window_repo =
@@ -729,7 +750,8 @@ impl AppState {
         // opponent gets a confirm-result action item before the 15-minute
         // auto-confirm fires (P-50). Reuses the lifecycle service so the
         // transition is audited in `match_status_log`.
-        .with_match_transitioner(Arc::new(match_lifecycle_service.clone()));
+        .with_match_transitioner(Arc::new(match_lifecycle_service.clone()))
+        .with_adhoc_repo(adhoc_team_repo.clone());
 
         // Create progression service for bracket advancement
         let progression_service = ProgressionService::new(
@@ -786,7 +808,8 @@ impl AppState {
             Arc::new(evidence_storage),
             Arc::clone(&league_team_member_repo),
             evidence_config,
-        );
+        )
+        .with_adhoc_repo(adhoc_team_repo.clone());
 
         // Create forfeit service
         let forfeit_repo = Arc::new(PgForfeitRecordRepository::new(db_pool.clone()));
@@ -847,7 +870,8 @@ impl AppState {
             Arc::clone(&league_team_repo),
             Arc::clone(&league_team_member_repo),
             Arc::clone(&pg_permission_repo),
-        );
+        )
+        .with_adhoc_repo(adhoc_team_repo.clone());
 
         // Create veto lobby manager for WebSocket connections
         let veto_lobby_manager = Arc::new(VetoLobbyManager::new());
@@ -1010,6 +1034,12 @@ impl AppState {
             tournament_match_repo,
             entity_change_repo,
             tournament_map_pool_repo,
+            tournament_repo,
+            tournament_stage_repo,
+            tournament_bracket_repo,
+            tournament_registration_repo,
+            pug_service,
+            adhoc_team_repo,
             permission_service,
             permission_repo,
             role_repo,

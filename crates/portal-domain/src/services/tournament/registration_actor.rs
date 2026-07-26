@@ -33,10 +33,11 @@
 //! For **individual** registrations the answer is unchanged: the registered
 //! player, or the user who created the row.
 
-use portal_core::{DomainError, PlayerId, TournamentRegistrationId, UserId};
+use portal_core::{AdhocTeamId, DomainError, PlayerId, TournamentRegistrationId, UserId};
 
 use crate::entities::tournament::{TournamentMatch, TournamentRegistration};
 use crate::repositories::LeagueTeamMemberRepository;
+use crate::repositories::pug::AdhocTeamRepository;
 use crate::repositories::tournament::TournamentRegistrationRepository;
 
 /// The identity of whoever is trying to act for a registration.
@@ -67,14 +68,19 @@ impl RegistrationActor {
 /// - Team registration: the actor must be an active member of the
 ///   registration's team-season (`left_at IS NULL`) — the same test
 ///   `is_dispute_participant` has always used.
-/// - Individual (or ad-hoc) registration: the actor must be the registered
-///   player, or the user who created the row.
+/// - Ad-hoc registration (PUG container): the actor must be a member of the
+///   ad-hoc team. Deliberately NOT `registered_by`: the PUG creator writes
+///   *both* registration rows, and creator-speaks-for-both-sides would let
+///   one person submit and confirm the same result.
+/// - Individual registration: the actor must be the registered player, or
+///   the user who created the row.
 ///
 /// Deliberately *not* consulted for team registrations: `registered_by`. A
 /// captain who registered the team and then left it no longer speaks for it,
 /// which is the mirror image of the defect this replaces.
 pub async fn speaks_for_registration<LTMR>(
     member_repo: &LTMR,
+    adhoc_repo: Option<&dyn AdhocTeamRepository>,
     registration: &TournamentRegistration,
     actor: RegistrationActor,
 ) -> Result<bool, DomainError>
@@ -83,6 +89,17 @@ where
 {
     if let Some(team_season_id) = registration.team_season_id {
         return member_repo.is_member(team_season_id, actor.player_id).await;
+    }
+
+    if let Some(adhoc_uuid) = registration.adhoc_team_id {
+        // Without a wired repo nobody speaks for an ad-hoc side — refusing is
+        // strictly safer than the registered_by fallback (see doc above).
+        let Some(adhoc_repo) = adhoc_repo else {
+            return Ok(false);
+        };
+        return adhoc_repo
+            .is_member(AdhocTeamId::from_uuid(adhoc_uuid), actor.player_id)
+            .await;
     }
 
     Ok(registration.player_id == Some(actor.player_id)
@@ -99,6 +116,7 @@ where
 pub async fn find_actor_registration<TRR, LTMR>(
     registration_repo: &TRR,
     member_repo: &LTMR,
+    adhoc_repo: Option<&dyn AdhocTeamRepository>,
     match_: &TournamentMatch,
     actor: RegistrationActor,
 ) -> Result<TournamentRegistrationId, DomainError>
@@ -116,7 +134,7 @@ where
         let Some(registration) = registration_repo.find_by_id(reg_id).await? else {
             continue;
         };
-        if speaks_for_registration(member_repo, &registration, actor).await? {
+        if speaks_for_registration(member_repo, adhoc_repo, &registration, actor).await? {
             return Ok(reg_id);
         }
     }
@@ -172,7 +190,7 @@ mod tests {
         member_repo.expect_is_member().returning(|_, _| Ok(true));
 
         assert!(
-            speaks_for_registration(&member_repo, &reg, actor)
+            speaks_for_registration(&member_repo, None, &reg, actor)
                 .await
                 .unwrap(),
             "an active roster member must speak for their team's registration \
@@ -193,7 +211,7 @@ mod tests {
         member_repo.expect_is_member().returning(|_, _| Ok(false));
 
         assert!(
-            !speaks_for_registration(&member_repo, &reg, actor)
+            !speaks_for_registration(&member_repo, None, &reg, actor)
                 .await
                 .unwrap()
         );
@@ -211,6 +229,7 @@ mod tests {
         assert!(
             speaks_for_registration(
                 &member_repo,
+                None,
                 &reg,
                 RegistrationActor::new(UserId::new(), player_id)
             )
@@ -221,6 +240,7 @@ mod tests {
         assert!(
             speaks_for_registration(
                 &member_repo,
+                None,
                 &reg,
                 RegistrationActor::new(reg.registered_by, PlayerId::new())
             )
@@ -231,6 +251,7 @@ mod tests {
         assert!(
             !speaks_for_registration(
                 &member_repo,
+                None,
                 &reg,
                 RegistrationActor::new(UserId::new(), PlayerId::new())
             )

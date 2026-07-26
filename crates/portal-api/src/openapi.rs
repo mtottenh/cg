@@ -76,8 +76,9 @@ use crate::dto::responses::{
 use crate::error::{ApiError, FieldErrorDto};
 use crate::handlers::{
     admin, auth, availability, awards, bans, demos, dispute, evidence, forfeit, game_servers,
-    games, league_teams, leagues, player_game_profiles, players, progression, result_reviews,
-    results, roles, steam_auth, steam_tracking, tournaments, uploads, users, veto, veto_delegates,
+    games, league_teams, leagues, player_game_profiles, players, progression, pugs,
+    result_reviews, results, roles, steam_auth, steam_tracking, tournaments, uploads, users, veto,
+    veto_delegates,
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -318,6 +319,27 @@ use utoipa_swagger_ui::SwaggerUi;
         veto::record_coin_flip,
         veto::perform_veto_action,
         veto::select_side,
+        // Pick-up games (PUGs)
+        pugs::create_pug,
+        pugs::get_pug,
+        pugs::my_pugs,
+        pugs::open_pugs,
+        pugs::recent_pugs,
+        pugs::preview_by_code,
+        pugs::join_by_code,
+        pugs::rotate_code,
+        pugs::leave_pug,
+        pugs::kick_player,
+        pugs::set_team,
+        pugs::set_captain,
+        pugs::shuffle_teams,
+        pugs::swap_teams,
+        pugs::nominate_map,
+        pugs::lock_pug,
+        pugs::spin_wheel,
+        pugs::cancel_pug,
+        pugs::rematch_pug,
+        pugs::player_pug_stats,
         // Veto delegates
         veto_delegates::create_delegation,
         veto_delegates::list_delegations,
@@ -675,6 +697,24 @@ use utoipa_swagger_ui::SwaggerUi;
             VetoActionResultResponse,
             VetoFormatResponse,
             MapStatusResponse,
+            // Pick-up games (PUGs)
+            crate::handlers::pugs::CreatePugRequest,
+            crate::handlers::pugs::SetTeamRequest,
+            crate::handlers::pugs::SetCaptainRequest,
+            crate::handlers::pugs::KickPlayerRequest,
+            crate::handlers::pugs::WheelEntryRequest,
+            crate::handlers::pugs::LockPugRequest,
+            crate::handlers::pugs::PugResponse,
+            crate::handlers::pugs::PugPlayerResponse,
+            crate::handlers::pugs::PugWheelEntryResponse,
+            crate::handlers::pugs::PugWheelSpinResponse,
+            crate::handlers::pugs::PugDetailResponse,
+            crate::handlers::pugs::PugPreviewResponse,
+            crate::handlers::pugs::SpinResponse,
+            crate::handlers::pugs::JoinCodeResponse,
+            crate::handlers::pugs::PugStatsResponse,
+            portal_core::types::PugStatus,
+            portal_core::types::PugMapSelectionMode,
             // Veto delegates
             crate::dto::requests::CreateVetoDelegateRequest,
             crate::dto::responses::VetoDelegateResponse,
@@ -842,6 +882,7 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "result_reviews", description = "Result review and validation discrepancy handling"),
         (name = "steam_tracking", description = "CS2 Steam match tracking registration"),
         (name = "game_servers", description = "Game server registry and agent management"),
+        (name = "pugs", description = "Pick-up games: ephemeral lobbies, wheel map picks, separate stats"),
         (name = "awards", description = "Tournament/season awards, stat leaderboards, and trophy cases")
     ),
     modifiers(&SecurityAddon)

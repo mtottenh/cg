@@ -13,6 +13,7 @@ pub mod league_team;
 pub mod permission;
 pub mod player;
 pub mod player_game_profile;
+pub mod pug;
 pub mod steam_tracking;
 pub mod system_settings;
 pub mod tournament;
@@ -35,6 +36,7 @@ pub use league_team::{
 pub use permission::PermissionService;
 pub use player::{PlayerSearchResult, PlayerService};
 pub use player_game_profile::PlayerGameProfileService;
+pub use pug::{LockPlan, PugService, WheelDraw, WheelSegment};
 pub use steam_tracking::SteamTrackingService;
 pub use system_settings::SystemSettingsService;
 pub use tournament::{BracketGenerator, GeneratedBracket, TournamentService};

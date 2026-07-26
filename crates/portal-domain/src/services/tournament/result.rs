@@ -115,6 +115,8 @@ where
     /// than an `Option` builder: a service missing it would silently fall back
     /// to "only the person who clicked register", which is the defect.
     member_repo: Arc<LTMR>,
+    /// Ad-hoc team membership (PUG containers); optional, see `with_adhoc_repo`.
+    adhoc_repo: Option<Arc<dyn crate::repositories::pug::AdhocTeamRepository>>,
     map_pool_provider: Option<Arc<dyn MapPoolProvider>>,
     match_transitioner: Option<Arc<dyn MatchStatusTransitioner>>,
     auto_confirm_timeout_seconds: i64,
@@ -145,6 +147,7 @@ where
             demo_link_repo,
             veto_session_repo,
             member_repo,
+            adhoc_repo: None,
             map_pool_provider: None,
             match_transitioner: None,
             // P-57: 24 hours, raised from 15 minutes. Auto-confirm makes a score
@@ -156,6 +159,17 @@ where
             // dispute/review path covers genuinely wrong results either way).
             auto_confirm_timeout_seconds: 24 * 60 * 60, // 24 hours
         }
+    }
+
+    /// Attach the ad-hoc team repository so ad-hoc registrations (PUGs)
+    /// authorize their team members.
+    #[must_use]
+    pub fn with_adhoc_repo(
+        mut self,
+        adhoc_repo: Arc<dyn crate::repositories::pug::AdhocTeamRepository>,
+    ) -> Self {
+        self.adhoc_repo = Some(adhoc_repo);
+        self
     }
 
     /// Create a new result service with custom auto-confirm timeout.
@@ -738,6 +752,7 @@ where
         find_actor_registration(
             self.registration_repo.as_ref(),
             self.member_repo.as_ref(),
+            self.adhoc_repo.as_deref(),
             match_,
             actor,
         )

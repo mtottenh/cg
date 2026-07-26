@@ -24,6 +24,7 @@ pub mod dto;
 pub mod error;
 pub mod extractors;
 pub mod game_server_flow;
+pub mod pug_flow;
 pub mod handlers;
 pub mod middleware;
 pub mod observability;

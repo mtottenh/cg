@@ -122,6 +122,7 @@ where
             .tournament_repo
             .create(CreateTournament {
                 game_id: cmd.game_id,
+                kind: portal_core::types::TournamentKind::Standard,
                 league_id: cmd.league_id,
                 season_id: cmd.season_id,
                 name: cmd.name,

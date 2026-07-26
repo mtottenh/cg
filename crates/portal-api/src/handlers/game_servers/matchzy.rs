@@ -220,6 +220,9 @@ pub async fn post_demo(
             // logged but never bounced to MatchZy (no retries anyway).
             tracing::debug!(demo_id = %demo.id, error = %e, "demo link skipped");
         }
+        // PUG demos are categorized 'pug' so the tournament stats surfaces
+        // never see them (stats separation).
+        crate::pug_flow::tag_demo_if_pug(&state, demo.id, reservation.match_id).await;
     }
 
     tracing::info!(server = %server.name, file = %file_name, size, "demo uploaded");

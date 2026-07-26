@@ -136,6 +136,47 @@ impl TournamentParticipantType {
 }
 
 // ============================================================================
+// Tournament Kind
+// ============================================================================
+
+/// What a tournament row represents.
+///
+/// `Pug` rows are hidden single-match containers created when a PUG lobby
+/// locks in; public tournament listings filter them out.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TournamentKind {
+    /// A real, user-visible tournament.
+    #[default]
+    Standard,
+    /// Hidden container for a pick-up game (see `pugs` table).
+    Pug,
+}
+
+impl fmt::Display for TournamentKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Standard => write!(f, "standard"),
+            Self::Pug => write!(f, "pug"),
+        }
+    }
+}
+
+impl FromStr for TournamentKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "standard" => Ok(Self::Standard),
+            "pug" => Ok(Self::Pug),
+            _ => Err(format!("invalid tournament kind: {s}")),
+        }
+    }
+}
+
+// ============================================================================
 // Registration Type
 // ============================================================================
 

@@ -294,6 +294,21 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for an ad-hoc team (ephemeral roster in a PUG container tournament).
+    AdhocTeamId
+);
+
+define_id!(
+    /// Unique identifier for a pick-up game (PUG) lobby.
+    PugId
+);
+
+define_id!(
+    /// Unique identifier for a recorded wheel spin in a PUG.
+    PugWheelSpinId
+);
+
+define_id!(
     /// Unique identifier for a match lineup (who played a match, per registration).
     MatchLineupId
 );

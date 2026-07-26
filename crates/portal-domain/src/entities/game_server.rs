@@ -11,7 +11,7 @@ use portal_core::ids::{
     ServerEventId, ServerReservationId, TournamentId, TournamentMatchId, TournamentRegistrationId,
     UserId,
 };
-use portal_core::types::{AgentGamestate, GameServerStatus, ReservationStatus, SubstitutionStatus};
+use portal_core::types::{AgentGamestate, GameServerStatus, ReservationKind, ReservationStatus, SubstitutionStatus};
 use std::net::IpAddr;
 
 /// A registered game server.
@@ -29,6 +29,8 @@ pub struct GameServer {
 
     /// Admin kill-switch; a disabled server is never allocated.
     pub enabled: bool,
+    /// Whether PUG reservations may take this server.
+    pub allow_pugs: bool,
     pub status: GameServerStatus,
     pub current_match_id: Option<TournamentMatchId>,
 
@@ -144,6 +146,9 @@ pub struct ServerReservation {
     pub match_id: TournamentMatchId,
     pub matchzy_id: i64,
     pub status: ReservationStatus,
+    /// match (tournament) or pug — pugs queue behind matches and only take
+    /// servers with `allow_pugs`.
+    pub kind: ReservationKind,
 
     /// `sv_password` players use; shown only to participants + admins.
     pub connect_password: String,

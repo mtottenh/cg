@@ -72,6 +72,8 @@ where
     tournament_repo: Arc<TR>,
     registration_repo: Arc<TRR>,
     member_repo: Arc<LTMR>,
+    /// Ad-hoc team membership (PUG containers); optional, see `with_adhoc_repo`.
+    adhoc_repo: Option<Arc<dyn crate::repositories::pug::AdhocTeamRepository>>,
 }
 
 impl<TR, TRR, LTMR> RegistrationService<TR, TRR, LTMR>
@@ -81,7 +83,7 @@ where
     LTMR: LeagueTeamMemberRepository,
 {
     /// Create a new registration service.
-    pub const fn new(
+    pub fn new(
         tournament_repo: Arc<TR>,
         registration_repo: Arc<TRR>,
         member_repo: Arc<LTMR>,
@@ -90,8 +92,21 @@ where
             tournament_repo,
             registration_repo,
             member_repo,
+            adhoc_repo: None,
         }
     }
+
+    /// Attach the ad-hoc team repository so ad-hoc registrations (PUGs)
+    /// authorize their team members.
+    #[must_use]
+    pub fn with_adhoc_repo(
+        mut self,
+        adhoc_repo: Arc<dyn crate::repositories::pug::AdhocTeamRepository>,
+    ) -> Self {
+        self.adhoc_repo = Some(adhoc_repo);
+        self
+    }
+
 
     /// Whether `actor` may act on behalf of `registration`.
     ///
@@ -106,7 +121,13 @@ where
         registration: &TournamentRegistration,
         actor: RegistrationActor,
     ) -> Result<bool, DomainError> {
-        speaks_for_registration(self.member_repo.as_ref(), registration, actor).await
+        speaks_for_registration(
+            self.member_repo.as_ref(),
+            self.adhoc_repo.as_deref(),
+            registration,
+            actor,
+        )
+        .await
     }
 
     /// Every registration in this tournament that `actor` speaks for.
@@ -472,6 +493,7 @@ where
             tournament_repo: Arc::clone(&self.tournament_repo),
             registration_repo: Arc::clone(&self.registration_repo),
             member_repo: Arc::clone(&self.member_repo),
+            adhoc_repo: self.adhoc_repo.clone(),
         }
     }
 }

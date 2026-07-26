@@ -954,7 +954,10 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
             LEFT JOIN league_team_members ltm
               ON tr.team_season_id = ltm.team_season_id
               AND ltm.player_id = $1
-            WHERE (tr.player_id = $1 OR ltm.player_id IS NOT NULL)
+            LEFT JOIN tournament_adhoc_team_members atm
+              ON tr.adhoc_team_id = atm.adhoc_team_id
+              AND atm.player_id = $1
+            WHERE (tr.player_id = $1 OR ltm.player_id IS NOT NULL OR atm.player_id IS NOT NULL)
               AND ($2::text IS NULL OR tm.status::text = $2)
               AND ($3::uuid IS NULL OR tm.tournament_id = $3)
             ORDER BY

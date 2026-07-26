@@ -55,7 +55,7 @@ impl TournamentRepository for PgTournamentRepository {
             r"
             INSERT INTO tournaments (
                 id, game_id, league_id, season_id, name, slug, description,
-                format, format_settings, participant_type, team_size,
+                format, format_settings, participant_type, kind, team_size,
                 min_participants, max_participants, registration_type,
                 registration_start, registration_end, check_in_required,
                 check_in_start, check_in_end, scheduling_mode, starts_at,
@@ -65,7 +65,8 @@ impl TournamentRepository for PgTournamentRepository {
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
+                $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
+                $30
             )
             RETURNING *
             ",
@@ -80,6 +81,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(cmd.format.to_string())
         .bind(&cmd.format_settings)
         .bind(cmd.participant_type.to_string())
+        .bind(cmd.kind.to_string())
         .bind(cmd.team_size)
         .bind(cmd.min_participants)
         .bind(cmd.max_participants)
@@ -341,6 +343,7 @@ impl TournamentRepository for PgTournamentRepository {
               AND ($7::text IS NULL OR name ILIKE $7 OR slug ILIKE $7)
               AND ($8::bool IS NULL OR NOT $8 OR starts_at > NOW())
               AND ($9::bool IS NULL OR NOT $9 OR status IN ('published', 'registration', 'check_in', 'in_progress'))
+              AND kind = 'standard'
             ORDER BY starts_at DESC NULLS LAST, created_at DESC
             LIMIT $10 OFFSET $11
             ")
@@ -372,6 +375,7 @@ impl TournamentRepository for PgTournamentRepository {
               AND ($7::text IS NULL OR name ILIKE $7 OR slug ILIKE $7)
               AND ($8::bool IS NULL OR NOT $8 OR starts_at > NOW())
               AND ($9::bool IS NULL OR NOT $9 OR status IN ('published', 'registration', 'check_in', 'in_progress'))
+              AND kind = 'standard'
             ",
         )
         .bind(filters.game_id.map(|id| id.as_uuid()))
@@ -399,7 +403,7 @@ impl TournamentRepository for PgTournamentRepository {
         let rows = sqlx::query_as::<_, TournamentRow>(
             r"
             SELECT * FROM tournaments
-            WHERE game_id = $1
+            WHERE game_id = $1 AND kind = 'standard'
             ORDER BY starts_at DESC NULLS LAST, created_at DESC
             LIMIT $2 OFFSET $3
             ",
@@ -411,7 +415,7 @@ impl TournamentRepository for PgTournamentRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tournaments WHERE game_id = $1")
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tournaments WHERE game_id = $1 AND kind = 'standard'")
             .bind(game_id.as_uuid())
             .fetch_one(&self.pool)
             .await

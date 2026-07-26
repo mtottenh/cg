@@ -22,6 +22,10 @@ pub enum VetoActionType {
     Pick,
     /// Last remaining map (automatic selection).
     Decider,
+    /// Server-side weighted random pick ("the wheel"). Recorded as an auto
+    /// action (performed_by NULL); never auto-executed — a human triggers
+    /// each spin.
+    Random,
 }
 
 impl std::fmt::Display for VetoActionType {
@@ -30,6 +34,7 @@ impl std::fmt::Display for VetoActionType {
             Self::Ban => write!(f, "ban"),
             Self::Pick => write!(f, "pick"),
             Self::Decider => write!(f, "decider"),
+            Self::Random => write!(f, "random"),
         }
     }
 }
@@ -42,6 +47,7 @@ impl std::str::FromStr for VetoActionType {
             "ban" => Ok(Self::Ban),
             "pick" => Ok(Self::Pick),
             "decider" => Ok(Self::Decider),
+            "random" => Ok(Self::Random),
             _ => Err(format!("invalid veto action type: {s}")),
         }
     }
@@ -246,6 +252,55 @@ impl VetoFormatConfig {
         }
     }
 
+    /// Create a wheel format: `map_count` weighted-random picks, no bans.
+    ///
+    /// Used by PUGs. The pool is the players' deduped nominations; weights
+    /// live in the PUG layer. Each `random` action is performed by a human
+    /// hitting "spin", with the server choosing the winner.
+    #[must_use]
+    pub fn wheel(map_count: usize) -> Self {
+        Self {
+            id: format!("wheel_bo{map_count}"),
+            display_name: format!("Wheel — Best of {map_count}"),
+            description: format!(
+                "{map_count} map{} chosen by spinning the wheel",
+                if map_count == 1 { "" } else { "s" }
+            ),
+            sequence: (0..map_count)
+                .map(|_| VetoFormatActionConfig {
+                    team: 0,
+                    action_type: VetoActionType::Random,
+                })
+                .collect(),
+            min_map_pool: map_count,
+        }
+    }
+
+    /// Wheel format for a Bo1 (one spin).
+    #[must_use]
+    pub fn wheel_bo1() -> Self {
+        Self::wheel(1)
+    }
+
+    /// Wheel format for a Bo3 (three spins — one per map that may be played).
+    #[must_use]
+    pub fn wheel_bo3() -> Self {
+        Self::wheel(3)
+    }
+
+    /// Wheel format for a Bo5 (five spins — one per map that may be played).
+    #[must_use]
+    pub fn wheel_bo5() -> Self {
+        Self::wheel(5)
+    }
+
+    /// Whether this format contains any team-performed actions.
+    /// Formats with none (e.g. wheel formats) skip the coin-flip stage.
+    #[must_use]
+    pub fn has_team_actions(&self) -> bool {
+        self.sequence.iter().any(|a| a.team != 0)
+    }
+
     /// Get the action at a given index (0-indexed).
     #[must_use]
     pub fn get_action(&self, index: usize) -> Option<&VetoFormatActionConfig> {
@@ -282,10 +337,19 @@ impl VetoFormatConfig {
             .count()
     }
 
-    /// Get total maps that will be selected (picks + deciders).
+    /// Count random (wheel) selections in this format.
+    #[must_use]
+    pub fn random_count(&self) -> usize {
+        self.sequence
+            .iter()
+            .filter(|a| matches!(a.action_type, VetoActionType::Random))
+            .count()
+    }
+
+    /// Get total maps that will be selected (picks + deciders + wheel spins).
     #[must_use]
     pub fn maps_selected(&self) -> usize {
-        self.pick_count() + self.decider_count()
+        self.pick_count() + self.decider_count() + self.random_count()
     }
 }
 

@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use portal_core::types::{
     AdvancementRule, BracketStatus, BracketType, MatchFormat, MatchParticipantSource,
     RegistrationType, SchedulingMode, StageFormat, StageStatus, TournamentFormat,
-    TournamentInvitationStatus, TournamentMatchStatus, TournamentParticipantType,
+    TournamentInvitationStatus, TournamentKind, TournamentMatchStatus, TournamentParticipantType,
     TournamentRegistrationStatus, TournamentStatus, WithdrawalPolicy,
 };
 use portal_core::{
@@ -54,6 +54,8 @@ pub struct Tournament {
     pub format: TournamentFormat,
     pub format_settings: serde_json::Value,
     pub participant_type: TournamentParticipantType,
+    /// standard = real tournament; pug = hidden PUG container.
+    pub kind: TournamentKind,
     pub team_size: Option<i32>,
 
     // Capacity

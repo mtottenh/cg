@@ -117,6 +117,8 @@ pub struct LifecyclePassSummary {
     pub veto_sessions_created: u32,
     /// Matches forfeited (single no-show).
     pub no_shows_forfeited: u32,
+    /// Veto turns auto-acted after their deadline passed.
+    pub veto_timeouts_processed: u32,
     /// Matches double-forfeited (nobody showed).
     pub double_forfeits: u32,
     /// Partially-opened check-in windows repaired (`checking_in` with a
@@ -284,6 +286,31 @@ pub async fn run_lifecycle_pass(
     summary.reservations_reconciled =
         reservation_summary.load_retried + reservation_summary.reconciled;
     summary.errors += reservation_summary.errors;
+
+    // ------------------------------------------------------------------
+    // 7b: veto turn timeouts — auto-act for absent players. Warnings have
+    //     always broadcast; this finally wires the enforcement so a
+    //     stalled veto (PUGs especially: strangers, no captains to chase)
+    //     advances with a random pick/ban instead of wedging forever.
+    // ------------------------------------------------------------------
+    match state.veto_service.find_timed_out_sessions().await {
+        Ok(sessions) => {
+            for session in sessions {
+                process_veto_timeout(state, &session, &mut summary).await;
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: timed-out veto scan failed");
+            summary.errors += 1;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 7c: PUG sweeper — expire stale gathering lobbies, cancel
+    //     materialized pugs that never went live (also releases their
+    //     server reservations).
+    // ------------------------------------------------------------------
+    crate::pug_flow::sweep_pugs(state).await;
 
     // ------------------------------------------------------------------
     // 8: game servers with stale agent heartbeats → offline (§6.7)
@@ -841,4 +868,50 @@ pub fn spawn_lifecycle_task(state: AppState, shutdown: Arc<Notify>) -> JoinHandl
             }
         }
     })
+}
+
+/// Auto-act a timed-out veto turn and broadcast the result, mirroring the
+/// REST action handler's completion behavior (WS frames + server
+/// assignment trigger).
+async fn process_veto_timeout(
+    state: &AppState,
+    session: &portal_domain::entities::VetoSession,
+    summary: &mut LifecyclePassSummary,
+) {
+    use crate::dto::responses::veto::{VetoActionResponse, VetoSessionResponse};
+    use crate::websocket::messages::{
+        LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast,
+    };
+
+    let result = match state.veto_service.process_timeout(session.id).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Raced a player action / already advanced: not an error.
+            tracing::debug!(session_id = %session.id, error = %e, "veto timeout skipped");
+            return;
+        }
+    };
+    tracing::info!(session_id = %session.id, match_id = %session.match_id,
+        map = %result.action.map_id, "veto turn timed out; auto-action performed");
+    summary.veto_timeouts_processed += 1;
+
+    if let Some(lobby) = state.veto_lobby_manager.get_lobby(&session.match_id) {
+        if result.veto_complete {
+            lobby.broadcast(LobbyBroadcast::VetoComplete(VetoCompleteBroadcast {
+                session: VetoSessionResponse::from(result.session.clone()),
+                selected_maps: result.session.selected_maps.clone(),
+            }));
+        } else {
+            lobby.broadcast(LobbyBroadcast::VetoActionPerformed(Box::new(
+                VetoActionBroadcast {
+                    session: VetoSessionResponse::from(result.session.clone()),
+                    action: VetoActionResponse::from(result.action.clone()),
+                    is_complete: false,
+                },
+            )));
+        }
+    }
+    if result.veto_complete {
+        let _ = state.server_assignment_tx.send(session.match_id);
+    }
 }

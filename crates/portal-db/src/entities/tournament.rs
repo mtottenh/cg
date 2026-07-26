@@ -34,6 +34,7 @@ pub struct TournamentRow {
     pub format: String,
     pub format_settings: serde_json::Value,
     pub participant_type: String,
+    pub kind: String,
     pub team_size: Option<i32>,
 
     // Capacity

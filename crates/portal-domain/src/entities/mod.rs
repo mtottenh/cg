@@ -20,6 +20,7 @@ pub mod league_team;
 pub mod match_lifecycle;
 pub mod match_lineup;
 pub mod player;
+pub mod pug;
 pub mod player_game_profile;
 pub mod player_match_history;
 pub mod player_mm_stats;
@@ -92,6 +93,9 @@ pub use league_team::{
     PlayerLeagueTeamMembership, UpdateLeagueSeasonCommand, UpdateLeagueTeamCommand,
 };
 pub use match_lifecycle::{CreateMatchStatusLogCommand, MatchStatusLog, TransitionTrigger};
+pub use pug::{
+    AdhocTeam, AdhocTeamMember, Pug, PugPlayer, PugPlayerAggregates, PugWheelEntry, PugWheelSpin,
+};
 pub use match_lineup::{
     DeclareLineupCommand, LineupPlayerInput, MatchLineup, MatchLineupPlayer, MatchLineupWithPlayers,
 };

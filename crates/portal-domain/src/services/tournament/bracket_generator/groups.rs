@@ -4,8 +4,8 @@
 //! and cross-seeding group winners for playoff brackets.
 
 use crate::entities::tournament::SeededParticipant;
-use portal_core::types::{MatchFormat, MatchFormatPlan};
 use portal_core::DomainError;
+use portal_core::types::{MatchFormat, MatchFormatPlan};
 use serde::Deserialize;
 
 /// Configuration for a Groups + Playoffs tournament.
@@ -469,11 +469,13 @@ mod tests {
         );
 
         // Invalid values are rejected, not silently defaulted.
-        assert!(GroupsConfig::from_format_settings(
-            &serde_json::json!({ "group_match_format": "bo2" }),
-            8
-        )
-        .is_err());
+        assert!(
+            GroupsConfig::from_format_settings(
+                &serde_json::json!({ "group_match_format": "bo2" }),
+                8
+            )
+            .is_err()
+        );
     }
 
     #[test]

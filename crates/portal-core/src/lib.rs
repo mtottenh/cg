@@ -24,14 +24,14 @@ pub use ids::{
     LeagueTeamSeasonId, LobbyId, MatchId, MatchLineupId, MatchLineupPlayerId, MatchStatusLogId,
     PlayerGameProfileId, PlayerId, PlayerMatchHistoryId, PlayerMmStatsId, PlayerRatingHistoryId,
     ProgressionLogId, PugId, PugWheelSpinId, ResultClaimId, ResultReviewId, SagaId,
-    ScheduleProposalId, SteamTrackingId,
-    SuggestedTimeId, TournamentBracketId, TournamentId, TournamentInvitationId,
-    TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId, TournamentRegistrationId,
-    TournamentStageId, UserId, VetoActionId, VetoDelegateId, VetoLobbyMessageId, VetoSessionId,
+    ScheduleProposalId, SteamTrackingId, SuggestedTimeId, TournamentBracketId, TournamentId,
+    TournamentInvitationId, TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId,
+    TournamentRegistrationId, TournamentStageId, UserId, VetoActionId, VetoDelegateId,
+    VetoLobbyMessageId, VetoSessionId,
 };
 pub use types::{
     DemoCategory, DemoLinkType, DemoStatus, EvidenceStorage, EvidenceType, MatchFormat,
     MatchFormatPlan, ParseScopeTypeError, PermissionScope, PugMapSelectionMode, PugStatus,
-    ScopeType,
-    SideSelectionMode, TournamentKind, VetoActionType, VetoFormatActionConfig, VetoFormatConfig,
+    ScopeType, SideSelectionMode, TournamentKind, VetoActionType, VetoFormatActionConfig,
+    VetoFormatConfig,
 };

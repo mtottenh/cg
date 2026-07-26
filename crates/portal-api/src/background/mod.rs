@@ -892,9 +892,7 @@ async fn process_veto_timeout(
     summary: &mut LifecyclePassSummary,
 ) {
     use crate::dto::responses::veto::{VetoActionResponse, VetoSessionResponse};
-    use crate::websocket::messages::{
-        LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast,
-    };
+    use crate::websocket::messages::{LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast};
 
     let result = match state.veto_service.process_timeout(session.id).await {
         Ok(r) => r,

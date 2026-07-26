@@ -626,16 +626,18 @@ impl UpdateTournamentStageRequest {
         portal_domain::repositories::tournament::UpdateTournamentStage,
         crate::error::ApiError,
     > {
-        Ok(portal_domain::repositories::tournament::UpdateTournamentStage {
-            name: self.name,
-            format_settings: self.format_settings,
-            advancement_count: self.advancement_count,
-            advancement_rule: parse_advancement_rule(self.advancement_rule)?,
-            match_format: parse_match_format(self.match_format)?,
-            map_veto_format: self.map_veto_format,
-            starts_at: self.starts_at,
-            ends_at: self.ends_at,
-        })
+        Ok(
+            portal_domain::repositories::tournament::UpdateTournamentStage {
+                name: self.name,
+                format_settings: self.format_settings,
+                advancement_count: self.advancement_count,
+                advancement_rule: parse_advancement_rule(self.advancement_rule)?,
+                match_format: parse_match_format(self.match_format)?,
+                map_veto_format: self.map_veto_format,
+                starts_at: self.starts_at,
+                ends_at: self.ends_at,
+            },
+        )
     }
 }
 

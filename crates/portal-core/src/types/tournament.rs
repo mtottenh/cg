@@ -1039,7 +1039,10 @@ impl MatchFormatPlan {
         {
             return f;
         }
-        self.round_formats.get(&round).copied().unwrap_or(self.default)
+        self.round_formats
+            .get(&round)
+            .copied()
+            .unwrap_or(self.default)
     }
 
     /// Format for the grand final of a double-elimination stage.

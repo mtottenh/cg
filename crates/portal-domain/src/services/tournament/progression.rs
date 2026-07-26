@@ -607,9 +607,7 @@ where
             next_stage.match_format.unwrap_or(MatchFormat::Bo3),
             Some(&next_stage.format_settings),
         )
-        .map_err(|e| {
-            DomainError::InvalidState(format!("invalid stage format settings: {e}"))
-        })?;
+        .map_err(|e| DomainError::InvalidState(format!("invalid stage format settings: {e}")))?;
 
         // Generate playoff brackets based on stage format
         match next_stage.format {

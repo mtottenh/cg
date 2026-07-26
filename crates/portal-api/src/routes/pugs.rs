@@ -47,6 +47,7 @@ pub fn routes() -> Router<AppState> {
         .route("/{pug_id}/captain", put(pugs::set_captain))
         .route("/{pug_id}/shuffle", post(pugs::shuffle_teams))
         .route("/{pug_id}/swap-teams", post(pugs::swap_teams))
+        .route("/{pug_id}/draft", post(pugs::draft_pick))
         .route("/{pug_id}/code/rotate", post(pugs::rotate_code))
         .route("/{pug_id}/wheel-entry", put(pugs::nominate_map))
         .route("/{pug_id}/lock", post(pugs::lock_pug))

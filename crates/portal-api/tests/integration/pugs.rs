@@ -498,3 +498,92 @@ async fn test_my_pugs_and_mine_visibility() {
         .await
         .assert_status(StatusCode::FORBIDDEN);
 }
+
+// ============================================================================
+// CAPTAINS DRAFT
+// ============================================================================
+
+#[tokio::test]
+async fn test_pug_captains_draft_alternates_by_roster_size() {
+    let app = TestApp::new().await;
+    let game_id = get_cs2_game_id(app.pool()).await;
+
+    let host = pug_user(&app, "pug_draft_host", 9701).await;
+    let cap2 = pug_user(&app, "pug_draft_cap2", 9702).await;
+    let bench_a = pug_user(&app, "pug_draft_a", 9703).await;
+    let bench_b = pug_user(&app, "pug_draft_b", 9704).await;
+
+    let detail = create_pug(
+        &app,
+        &host,
+        json!({
+            "game_id": game_id.to_string(),
+            "match_format": "bo1",
+            "map_selection_mode": "veto",
+            "team_size": 2
+        }),
+    )
+    .await;
+    let id = pug_id(&detail);
+    let code = join_code(&detail);
+
+    for user in [&cap2, &bench_a, &bench_b] {
+        app.post_json_with_token(&format!("/v1/pugs/code/{code}/join"), &json!({}), &user.token)
+            .await
+            .assert_status(StatusCode::OK);
+    }
+    // cap2 anchors team 2 and gets the armband.
+    app.put_json_with_token(&format!("/v1/pugs/{id}/team"), &json!({"team": 2}), &cap2.token)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    app.put_json_with_token(
+        &format!("/v1/pugs/{id}/captain"),
+        &json!({"player_id": cap2.user_id.to_string(), "is_captain": true}),
+        &host.token,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+
+    // Rosters are 1v1 → team 1 picks first (tie → team 1). Team 2's captain
+    // trying to jump the queue is refused.
+    let jumped = app
+        .post_json_with_token(
+            &format!("/v1/pugs/{id}/draft"),
+            &json!({"player_id": bench_a.user_id.to_string()}),
+            &cap2.token,
+        )
+        .await;
+    jumped.assert_status(StatusCode::FORBIDDEN);
+
+    // Team 1's captain (the host) drafts → lands on team 1.
+    let first = app
+        .post_json_with_token(
+            &format!("/v1/pugs/{id}/draft"),
+            &json!({"player_id": bench_a.user_id.to_string()}),
+            &host.token,
+        )
+        .await;
+    first.assert_status(StatusCode::OK);
+    assert_eq!(first.json::<Value>()["data"]["team"], 1);
+
+    // Now 2v1 → team 2 picks; cap2's draft lands on team 2.
+    let second = app
+        .post_json_with_token(
+            &format!("/v1/pugs/{id}/draft"),
+            &json!({"player_id": bench_b.user_id.to_string()}),
+            &cap2.token,
+        )
+        .await;
+    second.assert_status(StatusCode::OK);
+    assert_eq!(second.json::<Value>()["data"]["team"], 2);
+
+    // Bench empty → drafting an already-teamed player is rejected.
+    let dry = app
+        .post_json_with_token(
+            &format!("/v1/pugs/{id}/draft"),
+            &json!({"player_id": bench_a.user_id.to_string()}),
+            &host.token,
+        )
+        .await;
+    dry.assert_status(StatusCode::BAD_REQUEST);
+}

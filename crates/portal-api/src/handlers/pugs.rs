@@ -868,6 +868,57 @@ pub async fn swap_teams(
 // WHEEL + LOCK + SPIN + CANCEL
 // =============================================================================
 
+/// Draft the next bench player (captains draft). The team with fewer
+/// players picks; only that team's captain (or the creator) may draft.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct DraftPickRequest {
+    pub player_id: String,
+}
+
+/// Which team a draft pick landed on.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DraftPickResponse {
+    pub player_id: String,
+    pub team: i16,
+}
+
+/// Captains draft: assign the next bench player to the picking team.
+#[utoipa::path(
+    post,
+    path = "/v1/pugs/{pug_id}/draft",
+    request_body = DraftPickRequest,
+    params(("pug_id" = String, Path, description = "PUG ID")),
+    responses(
+        (status = 200, description = "Drafted", body = DataResponse<DraftPickResponse>),
+        (status = 403, description = "Not the picking captain", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "pugs"
+)]
+pub async fn draft_pick(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(pug_id): Path<String>,
+    ValidatedJson(req): ValidatedJson<DraftPickRequest>,
+) -> ApiResult<Json<DataResponse<DraftPickResponse>>> {
+    let request_id = get_request_id(&headers).to_string();
+    let pug_id = parse_pug_id(&pug_id)?;
+    let target = parse_player_id(&req.player_id)?;
+    let team = state
+        .pug_service
+        .draft_pick(pug_id, auth.user_id, auth.player_id, target)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(DataResponse::new(
+        DraftPickResponse {
+            player_id: req.player_id,
+            team,
+        },
+        &request_id,
+    )))
+}
+
 /// Nominate a map for the wheel (one per player, upserted).
 #[utoipa::path(
     put,

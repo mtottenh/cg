@@ -397,6 +397,65 @@ impl PugService {
         self.pug_repo.swap_teams(pug_id).await
     }
 
+    /// Captains draft: the captain of the team with FEWER players (tie:
+    /// team 1) picks the next player off the bench. Stateless by design —
+    /// the turn derives from roster sizes, so there is no draft cursor to
+    /// desync. The creator may draft on the picking team's behalf.
+    #[instrument(skip(self))]
+    pub async fn draft_pick(
+        &self,
+        pug_id: PugId,
+        actor_user: UserId,
+        actor_player: PlayerId,
+        target: PlayerId,
+    ) -> Result<i16, DomainError> {
+        let pug = self.get(pug_id).await?;
+        if !pug.is_open() {
+            return Err(DomainError::InvalidState(
+                "Drafting ends when the lobby locks".to_string(),
+            ));
+        }
+
+        let players = self.pug_repo.list_players(pug_id).await?;
+        let on_bench = players
+            .iter()
+            .find(|p| p.player_id == target)
+            .ok_or_else(|| DomainError::NotAuthorized("Player is not in this lobby".to_string()))?;
+        if on_bench.team.is_some() {
+            return Err(DomainError::InvalidState(
+                "That player is already on a team".to_string(),
+            ));
+        }
+
+        let count = |team: i16| players.iter().filter(|p| p.team == Some(team)).count();
+        let (team1, team2) = (count(1), count(2));
+        let team_size = usize::try_from(pug.team_size).unwrap_or(usize::MAX);
+        if team1 >= team_size && team2 >= team_size {
+            return Err(DomainError::Conflict("Both teams are full".to_string()));
+        }
+        let picking: i16 = if team1 > team2 && team2 < team_size {
+            2
+        } else if team1 <= team2 && team1 < team_size {
+            1
+        } else {
+            2
+        };
+
+        let is_picking_captain = players
+            .iter()
+            .any(|p| p.player_id == actor_player && p.is_captain && p.team == Some(picking));
+        if pug.created_by_user_id != actor_user && !is_picking_captain {
+            return Err(DomainError::NotAuthorized(format!(
+                "It is team {picking}'s pick — only their captain (or the creator) can draft"
+            )));
+        }
+
+        self.pug_repo
+            .set_player_team(pug_id, target, Some(picking))
+            .await?;
+        Ok(picking)
+    }
+
     // =========================================================================
     // CODES
     // =========================================================================

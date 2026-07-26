@@ -216,11 +216,11 @@ mod tests {
         let db = TestDb::new().await;
         // CS2 and AoE4 are seeded by migrations
         let cs2_id = get_game_id(&db.pool, "cs2").await;
-        let aoe4_id = get_game_id(&db.pool, "aoe4").await;
+        let aoe2_id = get_game_id(&db.pool, "aoe2").await;
 
         assert!(!cs2_id.is_nil());
-        assert!(!aoe4_id.is_nil());
-        assert_ne!(cs2_id, aoe4_id);
+        assert!(!aoe2_id.is_nil());
+        assert_ne!(cs2_id, aoe2_id);
     }
 
     #[tokio::test]

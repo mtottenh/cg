@@ -10,7 +10,7 @@ pub struct GameSummaryResponse {
     #[schema(example = "550e8400-e29b-41d4-a716-446655440000")]
     pub id: String,
 
-    /// Human-readable identifier (e.g., "cs2", "aoe4") - used in URLs.
+    /// Human-readable identifier (e.g., "cs2", "aoe2") - used in URLs.
     #[schema(example = "cs2")]
     pub slug: String,
 
@@ -45,7 +45,7 @@ pub struct GameSummaryResponse {
     /// Display order (lower = shown first).
     ///
     /// P-90: this column has always existed (`migrations/0003_create_games.sql:42`,
-    /// seeded `cs2 = 1` / `aoe4 = 2`) and `PATCH /v1/games/{game_id}` has always
+    /// seeded `cs2 = 1` / `aoe2 = 2`) and `PATCH /v1/games/{game_id}` has always
     /// accepted it, but no *response* carried it. The admin edit modal therefore
     /// had nothing to seed its "Sort Order" field from and hardcoded `0` — showing
     /// every game a value that was not the truth — and, to avoid writing that
@@ -79,7 +79,7 @@ pub struct GameDetailResponse {
     #[schema(example = "550e8400-e29b-41d4-a716-446655440000")]
     pub id: String,
 
-    /// Human-readable identifier (e.g., "cs2", "aoe4") - used in URLs.
+    /// Human-readable identifier (e.g., "cs2", "aoe2") - used in URLs.
     #[schema(example = "cs2")]
     pub slug: String,
 

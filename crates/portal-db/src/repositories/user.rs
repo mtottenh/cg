@@ -994,7 +994,7 @@ mod tests {
         let profile_repo = PlayerGameProfileRepository::new(db.pool.clone());
 
         let (_, player) = create_test_player(&user_repo, &player_repo, "reset").await;
-        let game_id = create_test_game(&db.pool, "aoe4").await;
+        let game_id = create_test_game(&db.pool, "aoe2").await;
 
         let new_profile = NewPlayerGameProfile {
             player_id: player.id,

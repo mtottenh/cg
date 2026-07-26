@@ -11,7 +11,7 @@ pub struct GameRow {
     /// UUID primary key.
     pub id: Uuid,
 
-    /// Human-readable identifier (e.g., "cs2", "aoe4") - used in URLs and API.
+    /// Human-readable identifier (e.g., "cs2", "aoe2") - used in URLs and API.
     pub slug: String,
 
     // Display Information

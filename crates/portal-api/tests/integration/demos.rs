@@ -1984,10 +1984,10 @@ async fn test_demo_status_counts_are_scoped_to_the_requested_game() {
 
     catalog_demo_for_game(&app, "cs2", "p144-cs2-a.dem").await;
     catalog_demo_for_game(&app, "cs2", "p144-cs2-b.dem").await;
-    catalog_demo_for_game(&app, "aoe4", "p144-aoe4.dem").await;
+    catalog_demo_for_game(&app, "aoe2", "p144-aoe2.dem").await;
 
     let cs2_game_id = get_game_id(app.pool(), "cs2").await;
-    let aoe4_game_id = get_game_id(app.pool(), "aoe4").await;
+    let aoe2_game_id = get_game_id(app.pool(), "aoe2").await;
 
     // Unscoped: every game, which is what the all-games view wants and what the
     // endpoint used to return unconditionally.
@@ -2003,17 +2003,17 @@ async fn test_demo_status_counts_are_scoped_to_the_requested_game() {
     let body: serde_json::Value = response.json();
     assert_eq!(
         body["data"]["pending"], 2,
-        "the CS2 rollup must not count the AoE4 demo: {body}"
+        "the CS2 rollup must not count the AoE2 demo: {body}"
     );
 
     let response = app
-        .get_auth(&format!("/v1/admin/demos/stats?game_id={aoe4_game_id}"))
+        .get_auth(&format!("/v1/admin/demos/stats?game_id={aoe2_game_id}"))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(
         body["data"]["pending"], 1,
-        "the AoE4 rollup must not count the CS2 demos: {body}"
+        "the AoE2 rollup must not count the CS2 demos: {body}"
     );
 }
 
@@ -2028,8 +2028,8 @@ async fn test_pipeline_overview_demo_counts_are_scoped_to_the_selected_game() {
     make_dev_user_admin(&app).await;
 
     catalog_demo_for_game(&app, "cs2", "p144-pipeline-cs2.dem").await;
-    catalog_demo_for_game(&app, "aoe4", "p144-pipeline-aoe4-a.dem").await;
-    catalog_demo_for_game(&app, "aoe4", "p144-pipeline-aoe4-b.dem").await;
+    catalog_demo_for_game(&app, "aoe2", "p144-pipeline-aoe2-a.dem").await;
+    catalog_demo_for_game(&app, "aoe2", "p144-pipeline-aoe2-b.dem").await;
 
     let response = app.get_auth("/v1/admin/pipeline/overview?game=cs2").await;
     response.assert_status(StatusCode::OK);
@@ -2040,12 +2040,12 @@ async fn test_pipeline_overview_demo_counts_are_scoped_to_the_selected_game() {
         "the CS2 pipeline must count only CS2 demos: {body}"
     );
 
-    let response = app.get_auth("/v1/admin/pipeline/overview?game=aoe4").await;
+    let response = app.get_auth("/v1/admin/pipeline/overview?game=aoe2").await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     assert_eq!(
         body["data"]["demos"]["pending"], 2,
-        "the AoE4 pipeline must count only AoE4 demos: {body}"
+        "the AoE2 pipeline must count only AoE2 demos: {body}"
     );
 
     // No `game` still means all games, so the fix narrowed the scoped view

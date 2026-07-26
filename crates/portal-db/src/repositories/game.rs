@@ -18,7 +18,7 @@ impl GameRepository {
         Self { pool }
     }
 
-    /// Find a game by slug (e.g., "cs2", "aoe4").
+    /// Find a game by slug (e.g., "cs2", "aoe2").
     pub async fn find_by_slug(&self, slug: &str) -> Result<Option<GameRow>, RepositoryError> {
         let game = sqlx::query_as::<_, GameRow>("SELECT * FROM games WHERE slug = $1")
             .bind(slug)
@@ -289,7 +289,7 @@ mod tests {
         let db = TestDb::new().await;
         let repo = GameRepository::new(db.pool.clone());
 
-        // Migration inserts 2 default games (cs2, aoe4)
+        // Migration inserts 2 default games (cs2, aoe2)
         let initial_count = repo.list().await.unwrap().len();
 
         for i in 1..=3 {
@@ -307,7 +307,7 @@ mod tests {
         let db = TestDb::new().await;
         let repo = GameRepository::new(db.pool.clone());
 
-        // Migration inserts 2 default games (cs2, aoe4) which are active
+        // Migration inserts 2 default games (cs2, aoe2) which are active
         let initial_active = repo.list_active().await.unwrap().len();
 
         // Create games

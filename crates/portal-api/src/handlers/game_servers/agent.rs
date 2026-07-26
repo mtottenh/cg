@@ -103,6 +103,25 @@ pub async fn enroll(
 // =============================================================================
 
 /// Resolve the calling agent's server identity from the proxy-verified
+/// Normalize a forwarded client-cert serial to the stored format:
+/// even-length lowercase hex. Caddy forwards decimal (Go big.Int); an
+/// all-digit value that parses as u128 (serials are <= 16 bytes) is
+/// converted; anything else is treated as hex and lowercased.
+fn normalize_serial(raw: &str) -> String {
+    let s = raw.trim().to_ascii_lowercase();
+    if !s.is_empty()
+        && s.bytes().all(|b| b.is_ascii_digit())
+        && let Ok(v) = s.parse::<u128>()
+    {
+        let hex = format!("{v:x}");
+        if hex.len() % 2 == 1 {
+            return format!("0{hex}");
+        }
+        return hex;
+    }
+    s
+}
+
 /// client-cert serial (or the dev header in insecure mode).
 async fn authenticate(
     state: &GameServerState,
@@ -117,10 +136,13 @@ async fn authenticate(
             .get(CLIENT_CERT_SERIAL_HEADER)
             .and_then(|v| v.to_str().ok())
     {
-        // Caddy normalizes serials to lowercase hex; ours are stored likewise.
+        // Caddy's {tls_client_serial} placeholder forwards the serial as a
+        // DECIMAL big-integer string (Go big.Int); enrollment stores
+        // even-length lowercase hex (as OpenSSL prints it). Accept both —
+        // the mismatch 403'd every real agent on the first deployment.
         return state
             .registry
-            .authenticate_agent(&serial.to_ascii_lowercase())
+            .authenticate_agent(&normalize_serial(serial))
             .await
             .map_err(ApiError::from);
     }

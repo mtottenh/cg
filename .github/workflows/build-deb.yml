@@ -128,8 +128,8 @@ jobs:
           test -x /usr/bin/portal-cli
           test -x /usr/bin/portal-scanner
           getent passwd portal
-          test -f /etc/portal/api.env
-          test -f /etc/portal/scanner.env
+          sudo test -f /etc/portal/api.env
+          sudo test -f /etc/portal/scanner.env
           # Enabled is what matters; the services crash-loop here (no DB,
           # CHANGE_ME env) and that's expected.
           systemctl is-enabled portal-api
@@ -140,11 +140,11 @@ jobs:
           set -x
           # portal-api leaves first: shared state must survive
           sudo dpkg --purge portal-api
-          test -f /etc/portal/scanner.env
+          sudo test -f /etc/portal/scanner.env
           getent passwd portal
           # last one out turns off the lights
           sudo dpkg --purge portal-scanner
-          ! test -e /etc/portal/scanner.env
+          ! sudo test -e /etc/portal/scanner.env
           ! getent passwd portal
 
   # Attach to the GitHub release only after the smoke install passed.

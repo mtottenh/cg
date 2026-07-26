@@ -97,9 +97,9 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
             INSERT INTO tournament_registrations (
                 id, tournament_id, team_season_id, player_id, adhoc_team_id,
                 participant_name, participant_logo_url, registered_by,
-                registered_at, seed_rating, created_at, updated_at
+                registered_at, seed_rating, status, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING *
             ",
         )
@@ -113,6 +113,7 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
         .bind(cmd.registered_by.as_uuid())
         .bind(now)
         .bind(cmd.seed_rating)
+        .bind(cmd.status.to_string())
         .bind(now)
         .bind(now)
         .fetch_one(&self.pool)
@@ -157,10 +158,15 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
                 .map_err(|e| DomainError::Internal(e.to_string()))?;
         }
 
+        // P-195: this exclusion list used to be ('withdrawn', 'rejected') —
+        // but 'rejected' is not a TournamentRegistrationStatus value
+        // (rejection writes 'withdrawn'), so it excluded nothing, while a
+        // disqualified registration kept occupying a capacity slot forever.
+        // Terminal statuses that free a slot: withdrawn + disqualified.
         let count: i64 = sqlx::query_scalar(
             r"
             SELECT COUNT(*) FROM tournament_registrations
-            WHERE tournament_id = $1 AND status NOT IN ('withdrawn', 'rejected')
+            WHERE tournament_id = $1 AND status NOT IN ('withdrawn', 'disqualified')
             ",
         )
         .bind(cmd.tournament_id.as_uuid())
@@ -180,9 +186,9 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
             INSERT INTO tournament_registrations (
                 id, tournament_id, team_season_id, player_id, adhoc_team_id,
                 participant_name, participant_logo_url, registered_by,
-                registered_at, seed_rating, created_at, updated_at
+                registered_at, seed_rating, status, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING *
             ",
         )
@@ -196,6 +202,7 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
         .bind(cmd.registered_by.as_uuid())
         .bind(now)
         .bind(cmd.seed_rating)
+        .bind(cmd.status.to_string())
         .bind(now)
         .bind(now)
         .fetch_one(&mut *tx)
@@ -250,7 +257,7 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
             r"
             SELECT COUNT(*) FROM tournament_registrations
             WHERE tournament_id = $1 AND id <> $2
-              AND status NOT IN ('withdrawn', 'rejected')
+              AND status NOT IN ('withdrawn', 'disqualified')
             ",
         )
         .bind(tournament_uuid)
@@ -520,6 +527,36 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(count.0)
+    }
+
+    async fn count_all_by_status(
+        &self,
+        tournament_id: TournamentId,
+    ) -> Result<Vec<(TournamentRegistrationStatus, i64)>, DomainError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            r"
+            SELECT status, COUNT(*) FROM tournament_registrations
+            WHERE tournament_id = $1
+            GROUP BY status
+            ",
+        )
+        .bind(tournament_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        rows.into_iter()
+            .map(|(status, count)| {
+                status
+                    .parse::<TournamentRegistrationStatus>()
+                    .map(|s| (s, count))
+                    .map_err(|e| {
+                        DomainError::Internal(format!(
+                            "Unknown registration status {status:?}: {e}"
+                        ))
+                    })
+            })
+            .collect()
     }
 
     async fn bulk_update_seeds(

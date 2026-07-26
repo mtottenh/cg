@@ -7,6 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+# ToSchema derives on the entity enums that cross the API boundary, so the
+# OpenAPI spec publishes their permitted values and clients get real unions
+# instead of `string` (P-31). Deriving on the single definition rather than
+# mirroring it in portal-api is the point -- duplication is what let clients drift.
+utoipa = { workspace = true }
 portal-core = { path = "../portal-core" }
 
 # Async
@@ -39,6 +44,10 @@ rand = "0.9"
 # Cryptography (refresh token hashing)
 sha2 = { workspace = true }
 hex = { workspace = true }
+
+# Agent-certificate CA (game-server integration)
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+time = "0.3"
 
 [dev-dependencies]
 mockall = { workspace = true }

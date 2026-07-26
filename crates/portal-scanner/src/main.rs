@@ -8,11 +8,12 @@ mod config;
 mod s3_scanner;
 mod scanner;
 mod stats_converter;
+mod telemetry;
 
 use std::time::Duration;
 
 use anyhow::Result;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use api_client::PortalApiClient;
 use config::ScannerConfig;
@@ -29,6 +30,8 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("portal_scanner=info")),
         )
         .init();
+
+    telemetry::install_from_env();
 
     let config = ScannerConfig::from_env();
 
@@ -72,20 +75,39 @@ async fn main() -> Result<()> {
         let mut interval = tokio::time::interval(Duration::from_secs(scan_interval_secs));
         loop {
             interval.tick().await;
-            info!("Starting S3 scan cycle");
+            // Idle cycles log at debug so Loki's error-rate signal stays
+            // meaningful (observability-design.md §5); the counts live in
+            // the metrics now.
+            debug!("Starting S3 scan cycle");
 
-            if let Err(e) = scanner::scan_and_process(
+            let start = std::time::Instant::now();
+            let result = scanner::scan_and_process(
                 &s3_client,
                 &scan_api_client,
                 &scan_demo_client,
                 &scan_config,
             )
-            .await
-            {
-                error!(error = %e, "S3 scan cycle failed");
+            .await;
+            metrics::histogram!("portal_scanner_scan_duration_seconds")
+                .record(start.elapsed().as_secs_f64());
+            match result {
+                Ok(()) => {
+                    metrics::counter!("portal_scanner_scan_cycles_total", "outcome" => "ok")
+                        .increment(1);
+                    metrics::gauge!(
+                        "portal_scanner_last_success_timestamp_seconds",
+                        "loop" => "scan"
+                    )
+                    .set(telemetry::unix_now());
+                }
+                Err(e) => {
+                    metrics::counter!("portal_scanner_scan_cycles_total", "outcome" => "error")
+                        .increment(1);
+                    error!(error = %e, "S3 scan cycle failed");
+                }
             }
 
-            info!("S3 scan cycle complete");
+            debug!("S3 scan cycle complete");
         }
     });
 
@@ -98,10 +120,17 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
 
-            if let Err(e) =
-                scanner::process_pending(&processing_api_client, &processing_demo_client).await
-            {
-                error!(error = %e, "Processing pending demos failed");
+            match scanner::process_pending(&processing_api_client, &processing_demo_client).await {
+                Ok(()) => {
+                    metrics::gauge!(
+                        "portal_scanner_last_success_timestamp_seconds",
+                        "loop" => "processing"
+                    )
+                    .set(telemetry::unix_now());
+                }
+                Err(e) => {
+                    error!(error = %e, "Processing pending demos failed");
+                }
             }
         }
     });

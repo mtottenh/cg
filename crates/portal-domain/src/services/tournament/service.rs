@@ -7,26 +7,28 @@ use portal_core::types::{
     TournamentMatchStatus, TournamentRegistrationStatus, TournamentStatus,
 };
 use portal_core::{
-    DomainError, FieldError, PlayerId, TournamentBracketId, TournamentId, TournamentMatchId,
-    UserId, ValidationError,
+    DomainError, FieldError, LeagueTeamSeasonId, PlayerId, TournamentBracketId, TournamentId,
+    TournamentInvitationId, TournamentMatchId, UserId, ValidationError,
 };
 
 use crate::entities::tournament::{
-    CreateTournamentCommand, Tournament, TournamentBracket, TournamentMatch,
+    CreateTournamentCommand, Tournament, TournamentBracket, TournamentInvitation, TournamentMatch,
     TournamentRegistration, TournamentStage, UpdateTournamentCommand,
 };
 use crate::repositories::tournament::{
-    CreateTournament, CreateTournamentBracket, CreateTournamentRegistration, CreateTournamentStage,
-    CreateTournamentStanding, TournamentBracketRepository, TournamentFilters,
+    CreateTournament, CreateTournamentBracket, CreateTournamentInvitation,
+    CreateTournamentRegistration, CreateTournamentStage, CreateTournamentStanding,
+    TournamentBracketRepository, TournamentFilters, TournamentInvitationRepository,
     TournamentMapPoolRepository, TournamentMatchRepository, TournamentRegistrationRepository,
     TournamentRepository, TournamentStageRepository, TournamentStandingsRepository,
     UpdateTournament, UpsertTournamentMapPool,
 };
 
 use super::bracket_generator::{BracketGenerator, CrossLinkType};
+use super::registration::initial_registration_status;
 
 /// Service for tournament management.
-pub struct TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR>
+pub struct TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR, TIR>
 where
     TR: TournamentRepository,
     TSR: TournamentStageRepository,
@@ -35,6 +37,7 @@ where
     TMR: TournamentMatchRepository,
     TSTR: TournamentStandingsRepository,
     TMPR: TournamentMapPoolRepository,
+    TIR: TournamentInvitationRepository,
 {
     tournament_repo: Arc<TR>,
     stage_repo: Arc<TSR>,
@@ -43,9 +46,11 @@ where
     match_repo: Arc<TMR>,
     standings_repo: Arc<TSTR>,
     map_pool_repo: Arc<TMPR>,
+    invitation_repo: Arc<TIR>,
 }
 
-impl<TR, TSR, TBR, TRR, TMR, TSTR, TMPR> TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR>
+impl<TR, TSR, TBR, TRR, TMR, TSTR, TMPR, TIR>
+    TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR, TIR>
 where
     TR: TournamentRepository,
     TSR: TournamentStageRepository,
@@ -54,6 +59,7 @@ where
     TMR: TournamentMatchRepository,
     TSTR: TournamentStandingsRepository,
     TMPR: TournamentMapPoolRepository,
+    TIR: TournamentInvitationRepository,
 {
     /// Create a new tournament service.
     pub const fn new(
@@ -64,6 +70,7 @@ where
         match_repo: Arc<TMR>,
         standings_repo: Arc<TSTR>,
         map_pool_repo: Arc<TMPR>,
+        invitation_repo: Arc<TIR>,
     ) -> Self {
         Self {
             tournament_repo,
@@ -73,6 +80,7 @@ where
             match_repo,
             standings_repo,
             map_pool_repo,
+            invitation_repo,
         }
     }
 
@@ -451,6 +459,13 @@ where
             return Err(DomainError::TournamentNotOpen);
         }
 
+        // Invite-only tournaments admit only teams on the invite list.
+        // Until P-27 this check did not exist anywhere, so `invite_only`
+        // was indistinguishable from `approval`.
+        let invitation = self
+            .require_team_invitation(&tournament, team_season_id)
+            .await?;
+
         // Check not already registered (allow re-registration after withdrawal)
         let replace_terminal = match self
             .registration_repo
@@ -468,7 +483,8 @@ where
         // lock on the tournament (see `create_with_capacity_check`). The
         // previous count-then-create pair let concurrent registrations
         // overflow `max_participants`.
-        self.registration_repo
+        let registration = self
+            .registration_repo
             .create_with_capacity_check(
                 CreateTournamentRegistration {
                     tournament_id,
@@ -479,10 +495,19 @@ where
                     participant_logo_url,
                     registered_by,
                     seed_rating: None,
+                    // `Open` tournaments auto-approve; the rest wait for an
+                    // organiser. Previously the insert omitted `status`
+                    // entirely and the `'pending'` column default always
+                    // won, so `Open` never auto-approved (P-2).
+                    status: initial_registration_status(tournament.registration_type),
                 },
                 replace_terminal,
             )
-            .await
+            .await?;
+
+        self.consume_invitation(invitation).await;
+
+        Ok(registration)
     }
 
     /// Register a player for an individual tournament.
@@ -500,6 +525,14 @@ where
             return Err(DomainError::TournamentNotOpen);
         }
 
+        // Invite-only tournaments admit only invited users (see P-27).
+        // The invite targets the *user* here, not the player, because the
+        // organiser invites an account and the account registers its own
+        // player (`register_player` takes `auth.player_id`).
+        let invitation = self
+            .require_user_invitation(&tournament, registered_by)
+            .await?;
+
         // Check not already registered (allow re-registration after withdrawal)
         let replace_terminal = match self
             .registration_repo
@@ -512,7 +545,8 @@ where
         };
 
         // Capacity check + insert in one transaction — see `register_team`.
-        self.registration_repo
+        let registration = self
+            .registration_repo
             .create_with_capacity_check(
                 CreateTournamentRegistration {
                     tournament_id,
@@ -523,10 +557,186 @@ where
                     participant_logo_url: None,
                     registered_by,
                     seed_rating: None,
+                    // See `register_team` — `Open` auto-approves (P-2).
+                    status: initial_registration_status(tournament.registration_type),
                 },
                 replace_terminal,
             )
+            .await?;
+
+        self.consume_invitation(invitation).await;
+
+        Ok(registration)
+    }
+
+    // =========================================================================
+    // Invite list (registration_type = invite_only)
+    // =========================================================================
+
+    /// Resolve the invitation a team-season needs to enter `tournament`.
+    ///
+    /// Returns `Ok(None)` when the tournament does not gate on invitations,
+    /// `Ok(Some(invitation))` when a live one exists (so the caller can
+    /// consume it), and [`DomainError::TournamentInviteOnly`] otherwise.
+    async fn require_team_invitation(
+        &self,
+        tournament: &Tournament,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<Option<TournamentInvitation>, DomainError> {
+        if !tournament.registration_type.requires_invitation() {
+            return Ok(None);
+        }
+
+        let invitation = self
+            .invitation_repo
+            .find_for_team_season(tournament.id, team_season_id)
+            .await?
+            .filter(TournamentInvitation::permits_registration)
+            .ok_or(DomainError::TournamentInviteOnly)?;
+
+        Ok(Some(invitation))
+    }
+
+    /// Resolve the invitation a user needs to enter `tournament`.
+    ///
+    /// See [`Self::require_team_invitation`].
+    async fn require_user_invitation(
+        &self,
+        tournament: &Tournament,
+        user_id: UserId,
+    ) -> Result<Option<TournamentInvitation>, DomainError> {
+        if !tournament.registration_type.requires_invitation() {
+            return Ok(None);
+        }
+
+        let invitation = self
+            .invitation_repo
+            .find_for_user(tournament.id, user_id)
+            .await?
+            .filter(TournamentInvitation::permits_registration)
+            .ok_or(DomainError::TournamentInviteOnly)?;
+
+        Ok(Some(invitation))
+    }
+
+    /// Mark an invitation as consumed once the registration exists.
+    ///
+    /// Best-effort on purpose: the registration is already committed, and
+    /// an invitation stuck at `pending` still permits registration, so
+    /// failing the caller here would report a failure for work that
+    /// succeeded. Logged so the discrepancy is visible.
+    async fn consume_invitation(&self, invitation: Option<TournamentInvitation>) {
+        let Some(invitation) = invitation else {
+            return;
+        };
+
+        if let Err(e) = self.invitation_repo.mark_accepted(invitation.id).await {
+            tracing::warn!(
+                invitation_id = %invitation.id,
+                error = %e,
+                "Failed to mark tournament invitation accepted after registration"
+            );
+        }
+    }
+
+    /// Invite a user or team-season to a tournament.
+    ///
+    /// Authorization (`tournament.participants.manage`) is enforced at the
+    /// handler; this method validates the invite shape against the
+    /// tournament itself.
+    pub async fn invite_to_tournament(
+        &self,
+        tournament_id: TournamentId,
+        user_id: Option<UserId>,
+        team_season_id: Option<LeagueTeamSeasonId>,
+        message: Option<String>,
+        invited_by: UserId,
+    ) -> Result<TournamentInvitation, DomainError> {
+        let tournament = self.get_tournament(tournament_id).await?;
+
+        // Exactly one target. The DB enforces this too; checking here turns
+        // a constraint violation (500) into a validation error (400).
+        match (user_id, team_season_id) {
+            (Some(_), None) | (None, Some(_)) => {}
+            _ => {
+                return Err(DomainError::Validation(ValidationError::field(
+                    FieldError::new(
+                        "user_id",
+                        "exactly one of user_id or team_season_id must be provided",
+                        "invalid_target",
+                    ),
+                )));
+            }
+        }
+
+        // A team invite is meaningless for an individual tournament and
+        // vice versa — the corresponding register_* path would never
+        // consult it.
+        if tournament.participant_type.requires_team_size() && team_season_id.is_none() {
+            return Err(DomainError::Validation(ValidationError::field(
+                FieldError::new(
+                    "team_season_id",
+                    "team tournaments must be invited by team_season_id",
+                    "invalid_target",
+                ),
+            )));
+        }
+        if !tournament.participant_type.requires_team_size() && user_id.is_none() {
+            return Err(DomainError::Validation(ValidationError::field(
+                FieldError::new(
+                    "user_id",
+                    "individual tournaments must be invited by user_id",
+                    "invalid_target",
+                ),
+            )));
+        }
+
+        self.invitation_repo
+            .create(CreateTournamentInvitation {
+                tournament_id,
+                user_id,
+                team_season_id,
+                message,
+                invited_by,
+            })
             .await
+    }
+
+    /// List a tournament's invitations.
+    pub async fn list_invitations(
+        &self,
+        tournament_id: TournamentId,
+    ) -> Result<Vec<TournamentInvitation>, DomainError> {
+        // 404 rather than an empty list for a tournament that does not exist.
+        let _ = self.get_tournament(tournament_id).await?;
+        self.invitation_repo.list_by_tournament(tournament_id).await
+    }
+
+    /// Revoke an invitation.
+    ///
+    /// Revoking does not touch an existing registration: an organiser who
+    /// wants someone out of a tournament they already entered uses
+    /// reject/disqualify. Revoking only closes the door to a *future*
+    /// registration.
+    pub async fn revoke_invitation(
+        &self,
+        tournament_id: TournamentId,
+        invitation_id: TournamentInvitationId,
+    ) -> Result<TournamentInvitation, DomainError> {
+        let invitation = self
+            .invitation_repo
+            .find_by_id(invitation_id)
+            .await?
+            .ok_or(DomainError::TournamentInvitationNotFound(invitation_id))?;
+
+        // Resolve against the tournament that owns the invitation, so an
+        // organiser of tournament A cannot revoke an invitation belonging
+        // to tournament B by crafting the URL.
+        if invitation.tournament_id != tournament_id {
+            return Err(DomainError::TournamentInvitationNotFound(invitation_id));
+        }
+
+        self.invitation_repo.revoke(invitation_id).await
     }
 
     /// Get registrations for a tournament.
@@ -1434,15 +1644,16 @@ where
             })
             .collect();
 
-        // Get registrations to look up names/logos
-        let (registrations, _) = self
+        // Get registrations to look up names/logos. Exhaustive fetch
+        // (P-186): with a capped page, any approved participant past the
+        // cap fell out of reg_map and the filter_map below silently
+        // dropped them from the pairing — data loss, not display. With
+        // every approved row present, the residual drops below are
+        // legitimate by construction: a standing whose registration is no
+        // longer approved (disqualified, withdrawn) must not be paired.
+        let registrations = self
             .registration_repo
-            .list_by_tournament(
-                tournament_id,
-                Some(TournamentRegistrationStatus::Approved),
-                1000,
-                0,
-            )
+            .list_all_by_tournament(tournament_id, Some(TournamentRegistrationStatus::Approved))
             .await?;
 
         let reg_map: std::collections::HashMap<
@@ -1649,8 +1860,8 @@ where
 }
 
 // Manual Clone implementation since derive(Clone) doesn't work with generic bounds
-impl<TR, TSR, TBR, TRR, TMR, TSTR, TMPR> Clone
-    for TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR>
+impl<TR, TSR, TBR, TRR, TMR, TSTR, TMPR, TIR> Clone
+    for TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR, TIR>
 where
     TR: TournamentRepository,
     TSR: TournamentStageRepository,
@@ -1659,6 +1870,7 @@ where
     TMR: TournamentMatchRepository,
     TSTR: TournamentStandingsRepository,
     TMPR: TournamentMapPoolRepository,
+    TIR: TournamentInvitationRepository,
 {
     fn clone(&self) -> Self {
         Self {
@@ -1669,6 +1881,7 @@ where
             match_repo: Arc::clone(&self.match_repo),
             standings_repo: Arc::clone(&self.standings_repo),
             map_pool_repo: Arc::clone(&self.map_pool_repo),
+            invitation_repo: Arc::clone(&self.invitation_repo),
         }
     }
 }

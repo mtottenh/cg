@@ -50,10 +50,25 @@ pub trait EvidenceRepository: Send + Sync {
         status: EvidenceStatus,
     ) -> Result<Evidence, DomainError>;
 
-    /// Mark evidence as validated.
+    /// Record the outcome of validating this evidence against a claimed result.
+    ///
+    /// `validated` is the **verdict**, not "a validation ran". P-138: this took
+    /// only the result JSON and the adapter set `validated = true`
+    /// unconditionally, so a validation that found the demo contradicting the
+    /// claim still lit the green "Validated" chip on the exact surface an admin
+    /// uses to resolve a dispute — an assertion of a guarantee that is false,
+    /// which is worse than no validation at all. The sibling
+    /// `DemoMatchLinkRepository::mark_validated` was fixed the same way under
+    /// P-111; this row was missed.
+    ///
+    /// A failing verdict is still persisted — `validation_result` keeps the
+    /// errors and `validated_at` records that a check happened — so `validated
+    /// = false` with a non-null `validated_at` means "validation FAILED", which
+    /// readers must distinguish from `validated_at IS NULL`, "never validated".
     async fn mark_validated(
         &self,
         id: EvidenceId,
+        validated: bool,
         validation_result: serde_json::Value,
     ) -> Result<Evidence, DomainError>;
 

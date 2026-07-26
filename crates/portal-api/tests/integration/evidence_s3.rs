@@ -80,12 +80,11 @@ async fn create_tournament_with_match(app: &TestApp, slug: &str) -> TestMatchInf
     let body: serde_json::Value = response.json();
     let reg1 = body["data"]["id"].as_str().unwrap().to_string();
 
-    // Approve registration 1
-    app.post_auth(&format!(
-        "/v1/tournaments/{tournament_id}/registrations/{reg1}/approve"
-    ))
-    .await
-    .assert_status(StatusCode::OK);
+    // Registration 1 is already approved — the tournament is
+    // `registration_type: open`, which auto-approves (P-2). The shared
+    // helper is a no-op in that case and still works if the fixture ever
+    // switches to an approval-gated tournament.
+    crate::tournaments::approve_registration(app, &tournament_id, &reg1).await;
 
     // Register player 2 (via builder)
     let user2 = UserBuilder::new()
@@ -175,7 +174,12 @@ async fn test_evidence_upload_s3_full_flow() {
         "Presigned URL should point to MinIO, got: {upload_url}"
     );
 
-    // 2. Verify evidence is pending (GET detail should show pending status)
+    // 2. Verify evidence is pending (GET detail should show pending status).
+    //
+    // This is why the single-evidence GET survived the P-67 sweep: the summary
+    // list excludes `pending` at the query level
+    // (`portal-db/src/adapters/evidence.rs:53`), so between `initiate` and
+    // `complete` this endpoint is the only way to observe the row at all.
     let response = app
         .get(&format!(
             "/v1/matches/{}/evidence/{}",

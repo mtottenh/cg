@@ -1,6 +1,10 @@
 //! League team response DTOs.
 
 use chrono::{DateTime, Utc};
+use portal_core::types::{
+    LeagueTeamInvitationStatus, LeagueTeamMemberStatus, LeagueTeamRole, LeagueTeamSeasonStatus,
+    LeagueTeamStatus, RosterLockStatus, SeasonStatus,
+};
 use portal_domain::entities::league_team::{
     LeagueSeason, LeagueSeasonParticipant, LeagueTeam, LeagueTeamInvitation,
     LeagueTeamInvitationWithTeam, LeagueTeamMember, LeagueTeamMemberWithPlayer, LeagueTeamSeason,
@@ -44,8 +48,19 @@ pub struct LeagueSeasonResponse {
     pub max_teams: Option<i32>,
 
     // Status
-    pub roster_lock_status: String,
-    pub status: String,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub roster_lock_status: RosterLockStatus,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub status: SeasonStatus,
+    /// The statuses this season may legally move to next (P-207). The edit
+    /// modal derives its Status options from this, so the client holds no
+    /// copy of the lifecycle chain and cannot offer a move the PATCH will
+    /// refuse (P-199 enforces the same list server-side).
+    pub allowed_status_transitions: Vec<SeasonStatus>,
 
     // Metadata
     pub created_by: String,
@@ -69,8 +84,9 @@ impl From<LeagueSeason> for LeagueSeasonResponse {
             team_size_max: season.team_size_max,
             max_substitutes: season.max_substitutes,
             max_teams: season.max_teams,
-            roster_lock_status: season.roster_lock_status.to_string(),
-            status: season.status.to_string(),
+            roster_lock_status: season.roster_lock_status,
+            allowed_status_transitions: season.status.allowed_transitions(),
+            status: season.status,
             created_by: season.created_by.to_string(),
             created_at: season.created_at,
             updated_at: season.updated_at,
@@ -108,7 +124,10 @@ pub struct LeagueTeamResponse {
     pub owner_player_id: String,
 
     // Status
-    pub status: String,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub status: LeagueTeamStatus,
 
     // Timestamps
     pub created_at: DateTime<Utc>,
@@ -130,7 +149,7 @@ impl From<LeagueTeam> for LeagueTeamResponse {
             primary_color: team.primary_color,
             secondary_color: team.secondary_color,
             owner_player_id: team.owner_player_id.to_string(),
-            status: team.status.to_string(),
+            status: team.status,
             created_at: team.created_at,
             updated_at: team.updated_at,
             disbanded_at: team.disbanded_at,
@@ -150,7 +169,10 @@ pub struct LeagueTeamSeasonResponse {
     pub season_id: String,
 
     // Status
-    pub status: String,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub status: LeagueTeamSeasonStatus,
 
     // Registration
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -170,9 +192,25 @@ pub struct LeagueTeamSeasonResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rating: Option<i32>,
 
+    /// The parent season's roster lock (P-200). Populated by handlers that
+    /// have the season loaded (the single-team-season GET); absent
+    /// elsewhere. Present, it saves the client a second round-trip to the
+    /// season endpoint just to learn its own roster's lock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roster_lock_status: Option<RosterLockStatus>,
+
     // Timestamps
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl LeagueTeamSeasonResponse {
+    /// Stamp the parent season's roster lock onto the response (P-200).
+    #[must_use]
+    pub const fn with_roster_lock(mut self, lock: RosterLockStatus) -> Self {
+        self.roster_lock_status = Some(lock);
+        self
+    }
 }
 
 impl From<LeagueTeamSeason> for LeagueTeamSeasonResponse {
@@ -181,7 +219,7 @@ impl From<LeagueTeamSeason> for LeagueTeamSeasonResponse {
             id: ts.id.to_string(),
             team_id: ts.team_id.to_string(),
             season_id: ts.season_id.to_string(),
-            status: ts.status.to_string(),
+            status: ts.status,
             registered_at: ts.registered_at,
             registration_notes: ts.registration_notes,
             matches_played: ts.matches_played,
@@ -190,6 +228,7 @@ impl From<LeagueTeamSeason> for LeagueTeamSeasonResponse {
             matches_drawn: ts.matches_drawn,
             seed: ts.seed,
             rating: ts.rating,
+            roster_lock_status: None,
             created_at: ts.created_at,
             updated_at: ts.updated_at,
         }
@@ -219,7 +258,10 @@ pub struct LeagueTeamSummaryResponse {
     pub team_tag: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_logo_url: Option<String>,
-    pub team_status: String,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub team_status: LeagueTeamStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_status: Option<String>,
     pub owner_player_id: String,
@@ -247,7 +289,7 @@ impl From<LeagueTeamSummary> for LeagueTeamSummaryResponse {
             team_name: summary.team_name,
             team_tag: summary.team_tag,
             team_logo_url: summary.team_logo_url,
-            team_status: summary.team_status.to_string(),
+            team_status: summary.team_status,
             season_status: summary.season_status.map(|s| s.to_string()),
             owner_player_id: summary.owner_player_id.to_string(),
             active_member_count: summary.active_member_count,
@@ -274,14 +316,19 @@ pub struct LeagueTeamMemberResponse {
     pub season_id: String,
 
     // Role
-    pub role: String,
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
+    pub role: LeagueTeamRole,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jersey_number: Option<i32>,
 
     // Status
-    pub status: String,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub status: LeagueTeamMemberStatus,
 
     // Timestamps
     pub joined_at: DateTime<Utc>,
@@ -300,10 +347,10 @@ impl From<LeagueTeamMember> for LeagueTeamMemberResponse {
             team_season_id: member.team_season_id.to_string(),
             player_id: member.player_id.to_string(),
             season_id: member.season_id.to_string(),
-            role: member.role.to_string(),
+            role: member.role,
             position: member.position,
             jersey_number: member.jersey_number,
-            status: member.status.to_string(),
+            status: member.status,
             joined_at: member.joined_at,
             left_at: member.left_at,
             added_by: member.added_by.map(|u| u.to_string()),
@@ -319,14 +366,19 @@ pub struct LeagueTeamMemberWithPlayerResponse {
     pub player_id: String,
 
     // Role
-    pub role: String,
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
+    pub role: LeagueTeamRole,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jersey_number: Option<i32>,
 
     // Status
-    pub status: String,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub status: LeagueTeamMemberStatus,
 
     // Timestamps
     pub joined_at: DateTime<Utc>,
@@ -345,10 +397,10 @@ impl From<LeagueTeamMemberWithPlayer> for LeagueTeamMemberWithPlayerResponse {
             id: member.id.to_string(),
             team_season_id: member.team_season_id.to_string(),
             player_id: member.player_id.to_string(),
-            role: member.role.to_string(),
+            role: member.role,
             position: member.position,
             jersey_number: member.jersey_number,
-            status: member.status.to_string(),
+            status: member.status,
             joined_at: member.joined_at,
             left_at: member.left_at,
             display_name: member.display_name,
@@ -376,14 +428,22 @@ pub struct PlayerLeagueTeamMembershipResponse {
     pub team_logo_url: Option<String>,
 
     // Membership info
-    pub role: String,
-    pub status: String,
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
+    pub role: LeagueTeamRole,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub status: LeagueTeamMemberStatus,
     pub joined_at: DateTime<Utc>,
 
     // Season info
     pub season_id: String,
     pub season_name: String,
-    pub season_status: String,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub season_status: SeasonStatus,
 
     // League info
     pub league_id: String,
@@ -399,12 +459,12 @@ impl From<PlayerLeagueTeamMembership> for PlayerLeagueTeamMembershipResponse {
             team_name: membership.team_name,
             team_tag: membership.team_tag,
             team_logo_url: membership.team_logo_url,
-            role: membership.role.to_string(),
-            status: membership.status.to_string(),
+            role: membership.role,
+            status: membership.status,
             joined_at: membership.joined_at,
             season_id: membership.season_id.to_string(),
             season_name: membership.season_name,
-            season_status: membership.season_status.to_string(),
+            season_status: membership.season_status,
             league_id: membership.league_id.to_string(),
             league_name: membership.league_name,
         }
@@ -431,7 +491,9 @@ pub struct LeagueTeamInvitationResponse {
 
     // Invitation details
     pub invitation_type: String,
-    pub role: String,
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
+    pub role: LeagueTeamRole,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 
@@ -440,7 +502,10 @@ pub struct LeagueTeamInvitationResponse {
     pub invited_by: Option<String>,
 
     // Status
-    pub status: String,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub status: LeagueTeamInvitationStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub responded_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -462,10 +527,10 @@ impl From<LeagueTeamInvitation> for LeagueTeamInvitationResponse {
             player_display_name: None,
             player_avatar_url: None,
             invitation_type: inv.invitation_type.to_string(),
-            role: inv.role.to_string(),
+            role: inv.role,
             message: inv.message,
             invited_by: inv.invited_by.map(|u| u.to_string()),
-            status: inv.status.to_string(),
+            status: inv.status,
             responded_at: inv.responded_at,
             response_message: inv.response_message,
             expires_at: inv.expires_at,
@@ -493,7 +558,9 @@ pub struct LeagueTeamInvitationWithTeamResponse {
 
     // Invitation details
     pub invitation_type: String,
-    pub role: String,
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
+    pub role: LeagueTeamRole,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 
@@ -502,7 +569,10 @@ pub struct LeagueTeamInvitationWithTeamResponse {
     pub invited_by: Option<String>,
 
     // Status
-    pub status: String,
+    // Typed as the enum: the OpenAPI schema then carries the permitted values
+    // and clients get a union rather than `string` (P-31). Wire-compatible —
+    // asserted by `wire_compat_tests` in portal-core.
+    pub status: LeagueTeamInvitationStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub responded_at: Option<DateTime<Utc>>,
 
@@ -535,10 +605,10 @@ impl From<LeagueTeamInvitationWithTeam> for LeagueTeamInvitationWithTeamResponse
             team_season_id: inv.team_season_id.to_string(),
             player_id: inv.player_id.to_string(),
             invitation_type: inv.invitation_type.to_string(),
-            role: inv.role.to_string(),
+            role: inv.role,
             message: inv.message,
             invited_by: inv.invited_by.map(|u| u.to_string()),
-            status: inv.status.to_string(),
+            status: inv.status,
             responded_at: inv.responded_at,
             expires_at: inv.expires_at,
             created_at: inv.created_at,

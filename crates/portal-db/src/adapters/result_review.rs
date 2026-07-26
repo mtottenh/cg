@@ -36,6 +36,7 @@ impl From<ResultReviewRow> for ResultReview {
             roster_mismatch: row.roster_mismatch,
             score_mismatch: row.score_mismatch,
             winner_mismatch: row.winner_mismatch,
+            progression_stalled: row.progression_stalled,
             demo_link_id: row.demo_link_id.map(DemoMatchLinkId::from),
             validation_result,
             unrecognized_players,
@@ -69,6 +70,7 @@ impl From<ResultReviewRow> for ResultReview {
 /// `result_review_status` to TEXT so SQLx can decode it into `String`.
 const SELECT_COLUMNS: &str = r"
     id, result_claim_id, match_id, roster_mismatch, score_mismatch, winner_mismatch,
+    progression_stalled,
     demo_link_id, validation_result, unrecognized_players, status::TEXT as status,
     captain1_registration_id, captain1_acknowledged, captain1_acknowledged_at,
     captain1_acknowledged_by_user_id, captain2_registration_id, captain2_acknowledged,
@@ -108,12 +110,13 @@ impl ResultReviewRepository for PgResultReviewRepository {
             r"
             INSERT INTO result_reviews (
                 id, result_claim_id, match_id, roster_mismatch, score_mismatch, winner_mismatch,
+                progression_stalled,
                 demo_link_id, validation_result, unrecognized_players, status,
                 captain1_registration_id, captain1_acknowledged, captain1_acknowledged_at,
                 captain1_acknowledged_by_user_id, captain2_registration_id, captain2_acknowledged,
                 captain2_acknowledged_at, captain2_acknowledged_by_user_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::result_review_status, $11, $12, $13, $14, $15, $16, $17, $18)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::result_review_status, $12, $13, $14, $15, $16, $17, $18, $19)
             ",
         )
         .bind(review.id.as_uuid())
@@ -122,6 +125,7 @@ impl ResultReviewRepository for PgResultReviewRepository {
         .bind(review.roster_mismatch)
         .bind(review.score_mismatch)
         .bind(review.winner_mismatch)
+        .bind(review.progression_stalled)
         .bind(review.demo_link_id.map(|id| id.as_uuid()))
         .bind(validation_result_json)
         .bind(serde_json::to_value(&unrecognized_players_json).unwrap_or_default())
@@ -187,10 +191,26 @@ impl ResultReviewRepository for PgResultReviewRepository {
         &self,
         limit: i64,
         offset: i64,
+        oldest_first: bool,
     ) -> Result<Vec<ResultReview>, DomainError> {
+        // P-55: NEWEST FIRST by default. This was `created_at ASC`, which put
+        // the review that had just escalated on the LAST page of a paginated
+        // queue — the one page an admin never opens (P-43 is the same lesson:
+        // anything off page 1 is, in practice, invisible). A pending review
+        // means a match is stalled and its participants are waiting right
+        // now, so recency is the urgency signal. P-129 adds the explicit
+        // oldest-first order so backlog-clearing has a server-side sort
+        // instead of paging to the far end. Tie-break on `id` because ids are
+        // UUID v7 and therefore share `created_at`'s ordering, which keeps
+        // paging stable when several reviews are raised in the same instant.
+        let order = if oldest_first {
+            "created_at ASC, id ASC"
+        } else {
+            "created_at DESC, id DESC"
+        };
         let reviews = sqlx::query_as::<_, ResultReviewRow>(
             &format!(
-                "SELECT {SELECT_COLUMNS} FROM result_reviews WHERE status = 'pending_admin_review' ORDER BY created_at ASC LIMIT $1 OFFSET $2"
+                "SELECT {SELECT_COLUMNS} FROM result_reviews WHERE status = 'pending_admin_review' ORDER BY {order} LIMIT $1 OFFSET $2"
             ),
         )
         .bind(limit)

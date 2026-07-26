@@ -24,6 +24,39 @@ use crate::repositories::demo::{
 };
 use crate::repositories::tournament::{MatchLinkCandidate, TournamentMatchRepository};
 
+/// A demo player that resolved to a registered account, tagged with the demo's
+/// team name so the materializer can assign it to the right registration side.
+#[derive(Debug, Clone)]
+pub struct DemoResolvedPlayer {
+    /// The resolved registered player.
+    pub player_id: PlayerId,
+    /// The demo's team name for this player (used for side inference).
+    pub demo_team_name: Option<String>,
+}
+
+/// Materializes the authoritative, demo-derived lineup for a match (Phase C).
+///
+/// Implemented by `LineupService` and injected into `DemoService` so that when a
+/// demo is linked to a match, the per-map lineup is built from who actually
+/// played. Decoupled as a trait to avoid threading `LineupService`'s generics
+/// through `DemoService`. A no-op unless the season opted in
+/// (`league_seasons.lineup_required`), which keeps the pre-cutover path
+/// unchanged (§9).
+#[async_trait::async_trait]
+pub trait DemoLineupMaterializer: Send + Sync {
+    /// Build the demo lineup for `match_id` / `game_number` from the resolved
+    /// players. `demo_team1_name`/`demo_team2_name` are the demo's team names,
+    /// used to assign non-rostered (substitute) players to a side.
+    async fn materialize_from_demo(
+        &self,
+        match_id: TournamentMatchId,
+        game_number: Option<i32>,
+        demo_team1_name: Option<String>,
+        demo_team2_name: Option<String>,
+        players: Vec<DemoResolvedPlayer>,
+    ) -> Result<(), DomainError>;
+}
+
 /// Minimum steam-ID-overlap confidence required to auto-link a demo.
 const AUTO_LINK_MIN_CONFIDENCE: f32 = 0.6;
 /// Time window (hours) around the demo's match date for candidate matches.
@@ -44,6 +77,11 @@ where
     link_repo: Arc<DMLR>,
     player_repo: Arc<DPR>,
     match_repo: Arc<TMR>,
+    /// Optional lineup materializer (Phase C). When present and the season opted
+    /// in, linking a demo to a match materializes the authoritative lineup
+    /// (review/eligibility input only — attribution is never gated on it).
+    /// `None` => pre-cutover behaviour.
+    lineup_materializer: Option<Arc<dyn DemoLineupMaterializer>>,
 }
 
 impl<DR, DMLR, DPR, TMR> DemoService<DR, DMLR, DPR, TMR>
@@ -65,6 +103,67 @@ where
             link_repo,
             player_repo,
             match_repo,
+            lineup_materializer: None,
+        }
+    }
+
+    /// Attach a lineup materializer (Phase C wiring). Builder-style so existing
+    /// `new()` call sites (tests) keep working.
+    #[must_use]
+    pub fn with_lineup_materializer(
+        mut self,
+        materializer: Arc<dyn DemoLineupMaterializer>,
+    ) -> Self {
+        self.lineup_materializer = Some(materializer);
+        self
+    }
+
+    /// Materialize the demo lineup for a freshly-created link. Best-effort:
+    /// failures are logged, never fatal to the link. Self-gating: the
+    /// materializer no-ops unless the season requires lineups, so the
+    /// pre-cutover path is untouched.
+    ///
+    /// ⚠️ Attribution is deliberately NOT touched here (§0b correction
+    /// 2026-07-24): attribution follows registration — a registered player in
+    /// the demo is attributed via the base Steam-ID join, full stop. The lineup
+    /// and its `is_substitute` tags feed the review + majority/eligibility
+    /// math, which are review-raisers an admin can waive, never stat-strippers.
+    async fn materialize_lineup(
+        &self,
+        demo: &Demo,
+        match_id: TournamentMatchId,
+        game_number: Option<i32>,
+    ) {
+        let Some(materializer) = self.lineup_materializer.as_ref() else {
+            return;
+        };
+
+        let players = match self.player_repo.find_by_demo(demo.id).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(demo_id = %demo.id, error = %e, "Lineup materialize: failed to load demo players");
+                return;
+            }
+        };
+        let resolved: Vec<DemoResolvedPlayer> = players
+            .into_iter()
+            .filter_map(|p| {
+                p.player_id.map(|player_id| DemoResolvedPlayer {
+                    player_id,
+                    demo_team_name: p.team_name,
+                })
+            })
+            .collect();
+
+        let (t1, t2) = demo.metadata.as_ref().map_or((None, None), |m| {
+            (Some(m.team1_name.clone()), Some(m.team2_name.clone()))
+        });
+
+        if let Err(e) = materializer
+            .materialize_from_demo(match_id, game_number, t1, t2, resolved)
+            .await
+        {
+            warn!(demo_id = %demo.id, match_id = %match_id, error = %e, "Lineup materialization failed");
         }
     }
 
@@ -244,6 +343,25 @@ where
         Ok(demo)
     }
 
+    /// P-74: put a failed demo back in the processing queue.
+    ///
+    /// The admin UI had a "Retry Processing" button that called no API at all —
+    /// it popped a success snackbar and returned, so an operator was told a
+    /// demo had been requeued when nothing had happened. Nothing could be wired
+    /// to, either: `submit_stats` takes a parsed-stats body (it is the
+    /// scanner's endpoint, not a trigger) and no requeue path existed.
+    ///
+    /// Resetting the status to `Pending` is the whole mechanism — the scanner
+    /// picks work up via `find_pending_processing`.
+    pub async fn requeue_demo(&self, id: DemoId, by_user_id: UserId) -> Result<Demo, DomainError> {
+        let demo = self
+            .demo_repo
+            .update_status(id, portal_core::types::DemoStatus::Pending)
+            .await?;
+        info!(demo_id = %id, by_user = %by_user_id, "Requeued demo for processing");
+        Ok(demo)
+    }
+
     /// Associate a demo with a league or tournament.
     #[instrument(skip(self))]
     pub async fn associate_demo(
@@ -315,25 +433,60 @@ where
             }
         }
 
+        // Phase C: build the authoritative lineup from this demo (no-op unless
+        // the season opted in). Attribution is not touched — it follows
+        // registration (§0b correction).
+        let demo = self.get_demo(demo_id).await?;
+        self.materialize_lineup(&demo, match_id, game_number).await;
+
         info!(demo_id = %demo_id, match_id = %match_id, "Linked demo to match");
         Ok(link)
     }
 
-    /// Unlink a demo from a match.
+    /// Unlink a demo from a match, erroring when the pairing does not exist.
+    ///
+    /// This is the admin endpoint's contract: unlinking something that is not
+    /// linked is a 404, because the operator named a pairing that isn't there.
     #[instrument(skip(self))]
     pub async fn unlink_from_match(
         &self,
         demo_id: DemoId,
         match_id: TournamentMatchId,
     ) -> Result<(), DomainError> {
-        let link = self
+        if self.unlink_from_match_if_linked(demo_id, match_id).await? {
+            Ok(())
+        } else {
+            Err(DomainError::LookupFailed {
+                resource: "demo match link",
+                query: format!("demo={demo_id},match={match_id}"),
+            })
+        }
+    }
+
+    /// Unlink a demo from a match if the pairing exists; `Ok(false)` if it does
+    /// not.
+    ///
+    /// P-157: deleting evidence has to detach the demo it names, and "there was
+    /// nothing to detach" is an ordinary state there — evidence can carry a
+    /// `catalog_demo_id` whose link was already removed, or was never created.
+    /// The delete handler used to swallow *both* that and a genuine failure
+    /// with `let _ = ...`, so a failed unlink left a `demo_match_link` row
+    /// pointing at deleted evidence while the caller was handed a 204.
+    /// Returning the distinction is what lets a caller be idempotent about the
+    /// first case and loud about the second.
+    #[instrument(skip(self))]
+    pub async fn unlink_from_match_if_linked(
+        &self,
+        demo_id: DemoId,
+        match_id: TournamentMatchId,
+    ) -> Result<bool, DomainError> {
+        let Some(link) = self
             .link_repo
             .find_by_demo_and_match(demo_id, match_id)
             .await?
-            .ok_or_else(|| DomainError::LookupFailed {
-                resource: "demo match link",
-                query: format!("demo={demo_id},match={match_id}"),
-            })?;
+        else {
+            return Ok(false);
+        };
 
         self.link_repo.delete(link.id).await?;
 
@@ -363,7 +516,7 @@ where
         }
 
         info!(demo_id = %demo_id, match_id = %match_id, "Unlinked demo from match");
-        Ok(())
+        Ok(true)
     }
 
     /// Get all demos linked to a match.
@@ -406,6 +559,40 @@ where
     #[instrument(skip(self))]
     pub async fn get_demo_links(&self, demo_id: DemoId) -> Result<Vec<DemoMatchLink>, DomainError> {
         self.link_repo.find_by_demo(demo_id).await
+    }
+
+    /// Record the outcome of validating a demo against a match's claimed result.
+    ///
+    /// P-111: `DemoMatchLinkRepository::mark_validated` had **no caller anywhere
+    /// in the workspace**, so `demo_match_links.validated` was `false` for every
+    /// row that ever existed and the "Validated" chips on `DemoBrowser` and
+    /// `EvidenceDisplay` were dead template. The evidence-validation endpoint
+    /// persisted its verdict to `match_evidence` only; this is the other half of
+    /// the same write, keyed the way `unlink_from_match` already keys the link.
+    ///
+    /// Returns `Ok(None)` when the demo is not linked to that match — validating
+    /// evidence that happens not to have a catalog link is not an error.
+    #[instrument(skip(self, validation_result))]
+    pub async fn record_link_validation(
+        &self,
+        demo_id: DemoId,
+        match_id: TournamentMatchId,
+        validated: bool,
+        validation_result: serde_json::Value,
+    ) -> Result<Option<DemoMatchLink>, DomainError> {
+        let Some(link) = self
+            .link_repo
+            .find_by_demo_and_match(demo_id, match_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let updated = self
+            .link_repo
+            .mark_validated(link.id, validated, validation_result)
+            .await?;
+        Ok(Some(updated))
     }
 
     // =========================================================================
@@ -510,6 +697,11 @@ where
             .demo_repo
             .associate(demo.id, league_id, Some(candidate.tournament_id))
             .await?;
+
+        // Phase C: materialize the authoritative lineup (attribution untouched).
+        // Auto-links carry no game number (per-map linking is manual/admin).
+        self.materialize_lineup(&updated, candidate.match_id, None)
+            .await;
 
         info!(
             demo_id = %demo.id,
@@ -694,9 +886,14 @@ where
     // =========================================================================
 
     /// Get demo count by status (for admin dashboard).
+    ///
+    /// `game_id` scopes the rollup; `None` counts every game (P-144).
     #[instrument(skip(self))]
-    pub async fn get_status_counts(&self) -> Result<Vec<(DemoStatus, i64)>, DomainError> {
-        self.demo_repo.count_by_status().await
+    pub async fn get_status_counts(
+        &self,
+        game_id: Option<GameId>,
+    ) -> Result<Vec<(DemoStatus, i64)>, DomainError> {
+        self.demo_repo.count_by_status(game_id).await
     }
 
     /// Delete a demo and all associated data.

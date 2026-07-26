@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub type EntityChangeId = Uuid;
 
 /// Types of changes tracked in the audit trail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChangeType {
     /// Entity was created.

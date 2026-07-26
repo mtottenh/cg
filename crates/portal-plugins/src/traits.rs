@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::{RatingError, StatsError};
+use crate::error::StatsError;
 use crate::stats::{StatDefinition, StatFact};
 use portal_core::MatchFormat;
 use portal_core::types::evidence::{
@@ -16,7 +16,7 @@ use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
 use crate::types::{
     DemoData, DemoPlayerData, DisplayStat, LobbyStateMachine, MapPickBanFormat, MatchConfig,
     MatchData, MatchPlayerData, MatchTeamData, MatchmakingCriteria, PlayerInfo, PlayerStatsContext,
-    RankedParticipant, RatingChange, TournamentFormatId,
+    TournamentFormatId,
 };
 
 // ============================================================================
@@ -205,15 +205,6 @@ pub trait GamePlugin: Send + Sync {
     /// Get rank tier definitions.
     fn rank_tiers(&self) -> Vec<RankTier>;
 
-    /// Calculate rating changes for match participants.
-    ///
-    /// Takes the match result and all participants with their current ratings,
-    /// returns the rating changes to apply.
-    fn calculate_rating_change(
-        &self,
-        participants: &[RankedParticipant],
-    ) -> Result<Vec<RatingChange>, RatingError>;
-
     /// Get the rank tier for a given rating.
     fn rating_to_rank_tier(&self, rating: i32) -> Option<RankTier> {
         self.rank_tiers().into_iter().find(|tier| {
@@ -348,12 +339,25 @@ pub struct MapInfo {
     pub display_name: String,
     pub image_url: Option<String>,
     pub game_modes: Vec<String>,
+    /// Engine-level map name — what the game server and demo headers call
+    /// the map. `None` means it equals `id` (true for every stock map);
+    /// workshop maps carry the name from inside the author's VPK here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_name: Option<String>,
     /// External identifier (e.g., Steam Workshop ID).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
     /// External URL (e.g., full Steam Workshop URL).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_url: Option<String>,
+}
+
+impl MapInfo {
+    /// The engine-level map name, falling back to the portal id.
+    #[must_use]
+    pub fn resolved_engine_name(&self) -> &str {
+        self.engine_name.as_deref().unwrap_or(&self.id)
+    }
 }
 
 /// Rank tier definition.
@@ -552,15 +556,16 @@ pub trait EvidencePlugin: TournamentPlugin {
         evidence_storage: &EvidenceStorage,
         claimed_result: &GameMatchResult,
     ) -> Result<EvidenceValidationResult, PluginError> {
-        // Default: accept without validation
+        // P-183: the default used to return `is_valid: true` with
+        // `confidence: 0.0` — a verdict for a check that never ran, which a
+        // reader of the stored validation cannot tell from a real pass. A
+        // game with no validator must refuse, not approve: the caller gets a
+        // clean error and the evidence keeps its honest "not yet validated"
+        // state instead of gaining a fabricated one.
         let _ = (evidence_storage, claimed_result);
-        Ok(EvidenceValidationResult {
-            is_valid: true,
-            confidence: 0.0, // No confidence since we didn't actually validate
-            extracted_result: None,
-            warnings: vec!["Evidence validation not implemented for this game".to_string()],
-            errors: Vec::new(),
-        })
+        Err(PluginError::NotSupported(
+            "evidence validation is not implemented for this game".to_string(),
+        ))
     }
 
     /// Get demo file metadata without fully parsing.
@@ -600,5 +605,108 @@ pub trait EvidencePlugin: TournamentPlugin {
     /// Get the S3 prefix where demos for this game are stored.
     fn demo_storage_prefix(&self) -> Option<&str> {
         None
+    }
+}
+
+#[cfg(test)]
+mod evidence_plugin_default_tests {
+    use super::*;
+
+    /// A game plugin that implements nothing evidence-specific — every
+    /// `EvidencePlugin` method is the trait default. The `GamePlugin` stubs
+    /// below exist only to satisfy the supertrait chain.
+    struct NoValidator;
+
+    // The trait signatures return `&str`; the literal bodies make clippy
+    // suggest `&'static str`, which the trait forbids.
+    #[allow(clippy::unnecessary_literal_bound)]
+    impl GamePlugin for NoValidator {
+        fn id(&self) -> &str {
+            "novalidator"
+        }
+        fn display_name(&self) -> &str {
+            "No Validator"
+        }
+        fn available_maps(&self) -> Vec<MapInfo> {
+            Vec::new()
+        }
+        fn default_map_pool(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn team_size_min(&self) -> u32 {
+            1
+        }
+        fn team_size_max(&self) -> u32 {
+            1
+        }
+        fn team_size_default(&self) -> u32 {
+            1
+        }
+        fn player_stats_schema(&self) -> Value {
+            Value::Null
+        }
+        fn calculate_player_stats(
+            &self,
+            _match_data: &MatchData,
+            _player_id: uuid::Uuid,
+            existing_stats: &Value,
+        ) -> Result<Value, StatsError> {
+            Ok(existing_stats.clone())
+        }
+        fn format_player_stats(
+            &self,
+            _stats: &Value,
+            _context: &PlayerStatsContext,
+        ) -> Vec<DisplayStat> {
+            Vec::new()
+        }
+        fn rank_tiers(&self) -> Vec<RankTier> {
+            Vec::new()
+        }
+        fn map_pick_ban_formats(&self) -> Vec<MapPickBanFormat> {
+            Vec::new()
+        }
+    }
+
+    impl TournamentPlugin for NoValidator {}
+
+    #[async_trait::async_trait]
+    impl EvidencePlugin for NoValidator {}
+
+    /// P-183: the default `validate_evidence` used to return
+    /// `is_valid: true` with `confidence: 0.0` — a fabricated verdict a
+    /// reader of the stored validation cannot tell from a real pass. A game
+    /// with no validator must refuse, and the refusal names itself
+    /// `NotSupported` so the API layer can map it to a clean 400 rather
+    /// than a 500 (and, crucially, never write a verdict for it).
+    #[tokio::test]
+    async fn default_validation_refuses_instead_of_fabricating_a_pass() {
+        let plugin = NoValidator;
+        let storage = EvidenceStorage::Url {
+            url: "https://example.com/some.dem".to_string(),
+        };
+        let claimed = GameMatchResult {
+            game_number: 1,
+            map_id: Some("de_inferno".to_string()),
+            participant1_score: 16,
+            participant2_score: 10,
+            expected_map_names: vec![],
+            map_name_advisory: false,
+        };
+
+        let result = plugin.validate_evidence(&storage, &claimed).await;
+        match result {
+            Err(PluginError::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("not implemented"),
+                    "the refusal should say why: {msg}"
+                );
+            }
+            Err(other) => panic!("expected NotSupported, got {other}"),
+            Ok(v) => panic!(
+                "a game with no validator must not produce a verdict (got is_valid={})",
+                v.is_valid
+            ),
+        }
     }
 }

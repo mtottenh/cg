@@ -13,6 +13,11 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 validator = { workspace = true }
+# ToSchema derives only. utoipa is not an async dependency, so this does not
+# violate the "core has no async deps" rule in CLAUDE.md. Deriving here rather
+# than mirroring the enums in portal-api keeps ONE definition of the wire values
+# -- the duplication is what let the frontend drift (P-31).
+utoipa = { workspace = true }
 
 [lints]
 workspace = true

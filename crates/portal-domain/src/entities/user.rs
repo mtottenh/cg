@@ -22,7 +22,7 @@ pub struct User {
 }
 
 /// User account status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, utoipa::ToSchema)]
 pub enum UserStatus {
     #[default]
     Active,

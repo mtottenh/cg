@@ -2,6 +2,7 @@
 
 pub mod action_item;
 pub mod admin;
+pub mod audit;
 pub mod auth;
 pub mod availability;
 pub mod award;
@@ -13,6 +14,8 @@ pub mod forfeit;
 pub mod game;
 pub mod league;
 pub mod league_team;
+pub mod lineup;
+pub mod pipeline;
 pub mod player;
 pub mod player_game_profile;
 pub mod progression;
@@ -26,6 +29,7 @@ pub mod veto_delegate;
 
 pub use action_item::ActionItemResponse;
 pub use admin::PlatformStatsResponse;
+pub use audit::EntityChangeResponse;
 pub use auth::{LoginResponse, LogoutResponse, RegisterResponse};
 pub use availability::{
     AvailabilityOverrideResponse, AvailabilityWindowResponse, DateAvailabilityResponse,
@@ -58,7 +62,7 @@ pub use forfeit::{
 };
 pub use game::{
     GameDetailResponse, GameSummaryResponse, MapInfoResponse, MapPickBanFormatResponse,
-    RankTierResponse, TeamSizeConfig,
+    RankTierResponse, TeamSizeConfig, WorkshopMapDetailsResponse,
 };
 pub use league::{
     LeagueInvitationResponse, LeagueMemberBasicResponse, LeagueMemberResponse, LeagueResponse,
@@ -69,6 +73,11 @@ pub use league_team::{
     LeagueTeamInvitationWithTeamResponse, LeagueTeamMemberResponse,
     LeagueTeamMemberWithPlayerResponse, LeagueTeamResponse, LeagueTeamSeasonResponse,
     LeagueTeamSummaryResponse, LeagueTeamWithSeasonResponse, PlayerLeagueTeamMembershipResponse,
+};
+pub use lineup::{MatchLineupPlayerResponse, MatchLineupResponse};
+pub use pipeline::{
+    DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, PipelineOverviewResponse,
+    TRACKING_STALE_AFTER_HOURS, TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
 };
 pub use player::{PlayerResponse, PlayerSearchResponse, SocialLinksResponse};
 pub use player_game_profile::{
@@ -90,11 +99,13 @@ pub use role::{
     PermissionResponse, RoleResponse, RoleWithPermissionsResponse, UserRoleAssignmentResponse,
 };
 pub use tournament::{
-    CheckInStatusResponse, MatchStatusDetailsResponse, MatchStatusLogResponse,
+    CheckInStatusResponse, MatchParticipantsResponse, MatchResultOverrideResponse,
+    MatchStatusDetailsResponse, MatchStatusLogResponse, MyTournamentRegistrationsResponse,
     ScheduleProposalResponse, SeededParticipantResponse, TournamentBracketResponse,
-    TournamentMapPoolResponse, TournamentMatchGameResponse, TournamentMatchResponse,
-    TournamentRegistrationResponse, TournamentResponse, TournamentStageResponse,
-    TournamentStandingResponse, TournamentSummaryResponse,
+    TournamentInvitationResponse, TournamentMapPoolResponse, TournamentMatchGameResponse,
+    TournamentMatchResponse, TournamentRegistrationCountsResponse, TournamentRegistrationResponse,
+    TournamentResponse, TournamentStageResponse, TournamentStandingResponse,
+    TournamentSummaryResponse,
 };
 pub use user::UserResponse;
 pub use veto::{

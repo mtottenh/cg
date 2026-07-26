@@ -206,8 +206,14 @@ pub mod admin {
     /// Manage any tournament on the platform.
     pub const TOURNAMENTS_MANAGE_ANY: &str = "admin.tournaments.manage_any";
 
-    /// View audit logs.
-    pub const AUDIT_VIEW: &str = "admin.audit.view";
+    // P-141: `AUDIT_VIEW = "admin.audit.view"` was declared here and referenced
+    // by nothing else in the workspace — no handler gated on it, no migration
+    // seeded it, and there is no audit_log table or audit endpoint for it to
+    // guard. Seeding a grant would have manufactured reachability for a
+    // subsystem that does not exist, so the constant is gone instead. If an
+    // audit viewer is built later, add the constant and its migration in the
+    // same change: `test_every_declared_permission_is_seeded_and_granted` now
+    // enforces that pairing.
 
     /// Manage system settings.
     pub const SYSTEM_MANAGE: &str = "admin.system.manage";
@@ -215,6 +221,22 @@ pub mod admin {
     /// Manage the demo catalog - catalog, categorize, link/unlink to
     /// matches, delete.
     pub const DEMOS_MANAGE: &str = "admin.demos.manage";
+
+    /// Manage the game catalog - enable/disable games, edit maps, rank tiers
+    /// and team sizes, and list inactive games.
+    ///
+    /// P-151: this was seeded by migration 0019 and gated on at six sites in
+    /// `handlers/games.rs`, but existed here as a **bare string literal** at
+    /// every one of them and appeared in no registry. That put it outside the
+    /// reach of `test_every_declared_permission_is_seeded_and_granted`, which
+    /// can only check constants in these `ALL` arrays — so the guard added for
+    /// P-140 would not have caught P-139 had it happened to this permission
+    /// instead. The registry is only a safety net for what is in it.
+    pub const GAMES_MANAGE: &str = "admin.games.manage";
+
+    /// Manage game servers - register, edit, enroll, revoke, remove,
+    /// and manage bookings.
+    pub const SERVERS_MANAGE: &str = "admin.servers.manage";
 
     /// All admin permissions for iteration.
     pub const ALL: &[&str] = &[
@@ -224,9 +246,10 @@ pub mod admin {
         TEAMS_MANAGE_ANY,
         LEAGUES_MANAGE_ANY,
         TOURNAMENTS_MANAGE_ANY,
-        AUDIT_VIEW,
         SYSTEM_MANAGE,
         DEMOS_MANAGE,
+        GAMES_MANAGE,
+        SERVERS_MANAGE,
     ];
 }
 

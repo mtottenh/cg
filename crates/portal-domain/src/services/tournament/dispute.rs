@@ -81,15 +81,41 @@ where
             )));
         }
 
-        // If disputing a specific claim, verify it's not the submitter's own claim
-        if let Some(claim_id) = result_claim_id
-            && let Some(claim) = self.claim_repo.find_by_id(claim_id).await?
-            && claim.submitted_by_registration_id == disputed_by_registration_id
+        // If disputing a specific claim, verify it's not the submitter's own claim.
+        //
+        // P-77: this also decides what "original" means. The snapshot used to come
+        // unconditionally from the MATCH row — but on the claim path the match is
+        // not confirmed yet, so its winner is NULL and its scores are 0-0. A
+        // dispute against a 1-0 claim therefore recorded "original 0-0", the admin
+        // modal rendered "Original Score 0 - 0", and upholding it produced a
+        // Completed match with no winner. The disputed thing is the CLAIM, so the
+        // claim is what must be snapshotted; the match row remains right for a
+        // dispute raised against an already-confirmed result.
+        let disputed_claim = match result_claim_id {
+            Some(claim_id) => self.claim_repo.find_by_id(claim_id).await?,
+            None => None,
+        };
+
+        if let Some(claim) = &disputed_claim
+            && claim.submitted_by_registration_id == Some(disputed_by_registration_id)
         {
             return Err(DomainError::InvalidState(
                 "Cannot dispute your own result claim".to_string(),
             ));
         }
+
+        let (original_winner, original_p1_score, original_p2_score) = match &disputed_claim {
+            Some(claim) => (
+                Some(claim.claimed_winner_registration_id),
+                claim.claimed_participant1_score,
+                claim.claimed_participant2_score,
+            ),
+            None => (
+                match_.winner_registration_id,
+                match_.participant1_score,
+                match_.participant2_score,
+            ),
+        };
 
         // Determine priority based on reason
         let priority = match reason {
@@ -125,9 +151,9 @@ where
                     reason,
                     description,
                     evidence_ids,
-                    original_winner_registration_id: match_.winner_registration_id,
-                    original_participant1_score: Some(match_.participant1_score),
-                    original_participant2_score: Some(match_.participant2_score),
+                    original_winner_registration_id: original_winner,
+                    original_participant1_score: Some(original_p1_score),
+                    original_participant2_score: Some(original_p2_score),
                     priority,
                 },
                 CreateDisputeMessage {
@@ -209,12 +235,16 @@ where
             )));
         }
 
+        // P-80: record WHO took it. Before the column existed this only
+        // flipped status, so two admins could both "take" one dispute and
+        // no surface showed ownership.
         let updated = self
             .dispute_repo
             .update(
                 dispute_id,
                 UpdateDispute {
                     status: Some(DisputeStatus::UnderReview),
+                    assigned_to_user_id: Some(assigned_by),
                     ..Default::default()
                 },
             )
@@ -252,6 +282,20 @@ where
         let dispute = self.get_dispute(dispute_id).await?;
         self.validate_can_resolve(&dispute)?;
 
+        // P-77: "uphold" means the original result stands — so it has to be
+        // WRITTEN. This previously only flipped the status to Completed, which
+        // is a no-op for a dispute against an already-confirmed result but
+        // catastrophic on the claim path: the claim was never confirmed, so the
+        // match had no winner and 0-0 scores, and upholding produced a Completed
+        // bracket match with NO winner, which then fed progression.
+        //
+        // Upholding is therefore "overturn to the original values", and it uses
+        // the same result-writing path. `original_*` is now snapshotted from the
+        // disputed claim (see `raise_dispute`), so it is the claimed result on
+        // the claim path and the confirmed result otherwise.
+        let match_ = self.get_match(dispute.match_id).await?;
+        let upheld_winner = dispute.original_winner_registration_id;
+
         let resolution = DisputeResolution {
             resolution_type: ResolutionType::Upheld,
             notes: notes.clone(),
@@ -260,26 +304,52 @@ where
             new_participant2_score: None,
         };
 
-        // Atomic: resolve dispute + restore match to Completed +
-        // append resolution message. See audit I5.
-        let resolved = self
-            .dispute_repo
-            .resolve_with_status_change(
-                dispute_id,
-                resolved_by,
-                resolution,
-                dispute.match_id,
-                TournamentMatchStatus::Completed,
-                CreateDisputeMessage {
+        let message = CreateDisputeMessage {
+            dispute_id,
+            author_user_id: resolved_by,
+            author_type: AuthorType::Admin,
+            message: format!("Dispute upheld: {notes}"),
+            evidence_ids: Vec::new(),
+            is_internal: false,
+        };
+
+        let resolved = if let Some(winner_id) = upheld_winner {
+            let loser_id = if match_.participant1_registration_id == Some(winner_id) {
+                match_.participant2_registration_id
+            } else {
+                match_.participant1_registration_id
+            }
+            .ok_or_else(|| DomainError::InvalidState("Cannot determine loser".to_string()))?;
+
+            self.dispute_repo
+                .resolve_with_overturn(
                     dispute_id,
-                    author_user_id: resolved_by,
-                    author_type: AuthorType::Admin,
-                    message: format!("Dispute upheld: {notes}"),
-                    evidence_ids: Vec::new(),
-                    is_internal: false,
-                },
-            )
-            .await?;
+                    resolved_by,
+                    resolution,
+                    dispute.match_id,
+                    winner_id,
+                    loser_id,
+                    dispute.original_participant1_score.unwrap_or(0),
+                    dispute.original_participant2_score.unwrap_or(0),
+                    message,
+                )
+                .await?
+        } else {
+            // No original winner to restore — a dispute raised against a match
+            // that genuinely had no result. Status-only, as before, and the
+            // result stays empty rather than being invented.
+            self.dispute_repo
+                .resolve_with_status_change(
+                    dispute_id,
+                    resolved_by,
+                    resolution,
+                    dispute.match_id,
+                    TournamentMatchStatus::Completed,
+                    false,
+                    message,
+                )
+                .await?
+        };
 
         info!(
             dispute_id = %dispute_id,
@@ -403,6 +473,9 @@ where
                 resolution,
                 dispute.match_id,
                 TournamentMatchStatus::Ready,
+                // P-78: a rematch un-completes the match; the old winner and
+                // score must not survive it.
+                true,
                 CreateDisputeMessage {
                     dispute_id,
                     author_user_id: resolved_by,
@@ -441,20 +514,15 @@ where
 
         let match_ = self.get_match(dispute.match_id).await?;
 
-        // Determine winner based on new scores
-        let new_winner_id = if new_participant1_score > new_participant2_score {
-            match_.participant1_registration_id
-        } else {
-            match_.participant2_registration_id
-        }
-        .ok_or_else(|| DomainError::InvalidState("Cannot determine winner".to_string()))?;
-
-        let loser_id = if match_.participant1_registration_id == Some(new_winner_id) {
-            match_.participant2_registration_id
-        } else {
-            match_.participant1_registration_id
-        }
-        .ok_or_else(|| DomainError::InvalidState("Cannot determine loser".to_string()))?;
+        // Shared with the admin score-override (P-72) so the two paths cannot
+        // disagree about who the adjusted score makes the winner. It also
+        // rejects a tie, which the open-coded version silently awarded to
+        // participant 2.
+        let (new_winner_id, loser_id) = super::helpers::derive_result_outcome(
+            &match_,
+            new_participant1_score,
+            new_participant2_score,
+        )?;
 
         let resolution = DisputeResolution {
             resolution_type: ResolutionType::Adjusted,
@@ -534,6 +602,9 @@ where
                 resolution,
                 dispute.match_id,
                 TournamentMatchStatus::Cancelled,
+                // P-78: a double-DQ cancels the match; neither participant won
+                // it, so the recorded winner and score must go.
+                true,
                 CreateDisputeMessage {
                     dispute_id,
                     author_user_id: resolved_by,

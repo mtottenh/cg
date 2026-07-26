@@ -130,6 +130,12 @@ pub struct UpdateLeagueSeason {
     pub max_teams: Option<i32>,
     pub status: Option<SeasonStatus>,
     pub settings: Option<serde_json::Value>,
+    /// When set, the same UPDATE statement also writes the roster lock —
+    /// a PATCH carrying generic fields and the lock must be ONE atomic
+    /// write, not two sequential ones a mid-flight error can split (P-198).
+    pub roster_lock_status: Option<RosterLockStatus>,
+    /// Who set the lock; only consulted when `roster_lock_status` is set.
+    pub roster_locked_by: Option<UserId>,
 }
 
 // =============================================================================
@@ -217,6 +223,17 @@ pub trait LeagueTeamRepository: Send + Sync {
     ) -> Result<LeagueTeam, DomainError>;
 
     /// Transfer team ownership.
+    ///
+    /// Implementations MUST move the team-scoped `team_captain` RBAC grant
+    /// along with `owner_player_id`, in the same transaction — revoked from
+    /// the outgoing owner, granted to the incoming one.
+    ///
+    /// That grant, not the column, is what the owner-gated endpoints check
+    /// (`update_team`, `disband_team` and `register_team_for_season` all go
+    /// through `require_team_settings_manage` →
+    /// `team.settings.manage`). Moving only the column produced P-113: the
+    /// new owner 403'd on every owner action while the old owner kept the
+    /// power to disband a team they no longer owned.
     async fn transfer_ownership(
         &self,
         id: LeagueTeamId,

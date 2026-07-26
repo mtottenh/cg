@@ -11,6 +11,7 @@ use portal_api::adapters::{EvidenceStorageBackend, S3EvidenceStorageAdapter};
 use portal_api::app::create_app;
 use portal_api::state::AppState;
 use portal_api::steam_openid::SteamOpenIdVerifier;
+use portal_api::steam_workshop::WorkshopMetadataProvider;
 use portal_db::DbPool;
 use portal_test::database::TestDb;
 use serde::de::DeserializeOwned;
@@ -78,6 +79,25 @@ impl TestApp {
         let state = AppState::new(db.pool.clone(), "test-jwt-secret")
             .await
             .with_steam_verifier(verifier);
+        let app = Self::with_connect_info(create_app(state));
+
+        Self {
+            app,
+            db,
+            server_addr: None,
+        }
+    }
+
+    /// Create a test application with an injected Steam Workshop metadata
+    /// double, so the workshop lookup endpoint can be exercised without
+    /// network access.
+    pub async fn new_with_workshop_metadata(provider: Arc<dyn WorkshopMetadataProvider>) -> Self {
+        Self::init_tracing();
+
+        let db = TestDb::new().await;
+        let state = AppState::new(db.pool.clone(), "test-jwt-secret")
+            .await
+            .with_workshop_metadata(provider);
         let app = Self::with_connect_info(create_app(state));
 
         Self {
@@ -205,6 +225,61 @@ impl TestApp {
                 .uri(uri)
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer dev-token")
+                .body(Body::from(json))
+                .unwrap(),
+        )
+        .await
+    }
+
+    /// POST raw bytes with custom headers (MatchZy demo/backup uploads).
+    /// Returns just the status.
+    pub async fn post_bytes_with_headers(
+        &self,
+        uri: &str,
+        body: Vec<u8>,
+        headers: &[(&str, &str)],
+    ) -> axum::http::StatusCode {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("Content-Type", "application/octet-stream");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        self.request(builder.body(Body::from(body)).unwrap())
+            .await
+            .status
+    }
+
+    /// GET with an explicit bearer token (machine-facing endpoints).
+    pub async fn get_with_bearer(&self, uri: &str, token: &str) -> TestResponse {
+        self.request(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    /// Make a POST request with JSON body and one custom header (no auth) —
+    /// the MatchZy webhook shape (single bearer header pair).
+    pub async fn post_json_with_header<T: serde::Serialize>(
+        &self,
+        uri: &str,
+        body: &T,
+        header_name: &str,
+        header_value: &str,
+    ) -> TestResponse {
+        let json = serde_json::to_string(body).unwrap();
+        self.request(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("Content-Type", "application/json")
+                .header(header_name, header_value)
                 .body(Body::from(json))
                 .unwrap(),
         )

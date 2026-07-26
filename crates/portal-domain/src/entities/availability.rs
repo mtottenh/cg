@@ -102,7 +102,7 @@ pub struct AvailabilityOverride {
 }
 
 /// Type of availability override.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, utoipa::ToSchema)]
 pub enum OverrideType {
     /// Player is unavailable during this time.
     Blocked,
@@ -177,7 +177,7 @@ pub struct SuggestedTime {
 }
 
 /// Status of a time suggestion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, utoipa::ToSchema)]
 pub enum SuggestionStatus {
     /// Suggestion is pending review.
     Suggested,

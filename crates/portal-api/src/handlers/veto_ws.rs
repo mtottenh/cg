@@ -153,6 +153,7 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
             msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        crate::observability::record_ws_message("lobby", "in");
                         if let Err(err) = handle_client_message(
                             &text,
                             &connection,
@@ -182,12 +183,14 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
             broadcast = broadcast_rx.recv() => {
                 match broadcast {
                     Ok(msg) => {
-                        if let Some(server_msg) = filter_broadcast_for_connection(&msg, &connection)
-                            && sender.send(Message::Text(
+                        if let Some(server_msg) = filter_broadcast_for_connection(&msg, &connection) {
+                            if sender.send(Message::Text(
                                 serde_json::to_string(&server_msg).unwrap().into()
                             )).await.is_err() {
                                 break;
                             }
+                            crate::observability::record_ws_message("lobby", "out");
+                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(%connection_id, lagged = n, "Broadcast receiver lagged");
@@ -559,6 +562,10 @@ async fn handle_veto_action(
 
             match result {
                 Ok(action_result) => {
+                    // Veto complete → server assignment trigger (§6.6).
+                    if action_result.veto_complete {
+                        let _ = state.server_assignment_tx.send(match_id);
+                    }
                     // Broadcast to lobby (the REST handlers do this, so we mirror the behavior)
                     if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) {
                         if action_result.veto_complete {
@@ -864,6 +871,28 @@ fn filter_broadcast_for_connection(
                 }
             }
         }
+        LobbyBroadcast::ServerAssignmentUpdate(update) => {
+            // §9 / M1: connect details (sv_password) are participant-only.
+            // Spectators get the bare status; the REST endpoint applies the
+            // same gating for cold loads.
+            let connect = if connection.is_spectator() {
+                None
+            } else {
+                update.connect.clone()
+            };
+            Some(ServerMessage::ServerAssignmentUpdate {
+                status: update.status.clone(),
+                connect,
+                reason: update.reason.clone(),
+            })
+        }
+        LobbyBroadcast::LineupUpdate => Some(ServerMessage::LineupUpdate),
+        LobbyBroadcast::LiveScoreUpdate(score) => Some(ServerMessage::LiveScoreUpdate {
+            map_number: score.map_number,
+            team1_score: score.team1_score,
+            team2_score: score.team2_score,
+            round_number: score.round_number,
+        }),
         LobbyBroadcast::CoinFlipResult(result) => Some(ServerMessage::CoinFlipResult {
             winner_registration_id: result.winner_registration_id.to_string(),
             winner_name: result.winner_name.clone(),
@@ -884,7 +913,6 @@ fn filter_broadcast_for_connection(
         }),
         LobbyBroadcast::TimeoutWarning(warning) => Some(ServerMessage::TimeoutWarning {
             seconds_remaining: warning.seconds_remaining,
-            current_team: warning.current_team_name.clone(),
             current_team_registration_id: warning.current_team_registration_id.to_string(),
         }),
         LobbyBroadcast::ParticipantConnected(conn) => Some(ServerMessage::PlayerConnected {

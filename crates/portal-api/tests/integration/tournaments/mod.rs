@@ -4,6 +4,7 @@ mod auth;
 mod brackets;
 mod crud;
 mod lifecycle;
+mod lineup;
 mod map_pool;
 mod matches;
 mod registration;
@@ -79,8 +80,20 @@ pub async fn insert_test_registration(
     reg.id.as_uuid().to_string()
 }
 
-/// Helper to create a tournament and open registration.
+/// Helper to create an **open-registration** tournament and open
+/// registration. Registrations on it auto-approve (P-2).
 pub async fn create_tournament_with_registration(app: &TestApp, slug: &str) -> String {
+    create_tournament_with_registration_type(app, slug, "open").await
+}
+
+/// Like [`create_tournament_with_registration`] but lets the caller pick
+/// the `registration_type` — use `"approval"` when the test needs a
+/// registration that actually lands in `pending`.
+pub async fn create_tournament_with_registration_type(
+    app: &TestApp,
+    slug: &str,
+    registration_type: &str,
+) -> String {
     let game_id = get_game_id(app.pool(), "cs2").await.to_string();
 
     // Create tournament with min_participants: 2 (the minimum for any tournament)
@@ -96,7 +109,7 @@ pub async fn create_tournament_with_registration(app: &TestApp, slug: &str) -> S
                 "participant_type": "individual",
                 "min_participants": 2,
                 "max_participants": 16,
-                "registration_type": "open",
+                "registration_type": registration_type,
                 "scheduling_mode": "live",
                 "default_match_format": "bo3"
             }),
@@ -125,7 +138,9 @@ pub async fn create_tournament_with_registration(app: &TestApp, slug: &str) -> S
 }
 
 /// Helper to register a player and return the registration ID.
-/// By default, registrations are created with 'pending' status.
+///
+/// The resulting status follows the tournament's `registration_type`:
+/// `open` auto-approves, everything else lands `pending` (P-2).
 pub async fn register_player(app: &TestApp, tournament_id: &str, participant_name: &str) -> String {
     let response = app
         .post_json(
@@ -141,9 +156,29 @@ pub async fn register_player(app: &TestApp, tournament_id: &str, participant_nam
     body["data"]["id"].as_str().unwrap().to_string()
 }
 
-/// Helper to approve a registration (for seeding tests).
+/// Helper to leave a registration in `approved` state (for seeding tests).
+///
+/// On an `open` tournament the registration is already approved (P-2) and
+/// the approve endpoint would correctly reject the transition, so this
+/// reads the current status first and only calls the endpoint when there
+/// is actually something to approve.
 pub async fn approve_registration(app: &TestApp, tournament_id: &str, registration_id: &str) {
-    // Approve via the API
+    let reg_uuid: Uuid = registration_id.parse().expect("Invalid registration ID");
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tournament_registrations WHERE id = $1")
+            .bind(reg_uuid)
+            .fetch_one(app.pool())
+            .await
+            .expect("registration should exist");
+
+    if status == "approved" {
+        return;
+    }
+    assert_eq!(
+        status, "pending",
+        "approve_registration expects a pending (or already approved) registration"
+    );
+
     let response = app
         .post_auth(&format!(
             "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"

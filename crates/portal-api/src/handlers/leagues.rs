@@ -296,7 +296,12 @@ pub async fn update_league(
     get,
     path = "/v1/leagues/{league_id}/members",
     params(
-        ("league_id" = String, Path, description = "League ID")
+        ("league_id" = String, Path, description = "League ID"),
+        // P-54: the handler always accepted `page`/`per_page`, but the spec
+        // did not declare them, so generated clients typed the query as
+        // `never` and a roster past the default 20 rows was unreachable by
+        // construction.
+        PaginationParams
     ),
     responses(
         (status = 200, description = "List of league members", body = Vec<LeagueMemberResponse>),
@@ -306,9 +311,27 @@ pub async fn update_league(
 )]
 pub async fn list_members(
     State(state): State<LeaguesState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     Path(league_id): Path<LeagueId>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<Vec<LeagueMemberResponse>>> {
+    // This endpoint previously took NO auth extractor at all and returned every
+    // member's email address, so anonymous callers could enumerate accounts
+    // (P-37). Membership is not secret -- a league roster is reasonably visible
+    // to signed-in users -- but the email addresses are, so they are now emitted
+    // only for callers who manage the league.
+    let include_email = perm_checker
+        .has_scoped_permission(
+            &auth,
+            permissions::league::MEMBERS_MANAGE,
+            ScopeType::League,
+            league_id.as_uuid(),
+        )
+        .await
+        || perm_checker
+            .has_admin_override(&auth, ScopeType::League)
+            .await;
     let offset = i64::from((params.page.max(1) - 1) * params.per_page);
     let limit = i64::from(params.per_page.clamp(1, 100));
 
@@ -319,7 +342,7 @@ pub async fn list_members(
 
     let response: Vec<LeagueMemberResponse> = members
         .into_iter()
-        .map(LeagueMemberResponse::from)
+        .map(|m| LeagueMemberResponse::from_member(m, include_email))
         .collect();
 
     Ok(Json(response))
@@ -517,7 +540,7 @@ pub async fn apply_to_league(
     Ok((
         StatusCode::CREATED,
         Json(DataResponse::new(
-            LeagueInvitationResponse::from(application),
+            LeagueInvitationResponse::from_invitation(application, league.name),
             request_id,
         )),
     ))
@@ -565,6 +588,10 @@ pub async fn invite_user(
         )
         .await?;
 
+    // Fetched for the response's `league_name` (P-38); also turns an
+    // invitation against a nonexistent league into a clean 404.
+    let league = state.league_service.get_league(league_id).await?;
+
     let invitation = state
         .league_service
         .invite_user_authorized(league_id, target_user_id, auth.user_id, req.message, None)
@@ -573,21 +600,36 @@ pub async fn invite_user(
     Ok((
         StatusCode::CREATED,
         Json(DataResponse::new(
-            LeagueInvitationResponse::from(invitation),
+            LeagueInvitationResponse::from_invitation(invitation, league.name),
             request_id,
         )),
     ))
 }
 
-/// List pending invitations for a league.
+/// Query parameters for listing league invitations.
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+pub struct ListLeagueInvitationsParams {
+    /// Filter by invitation status: `pending` (default), `accepted`,
+    /// `rejected`, `expired`, or `all` for every status.
+    ///
+    /// The default stays pending-only for backward compatibility; admin
+    /// surfaces that need to distinguish "declined" from "never invited"
+    /// should request `all` (P-39).
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// List invitations for a league, filterable by status.
 #[utoipa::path(
     get,
     path = "/v1/leagues/{league_id}/invitations",
     params(
-        ("league_id" = String, Path, description = "League ID")
+        ("league_id" = String, Path, description = "League ID"),
+        ListLeagueInvitationsParams
     ),
     responses(
         (status = 200, description = "List of invitations", body = Vec<LeagueInvitationResponse>),
+        (status = 400, description = "Invalid status filter", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Permission denied", body = ApiError),
         (status = 404, description = "League not found", body = ApiError),
@@ -600,6 +642,7 @@ pub async fn list_invitations(
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     Path(league_id): Path<LeagueId>,
+    Query(params): Query<ListLeagueInvitationsParams>,
 ) -> ApiResult<Json<Vec<LeagueInvitationResponse>>> {
     // Check RBAC permission to view invitations
     perm_checker
@@ -610,18 +653,38 @@ pub async fn list_invitations(
         )
         .await?;
 
-    let all_pending = state
+    // P-39: `pending` remains the default (preserves the old contract), but
+    // terminal invitations are now reachable via `?status=accepted|rejected|
+    // expired|all` so an admin can tell "they declined" from "never invited".
+    let status_filter = match params.status.as_deref() {
+        None | Some("pending") => Some(portal_domain::entities::league::LeagueInvitationStatus::Pending),
+        Some("all") => None,
+        Some(other) => Some(
+            portal_domain::entities::league::LeagueInvitationStatus::from_str(other).ok_or_else(
+                || {
+                    ApiError::bad_request(
+                        "Invalid status filter: expected pending, accepted, rejected, expired or all",
+                    )
+                },
+            )?,
+        ),
+    };
+
+    // Fetched for `league_name` on each row (P-38).
+    let league = state.league_service.get_league(league_id).await?;
+
+    let invitations = state
         .league_service
-        .get_pending_by_league_authorized(league_id)
+        .get_by_league_authorized(league_id, status_filter)
         .await?;
 
     // Filter to only show invitations (sent by admins)
-    let response: Vec<LeagueInvitationResponse> = all_pending
+    let response: Vec<LeagueInvitationResponse> = invitations
         .into_iter()
         .filter(|inv| {
             inv.invitation_type == portal_domain::entities::league::LeagueInvitationType::Invite
         })
-        .map(LeagueInvitationResponse::from)
+        .map(|inv| LeagueInvitationResponse::from_invitation(inv, league.name.clone()))
         .collect();
 
     Ok(Json(response))
@@ -658,6 +721,9 @@ pub async fn list_applications(
         )
         .await?;
 
+    // Fetched for `league_name` on each row (P-38).
+    let league = state.league_service.get_league(league_id).await?;
+
     let all_pending = state
         .league_service
         .get_pending_by_league_authorized(league_id)
@@ -670,7 +736,7 @@ pub async fn list_applications(
             inv.invitation_type
                 == portal_domain::entities::league::LeagueInvitationType::Application
         })
-        .map(LeagueInvitationResponse::from)
+        .map(|inv| LeagueInvitationResponse::from_invitation(inv, league.name.clone()))
         .collect();
 
     Ok(Json(response))
@@ -819,10 +885,22 @@ pub async fn get_my_invitations(
         .get_pending_invitations_for_user(auth.user_id)
         .await?;
 
-    let response: Vec<LeagueInvitationResponse> = invitations
-        .into_iter()
-        .map(LeagueInvitationResponse::from)
-        .collect();
+    // P-38: resolve each league's name so two pending invitations are
+    // distinguishable on the invitations page. One lookup per distinct
+    // league — a user's pending-invitation list is small.
+    let mut league_names: std::collections::HashMap<LeagueId, String> =
+        std::collections::HashMap::new();
+    let mut response: Vec<LeagueInvitationResponse> = Vec::with_capacity(invitations.len());
+    for inv in invitations {
+        let name = if let Some(name) = league_names.get(&inv.league_id) {
+            name.clone()
+        } else {
+            let league = state.league_service.get_league(inv.league_id).await?;
+            league_names.insert(inv.league_id, league.name.clone());
+            league.name
+        };
+        response.push(LeagueInvitationResponse::from_invitation(inv, name));
+    }
 
     Ok(Json(response))
 }

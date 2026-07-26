@@ -210,6 +210,28 @@ pub struct NewTournamentBracket {
 }
 
 // =============================================================================
+// TOURNAMENT INVITATION
+// =============================================================================
+
+/// Database row for the `tournament_invitations` table.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct TournamentInvitationRow {
+    pub id: Uuid,
+    pub tournament_id: Uuid,
+
+    // Invite target — exactly one is non-null (DB check constraint).
+    pub user_id: Option<Uuid>,
+    pub team_season_id: Option<Uuid>,
+
+    pub status: String,
+    pub message: Option<String>,
+    pub invited_by: Uuid,
+    pub accepted_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+// =============================================================================
 // TOURNAMENT REGISTRATION
 // =============================================================================
 
@@ -691,9 +713,12 @@ pub struct ResultClaimRow {
     pub id: Uuid,
     pub match_id: Uuid,
 
-    // Who submitted
-    pub submitted_by_registration_id: Uuid,
-    pub submitted_by_user_id: Uuid,
+    // Who submitted (NULL for server-sourced claims)
+    pub submitted_by_registration_id: Option<Uuid>,
+    pub submitted_by_user_id: Option<Uuid>,
+
+    // Claim origin: participant | server | admin
+    pub source: String,
 
     // Claimed result
     pub claimed_winner_registration_id: Uuid,
@@ -733,8 +758,9 @@ pub struct ResultClaimRow {
 #[derive(Debug, Clone)]
 pub struct NewResultClaim {
     pub match_id: Uuid,
-    pub submitted_by_registration_id: Uuid,
-    pub submitted_by_user_id: Uuid,
+    pub submitted_by_registration_id: Option<Uuid>,
+    pub submitted_by_user_id: Option<Uuid>,
+    pub source: String,
     pub claimed_winner_registration_id: Uuid,
     pub claimed_participant1_score: i32,
     pub claimed_participant2_score: i32,

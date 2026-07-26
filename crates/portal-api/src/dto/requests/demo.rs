@@ -121,6 +121,29 @@ pub struct ProcessUnlinkedDemosQuery {
     pub limit: Option<i64>,
 }
 
+/// Query parameters for the admin demo status-count rollup.
+///
+/// P-144: the rollup took no parameters and counted every game's demos, while
+/// the page that renders it (`AdminDemosPage`) has a Game filter directly
+/// beneath the cards — so a CS2 admin who had filtered the table to CS2 still
+/// read totals inflated by every other game in the catalog.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+pub struct DemoStatusCountsQuery {
+    /// Restrict the counts to one game. Omit to count every game.
+    pub game_id: Option<Uuid>,
+}
+
+/// Query parameters for the admin ingestion-pipeline reads (P-73).
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+pub struct PipelineQuery {
+    /// Restrict to one game, by slug (e.g. `cs2`) or UUID. Omit for all games.
+    pub game: Option<String>,
+    /// Filter discovered matches by status (pending, enriching, enriched, failed).
+    pub status: Option<String>,
+    /// Maximum rows to return (default 25, max 200).
+    pub limit: Option<i64>,
+}
+
 /// Query parameters for getting demos linked to a match.
 #[derive(Debug, Clone, Deserialize, IntoParams, ToSchema)]
 pub struct GetDemosForMatchQuery {

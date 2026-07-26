@@ -10,9 +10,10 @@ pub mod substates;
 
 pub use substates::{
     AdminState, AuthState, AvailabilityState, AwardsState, BanState, DemoState, DisputeState,
-    EvidenceState, ForfeitState, GamesState, InternalState, LeagueTeamState, LeaguesState,
-    PlayerState, ProgressionState, ResultReviewState, ResultState, RolesState, SteamTrackingState,
-    TournamentState, UploadsState, UsersState, VetoDelegatesState, VetoState, VetoWsState,
+    EvidenceState, ForfeitState, GameServerState, GamesState, InternalState, LeagueTeamState,
+    LeaguesState, PlayerState, ProgressionState, ResultReviewState, ResultState, RolesState,
+    SteamTrackingState, TournamentState, UploadsState, UsersState, VetoDelegatesState, VetoState,
+    VetoWsState,
 };
 
 use crate::adapters::{
@@ -21,38 +22,45 @@ use crate::adapters::{
 };
 use crate::adapters::{EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceStorageAdapter};
 use crate::steam_openid::{HttpSteamOpenIdVerifier, SteamAuthConfig, SteamOpenIdVerifier};
+use crate::steam_workshop::{HttpWorkshopClient, WorkshopMetadataProvider};
 use crate::websocket::VetoLobbyManager;
+use crate::websocket::agent_manager::AgentConnectionManager;
 use portal_db::{
-    ActionItemRepository, DbPool, GameRepository, PermissionRepository, PgApiKeyRepository,
-    PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgAwardRepository,
-    PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
+    ActionItemRepository, DbPool, GameRepository, PermissionRepository, PgAgentCertRepository,
+    PgApiKeyRepository, PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository,
+    PgAwardRepository, PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
     PgDemoPlayerStatsRepository, PgDemoRepository, PgDiscoveredMatchRepository,
-    PgDisputeMessageRepository, PgDisputeRepository, PgEvidenceRepository,
-    PgForfeitRecordRepository, PgLeagueInvitationRepository, PgLeagueMemberRepository,
-    PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
+    PgDisputeMessageRepository, PgDisputeRepository, PgEntityChangeRepository,
+    PgEvidenceRepository, PgForfeitRecordRepository, PgGameServerRepository,
+    PgLeagueInvitationRepository, PgLeagueMemberRepository, PgLeagueRepository,
+    PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
-    PgLeagueTeamSeasonRepository, PgMatchStatusLogRepository, PgPermissionRepository,
-    PgPlayerGameProfileRepository, PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository,
-    PgPlayerRatingHistoryRepository, PgPlayerRepository, PgProgressionLogRepository,
-    PgRefreshTokenRepository, PgResultClaimRepository, PgResultReviewRepository,
-    PgSagaExecutionRepository, PgScheduleProposalRepository, PgSteamTrackingRepository,
-    PgSuggestedTimeRepository, PgSystemSettingsRepository, PgTournamentBracketRepository,
-    PgTournamentMapPoolRepository, PgTournamentMatchRepository, PgTournamentRegistrationRepository,
-    PgTournamentRepository, PgTournamentStageRepository, PgTournamentStandingsRepository,
-    PgUserRepository, PgVetoActionRepository, PgVetoDelegateRepository,
-    PgVetoLobbyMessageRepository, PgVetoSessionRepository, RoleRepository, StatsRepository,
+    PgLeagueTeamSeasonRepository, PgMatchLineupRepository, PgMatchStatusLogRepository,
+    PgMatchSubstitutionRepository, PgPermissionRepository, PgPlayerGameProfileRepository,
+    PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository,
+    PgPlayerRepository, PgProgressionLogRepository, PgRefreshTokenRepository,
+    PgResultClaimRepository, PgResultReviewRepository, PgSagaExecutionRepository,
+    PgScheduleProposalRepository, PgServerBookingRepository, PgServerEventRepository,
+    PgServerReservationRepository, PgSteamTrackingRepository, PgSuggestedTimeRepository,
+    PgSystemSettingsRepository, PgTournamentBracketRepository, PgTournamentInvitationRepository,
+    PgTournamentMapPoolRepository, PgTournamentMatchGameRepository, PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
+    PgTournamentStandingsRepository, PgUserRepository, PgVetoActionRepository,
+    PgVetoDelegateRepository, PgVetoLobbyMessageRepository, PgVetoSessionRepository,
+    RoleRepository, StatsRepository,
 };
 use portal_domain::services::{
     AwardService, BanService, DemoService, DiscoveredMatchService, LeagueSeasonParticipantService,
     LeagueSeasonService, LeagueService, LeagueTeamInvitationService, LeagueTeamService,
     PermissionService, PlayerGameProfileService, PlayerService, SteamTrackingService,
     SystemSettingsService, TournamentService, UserService,
+    game_server::{CertificateAuthority, GameServerRegistryService},
     tournament::{
         AvailabilityService, CheckInService, DisputeService, EvidenceService,
-        EvidenceServiceConfig, ForfeitService, MatchCompletionSaga, MatchLifecycleService,
-        ProgressionService, RegistrationService, ResultReviewService, ResultService,
-        SchedulingService, SeedingService, StandingsService, VetoAuthorizationService,
-        VetoLobbyChatService, VetoService,
+        EvidenceServiceConfig, ForfeitService, LineupService, MatchCompletionSaga,
+        MatchLifecycleService, ProgressionService, RegistrationService, ResultReviewService,
+        ResultService, SchedulingService, SeedingService, StandingsService,
+        VetoAuthorizationService, VetoLobbyChatService, VetoService,
     },
 };
 use portal_plugins::PluginManager;
@@ -63,6 +71,11 @@ use std::sync::Arc;
 pub type AppSteamTrackingService =
     SteamTrackingService<PgSteamTrackingRepository, PgPlayerRepository>;
 pub type AppSystemSettingsService = SystemSettingsService<PgSystemSettingsRepository>;
+pub type AppGameServerRegistryService = GameServerRegistryService<
+    PgGameServerRepository,
+    PgAgentCertRepository,
+    PgServerBookingRepository,
+>;
 pub type AppDiscoveredMatchService = DiscoveredMatchService<PgDiscoveredMatchRepository>;
 pub type AppUserService = UserService<PgUserRepository, PgPlayerRepository>;
 pub type AppPlayerService = PlayerService<PgPlayerRepository, PgLeagueTeamMemberRepository>;
@@ -99,9 +112,13 @@ pub type AppTournamentService = TournamentService<
     PgTournamentMatchRepository,
     PgTournamentStandingsRepository,
     PgTournamentMapPoolRepository,
+    PgTournamentInvitationRepository,
 >;
-pub type AppRegistrationService =
-    RegistrationService<PgTournamentRepository, PgTournamentRegistrationRepository>;
+pub type AppRegistrationService = RegistrationService<
+    PgTournamentRepository,
+    PgTournamentRegistrationRepository,
+    PgLeagueTeamMemberRepository,
+>;
 pub type AppCheckInService =
     CheckInService<PgTournamentRepository, PgTournamentRegistrationRepository>;
 pub type AppSeedingService =
@@ -111,10 +128,17 @@ pub type AppMatchLifecycleService = MatchLifecycleService<
     PgTournamentRegistrationRepository,
     PgMatchStatusLogRepository,
 >;
+pub type AppLineupService = LineupService<
+    PgMatchLineupRepository,
+    PgTournamentMatchRepository,
+    PgTournamentRegistrationRepository,
+    PgLeagueTeamMemberRepository,
+>;
 pub type AppSchedulingService = SchedulingService<
     PgScheduleProposalRepository,
     PgTournamentMatchRepository,
     PgTournamentRegistrationRepository,
+    PgLeagueTeamMemberRepository,
 >;
 pub type AppAvailabilityService = AvailabilityService<
     PgAvailabilityWindowRepository,
@@ -131,6 +155,7 @@ pub type AppResultService = ResultService<
     PgTournamentRegistrationRepository,
     PgDemoMatchLinkRepository,
     PgVetoSessionRepository,
+    PgLeagueTeamMemberRepository,
 >;
 pub type AppProgressionService = ProgressionService<
     PgTournamentMatchRepository,
@@ -144,6 +169,7 @@ pub type AppEvidenceService = EvidenceService<
     PgTournamentMatchRepository,
     PgTournamentRegistrationRepository,
     EvidenceStorageBackend,
+    PgLeagueTeamMemberRepository,
 >;
 pub type AppForfeitService = ForfeitService<
     PgForfeitRecordRepository,
@@ -185,6 +211,7 @@ pub type AppStatsUpdaterAdapter = StatsUpdaterAdapter<
     PgTournamentRepository,
     PgTournamentRegistrationRepository,
     PgDemoMatchLinkRepository,
+    PgMatchLineupRepository,
 >;
 pub type AppMatchCompletionSaga = MatchCompletionSaga<
     PgTournamentMatchRepository,
@@ -235,6 +262,8 @@ pub struct AppState {
     pub seeding_service: AppSeedingService,
     /// Match lifecycle service.
     pub match_lifecycle_service: AppMatchLifecycleService,
+    /// Match lineup service (provisional declaration + locking).
+    pub lineup_service: AppLineupService,
     /// Match scheduling service.
     pub scheduling_service: AppSchedulingService,
     /// Availability service for player/participant availability.
@@ -265,10 +294,54 @@ pub struct AppState {
     pub veto_authorization_service: AppVetoAuthorizationService,
     /// Veto lobby manager for WebSocket connections.
     pub veto_lobby_manager: Arc<VetoLobbyManager>,
+    /// Game-server registry service (MatchZy integration).
+    pub game_server_registry: AppGameServerRegistryService,
+    /// Match server reservations (MatchZy Phases 2–3).
+    pub server_reservation_repo: Arc<PgServerReservationRepository>,
+    /// Raw MatchZy webhook events.
+    pub server_event_repo: Arc<PgServerEventRepository>,
+    /// Mid-series substitutions (§6.8).
+    pub match_substitution_repo: Arc<PgMatchSubstitutionRepository>,
+    /// Per-map game rows (populated by the server event pipeline).
+    pub tournament_match_game_repo: Arc<PgTournamentMatchGameRepository>,
+    /// League-team rosters (server config generation).
+    pub league_team_member_repo: Arc<PgLeagueTeamMemberRepository>,
+    /// Public https base URL MatchZy fetches configs from / posts events to.
+    pub public_base_url: String,
+    /// Storage backend for MatchZy demo uploads (S3 `portal-demos` in prod
+    /// via DEMO_STORAGE=s3, local uploads dir otherwise) + the catalog
+    /// bucket name recorded on demo rows.
+    pub demo_upload_storage: Arc<dyn StorageBackend>,
+    /// Bucket name recorded in the demo catalog for uploaded demos.
+    pub demo_upload_bucket: String,
+    /// Fire-and-forget veto-completion trigger for server assignment; the
+    /// drain task (`spawn_server_assignment_task`) runs the actual flow.
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
+    /// Receiver side, taken once by the drain task at startup.
+    pub server_assignment_rx: Arc<
+        tokio::sync::Mutex<
+            Option<tokio::sync::mpsc::UnboundedReceiver<portal_core::ids::TournamentMatchId>>,
+        >,
+    >,
+    /// Connected server-agent manager (outbound mTLS WSS channel).
+    pub agent_manager: Arc<AgentConnectionManager>,
+    /// Portal CA for signing agent certificates. `None` when
+    /// `PORTAL_AGENT_CA_DIR` is unset (integration disabled).
+    pub agent_ca: Option<Arc<CertificateAuthority>>,
+    /// Accept `X-Dev-Server-Id` agent auth (tests/dev only).
+    pub agent_insecure_dev_auth: bool,
+    /// Global kill switch for the match↔server flows (§8/§11). Registry
+    /// CRUD stays available; assignment/allocation/events stop.
+    pub gameserver_enabled: bool,
     /// Standings service for round robin/swiss standings.
     pub standings_service: AppStandingsService,
     /// Tournament match repository for direct match access.
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
+    /// Entity-change (audit trail) repository. Written by the roster-lock
+    /// override (P-18) and by the admin match score override (P-72); read
+    /// back by the admin score-correction history.
+    pub entity_change_repo: Arc<dyn portal_domain::repositories::EntityChangeRepository>,
     /// Tournament map pool repository for veto auto-creation.
     pub tournament_map_pool_repo: Arc<PgTournamentMapPoolRepository>,
     /// Permission service for high-level authorization checks (`is_admin`, etc).
@@ -315,6 +388,8 @@ pub struct AppState {
     pub steam_verifier: Arc<dyn SteamOpenIdVerifier>,
     /// Steam sign-in configuration (public/frontend URLs, optional API key).
     pub steam_auth_config: SteamAuthConfig,
+    /// Steam Workshop metadata lookup (outbound GetPublishedFileDetails seam).
+    pub workshop_metadata: Arc<dyn WorkshopMetadataProvider>,
 }
 
 /// Token expiry configuration.
@@ -345,10 +420,35 @@ pub struct StorageConfig {
 }
 
 impl Default for StorageConfig {
+    /// P-118: `base_url` used to be the hard-coded literal
+    /// `http://localhost:3000/uploads`, with nothing able to override it.
+    ///
+    /// That URL is handed to the CLIENT as the destination for the upload PUT,
+    /// so without S3 configured every deployment told its users to upload to
+    /// `localhost:3000` — and every ephemeral e2e run told the browser to
+    /// upload to the DEV stack. When the dev API happened to be running the
+    /// upload silently landed in the developer's real uploads directory and the
+    /// test passed; when it was not, the PUT failed and only the missing
+    /// `/complete` call gave it away. Same shape as P-102: a default that
+    /// quietly points at another environment is worse than a missing value,
+    /// because it works just often enough to look correct.
+    ///
+    /// Now derived, in order: `PORTAL_EVIDENCE_BASE_URL`, else
+    /// `PORTAL_PUBLIC_URL` + `/uploads` (which every runner already sets
+    /// per-instance), else the old literal so nothing that relied on it breaks.
     fn default() -> Self {
+        let base_url = std::env::var("PORTAL_EVIDENCE_BASE_URL")
+            .ok()
+            .or_else(|| {
+                std::env::var("PORTAL_PUBLIC_URL")
+                    .ok()
+                    .map(|public| format!("{}/uploads", public.trim_end_matches('/')))
+            })
+            .unwrap_or_else(|| "http://localhost:3000/uploads".to_string());
+
         Self {
             base_path: "./uploads".to_string(),
-            base_url: "http://localhost:3000/uploads".to_string(),
+            base_url,
         }
     }
 }
@@ -462,11 +562,24 @@ impl AppState {
         );
         let league_season_service =
             LeagueSeasonService::new(Arc::clone(&league_season_repo), Arc::clone(&league_repo));
+        // P-18: the roster-lock override is only permitted because it is
+        // recorded. The service therefore owns an audit sink, and the
+        // enforcement point writes to it before letting a locked roster change
+        // through.
+        let entity_change_repo: Arc<dyn portal_domain::repositories::EntityChangeRepository> =
+            Arc::new(PgEntityChangeRepository::new(db_pool.clone()));
+        // §9.3: both team services consult league membership at every seat
+        // point — the same Pg repo the league service uses, as a trait object.
+        let league_member_repo_dyn: Arc<
+            dyn portal_domain::repositories::league::LeagueMemberRepository,
+        > = Arc::new(PgLeagueMemberRepository::new(db_pool.clone()));
         let league_team_service = LeagueTeamService::new(
             Arc::clone(&league_team_repo),
             Arc::clone(&league_team_season_repo),
             Arc::clone(&league_team_member_repo),
             Arc::clone(&league_season_repo),
+            Arc::clone(&entity_change_repo),
+            Arc::clone(&league_member_repo_dyn),
         );
         let league_team_invitation_service = LeagueTeamInvitationService::new(
             Arc::clone(&league_team_invitation_repo),
@@ -474,6 +587,7 @@ impl AppState {
             Arc::clone(&league_team_season_repo),
             Arc::clone(&league_team_member_repo),
             Arc::clone(&league_season_repo),
+            Arc::clone(&league_member_repo_dyn),
         );
         let league_season_participant_service = LeagueSeasonParticipantService::new(
             Arc::clone(&league_season_participant_repo),
@@ -501,6 +615,11 @@ impl AppState {
         let tournament_map_pool_repo =
             Arc::new(PgTournamentMapPoolRepository::new(db_pool.clone()));
 
+        // Invitation repository — backs `registration_type = invite_only`
+        // (audit P-27); the tournament service consults it on registration.
+        let tournament_invitation_repo =
+            Arc::new(PgTournamentInvitationRepository::new(db_pool.clone()));
+
         // Create tournament service
         let tournament_service = TournamentService::new(
             Arc::clone(&tournament_repo),
@@ -510,12 +629,14 @@ impl AppState {
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_standings_repo),
             Arc::clone(&tournament_map_pool_repo),
+            Arc::clone(&tournament_invitation_repo),
         );
 
         // Create Phase 2 tournament services
         let registration_service = RegistrationService::new(
             Arc::clone(&tournament_repo),
             Arc::clone(&tournament_registration_repo),
+            Arc::clone(&league_team_member_repo),
         );
         let checkin_service = CheckInService::new(
             Arc::clone(&tournament_repo),
@@ -534,12 +655,23 @@ impl AppState {
             Arc::clone(&match_status_log_repo),
         );
 
+        let match_lineup_repo = Arc::new(PgMatchLineupRepository::new(db_pool.clone()));
+        let lineup_service = LineupService::new(
+            Arc::clone(&match_lineup_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&league_team_member_repo),
+        );
+
         let schedule_proposal_repo = Arc::new(PgScheduleProposalRepository::new(db_pool.clone()));
         let scheduling_service = SchedulingService::new(
             Arc::clone(&schedule_proposal_repo),
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_registration_repo),
-        );
+            Arc::clone(&league_team_member_repo),
+        )
+        // P-84: admin scheduling is audited through the lifecycle service.
+        .with_match_transitioner(Arc::new(match_lifecycle_service.clone()));
 
         // Create availability repositories and service
         let availability_window_repo =
@@ -585,13 +717,19 @@ impl AppState {
             Arc::clone(&tournament_registration_repo),
             Arc::clone(&demo_match_link_repo),
             Arc::clone(&veto_session_repo),
+            Arc::clone(&league_team_member_repo),
         )
         .with_map_pool_provider(Arc::new(crate::adapters::DbMapPoolProvider::new(
             Arc::clone(&tournament_map_pool_repo),
             Arc::clone(&tournament_repo),
             game_repo.clone(),
             Arc::clone(&plugin_manager),
-        )));
+        )))
+        // Move the match to `awaiting_result` on claim submission so the
+        // opponent gets a confirm-result action item before the 15-minute
+        // auto-confirm fires (P-50). Reuses the lifecycle service so the
+        // transition is audited in `match_status_log`.
+        .with_match_transitioner(Arc::new(match_lifecycle_service.clone()));
 
         // Create progression service for bracket advancement
         let progression_service = ProgressionService::new(
@@ -632,7 +770,7 @@ impl AppState {
             tracing::info!(bucket = %bucket, "Evidence storage: S3");
             (EvidenceStorageBackend::S3(adapter), bucket)
         } else {
-            let local = LocalEvidenceStorage::new(&uploads_path, evidence_base_url);
+            let local = LocalEvidenceStorage::new(&uploads_path, evidence_base_url.clone());
             tracing::info!("Evidence storage: local filesystem");
             (EvidenceStorageBackend::Local(local), "evidence".to_string())
         };
@@ -646,6 +784,7 @@ impl AppState {
             Arc::clone(&tournament_match_repo),
             Arc::clone(&tournament_registration_repo),
             Arc::new(evidence_storage),
+            Arc::clone(&league_team_member_repo),
             evidence_config,
         );
 
@@ -673,7 +812,11 @@ impl AppState {
             Arc::clone(&demo_match_link_repo),
             Arc::clone(&demo_player_repo),
             Arc::clone(&tournament_match_repo),
-        );
+        )
+        // Phase C: linking a demo to a match materializes the authoritative
+        // lineup and gates stat attribution to it (no-op unless the season
+        // opted into `lineup_required`).
+        .with_lineup_materializer(Arc::new(lineup_service.clone()));
 
         // Create demo stat-fact repository + award service
         let demo_stats_repo = Arc::new(PgDemoPlayerStatsRepository::new(db_pool.clone()));
@@ -709,12 +852,86 @@ impl AppState {
         // Create veto lobby manager for WebSocket connections
         let veto_lobby_manager = Arc::new(VetoLobbyManager::new());
 
+        // Game-server integration (MatchZy). The CA is optional: unset
+        // PORTAL_AGENT_CA_DIR disables enrollment (503) while the registry
+        // CRUD still works. An unreadable/invalid CA dir hard-fails startup,
+        // mirroring the CS2_DEMO_SERVICE_URL policy above.
+        let game_server_repo = Arc::new(PgGameServerRepository::new(db_pool.clone()));
+        let agent_cert_repo = Arc::new(PgAgentCertRepository::new(db_pool.clone()));
+        let server_booking_repo = Arc::new(PgServerBookingRepository::new(db_pool.clone()));
+        let game_server_registry =
+            GameServerRegistryService::new(game_server_repo, agent_cert_repo, server_booking_repo);
+        let agent_manager = Arc::new(AgentConnectionManager::new());
+        let agent_ca = std::env::var("PORTAL_AGENT_CA_DIR").ok().map(|dir| {
+            let cert_pem = std::fs::read_to_string(format!("{dir}/ca.pem"))
+                .expect("PORTAL_AGENT_CA_DIR set but ca.pem is unreadable");
+            let key_pem = std::fs::read_to_string(format!("{dir}/ca.key"))
+                .expect("PORTAL_AGENT_CA_DIR set but ca.key is unreadable");
+            Arc::new(
+                CertificateAuthority::from_pem(&cert_pem, &key_pem)
+                    .expect("PORTAL_AGENT_CA_DIR contains invalid CA material"),
+            )
+        });
+        let agent_insecure_dev_auth = std::env::var("PORTAL_AGENT_INSECURE")
+            .is_ok_and(|v| matches!(v.as_str(), "true" | "1" | "yes"));
+        // Default ON: unset means enabled; deploy renders an explicit value.
+        let gameserver_enabled = std::env::var("PORTAL_GAMESERVER_ENABLED")
+            .map_or(true, |v| !matches!(v.as_str(), "false" | "0" | "no"));
+        let server_reservation_repo = Arc::new(PgServerReservationRepository::new(db_pool.clone()));
+        let server_event_repo = Arc::new(PgServerEventRepository::new(db_pool.clone()));
+        let match_substitution_repo = Arc::new(PgMatchSubstitutionRepository::new(db_pool.clone()));
+        let tournament_match_game_repo =
+            Arc::new(PgTournamentMatchGameRepository::new(db_pool.clone()));
+        // MatchZy fetches configs over the public URL (agents + game servers
+        // are remote); falls back to the Steam-auth public URL default.
+        let public_base_url = std::env::var("PORTAL_PUBLIC_URL")
+            .unwrap_or_else(|_| "http://localhost:3000".to_string());
+        let (server_assignment_tx, server_assignment_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Demo uploads: mirror the evidence-storage selection pattern.
+        let (demo_upload_storage, demo_upload_bucket): (Arc<dyn StorageBackend>, String) =
+            if std::env::var("DEMO_STORAGE").as_deref() == Ok("s3") {
+                let bucket = std::env::var("S3_DEMOS_BUCKET")
+                    .expect("S3_DEMOS_BUCKET must be set when DEMO_STORAGE=s3");
+                let region = std::env::var("S3_DEMOS_REGION")
+                    .or_else(|_| std::env::var("S3_EVIDENCE_REGION"))
+                    .expect("S3_DEMOS_REGION or S3_EVIDENCE_REGION must be set");
+                let public_url = std::env::var("S3_DEMOS_PUBLIC_URL").unwrap_or_default();
+                let endpoint = std::env::var("S3_DEMOS_ENDPOINT")
+                    .ok()
+                    .or_else(|| std::env::var("S3_EVIDENCE_ENDPOINT").ok());
+                let s3 = portal_storage::S3Storage::new(portal_storage::S3Config {
+                    bucket: bucket.clone(),
+                    region,
+                    public_url,
+                    endpoint,
+                })
+                .await;
+                tracing::info!(bucket = %bucket, "Demo upload storage: S3");
+                (Arc::new(s3), bucket)
+            } else {
+                tracing::info!("Demo upload storage: local filesystem");
+                (
+                    Arc::new(LocalStorage::new(
+                        uploads_path.clone(),
+                        evidence_base_url.clone(),
+                    )),
+                    "local".to_string(),
+                )
+            };
+
         // Create match completion saga with adapters
         let saga_execution_repo = Arc::new(PgSagaExecutionRepository::new(db_pool.clone()));
         let progression_log_repo = Arc::new(PgProgressionLogRepository::new(db_pool.clone()));
         let demo_validator_adapter = Arc::new(DemoValidatorAdapter::new(
             demo_service.clone(),
             result_service.clone(),
+            Arc::clone(&match_lineup_repo),
+            Arc::clone(&tournament_match_repo),
+            Arc::clone(&tournament_repo),
+            Arc::clone(&tournament_registration_repo),
+            Arc::clone(&league_team_member_repo),
+            eligibility_service.clone(),
         ));
         let review_creator_adapter =
             Arc::new(ReviewCreatorAdapter::new(result_review_service.clone()));
@@ -723,6 +940,7 @@ impl AppState {
             Arc::clone(&tournament_repo),
             Arc::clone(&tournament_registration_repo),
             Arc::clone(&demo_match_link_repo),
+            Arc::clone(&match_lineup_repo),
             game_repo.clone(),
             player_game_profile_service.clone(),
             Arc::clone(&plugin_manager),
@@ -757,6 +975,7 @@ impl AppState {
             checkin_service,
             seeding_service,
             match_lifecycle_service,
+            lineup_service,
             scheduling_service,
             availability_service,
             veto_service,
@@ -772,8 +991,24 @@ impl AppState {
             veto_lobby_chat_service,
             veto_authorization_service,
             veto_lobby_manager,
+            game_server_registry,
+            server_reservation_repo,
+            server_event_repo,
+            match_substitution_repo,
+            tournament_match_game_repo,
+            league_team_member_repo: Arc::clone(&league_team_member_repo),
+            public_base_url,
+            demo_upload_storage,
+            demo_upload_bucket,
+            server_assignment_tx,
+            server_assignment_rx: Arc::new(tokio::sync::Mutex::new(Some(server_assignment_rx))),
+            agent_manager,
+            agent_ca,
+            agent_insecure_dev_auth,
+            gameserver_enabled,
             standings_service,
             tournament_match_repo,
+            entity_change_repo,
             tournament_map_pool_repo,
             permission_service,
             permission_repo,
@@ -797,6 +1032,7 @@ impl AppState {
             token_config: TokenConfig::default(),
             steam_verifier: Arc::new(HttpSteamOpenIdVerifier::new()),
             steam_auth_config: SteamAuthConfig::from_env(),
+            workshop_metadata: Arc::new(HttpWorkshopClient::steam_default()),
         }
     }
 
@@ -814,6 +1050,16 @@ impl AppState {
     #[must_use]
     pub fn with_steam_verifier(mut self, verifier: Arc<dyn SteamOpenIdVerifier>) -> Self {
         self.steam_verifier = verifier;
+        self
+    }
+
+    /// Replace the Steam Workshop metadata provider.
+    ///
+    /// Integration tests inject a double here so the workshop lookup
+    /// endpoint can be exercised without any network access.
+    #[must_use]
+    pub fn with_workshop_metadata(mut self, provider: Arc<dyn WorkshopMetadataProvider>) -> Self {
+        self.workshop_metadata = provider;
         self
     }
 
@@ -849,6 +1095,7 @@ impl AppState {
             match_repo,
             reg_repo,
             Arc::new(storage),
+            Arc::new(PgLeagueTeamMemberRepository::new(self.db_pool.clone())),
             config,
         );
         self

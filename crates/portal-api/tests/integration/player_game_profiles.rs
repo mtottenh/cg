@@ -1,7 +1,7 @@
 //! Player game profile integration tests.
 //!
-//! Covers the seven `/v1/players/...` game-profile endpoints: profile
-//! list/get, `/me/games`, the admin rating submission, rating history,
+//! Covers the `/v1/players/...` game-profile endpoints: profile
+//! the list read, the admin rating submission, rating history,
 //! public matchmaking stats and public match history.
 
 use crate::common::TestApp;
@@ -172,7 +172,13 @@ async fn insert_match_history(
 
 /// Submitting a rating creates the profile on demand, records history, and
 /// surfaces the plugin-derived rank tier; the profile then shows up on the
-/// per-player list, the single-profile read and `/me/games`.
+/// per-player list.
+///
+/// P-67: the single-profile read (`/v1/players/{id}/games/{game_id}`) and
+/// `/v1/players/me/games` are deleted. Both were redundant single-getters over
+/// `/v1/players/{id}/games`, which every frontend surface already uses, and
+/// neither had a consumer. Their absence is pinned below so they cannot return
+/// unnoticed.
 #[tokio::test]
 async fn test_submit_rating_creates_profile_and_reads() {
     let app = TestApp::new().await;
@@ -190,29 +196,34 @@ async fn test_submit_rating_creates_profile_and_reads() {
     assert_eq!(display_stat(profile, "elo_current")["color"], "#9932CC");
     assert_eq!(display_stat(profile, "elo_peak")["value"], "15000");
 
-    // The game path segment accepts a UUID as well as a slug.
-    let response = app
-        .get(&format!("/v1/players/{player_id}/games/{game_id}"))
-        .await;
-    response.assert_status(StatusCode::OK);
-    let body: Value = response.json();
-    assert_eq!(body["data"]["game_id"], game_id.to_string());
-
-    // The profile appears on the player's profile list...
+    // The profile appears on the player's profile list — the surviving read.
     let response = app.get(&format!("/v1/players/{player_id}/games")).await;
     response.assert_status(StatusCode::OK);
     let body: Value = response.json();
     let profiles = body["data"].as_array().unwrap();
     assert_eq!(profiles.len(), 1);
     assert_eq!(profiles[0]["game_id"], game_id.to_string());
+    assert_eq!(profiles[0]["player_id"], player_id.to_string());
 
-    // ... and on `/me/games` for the authenticated player.
+    // The two deleted single-getters stay deleted (P-67).
+    let response = app
+        .get(&format!("/v1/players/{player_id}/games/{game_id}"))
+        .await;
+    assert_eq!(
+        response.status,
+        StatusCode::NOT_FOUND,
+        "single game-profile getter must stay deleted (P-67)"
+    );
+    // `/players/me/games` now falls through to `/players/{player_id}/games`,
+    // which cannot parse "me" as a UUID — a 400, not a 404. Asserting the exact
+    // code is the point: it proves the dedicated route is gone rather than
+    // merely returning something unhelpful.
     let response = app.get_auth("/v1/players/me/games").await;
-    response.assert_status(StatusCode::OK);
-    let body: Value = response.json();
-    let mine = body["data"].as_array().unwrap();
-    assert_eq!(mine.len(), 1);
-    assert_eq!(mine[0]["player_id"], player_id.to_string());
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "/players/me/games must stay deleted (P-67)"
+    );
 }
 
 /// Rating history is newest-first, `limit` truncates it, and current/peak
@@ -304,16 +315,6 @@ async fn test_submit_rating_requires_admin_permission() {
     response.assert_status(StatusCode::OK);
     let body: Value = response.json();
     assert!(body["data"].as_array().unwrap().is_empty());
-}
-
-/// `/me/games` requires authentication.
-#[tokio::test]
-async fn test_my_game_profiles_requires_auth() {
-    let app = TestApp::new().await;
-
-    app.get("/v1/players/me/games")
-        .await
-        .assert_status(StatusCode::UNAUTHORIZED);
 }
 
 // =============================================================================
@@ -513,4 +514,137 @@ async fn test_missing_profile_for_known_game_is_not_found() {
     response.assert_status(StatusCode::OK);
     let body: Value = response.json();
     assert!(body["data"].as_array().unwrap().is_empty());
+}
+
+// =============================================================================
+// P-68: OPERATOR OVERRIDE OF A PIPELINE-PRODUCED RATING
+// =============================================================================
+
+/// A bad demo-derived rating can be corrected, and the correction is what
+/// downstream consumers read.
+///
+/// Ratings normally arrive from the enricher (`process_demo_ratings` writes
+/// `source = "demo_rank_update"`), and that value drives seeding and league
+/// entry gates (`min_rating_per_player`). Before this the admin submission
+/// endpoint had no UI consumer at all, so a wrong extraction was
+/// uncorrectable. This pins the two properties the operator needs: the
+/// override supersedes the scraped value in the derived current rating, and
+/// the scraped row is *kept*, so the audit trail shows what the pipeline
+/// actually produced.
+#[tokio::test]
+async fn test_admin_override_supersedes_a_scraped_rating() {
+    let app = TestApp::new().await;
+    let player_id = dev_player_id();
+    let game_id = get_game_id(app.pool(), "cs2").await;
+    let scraped_at = Utc::now() - Duration::hours(2);
+
+    // The pipeline's own write path, verbatim: source and rank_type_id as
+    // `process_demo_ratings` sets them.
+    sqlx::query(
+        r"
+        INSERT INTO player_rating_history
+            (player_id, game_id, rating, source, recorded_at, rank_type_id)
+        VALUES ($1, $2, $3, 'demo_rank_update', $4, 11)
+        ",
+    )
+    .bind(player_id)
+    .bind(game_id)
+    .bind(31_000_i32)
+    .bind(scraped_at)
+    .execute(app.pool())
+    .await
+    .expect("seed scraped rating");
+
+    // Precondition, asserted rather than assumed: the bogus value is live.
+    let response = app
+        .get(&format!("/v1/players/{player_id}/games/cs2/rating-history"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    assert_eq!(body["data"][0]["rating"], 31_000);
+
+    // The operator corrects it, recording why in the only free-text field the
+    // history table has.
+    let body = submit_rating(
+        &app,
+        player_id,
+        "cs2",
+        14_500,
+        "manual: demo misparse",
+        Utc::now(),
+    )
+    .await;
+
+    // The plugin's history-derived current rating is the corrected one.
+    assert_eq!(
+        display_stat(&body["data"], "elo_current")["value"],
+        "14500",
+        "the override must supersede the scraped value: {body}"
+    );
+
+    // Both rows survive, newest first — the correction is additive, not a
+    // rewrite of what the pipeline reported.
+    let response = app
+        .get(&format!("/v1/players/{player_id}/games/cs2/rating-history"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: Value = response.json();
+    let entries = body["data"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "the scraped row must be kept: {body}");
+    assert_eq!(entries[0]["rating"], 14_500);
+    assert_eq!(entries[0]["source"], "manual: demo misparse");
+    assert_eq!(entries[1]["rating"], 31_000);
+    assert_eq!(entries[1]["source"], "demo_rank_update");
+}
+
+/// A real platform admin — not the dev-token bypass — can submit a rating.
+///
+/// Every other test here calls the endpoint as the well-known dev account,
+/// which `PermissionChecker` short-circuits to "has every permission" in
+/// `test-utils` builds. That bypass hid a live defect for the whole life of
+/// the endpoint: `admin.system.manage` was declared in the permission registry
+/// but **never seeded into the `permissions` table**, so no role held it and
+/// `submit_player_rating` was 403 for every real caller, super_admin included.
+/// Nobody noticed because the endpoint had no UI consumer (P-68).
+///
+/// This test authenticates as a `platform_admin` with no bypass, so it fails
+/// if the grant in migration 0080 is ever dropped.
+#[tokio::test]
+async fn test_submit_rating_works_for_a_real_platform_admin() {
+    let app = TestApp::new().await;
+    let player_id = dev_player_id();
+
+    let admin = UserBuilder::new()
+        .username("rating_real_admin")
+        .email("rating-real-admin@example.com")
+        .build_persisted(app.pool())
+        .await;
+    assign_role_to_user(app.pool(), admin.id, "platform_admin").await;
+    let admin_token = create_test_token(admin.id, admin.id, "rating_real_admin", TEST_JWT_SECRET);
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/players/{player_id}/games/cs2/rating"),
+            &json!({
+                "rating": 12_345,
+                "source": "manual: operator correction",
+                "recorded_at": Utc::now().to_rfc3339(),
+            }),
+            &admin_token,
+        )
+        .await;
+    assert_eq!(
+        response.status,
+        StatusCode::CREATED,
+        "a real platform_admin must hold admin.system.manage, got {}: {}",
+        response.status,
+        response.text()
+    );
+
+    let response = app
+        .get(&format!("/v1/players/{player_id}/games/cs2/rating-history"))
+        .await;
+    let body: Value = response.json();
+    assert_eq!(body["data"][0]["rating"], 12_345);
+    assert_eq!(body["data"][0]["source"], "manual: operator correction");
 }

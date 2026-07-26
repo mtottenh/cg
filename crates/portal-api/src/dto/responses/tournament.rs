@@ -1,12 +1,16 @@
 //! Tournament response DTOs.
 
 use chrono::{DateTime, Utc};
+use portal_core::types::{
+    BracketStatus, ProposalStatus, StageFormat, StageStatus, TournamentInvitationStatus,
+    TournamentMatchStatus, TournamentRegistrationStatus, TournamentStatus,
+};
 use portal_domain::entities::tournament::{
-    Tournament, TournamentBracket, TournamentMatch, TournamentMatchGame, TournamentRegistration,
-    TournamentStage, TournamentStanding,
+    Tournament, TournamentBracket, TournamentInvitation, TournamentMatch, TournamentMatchGame,
+    TournamentRegistration, TournamentStage, TournamentStanding,
 };
 use portal_domain::entities::{MatchStatusLog, ScheduleProposal};
-use portal_domain::services::tournament::MatchStatusDetails;
+use portal_domain::services::tournament::{MatchStatusDetails, RegistrationCounts};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -90,7 +94,10 @@ pub struct TournamentResponse {
     pub withdrawal_policy: String,
 
     // Status
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: TournamentStatus,
 
     // Ownership
     pub created_by: String,
@@ -195,7 +202,7 @@ impl From<Tournament> for TournamentResponse {
             rules_url: t.rules_url,
             settings: t.settings,
             withdrawal_policy: t.withdrawal_policy.to_string(),
-            status: t.status.to_string(),
+            status: t.status,
             created_by: t.created_by.to_string(),
             created_at: t.created_at,
             updated_at: t.updated_at,
@@ -224,7 +231,10 @@ pub struct TournamentSummaryResponse {
     pub logo_url: Option<String>,
     pub format: String,
     pub participant_type: String,
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: TournamentStatus,
     pub max_participants: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub starts_at: Option<DateTime<Utc>>,
@@ -245,7 +255,7 @@ impl From<Tournament> for TournamentSummaryResponse {
             logo_url: t.logo_url,
             format: t.format.to_string(),
             participant_type: t.participant_type.to_string(),
-            status: t.status.to_string(),
+            status: t.status,
             max_participants: t.max_participants,
             starts_at: t.starts_at,
             is_registration_open,
@@ -264,7 +274,9 @@ pub struct TournamentStageResponse {
     pub tournament_id: String,
     pub name: String,
     pub stage_order: i32,
-    pub format: String,
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
+    pub format: StageFormat,
     pub format_settings: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advancement_count: Option<i32>,
@@ -273,7 +285,10 @@ pub struct TournamentStageResponse {
     pub match_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub map_veto_format: Option<String>,
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: StageStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub starts_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -289,13 +304,13 @@ impl From<TournamentStage> for TournamentStageResponse {
             tournament_id: s.tournament_id.to_string(),
             name: s.name,
             stage_order: s.stage_order,
-            format: s.format.to_string(),
+            format: s.format,
             format_settings: s.format_settings,
             advancement_count: s.advancement_count,
             advancement_rule: s.advancement_rule.to_string(),
             match_format: s.match_format.map(|f| f.to_string()),
             map_veto_format: s.map_veto_format,
-            status: s.status.to_string(),
+            status: s.status,
             starts_at: s.starts_at,
             ends_at: s.ends_at,
             created_at: s.created_at,
@@ -320,7 +335,10 @@ pub struct TournamentBracketResponse {
     pub current_round: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_number: Option<i32>,
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: BracketStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -336,7 +354,7 @@ impl From<TournamentBracket> for TournamentBracketResponse {
             total_rounds: b.total_rounds,
             current_round: b.current_round,
             group_number: b.group_number,
-            status: b.status.to_string(),
+            status: b.status,
             created_at: b.created_at,
             updated_at: b.updated_at,
         }
@@ -380,7 +398,10 @@ pub struct TournamentRegistrationResponse {
     pub seed_rating: Option<i32>,
 
     // Status
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: TournamentRegistrationStatus,
 
     // Timestamps
     pub created_at: DateTime<Utc>,
@@ -404,10 +425,57 @@ impl From<TournamentRegistration> for TournamentRegistrationResponse {
             checked_in_at: r.checked_in_at,
             seed: r.seed,
             seed_rating: r.seed_rating,
-            status: r.status.to_string(),
+            status: r.status,
             created_at: r.created_at,
             updated_at: r.updated_at,
             withdrawn_at: r.withdrawn_at,
+        }
+    }
+}
+
+// =============================================================================
+// TOURNAMENT INVITATION RESPONSES
+// =============================================================================
+
+/// Response DTO for a tournament invitation.
+///
+/// The invite list behind `registration_type = "invite_only"` (audit P-27).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentInvitationResponse {
+    pub id: String,
+    pub tournament_id: String,
+
+    /// Invited user — set for individual tournaments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// Invited team-season — set for team tournaments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_season_id: Option<String>,
+
+    pub status: TournamentInvitationStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub invited_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<TournamentInvitation> for TournamentInvitationResponse {
+    fn from(i: TournamentInvitation) -> Self {
+        Self {
+            id: i.id.to_string(),
+            tournament_id: i.tournament_id.to_string(),
+            user_id: i.user_id.map(|id| id.to_string()),
+            team_season_id: i.team_season_id.map(|id| id.to_string()),
+            status: i.status,
+            message: i.message,
+            invited_by: i.invited_by.to_string(),
+            accepted_at: i.accepted_at,
+            revoked_at: i.revoked_at,
+            created_at: i.created_at,
         }
     }
 }
@@ -468,7 +536,13 @@ pub struct TournamentMatchResponse {
     pub winner_registration_id: Option<String>,
 
     // Status
-    pub status: String,
+    //
+    // Typed as the enum rather than `String` so the OpenAPI schema carries the
+    // permitted values and `openapi-typescript` emits a union. A drifted status
+    // in a client is then a compile error, not a silent `default:` branch (P-31).
+    // Wire-compatible: `Display` and `Serialize` agree for every variant, which
+    // is asserted by `schema_wire_compat_tests` in portal-core.
+    pub status: TournamentMatchStatus,
     pub disputed: bool,
 
     // VOD/Stream
@@ -517,7 +591,7 @@ impl From<TournamentMatch> for TournamentMatchResponse {
             participant1_score: m.participant1_score,
             participant2_score: m.participant2_score,
             winner_registration_id: m.winner_registration_id.map(|id| id.to_string()),
-            status: m.status.to_string(),
+            status: m.status,
             disputed: m.disputed,
             stream_url: m.stream_url,
             vod_url: m.vod_url,
@@ -795,7 +869,10 @@ pub struct ScheduleProposalResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counter_proposal_id: Option<String>,
     /// Current status.
-    pub status: String,
+    // Typed as the enum so the OpenAPI schema carries the permitted values and
+    // clients get a union rather than `string` (P-31). Wire-compatible: asserted
+    // by `wire_compat_tests` in portal-core.
+    pub status: ProposalStatus,
     /// When this proposal expires.
     pub expires_at: DateTime<Utc>,
     /// Notes.
@@ -836,7 +913,7 @@ impl From<ScheduleProposal> for ScheduleProposalResponse {
             responded_at: p.responded_at,
             responded_by_user_id: p.responded_by_user_id.map(|id| id.to_string()),
             counter_proposal_id: p.counter_proposal_id.map(|id| id.to_string()),
-            status: p.status.as_str().to_string(),
+            status: p.status,
             expires_at: p.expires_at,
             notes: p.notes,
             rejection_reason: p.rejection_reason,
@@ -844,4 +921,178 @@ impl From<ScheduleProposal> for ScheduleProposalResponse {
             updated_at: p.updated_at,
         }
     }
+}
+
+// =============================================================================
+// MATCH PARTICIPANT RESOLUTION (P-53 / P-56)
+// =============================================================================
+
+/// The two registrations that face each other in one match, plus which of
+/// them (if either) belongs to the caller.
+///
+/// # Why this exists
+///
+/// Resolving "which registration am I in this match?" used to be done in the
+/// browser by paging `GET /v1/tournaments/{id}/registrations` and scanning the
+/// rows. That scan is bounded by `PaginationParams::limit()`, which clamps
+/// `per_page` to 100 — so in a tournament with more than 100 participants
+/// every participant whose row sorts past #100 resolved to `null`, and the
+/// result-submission affordance simply never appeared for them. 128-player
+/// events are routine, and the failure is silent.
+///
+/// This endpoint answers the question directly from the match row, in O(1),
+/// so participant count cannot affect it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MatchParticipantsResponse {
+    /// The match these registrations belong to.
+    pub match_id: String,
+    /// Registration seated in slot 1, if the slot is filled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant1: Option<TournamentRegistrationResponse>,
+    /// Registration seated in slot 2, if the slot is filled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant2: Option<TournamentRegistrationResponse>,
+    /// The caller's own registration id, when the caller is one of the two —
+    /// directly as the registered player, or as a member of the registered
+    /// team-season. `null` for spectators and staff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub my_registration_id: Option<String>,
+    /// Whether the caller may CHECK IN for their registration (P-193).
+    ///
+    /// Check-in is gated narrower than `speaks_for` — captain, team owner,
+    /// active delegate, or the registered player — because a check-in can
+    /// auto-advance the match. A plain roster member speaks for the
+    /// registration (may submit and confirm results) yet cannot check it
+    /// in, so the check-in panel must key off THIS field rather than
+    /// `my_registration_id`, or it offers an action the backend refuses.
+    pub my_registration_can_check_in: bool,
+}
+
+// =============================================================================
+// SELF-SCOPED REGISTRATION LOOKUP + REAL COUNTS (P-167)
+// =============================================================================
+
+/// Every registration in one tournament that the caller speaks for.
+///
+/// # Why this exists
+///
+/// The tournament page decided "am I registered?" by fetching
+/// `GET /v1/tournaments/{id}/registrations` **at the default `per_page` of
+/// 20** and scanning the page for the viewer. Past row 20 every participant
+/// was shown the "Join This Tournament" call to action instead of their own
+/// registration: no Registered chip, no withdraw control, no check-in — the
+/// product told them, on the page they land on first, that they were not in a
+/// tournament they were in.
+///
+/// Widening the page only moves the ceiling (the same defect was already
+/// fixed once at 100), so the question is answered directly: at most one
+/// lookup by player plus one per team-season the caller belongs to,
+/// regardless of how large the tournament is.
+///
+/// Usually zero or one row. It is a list because a player can legitimately
+/// hold both an individual row and a team row (different tournaments allow
+/// different things), and because silently picking one of several would be
+/// the same class of lie this replaces.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MyTournamentRegistrationsResponse {
+    /// Tournament the rows belong to.
+    pub tournament_id: String,
+    /// The caller's registrations, including terminal ones (`withdrawn`,
+    /// `disqualified`) so the client can tell "withdrew" from "never entered".
+    pub registrations: Vec<TournamentRegistrationResponse>,
+}
+
+/// Real per-status registration counts for a tournament.
+///
+/// The participant count and the pending-approvals badge used to be the
+/// `.length` of a **page** of the registrations list, so a 64-slot event with
+/// 40 entrants displayed "20 / 64" — telling every viewer there were 44 free
+/// slots — and an organiser with 40 people waiting saw "20 pending approvals"
+/// (P-167).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TournamentRegistrationCountsResponse {
+    /// Tournament these counts describe.
+    pub tournament_id: String,
+    /// Every registration row, whatever its status.
+    pub total: i64,
+    /// Rows that still represent someone taking part — everything except
+    /// `withdrawn` and `disqualified`. This is the number to show against
+    /// `max_participants`.
+    pub participating: i64,
+    /// Awaiting organiser approval.
+    pub pending: i64,
+    /// Approved, awaiting check-in.
+    pub approved: i64,
+    /// Checked in.
+    pub checked_in: i64,
+    /// Currently competing.
+    pub active: i64,
+    /// Eliminated.
+    pub eliminated: i64,
+    /// Removed for a rule violation.
+    pub disqualified: i64,
+    /// Voluntarily withdrawn.
+    pub withdrawn: i64,
+    /// Failed to check in.
+    pub no_show: i64,
+}
+
+impl TournamentRegistrationCountsResponse {
+    /// Build from the domain counts.
+    #[must_use]
+    pub fn new(tournament_id: String, counts: RegistrationCounts) -> Self {
+        Self {
+            tournament_id,
+            total: counts.total,
+            participating: counts.participating,
+            pending: counts.pending,
+            approved: counts.approved,
+            checked_in: counts.checked_in,
+            active: counts.active,
+            eliminated: counts.eliminated,
+            disqualified: counts.disqualified,
+            withdrawn: counts.withdrawn,
+            no_show: counts.no_show,
+        }
+    }
+}
+
+// =============================================================================
+// ADMIN RESULT OVERRIDE (P-72)
+// =============================================================================
+
+/// One recorded admin correction of a match's score.
+///
+/// Read back from the `entity_changes` audit trail, which is where
+/// `override_result_audited` writes it in the same transaction as the score
+/// itself — so a correction that is not on this list did not happen.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MatchResultOverrideResponse {
+    /// Audit row id.
+    pub id: String,
+    /// Match whose score was corrected.
+    pub match_id: String,
+    /// Score recorded before the correction (absent if the match had none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_participant1_score: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_participant2_score: Option<i32>,
+    /// Winner recorded before the correction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_winner_registration_id: Option<String>,
+    /// Score recorded by the correction.
+    pub new_participant1_score: i32,
+    pub new_participant2_score: i32,
+    /// Winner recorded by the correction.
+    pub new_winner_registration_id: String,
+    /// Operator-supplied justification.
+    pub reason: String,
+    /// Player id of the admin who made the correction.
+    pub changed_by_player_id: String,
+    /// That admin's display name — never make an operator read a truncated
+    /// UUID to find out who changed a score.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_by_name: Option<String>,
+    /// When the correction was made.
+    pub created_at: DateTime<Utc>,
 }

@@ -33,10 +33,10 @@ pub use award::{
 pub use ban::{CreateBanRequest, LiftBanRequest, ListBansQuery};
 pub use demo::{
     AssociateDemoRequest, BatchCatalogDemoEntry, BatchCatalogDemosRequest, CatalogDemoRequest,
-    CategorizeDemoRequest, DemoPlayerInputDto, GetDemosForMatchQuery, LinkDemoToMatchRequest,
-    ListDemosQuery, MarkDemoFailedRequest, PendingDemosQuery, ProcessUnlinkedDemosQuery,
-    SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
-    UnlinkDemoFromMatchRequest, UpdateAutoLinkSettingRequest,
+    CategorizeDemoRequest, DemoPlayerInputDto, DemoStatusCountsQuery, GetDemosForMatchQuery,
+    LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest, PendingDemosQuery,
+    PipelineQuery, ProcessUnlinkedDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest,
+    SubmitDemoStatsRequest, UnlinkDemoFromMatchRequest, UpdateAutoLinkSettingRequest,
 };
 pub use dispute::{
     AddDisputeMessageRequest, AdminDisputeMessageRequest, AssignDisputeRequest, ListDisputesQuery,
@@ -80,14 +80,15 @@ pub use role::{
     UpdateRoleRequest,
 };
 pub use tournament::{
-    AcceptScheduleProposalRequest, AdminMatchTransitionRequest, AdminScheduleRequest,
-    AutoSeedRequest, CheckInRequest, CounterProposeRequest, CreateTournamentRequest,
-    CreateTournamentStageRequest, DisputeMatchRequest, DisqualifyRequest,
+    AcceptScheduleProposalRequest, AdminMatchTransitionRequest, AdminOverrideMatchResultRequest,
+    AdminScheduleRequest, AutoSeedRequest, CancelScheduleProposalRequest, CheckInRequest,
+    CounterProposeRequest, CreateTournamentInvitationRequest, CreateTournamentRequest,
+    CreateTournamentStageRequest, DeclareLineupRequest, DisputeMatchRequest, DisqualifyRequest,
     EligibilityRestrictionsInput, ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest,
     MatchCheckInRequest, ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest,
     RejectRegistrationRequest, RejectScheduleProposalRequest, ResolveDisputeRequest,
-    ScheduleMatchRequest, SeedAssignment, SetTournamentMapPoolRequest, SubmitMatchResultRequest,
-    UpdateTournamentRequest, WithdrawRequest,
+    SeedAssignment, SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
+    WithdrawRequest,
 };
 pub use veto::{
     CreateVetoSessionRequest, GetVetoStateQuery, PerformVetoActionRequest, RecordCoinFlipRequest,

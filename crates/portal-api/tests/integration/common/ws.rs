@@ -72,10 +72,10 @@ pub enum ServerMessage {
         success: bool,
         message: Option<String>,
     },
-    /// Timeout warning.
+    /// Timeout warning. (`current_team` removed with P-182 — it was the
+    /// fabricated literal "Current Team" on every broadcast, and unread.)
     TimeoutWarning {
         seconds_remaining: u32,
-        current_team: String,
         current_team_registration_id: String,
     },
 }

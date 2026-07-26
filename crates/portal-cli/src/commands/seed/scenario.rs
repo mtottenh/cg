@@ -18,6 +18,17 @@ pub fn seed_uuid(key: &str) -> Uuid {
 /// Shared password for all seed users (dev-only).
 pub const SEED_PASSWORD: &str = "SeedPassword123!";
 
+/// Well-known internal X-API-Key for DEV/E2E stacks (P-143).
+///
+/// The internal pipeline routes (`routes/internal.rs`) are service-to-service
+/// and key-authenticated; without a seeded key no e2e test could drive an
+/// enrichment failure into the admin pipeline page, so that rendering was
+/// API-covered only. This is seed tooling for throwaway stacks — nothing in
+/// production runs the seeder, and the key grants only the demo-pipeline
+/// service permissions. `web/e2e/fixtures/internal-api.fixture.ts` carries
+/// the same constant; the pair IS the contract.
+pub const SEED_INTERNAL_API_KEY: &str = "cgp_e2e_internal_dev_stack_key_00";
+
 // ---------------------------------------------------------------------------
 // Persona definitions
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Type of ban that determines what the user is restricted from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BanType {
     /// Complete platform ban - user cannot access any features.
@@ -58,6 +58,23 @@ pub struct Ban {
     pub id: BanId,
     /// The user who is banned.
     pub user_id: UserId,
+    /// The banned user's username (`users.username`, always present).
+    ///
+    /// Carried on the entity for the same reason `LeagueInvitation` carries it
+    /// (P-115): a moderation row identified only by `user_id` cannot be read by
+    /// a human, and truncating the id is worse than useless because UUID v7
+    /// prefixes are timestamps — two bans created minutes apart share theirs.
+    /// P-123 is the sharper case: the truncated id was quoted back to the
+    /// operator inside the *lift-ban confirm dialog*, i.e. a destructive action
+    /// confirmed against an ambiguous target.
+    pub username: String,
+    /// The banned user's display name (`players.display_name`), when they have
+    /// a player profile. This is the name every search surface shows —
+    /// including `UserSearchAutocomplete`, which is what an admin types into to
+    /// issue the ban in the first place — so it is what the ban row should lead
+    /// with. `None` for a user with no player row, hence a LEFT join: an INNER
+    /// one would hide an active ban from every admin listing.
+    pub display_name: Option<String>,
     /// Type of ban (determines what is restricted).
     pub ban_type: BanType,
     /// Human-readable reason for the ban.

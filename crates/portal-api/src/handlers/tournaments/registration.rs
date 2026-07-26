@@ -12,12 +12,17 @@
 //! (different services for different operations) rather than by module
 //! boundary, so everything registration-shaped lives together here.
 
-use super::{check_eligibility_for_players, get_request_id};
+use super::{check_eligibility_for_players, get_request_id, require_registration_actor};
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{
-    DisqualifyRequest, RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
+    CreateTournamentInvitationRequest, DisqualifyRequest, RegisterPlayerRequest,
+    RegisterTeamRequest, RejectRegistrationRequest,
 };
-use crate::dto::responses::{CheckInStatusResponse, TournamentRegistrationResponse};
+use crate::dto::responses::{
+    CheckInStatusResponse, MatchParticipantsResponse, MyTournamentRegistrationsResponse,
+    TournamentInvitationResponse, TournamentRegistrationCountsResponse,
+    TournamentRegistrationResponse,
+};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::TournamentState;
@@ -25,6 +30,8 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{PlayerId, TournamentId};
+use portal_domain::repositories::tournament::TournamentMatchRepository;
+use portal_domain::services::tournament::RegistrationActor;
 
 /// Query parameter for filtering registrations by status.
 #[derive(Debug, serde::Deserialize)]
@@ -80,6 +87,223 @@ async fn require_registration_manage(
         .await?;
 
     Ok(())
+}
+
+/// Path parameters for invitation operations.
+#[derive(Debug, serde::Deserialize)]
+pub struct InvitationPath {
+    tournament_id: String,
+    invitation_id: String,
+}
+
+/// Invite a user or team to an invite-only tournament.
+///
+/// The invite list is what makes `registration_type = "invite_only"` mean
+/// anything: before audit P-27 no invite concept existed and an invite-only
+/// tournament accepted registrations from anybody.
+#[utoipa::path(
+    post,
+    path = "/v1/tournaments/{tournament_id}/invitations",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    request_body = CreateTournamentInvitationRequest,
+    responses(
+        (status = 201, description = "Invitation created", body = DataResponse<TournamentInvitationResponse>),
+        (status = 400, description = "Invalid invite target", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+        (status = 409, description = "Target already invited", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn create_invitation(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(tournament_id): Path<TournamentId>,
+    ValidatedJson(req): ValidatedJson<CreateTournamentInvitationRequest>,
+) -> ApiResult<(StatusCode, Json<DataResponse<TournamentInvitationResponse>>)> {
+    let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+        )
+        .await?;
+
+    let (user_id, team_season_id) = req.parse_target()?;
+
+    let invitation = state
+        .tournament_service
+        .invite_to_tournament(
+            tournament_id,
+            user_id,
+            team_season_id,
+            req.message,
+            auth.user_id,
+        )
+        .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            TournamentInvitationResponse::from(invitation),
+            request_id,
+        )),
+    ))
+}
+
+/// List a tournament's invitations.
+///
+/// P-51: this endpoint is self-scoping. An organiser (holder of
+/// `tournament.participants.manage`, or an `admin.tournaments.manage_any`
+/// override) receives the full invite list. Any other caller receives ONLY the
+/// invitations that target them — their own `user_id`, or a team-season they
+/// captain — rather than a 403. This is the invitee-readable signal the
+/// registration-card gate needs to turn the invite-only precondition from a soft
+/// prompt (P-47) into a hard block: a caller with no invitation gets an empty
+/// list and no register affordance. The full list is still not public — a
+/// non-invited, non-organiser caller learns nothing about who else was invited.
+#[utoipa::path(
+    get,
+    // `operationId` defaults to the handler name, and `leagues::list_invitations`
+    // already claims `list_invitations`. Two operations sharing an ID make the
+    // document ambiguous and break generated clients — `openapi-typescript`
+    // emits one `operations` member per ID, so the collision produced a
+    // TypeScript file that would not compile (duplicate identifier).
+    operation_id = "list_tournament_invitations",
+    path = "/v1/tournaments/{tournament_id}/invitations",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    responses(
+        (status = 200, description = "Invitations (full list for organisers; own invitations only otherwise)", body = DataResponse<Vec<TournamentInvitationResponse>>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn list_invitations(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(tournament_id): Path<TournamentId>,
+) -> ApiResult<Json<DataResponse<Vec<TournamentInvitationResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    // The full invite list names who an organiser considered; it is not public.
+    // Anyone else may see only the invitations addressed to them.
+    let is_organiser = perm_checker
+        .has_scoped_permission(
+            &auth,
+            portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+            portal_core::ScopeType::Tournament,
+            tournament_id.as_uuid(),
+        )
+        .await
+        || perm_checker
+            .has_admin_override(&auth, portal_core::ScopeType::Tournament)
+            .await;
+
+    let invitations = state
+        .tournament_service
+        .list_invitations(tournament_id)
+        .await?;
+
+    let visible = if is_organiser {
+        invitations
+    } else {
+        // Self-scope: keep only invitations that target this caller — a user
+        // invite addressed to them, or a team invite for a team-season they
+        // captain (the same party the register-team path lets act for the team).
+        let mut own = Vec::new();
+        for invitation in invitations {
+            let mine = if invitation.user_id == Some(auth.user_id) {
+                true
+            } else if let Some(team_season_id) = invitation.team_season_id {
+                state
+                    .league_team_service
+                    .is_captain(team_season_id, auth.player_id)
+                    .await
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if mine {
+                own.push(invitation);
+            }
+        }
+        own
+    };
+
+    let data: Vec<TournamentInvitationResponse> = visible.into_iter().map(Into::into).collect();
+
+    Ok(Json(DataResponse::new(data, request_id)))
+}
+
+/// Revoke a tournament invitation.
+#[utoipa::path(
+    delete,
+    path = "/v1/tournaments/{tournament_id}/invitations/{invitation_id}",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("invitation_id" = String, Path, description = "Invitation ID"),
+    ),
+    responses(
+        (status = 200, description = "Invitation revoked", body = DataResponse<TournamentInvitationResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
+        (status = 404, description = "Invitation not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn revoke_invitation(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(path): Path<InvitationPath>,
+) -> ApiResult<Json<DataResponse<TournamentInvitationResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let tournament_id: TournamentId = path
+        .tournament_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tournament ID format"))?;
+    let invitation_id: portal_core::TournamentInvitationId = path
+        .invitation_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid invitation ID format"))?;
+
+    perm_checker
+        .require_tournament_permission(
+            &auth,
+            tournament_id.as_uuid(),
+            portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+        )
+        .await?;
+
+    // The service re-checks that the invitation belongs to this tournament,
+    // so the permission above cannot be satisfied against tournament A to
+    // revoke an invitation owned by tournament B.
+    let invitation = state
+        .tournament_service
+        .revoke_invitation(tournament_id, invitation_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentInvitationResponse::from(invitation),
+        request_id,
+    )))
 }
 
 /// Register a team for a tournament.
@@ -253,7 +477,229 @@ pub async fn get_registrations(
     )))
 }
 
+/// The caller's own registrations in this tournament.
+///
+/// # Why this endpoint exists (P-167)
+///
+/// `TournamentDetailPage` decided whether the viewer was registered by
+/// fetching `GET /v1/tournaments/{id}/registrations` — with **no `per_page`,
+/// so the default 20** — and scanning the returned page for them. Past row 20
+/// every participant was told they were not registered: the page rendered the
+/// "Join This Tournament" call to action, with no Registered chip, no
+/// withdraw control and no check-in, on the page every entrant lands on
+/// first. The organiser's derived numbers (`hasEligibleTeams`, the pending
+/// count) were computed from the same 20-row sample.
+///
+/// Raising `per_page` would only move the ceiling — this codebase has now hit
+/// exactly this defect at 20 and at 100 — so identity is resolved directly.
+/// Cost is bounded by the caller's own team memberships, not by the size of
+/// the tournament.
+///
+/// "Mine" is [`RegistrationService::speaks_for`], the same rule that
+/// authorizes result submission, confirmation and disputes (P-168): the
+/// registered player, or an active member of the registered team-season. A
+/// client can therefore trust that what this returns is what the write
+/// endpoints will accept.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/registrations/me",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+    ),
+    responses(
+        (status = 200, description = "The caller's registrations in this tournament", body = DataResponse<MyTournamentRegistrationsResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn get_my_registrations(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(tournament_id): Path<TournamentId>,
+) -> ApiResult<Json<DataResponse<MyTournamentRegistrationsResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let registrations = state
+        .registration_service
+        .list_for_actor(
+            tournament_id,
+            RegistrationActor::new(auth.user_id, auth.player_id),
+        )
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        MyTournamentRegistrationsResponse {
+            tournament_id: tournament_id.to_string(),
+            registrations: registrations
+                .into_iter()
+                .map(TournamentRegistrationResponse::from)
+                .collect(),
+        },
+        request_id,
+    )))
+}
+
+/// Real per-status registration counts for a tournament.
+///
+/// # Why this endpoint exists (P-167)
+///
+/// "27 participants" and "12 pending approvals" were `page.length` of a
+/// 20-row page of the registrations list. A 64-slot tournament with 40
+/// entrants rendered "20 / 64" — advertising 44 free slots that do not
+/// exist — and an organiser with 40 people waiting on approval saw "20
+/// pending". Public: the participant count is on the public tournament page.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/registrations/counts",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+    ),
+    responses(
+        (status = 200, description = "Registration counts by status", body = DataResponse<TournamentRegistrationCountsResponse>),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    tag = "tournaments"
+)]
+pub async fn get_registration_counts(
+    State(state): State<TournamentState>,
+    headers: HeaderMap,
+    Path(tournament_id): Path<TournamentId>,
+) -> ApiResult<Json<DataResponse<TournamentRegistrationCountsResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let counts = state.registration_service.counts(tournament_id).await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentRegistrationCountsResponse::new(tournament_id.to_string(), counts),
+        request_id,
+    )))
+}
+
+/// Resolve the two registrations facing each other in one match, and which of
+/// them belongs to the caller.
+///
+/// # Why this endpoint exists (P-53 / P-56)
+///
+/// `useMatchDetail` used to answer "which registration am I?" by fetching
+/// `GET /v1/tournaments/{id}/registrations` and scanning the page for the
+/// caller's `player_id` (or one of their team-seasons). That scan is bounded
+/// by [`PaginationParams::limit`], which clamps `per_page` at **100** — so in
+/// any tournament with more than 100 participants, every participant whose row
+/// sorts past #100 resolved to `null`. `canSubmitResult`,
+/// `showConfirmationPanel`, `showSchedulingPanel` and `showCheckInPanel` are
+/// all gated on that value, so those players could not submit a result, could
+/// not confirm one, and could not schedule — with no error anywhere: the
+/// controls simply never rendered. 128-player CS2 events are routine.
+///
+/// Raising the page size only moves the ceiling. Answering the question from
+/// the match row removes it: the match already names both registrations, so
+/// this is two lookups by id regardless of how large the tournament is.
+///
+/// `my_registration_id` uses `RegistrationService::speaks_for`, the single
+/// definition of "acts for this participant" (P-168): the registered player
+/// themself, or an active member of the registration's team-season. Staff and
+/// spectators get `null`, which is exactly what the participant-only panels
+/// should key off — and, since submission and confirmation are authorized
+/// under the same rule, a panel is never offered to someone the backend will
+/// refuse.
+#[utoipa::path(
+    get,
+    path = "/v1/tournaments/{tournament_id}/matches/{match_id}/participants",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("match_id" = String, Path, description = "Match ID"),
+    ),
+    responses(
+        (status = 200, description = "Both participants plus the caller's own registration", body = DataResponse<MatchParticipantsResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 404, description = "Match not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn get_match_participants(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path((_tournament_id, match_id)): Path<(String, String)>,
+) -> ApiResult<Json<DataResponse<MatchParticipantsResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let match_id: portal_core::TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    let match_ = state
+        .tournament_match_repo
+        .find_by_id(match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Match not found"))?;
+
+    let mut resolved: [Option<TournamentRegistrationResponse>; 2] = [None, None];
+    let mut my_registration: Option<portal_core::TournamentRegistrationId> = None;
+
+    for (slot, reg_id) in [
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let Some(reg_id) = reg_id else { continue };
+        let registration = state.registration_service.get_registration(reg_id).await?;
+
+        if state
+            .registration_service
+            .speaks_for(
+                &registration,
+                RegistrationActor::new(auth.user_id, auth.player_id),
+            )
+            .await?
+        {
+            my_registration = Some(reg_id);
+        }
+
+        resolved[slot] = Some(TournamentRegistrationResponse::from(registration));
+    }
+
+    // P-193: check-in is deliberately gated NARROWER than `speaks_for` —
+    // captain / team owner / active delegate / the registered player
+    // (`require_registration_actor`), because a check-in can auto-advance
+    // the match. The UI must not hand-copy that rule (P-15's lesson), so
+    // the authorized answer ships on the response and the check-in panel
+    // keys off it instead of guessing.
+    let my_registration_can_check_in = match my_registration {
+        Some(reg_id) => state
+            .veto_authorization_service
+            .can_act_for_registration(reg_id, auth.user_id, auth.player_id)
+            .await
+            .is_ok(),
+        None => false,
+    };
+
+    let [participant1, participant2] = resolved;
+
+    Ok(Json(DataResponse::new(
+        MatchParticipantsResponse {
+            match_id: match_id.to_string(),
+            participant1,
+            participant2,
+            my_registration_id: my_registration.map(|id| id.to_string()),
+            my_registration_can_check_in,
+        },
+        request_id,
+    )))
+}
+
 /// Check in for a tournament.
+///
+/// Carried the same hole as match check-in (P-24): the caller must now
+/// be able to act for the registration — see
+/// [`require_registration_actor`]. Staff wanting to check someone in
+/// out-of-band still have the dedicated `admin-check-in` endpoint,
+/// which additionally bypasses the check-in window.
 #[utoipa::path(
     post,
     path = "/v1/tournaments/{tournament_id}/registrations/{registration_id}/check-in",
@@ -265,6 +711,7 @@ pub async fn get_registrations(
         (status = 200, description = "Checked in", body = DataResponse<TournamentRegistrationResponse>),
         (status = 400, description = "Check-in not open or already checked in", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Not authorized to check in this participant", body = ApiError),
         (status = 404, description = "Registration not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -273,6 +720,7 @@ pub async fn get_registrations(
 pub async fn check_in(
     State(state): State<TournamentState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(path): Path<CheckInPath>,
 ) -> ApiResult<Json<DataResponse<TournamentRegistrationResponse>>> {
@@ -283,50 +731,11 @@ pub async fn check_in(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
 
+    require_registration_actor(&state, &auth, &perm_checker, registration_id).await?;
+
     let registration = state
         .tournament_service
         .check_in(registration_id, auth.user_id)
-        .await?;
-
-    Ok(Json(DataResponse::new(
-        TournamentRegistrationResponse::from(registration),
-        request_id,
-    )))
-}
-
-/// Withdraw from a tournament.
-#[utoipa::path(
-    delete,
-    path = "/v1/tournaments/{tournament_id}/registrations/{registration_id}",
-    params(
-        ("tournament_id" = String, Path, description = "Tournament ID"),
-        ("registration_id" = String, Path, description = "Registration ID"),
-    ),
-    responses(
-        (status = 200, description = "Withdrawn successfully", body = DataResponse<TournamentRegistrationResponse>),
-        (status = 400, description = "Cannot withdraw", body = ApiError),
-        (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 404, description = "Registration not found", body = ApiError),
-    ),
-    security(("bearer_auth" = [])),
-    tag = "tournaments"
-)]
-pub async fn withdraw(
-    State(state): State<TournamentState>,
-    auth: AuthenticatedUser,
-    headers: HeaderMap,
-    Path(path): Path<RegistrationPath>,
-) -> ApiResult<Json<DataResponse<TournamentRegistrationResponse>>> {
-    let request_id = get_request_id(&headers);
-
-    let registration_id: portal_core::TournamentRegistrationId = path
-        .registration_id
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
-
-    let registration = state
-        .registration_service
-        .withdraw(registration_id, auth.user_id)
         .await?;
 
     Ok(Json(DataResponse::new(

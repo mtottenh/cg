@@ -98,7 +98,17 @@ where
         let seeded = match algorithm {
             SeedingAlgorithm::Random => self.seed_random(eligible_registrations),
             SeedingAlgorithm::Rating => self.seed_by_rating(eligible_registrations),
-            SeedingAlgorithm::SeasonRank => self.seed_by_season_rank(eligible_registrations),
+            // P-181: this used to silently fall back to rating seeding with
+            // an info! log — an operator who chose season-rank got rating
+            // seeding and was never told. Refuse until it is implemented;
+            // no UI offers this value, so the refusal creates no dead
+            // control.
+            SeedingAlgorithm::SeasonRank => {
+                return Err(DomainError::InvalidState(
+                    "Season-rank seeding is not implemented — use rating or random seeding"
+                        .to_string(),
+                ));
+            }
             SeedingAlgorithm::Manual => {
                 return Err(DomainError::InvalidState(
                     "Use manual_seed for manual seeding".to_string(),
@@ -272,15 +282,11 @@ where
         &self,
         tournament_id: TournamentId,
     ) -> Result<Vec<TournamentRegistration>, DomainError> {
-        // First get checked-in participants
-        let (checked_in, _) = self
+        // Exhaustive fetches (P-187): a capped page seeded only the first
+        // page-worth of participants and silently ignored the rest.
+        let checked_in = self
             .registration_repo
-            .list_by_tournament(
-                tournament_id,
-                Some(TournamentRegistrationStatus::CheckedIn),
-                1000,
-                0,
-            )
+            .list_all_by_tournament(tournament_id, Some(TournamentRegistrationStatus::CheckedIn))
             .await?;
 
         if !checked_in.is_empty() {
@@ -289,14 +295,9 @@ where
         }
 
         // Otherwise get approved participants
-        let (approved, _) = self
+        let approved = self
             .registration_repo
-            .list_by_tournament(
-                tournament_id,
-                Some(TournamentRegistrationStatus::Approved),
-                1000,
-                0,
-            )
+            .list_all_by_tournament(tournament_id, Some(TournamentRegistrationStatus::Approved))
             .await?;
 
         Ok(approved)
@@ -347,22 +348,6 @@ where
                 seed_rating: Some(rating),
             })
             .collect()
-    }
-
-    /// Seed participants by season rank.
-    ///
-    /// This is a placeholder - in practice, this would need to look up
-    /// the participant's standing in the current or previous season.
-    fn seed_by_season_rank(
-        &self,
-        registrations: Vec<TournamentRegistration>,
-    ) -> Vec<SeededParticipant> {
-        // For now, fall back to rating-based seeding
-        // In a full implementation, this would:
-        // 1. Look up each team's/player's season standings
-        // 2. Sort by their position in the standings
-        tracing::info!("Season rank seeding - falling back to rating-based");
-        self.seed_by_rating(registrations)
     }
 }
 

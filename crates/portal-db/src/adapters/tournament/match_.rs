@@ -12,6 +12,7 @@ use portal_core::{
     TournamentRegistrationId, TournamentStageId, UserId,
 };
 use portal_domain::entities::tournament::TournamentMatch;
+use portal_domain::repositories::CreateEntityChange;
 use portal_domain::repositories::tournament::{
     CreateTournamentMatch, MatchLinkCandidate, ParticipantSlot, TournamentMatchRepository,
     UpdateTournamentMatch,
@@ -337,6 +338,53 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         Ok(result.rows_affected())
     }
 
+    async fn clear_participant(
+        &self,
+        id: TournamentMatchId,
+        slot: ParticipantSlot,
+    ) -> Result<TournamentMatch, DomainError> {
+        // P-83: inverse of `assign_participant`. Clears the denormalised name,
+        // logo and seed alongside the id — leaving those behind would show a
+        // phantom opponent in a slot with no registration.
+        let now = Utc::now();
+        let sql = match slot {
+            ParticipantSlot::One => {
+                r"
+                UPDATE tournament_matches SET
+                    participant1_registration_id = NULL,
+                    participant1_name = NULL,
+                    participant1_logo_url = NULL,
+                    participant1_seed = NULL,
+                    updated_at = $2
+                WHERE id = $1
+                RETURNING *
+                "
+            }
+            ParticipantSlot::Two => {
+                r"
+                UPDATE tournament_matches SET
+                    participant2_registration_id = NULL,
+                    participant2_name = NULL,
+                    participant2_logo_url = NULL,
+                    participant2_seed = NULL,
+                    updated_at = $2
+                WHERE id = $1
+                RETURNING *
+                "
+            }
+        };
+
+        let row = sqlx::query_as::<_, TournamentMatchRow>(sql)
+            .bind(id.as_uuid())
+            .bind(now)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?
+            .ok_or(DomainError::TournamentMatchNotFound(id))?;
+
+        Ok(row.into())
+    }
+
     async fn assign_participant(
         &self,
         id: TournamentMatchId,
@@ -434,6 +482,71 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(TournamentMatch::from(row))
+    }
+
+    async fn override_result_audited(
+        &self,
+        id: TournamentMatchId,
+        participant1_score: i32,
+        participant2_score: i32,
+        winner_id: TournamentRegistrationId,
+        loser_id: TournamentRegistrationId,
+        audit: CreateEntityChange,
+    ) -> Result<TournamentMatch, DomainError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // The score write is `submit_result_in_tx` — literally the same
+        // statement the confirmed-claim and adjusted-dispute paths run, so an
+        // overridden match row is indistinguishable from a normally-recorded
+        // one and everything derived from it (standings, progression) keeps
+        // working. Duplicating the UPDATE here is how those three paths would
+        // drift apart.
+        let match_ = Self::submit_result_in_tx(
+            &mut tx,
+            id,
+            participant1_score,
+            participant2_score,
+            winner_id,
+            loser_id,
+        )
+        .await?;
+
+        // Same transaction as the score write. `ip_address` needs the explicit
+        // `::inet` cast for the same reason it does in
+        // `PgEntityChangeRepository::create` — the bound value is text.
+        sqlx::query(
+            r"
+            INSERT INTO entity_changes (
+                entity_type, entity_id, change_type, field_name,
+                old_value, new_value, changed_by,
+                request_id, ip_address, user_agent
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10)
+            ",
+        )
+        .bind(&audit.entity_type)
+        .bind(audit.entity_id)
+        .bind(audit.change_type.to_string())
+        .bind(&audit.field_name)
+        .bind(&audit.old_value)
+        .bind(&audit.new_value)
+        .bind(audit.changed_by.as_uuid())
+        .bind(&audit.request_id)
+        .bind(&audit.ip_address)
+        .bind(&audit.user_agent)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(match_)
     }
 
     async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError> {
@@ -806,18 +919,20 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
 
         let rows = sqlx::query_as::<_, TournamentMatchRow>(
             r"
-            SELECT DISTINCT tm.*
-            FROM tournament_matches tm
-            JOIN tournament_registrations tr
-              ON tm.participant1_registration_id = tr.id
-              OR tm.participant2_registration_id = tr.id
-            LEFT JOIN league_team_members ltm
-              ON tr.team_season_id = ltm.team_season_id
-              AND ltm.player_id = $1
-            WHERE (tr.player_id = $1 OR ltm.player_id IS NOT NULL)
-              AND ($2::text IS NULL OR tm.status::text = $2)
-              AND ($3::uuid IS NULL OR tm.tournament_id = $3)
-            ORDER BY
+            -- `DISTINCT` is load-bearing: the join matches on EITHER participant
+            -- slot, so a match where the player reaches both slots (e.g. an
+            -- individual registration facing a team whose roster they are on)
+            -- would otherwise be returned twice.
+            --
+            -- Because of that `DISTINCT`, Postgres requires every ORDER BY
+            -- expression to appear in the select list — ordering by a bare
+            -- `CASE tm.status ... END` made this query fail unconditionally
+            -- (P-29): for SELECT DISTINCT, ORDER BY expressions must appear in
+            -- select list. The status ranking is therefore selected as a named
+            -- output column and ordered by that name. It is a pure function of
+            -- `tm.status`, so it cannot make two otherwise-identical rows
+            -- distinct.
+            SELECT DISTINCT tm.*,
               CASE tm.status::text
                 WHEN 'in_progress' THEN 1
                 WHEN 'pick_ban' THEN 2
@@ -830,7 +945,20 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
                 WHEN 'completed' THEN 9
                 WHEN 'forfeit' THEN 10
                 WHEN 'cancelled' THEN 11
-              END,
+                ELSE 99
+              END AS status_rank
+            FROM tournament_matches tm
+            JOIN tournament_registrations tr
+              ON tm.participant1_registration_id = tr.id
+              OR tm.participant2_registration_id = tr.id
+            LEFT JOIN league_team_members ltm
+              ON tr.team_season_id = ltm.team_season_id
+              AND ltm.player_id = $1
+            WHERE (tr.player_id = $1 OR ltm.player_id IS NOT NULL)
+              AND ($2::text IS NULL OR tm.status::text = $2)
+              AND ($3::uuid IS NULL OR tm.tournament_id = $3)
+            ORDER BY
+              status_rank,
               tm.scheduled_at ASC NULLS LAST,
               tm.created_at DESC
             LIMIT $4 OFFSET $5

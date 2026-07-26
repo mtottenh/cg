@@ -681,6 +681,19 @@ where
         self.invitation_repo.list_pending_by_league(league_id).await
     }
 
+    /// Get invitations/applications for a league, optionally filtered by
+    /// status (authorized). `None` returns all statuses, including terminal
+    /// ones — see P-39: an admin must be able to tell "they declined" from
+    /// "never invited".
+    #[instrument(skip(self))]
+    pub async fn get_by_league_authorized(
+        &self,
+        league_id: LeagueId,
+        status: Option<LeagueInvitationStatus>,
+    ) -> Result<Vec<LeagueInvitation>, DomainError> {
+        self.invitation_repo.list_by_league(league_id, status).await
+    }
+
     /// Decline an invitation (for the invited user to decline).
     #[instrument(skip(self))]
     pub async fn decline_invitation(

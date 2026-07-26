@@ -1,6 +1,8 @@
 //! Evidence response DTOs.
 
 use chrono::{DateTime, Utc};
+use portal_core::types::EvidenceType;
+use portal_domain::entities::evidence::EvidenceStatus;
 use serde::Serialize;
 use std::collections::HashMap;
 use utoipa::ToSchema;
@@ -16,7 +18,10 @@ pub struct EvidenceResponse {
     pub id: Uuid,
     pub match_id: Uuid,
     pub game_number: Option<i32>,
-    pub evidence_type: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-112/P-175). Wire-compatible: serde snake_case
+    // matches the old Display strings.
+    pub evidence_type: EvidenceType,
     pub evidence_source: String,
     pub name: String,
     pub description: Option<String>,
@@ -29,7 +34,9 @@ pub struct EvidenceResponse {
     pub uploaded_by_user_id: Option<Uuid>,
     pub discovered_by_plugin: Option<String>,
     pub discovered_at: Option<DateTime<Utc>>,
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub status: EvidenceStatus,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
 }
@@ -40,7 +47,7 @@ impl From<Evidence> for EvidenceResponse {
             id: e.id.as_uuid(),
             match_id: e.match_id.as_uuid(),
             game_number: e.game_number,
-            evidence_type: e.evidence_type.to_string(),
+            evidence_type: e.evidence_type,
             evidence_source: e.evidence_source.to_string(),
             name: e.name,
             description: e.description,
@@ -53,7 +60,7 @@ impl From<Evidence> for EvidenceResponse {
             uploaded_by_user_id: e.uploaded_by_user_id.map(|id| id.as_uuid()),
             discovered_by_plugin: e.discovered_by_plugin,
             discovered_at: e.discovered_at,
-            status: e.status.to_string(),
+            status: e.status,
             created_at: e.created_at,
             expires_at: e.expires_at,
         }
@@ -113,8 +120,8 @@ impl From<EvidenceAccessUrl> for AccessUrlResponse {
 pub struct DiscoveredEvidenceResponse {
     /// External identifier
     pub external_id: String,
-    /// Type of evidence
-    pub evidence_type: String,
+    /// Type of evidence. Typed as the enum (P-112/P-175); wire-compatible.
+    pub evidence_type: EvidenceType,
     /// Display name
     pub name: String,
     /// File size if known
@@ -131,7 +138,7 @@ impl From<DiscoveredEvidence> for DiscoveredEvidenceResponse {
     fn from(d: DiscoveredEvidence) -> Self {
         Self {
             external_id: d.external_id,
-            evidence_type: d.evidence_type.to_string(),
+            evidence_type: d.evidence_type,
             name: d.name,
             file_size_bytes: d.file_size_bytes,
             discovered_at: d.discovered_at,
@@ -186,10 +193,29 @@ pub struct ExtractedResultResponse {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct EvidenceSummaryResponse {
     pub id: Uuid,
-    pub evidence_type: String,
+    // Typed as the enum (P-112/P-175); wire-compatible.
+    pub evidence_type: EvidenceType,
     pub name: String,
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub status: EvidenceStatus,
+    /// The **verdict**: `true` only when a validation ran *and* the evidence
+    /// corroborated the claimed result.
     pub validated: bool,
+    /// When a validation last ran, whatever it concluded.
+    ///
+    /// P-138: `validated` alone cannot tell "never checked" from "checked and
+    /// FAILED", and those must not look the same to an operator resolving a
+    /// dispute. The pair is the state:
+    ///   - `validated = true`                        → validated
+    ///   - `validated = false`, `validated_at` set   → validation failed
+    ///   - `validated = false`, `validated_at` null  → not yet validated
+    pub validated_at: Option<DateTime<Utc>>,
+    /// Why the last validation failed, when it did — lifted out of the stored
+    /// `validation_result` so a client does not have to parse an untyped blob
+    /// to tell the operator what the evidence actually contradicts. Empty
+    /// whenever the verdict passed or no validation has run.
+    pub validation_errors: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -197,13 +223,34 @@ impl From<Evidence> for EvidenceSummaryResponse {
     fn from(e: Evidence) -> Self {
         Self {
             id: e.id.as_uuid(),
-            evidence_type: e.evidence_type.to_string(),
+            evidence_type: e.evidence_type,
             name: e.name,
-            status: e.status.to_string(),
+            status: e.status,
             validated: e.validated,
+            validated_at: e.validated_at,
+            validation_errors: validation_errors_of(e.validation_result.as_ref()),
             created_at: e.created_at,
         }
     }
+}
+
+/// Pull the `errors` array out of a stored `EvidenceValidation` blob.
+///
+/// The column holds `serde_json::to_value(&EvidenceValidation)`, so the shape
+/// is known; anything else (a legacy row, a partial write) yields no errors
+/// rather than a parse failure — an operator seeing "validation failed" with
+/// no detail is bad, but a 500 on the evidence list is worse.
+fn validation_errors_of(result: Option<&serde_json::Value>) -> Vec<String> {
+    result
+        .and_then(|v| v.get("errors"))
+        .and_then(serde_json::Value::as_array)
+        .map(|errors| {
+            errors
+                .iter()
+                .filter_map(|e| e.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // =============================================================================

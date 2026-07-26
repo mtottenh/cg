@@ -54,7 +54,7 @@ impl ForfeitRecord {
 }
 
 /// Type of forfeit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ForfeitType {
     /// Team failed to check in for the match.

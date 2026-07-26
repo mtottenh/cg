@@ -9,8 +9,9 @@
 //!   - `TournamentMatchGameRepository`: Individual games in a match series
 
 use crate::entities::tournament::{
-    GameStatus, Tournament, TournamentBracket, TournamentMapPool, TournamentMatch,
-    TournamentMatchGame, TournamentRegistration, TournamentStage, TournamentStanding,
+    GameStatus, Tournament, TournamentBracket, TournamentInvitation, TournamentMapPool,
+    TournamentMatch, TournamentMatchGame, TournamentRegistration, TournamentStage,
+    TournamentStanding,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -22,8 +23,8 @@ use portal_core::types::{
 };
 use portal_core::{
     DemoMatchLinkId, DomainError, GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId,
-    TournamentBracketId, TournamentId, TournamentMapPoolId, TournamentMatchGameId,
-    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
+    TournamentBracketId, TournamentId, TournamentInvitationId, TournamentMapPoolId,
+    TournamentMatchGameId, TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
 };
 
 // =============================================================================
@@ -416,7 +417,7 @@ pub trait TournamentRegistrationRepository: Send + Sync {
     /// seeding / bracket-generation assumptions built on it.
     ///
     /// Returns [`DomainError::TournamentFull`] when the tournament is at
-    /// capacity. `withdrawn` / `rejected` rows do not count, matching
+    /// capacity. `withdrawn` / `disqualified` rows do not count, matching
     /// [`TournamentRepository::count_registrations`].
     ///
     /// `replace_terminal` optionally names a terminal (withdrawn /
@@ -484,6 +485,35 @@ pub trait TournamentRegistrationRepository: Send + Sync {
         offset: i64,
     ) -> Result<(Vec<TournamentRegistration>, i64), DomainError>;
 
+    /// List EVERY registration matching the filter, paging to exhaustion.
+    ///
+    /// Call sites that mean "all of them" — Swiss pairing, seeding,
+    /// no-show processing — must use this, never a single page with a
+    /// "reasonable limit": a capped page silently drops every participant
+    /// past the cap, and each of those sites turned that into data loss
+    /// (P-186/P-187/P-188 — a participant past row 1000 was dropped from
+    /// the pairing, never seeded, never marked no-show).
+    async fn list_all_by_tournament(
+        &self,
+        tournament_id: TournamentId,
+        status_filter: Option<TournamentRegistrationStatus>,
+    ) -> Result<Vec<TournamentRegistration>, DomainError> {
+        const PAGE: i64 = 500;
+        let mut all = Vec::new();
+        let mut offset = 0;
+        loop {
+            let (page, _total) = self
+                .list_by_tournament(tournament_id, status_filter, PAGE, offset)
+                .await?;
+            let fetched = page.len() as i64;
+            all.extend(page);
+            if fetched < PAGE {
+                return Ok(all);
+            }
+            offset += PAGE;
+        }
+    }
+
     /// List checked-in registrations (for bracket generation).
     async fn list_checked_in(
         &self,
@@ -503,6 +533,19 @@ pub trait TournamentRegistrationRepository: Send + Sync {
         status: TournamentRegistrationStatus,
     ) -> Result<i64, DomainError>;
 
+    /// Count registrations for every status present, in one query.
+    ///
+    /// Backs the tournament page's participant and pending-approval counts.
+    /// Those were previously `page.length` of a 20-row page of the
+    /// registrations list, so a 128-player event reported 20 participants and
+    /// (with everyone awaiting approval) exactly 20 pending — numbers that
+    /// were wrong in a way nobody could see (P-167). Statuses with no rows are
+    /// simply absent from the result.
+    async fn count_all_by_status(
+        &self,
+        tournament_id: TournamentId,
+    ) -> Result<Vec<(TournamentRegistrationStatus, i64)>, DomainError>;
+
     /// Bulk update seeds.
     async fn bulk_update_seeds(
         &self,
@@ -516,6 +559,74 @@ pub trait TournamentRegistrationRepository: Send + Sync {
     async fn delete(&self, id: TournamentRegistrationId) -> Result<(), DomainError>;
 }
 
+// =============================================================================
+// TOURNAMENT INVITATION REPOSITORY
+// =============================================================================
+
+/// Repository trait for the invite list behind
+/// [`RegistrationType::InviteOnly`](portal_core::types::RegistrationType::InviteOnly).
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait TournamentInvitationRepository: Send + Sync {
+    /// Find an invitation by ID.
+    async fn find_by_id(
+        &self,
+        id: TournamentInvitationId,
+    ) -> Result<Option<TournamentInvitation>, DomainError>;
+
+    /// Find the live (non-revoked) invitation for a user, if any.
+    async fn find_for_user(
+        &self,
+        tournament_id: TournamentId,
+        user_id: UserId,
+    ) -> Result<Option<TournamentInvitation>, DomainError>;
+
+    /// Find the live (non-revoked) invitation for a team-season, if any.
+    async fn find_for_team_season(
+        &self,
+        tournament_id: TournamentId,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<Option<TournamentInvitation>, DomainError>;
+
+    /// List every invitation for a tournament, newest first.
+    async fn list_by_tournament(
+        &self,
+        tournament_id: TournamentId,
+    ) -> Result<Vec<TournamentInvitation>, DomainError>;
+
+    /// Create an invitation.
+    ///
+    /// Returns [`DomainError::Conflict`] if a live invitation for the same
+    /// target already exists (enforced by a partial unique index).
+    async fn create(
+        &self,
+        invitation: CreateTournamentInvitation,
+    ) -> Result<TournamentInvitation, DomainError>;
+
+    /// Mark an invitation accepted (consumed by a registration).
+    async fn mark_accepted(
+        &self,
+        id: TournamentInvitationId,
+    ) -> Result<TournamentInvitation, DomainError>;
+
+    /// Revoke an invitation.
+    async fn revoke(&self, id: TournamentInvitationId)
+    -> Result<TournamentInvitation, DomainError>;
+}
+
+/// Data for creating a tournament invitation.
+///
+/// Exactly one of `user_id` / `team_season_id` must be set; the DB enforces
+/// this with a `num_nonnulls(...) = 1` check constraint.
+#[derive(Debug, Clone)]
+pub struct CreateTournamentInvitation {
+    pub tournament_id: TournamentId,
+    pub user_id: Option<UserId>,
+    pub team_season_id: Option<LeagueTeamSeasonId>,
+    pub message: Option<String>,
+    pub invited_by: UserId,
+}
+
 /// Data for creating a tournament registration.
 #[derive(Debug, Clone)]
 pub struct CreateTournamentRegistration {
@@ -527,6 +638,14 @@ pub struct CreateTournamentRegistration {
     pub participant_logo_url: Option<String>,
     pub registered_by: UserId,
     pub seed_rating: Option<i32>,
+    /// Status the row is inserted with.
+    ///
+    /// Derived from the tournament's `registration_type` by
+    /// [`initial_registration_status`](crate::services::tournament::initial_registration_status):
+    /// `Open` tournaments auto-approve, everything else lands `Pending`.
+    /// Persisted by the insert rather than left to the column default so
+    /// the caller's decision is the one that sticks.
+    pub status: TournamentRegistrationStatus,
 }
 
 /// Data for updating a tournament registration.
@@ -658,6 +777,19 @@ pub trait TournamentMatchRepository: Send + Sync {
         seed: Option<i32>,
     ) -> Result<TournamentMatch, DomainError>;
 
+    /// Clear a participant slot — the inverse of [`Self::assign_participant`].
+    ///
+    /// P-83: reverting progression on an elimination bracket needs to take the
+    /// advanced participant back OUT of the downstream match. Without this the
+    /// revert could only clear the source match's own result, so the winner
+    /// stayed seeded in the next round while the UI reported the revert had
+    /// rolled the pairings back.
+    async fn clear_participant(
+        &self,
+        id: TournamentMatchId,
+        slot: ParticipantSlot,
+    ) -> Result<TournamentMatch, DomainError>;
+
     /// Submit match result.
     async fn submit_result(
         &self,
@@ -666,6 +798,28 @@ pub trait TournamentMatchRepository: Send + Sync {
         participant2_score: i32,
         winner_id: TournamentRegistrationId,
         loser_id: TournamentRegistrationId,
+    ) -> Result<TournamentMatch, DomainError>;
+
+    /// Overwrite an already-recorded result **and** append the audit row that
+    /// records the change, in one transaction.
+    ///
+    /// P-72: a confirmed-but-wrong score used to be permanently uncorrectable
+    /// — the only score-writing admin path (`resolve/adjusted`) requires a
+    /// dispute to exist, so a result nobody disputed could never be repaired.
+    ///
+    /// The audit row is not optional and not a separate call: the two writes
+    /// share a transaction, so there is no ordering in which an override lands
+    /// without its record, or a record lands without its override. That is the
+    /// whole reason this is a repository method rather than "call
+    /// `submit_result`, then call `EntityChangeRepository::create`".
+    async fn override_result_audited(
+        &self,
+        id: TournamentMatchId,
+        participant1_score: i32,
+        participant2_score: i32,
+        winner_id: TournamentRegistrationId,
+        loser_id: TournamentRegistrationId,
+        audit: crate::repositories::CreateEntityChange,
     ) -> Result<TournamentMatch, DomainError>;
 
     /// Clear a recorded result: drop `winner_registration_id`,
@@ -1242,8 +1396,13 @@ pub trait ResultClaimRepository: Send + Sync {
     /// Find a result claim by ID.
     async fn find_by_id(&self, id: ResultClaimId) -> Result<Option<ResultClaim>, DomainError>;
 
-    /// Find the pending claim for a match.
-    async fn find_pending_by_match(
+    /// Find the authoritative claim for a match.
+    ///
+    /// The pending claim while one is open (it is awaiting confirmation or
+    /// dispute), otherwise the confirmed claim that settled the series.
+    /// `None` when the match has neither — e.g. it was never claimed, or the
+    /// only claims are disputed/superseded/cancelled.
+    async fn find_current_by_match(
         &self,
         match_id: TournamentMatchId,
     ) -> Result<Option<ResultClaim>, DomainError>;
@@ -1314,7 +1473,7 @@ pub trait ResultClaimRepository: Send + Sync {
         &self,
         id: ResultClaimId,
         confirmed_by_registration_id: TournamentRegistrationId,
-        confirmed_by_user_id: UserId,
+        confirmed_by_user_id: Option<UserId>,
         was_auto: bool,
         match_id: TournamentMatchId,
         winner_registration_id: TournamentRegistrationId,
@@ -1352,8 +1511,10 @@ pub trait ResultClaimRepository: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct CreateResultClaim {
     pub match_id: TournamentMatchId,
-    pub submitted_by_registration_id: TournamentRegistrationId,
-    pub submitted_by_user_id: UserId,
+    pub submitted_by_registration_id: Option<TournamentRegistrationId>,
+    pub submitted_by_user_id: Option<UserId>,
+    /// Claim origin: `participant` (default), `server`, or `admin`.
+    pub source: String,
     pub claimed_winner_registration_id: TournamentRegistrationId,
     pub participant1_score: i32,
     pub participant2_score: i32,

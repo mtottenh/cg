@@ -5,3 +5,4 @@ pub mod config;
 pub mod s3_scanner;
 pub mod scanner;
 pub mod stats_converter;
+pub mod telemetry;

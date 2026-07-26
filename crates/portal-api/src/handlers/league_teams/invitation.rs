@@ -281,7 +281,9 @@ pub async fn decline_invitation(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Cancel an invitation (captain only).
+/// Cancel a pending invitation (captain) or withdraw a pending join
+/// request (the applicant) — see the service for the direction rule
+/// (Discord-design §9.4).
 #[utoipa::path(
     delete,
     path = "/v1/league-team-invitations/{invitation_id}",
@@ -289,9 +291,9 @@ pub async fn decline_invitation(
         ("invitation_id" = String, Path, description = "Invitation ID")
     ),
     responses(
-        (status = 204, description = "Invitation cancelled"),
+        (status = 204, description = "Invitation cancelled (captain) or join request withdrawn (applicant)"),
         (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 403, description = "Forbidden - captain only", body = ApiError),
+        (status = 403, description = "Forbidden - captain for invites, the applicant for requests", body = ApiError),
         (status = 404, description = "Invitation not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),

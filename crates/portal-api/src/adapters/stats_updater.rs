@@ -11,6 +11,7 @@ use portal_core::{DomainError, GameId, PlayerId, TournamentMatchId, TournamentRe
 use portal_db::GameRepository;
 use portal_domain::entities::demo::{Demo, DemoPlayer, ParsedDemoMetadata};
 use portal_domain::repositories::demo::DemoMatchLinkRepository;
+use portal_domain::repositories::match_lineup::MatchLineupRepository;
 use portal_domain::repositories::tournament::{
     TournamentMatchRepository, TournamentRegistrationRepository, TournamentRepository,
 };
@@ -25,17 +26,18 @@ use crate::state::AppPlayerGameProfileService;
 
 /// Adapter that wraps PlayerGameProfileService + tournament repos + demo repos + PluginManager
 /// to implement MatchStatsUpdater.
-pub struct StatsUpdaterAdapter<TMR, TR, TRR, DMLR> {
+pub struct StatsUpdaterAdapter<TMR, TR, TRR, DMLR, LR> {
     match_repo: Arc<TMR>,
     tournament_repo: Arc<TR>,
     registration_repo: Arc<TRR>,
     demo_link_repo: Arc<DMLR>,
+    lineup_repo: Arc<LR>,
     game_repo: GameRepository,
     profile_service: AppPlayerGameProfileService,
     plugin_manager: Arc<PluginManager>,
 }
 
-impl<TMR, TR, TRR, DMLR> StatsUpdaterAdapter<TMR, TR, TRR, DMLR> {
+impl<TMR, TR, TRR, DMLR, LR> StatsUpdaterAdapter<TMR, TR, TRR, DMLR, LR> {
     /// Create a new adapter.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -43,6 +45,7 @@ impl<TMR, TR, TRR, DMLR> StatsUpdaterAdapter<TMR, TR, TRR, DMLR> {
         tournament_repo: Arc<TR>,
         registration_repo: Arc<TRR>,
         demo_link_repo: Arc<DMLR>,
+        lineup_repo: Arc<LR>,
         game_repo: GameRepository,
         profile_service: AppPlayerGameProfileService,
         plugin_manager: Arc<PluginManager>,
@@ -52,6 +55,7 @@ impl<TMR, TR, TRR, DMLR> StatsUpdaterAdapter<TMR, TR, TRR, DMLR> {
             tournament_repo,
             registration_repo,
             demo_link_repo,
+            lineup_repo,
             game_repo,
             profile_service,
             plugin_manager,
@@ -100,12 +104,13 @@ fn build_demo_data(
 }
 
 #[async_trait]
-impl<TMR, TR, TRR, DMLR> MatchStatsUpdater for StatsUpdaterAdapter<TMR, TR, TRR, DMLR>
+impl<TMR, TR, TRR, DMLR, LR> MatchStatsUpdater for StatsUpdaterAdapter<TMR, TR, TRR, DMLR, LR>
 where
     TMR: TournamentMatchRepository + 'static,
     TR: TournamentRepository + 'static,
     TRR: TournamentRegistrationRepository + 'static,
     DMLR: DemoMatchLinkRepository + 'static,
+    LR: MatchLineupRepository + 'static,
 {
     async fn update_player_stats(
         &self,
@@ -168,41 +173,48 @@ where
                 loser_registration_id,
             ))?;
 
-        // For now, only handle individual player registrations.
-        // Team stats aggregation would require looking up team members.
-        let winner_player_id = winner_reg.player_id;
-        let loser_player_id = loser_reg.player_id;
+        // 6. Resolve who to credit on each side.
+        //
+        // P-58: credit team-match participation from the authoritative
+        // (demo-derived) lineup — who ACTUALLY played — not the whole roster.
+        // For an individual registration the "lineup" is just its player.
+        // Falls back to the registration's own player_id when no lineup exists
+        // (pre-cutover / no-demo path), preserving today's behaviour.
+        let winners = self
+            .credited_players(match_id, winner_registration_id, winner_reg.player_id)
+            .await;
+        let losers = self
+            .credited_players(match_id, loser_registration_id, loser_reg.player_id)
+            .await;
 
-        // 6. Update winner stats
-        if let Some(player_id) = winner_player_id {
+        for player_id in &winners {
             let new_stats = self
-                .calculate_new_stats(player_id, game_id, &plugin, &match_data)
+                .calculate_new_stats(*player_id, game_id, &plugin, &match_data)
                 .await;
             self.profile_service
                 .update_stats_after_match(
-                    player_id, game_id, match_id, new_stats, true, false, false,
+                    *player_id, game_id, match_id, new_stats, true, false, false,
                 )
                 .await?;
             debug!(player_id = %player_id, game_id = %game_id, "Updated winner stats");
         }
 
-        // 7. Update loser stats
-        if let Some(player_id) = loser_player_id {
+        for player_id in &losers {
             let new_stats = self
-                .calculate_new_stats(player_id, game_id, &plugin, &match_data)
+                .calculate_new_stats(*player_id, game_id, &plugin, &match_data)
                 .await;
             self.profile_service
                 .update_stats_after_match(
-                    player_id, game_id, match_id, new_stats, false, true, false,
+                    *player_id, game_id, match_id, new_stats, false, true, false,
                 )
                 .await?;
             debug!(player_id = %player_id, game_id = %game_id, "Updated loser stats");
         }
 
-        if winner_player_id.is_none() && loser_player_id.is_none() {
+        if winners.is_empty() && losers.is_empty() {
             warn!(
                 match_id = %match_id,
-                "Neither registration has a player_id — team stats not yet supported"
+                "No credited players — no lineup and no individual registration player"
             );
         }
 
@@ -210,7 +222,42 @@ where
     }
 }
 
-impl<TMR, TR, TRR, DMLR> StatsUpdaterAdapter<TMR, TR, TRR, DMLR>
+impl<TMR, TR, TRR, DMLR, LR> StatsUpdaterAdapter<TMR, TR, TRR, DMLR, LR>
+where
+    LR: MatchLineupRepository,
+{
+    /// The players to credit for a registration in this match (P-58).
+    ///
+    /// Prefers the authoritative demo-derived lineup (who actually played);
+    /// falls back to the registration's own `player_id` (individual
+    /// registrations, and pre-cutover team matches with no lineup).
+    async fn credited_players(
+        &self,
+        match_id: TournamentMatchId,
+        registration_id: TournamentRegistrationId,
+        registration_player_id: Option<PlayerId>,
+    ) -> Vec<PlayerId> {
+        match self
+            .lineup_repo
+            .distinct_participants(match_id, registration_id)
+            .await
+        {
+            Ok(players) if !players.is_empty() => players,
+            Ok(_) => registration_player_id.into_iter().collect(),
+            Err(e) => {
+                warn!(
+                    match_id = %match_id,
+                    registration_id = %registration_id,
+                    error = %e,
+                    "Lineup participants lookup failed — falling back to registration player"
+                );
+                registration_player_id.into_iter().collect()
+            }
+        }
+    }
+}
+
+impl<TMR, TR, TRR, DMLR, LR> StatsUpdaterAdapter<TMR, TR, TRR, DMLR, LR>
 where
     DMLR: DemoMatchLinkRepository,
 {

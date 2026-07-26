@@ -79,6 +79,38 @@ impl GameRepository {
         Ok(games)
     }
 
+    /// One page of the catalog plus its total count (P-156).
+    ///
+    /// The games handler used to fetch the WHOLE table and skip/take in
+    /// memory — honest at a handful of rows, but a read that grows with the
+    /// catalog forever. LIMIT/OFFSET belongs in SQL.
+    pub async fn list_paged(
+        &self,
+        active_only: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<GameRow>, i64), RepositoryError> {
+        let status_filter = if active_only {
+            "WHERE status = 'active'"
+        } else {
+            ""
+        };
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM games {status_filter}"))
+            .fetch_one(&self.pool)
+            .await?;
+
+        let games = sqlx::query_as::<_, GameRow>(&format!(
+            "SELECT * FROM games {status_filter} ORDER BY sort_order, display_name LIMIT $1 OFFSET $2"
+        ))
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok((games, total))
+    }
+
     /// Create a new game.
     pub async fn create(&self, new_game: NewGame) -> Result<GameRow, RepositoryError> {
         let game = sqlx::query_as::<_, GameRow>(

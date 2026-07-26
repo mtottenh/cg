@@ -622,3 +622,373 @@ async fn test_revoke_role_from_user() {
         "moderator role should be revoked"
     );
 }
+
+// ============================================================================
+// P-140 — EVERY DECLARED PERMISSION MUST BE SEEDED AND GRANTED
+// ============================================================================
+
+/// A permission constant that no role holds is a gate nobody can pass.
+///
+/// `admin.system.manage` sat in `portal_core::permissions::admin` from the day
+/// admin permissions were introduced and was **never seeded** — so
+/// `submit_player_rating`, the only path that can correct a bad scraped rating,
+/// returned 403 to every real caller including `super_admin`, for the endpoint's
+/// entire life.
+///
+/// It stayed invisible because of a gap in the *tests*, not the code:
+/// `PermissionChecker` short-circuits for the dev user in `test-utils` builds,
+/// so every integration test calling an endpoint as `dev-token` passes the gate
+/// without ever consulting the `permissions` table. And no UI called it (that
+/// was P-68), so no human hit the 403 either. Two independent blind spots
+/// covering the same defect.
+///
+/// This asserts against the DATABASE rather than through a handler, which is
+/// what makes it immune to the dev-user bypass that hid the original.
+#[tokio::test]
+async fn test_every_declared_permission_is_seeded_and_granted() {
+    let app = TestApp::new().await;
+
+    // Every permission the code can gate on. The scoped registries are
+    // included, not just `admin::ALL`: the P-72 admin score override is gated
+    // on `tournament.results.manage`, and an unseeded SCOPED permission fails
+    // exactly the same silent-403 way an unseeded admin one does. Covering
+    // only `admin::` left four registries where the original defect could
+    // recur unnoticed.
+    let declared: Vec<&str> = portal_core::permissions::admin::ALL
+        .iter()
+        .chain(portal_core::permissions::tournament::ALL)
+        .chain(portal_core::permissions::league::ALL)
+        .chain(portal_core::permissions::team::ALL)
+        .chain(portal_core::permissions::match_::ALL)
+        .copied()
+        .collect();
+    assert!(
+        declared.len() >= 25,
+        "permission registry looks empty ({} entries) — this test would pass vacuously",
+        declared.len()
+    );
+
+    let mut unseeded = Vec::new();
+    let mut ungranted = Vec::new();
+
+    for name in &declared {
+        let permission_id: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM permissions WHERE name = $1")
+                .bind(name)
+                .fetch_optional(app.pool())
+                .await
+                .expect("query permissions");
+
+        match permission_id {
+            None => unseeded.push(*name),
+            Some(id) => {
+                let holders: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM role_permissions WHERE permission_id = $1",
+                )
+                .bind(id)
+                .fetch_one(app.pool())
+                .await
+                .expect("query role_permissions");
+                if holders == 0 {
+                    ungranted.push(*name);
+                }
+            }
+        }
+    }
+
+    assert!(
+        unseeded.is_empty(),
+        "these permissions are declared in code but absent from the `permissions` \
+         table, so nothing can ever hold them: {unseeded:?}"
+    );
+    assert!(
+        ungranted.is_empty(),
+        "these permissions exist but are granted to NO role, so every caller is \
+         refused and the endpoints behind them are unreachable: {ungranted:?}"
+    );
+}
+
+/// P-153: the priority ceiling applied to granting a role but NOT to revoking
+/// one, so the asymmetry ran in the dangerous direction — a platform_admin
+/// could not GRANT super_admin, but could STRIP one, removing the only role
+/// that outranks them from the person holding it. Being unable to promote
+/// yourself is worth little if you can demote everyone above you.
+///
+/// `revoke_role_from_user` checked `admin.users.manage` and nothing else. The
+/// admin UI hides revoke buttons for roles that outrank the actor, which is a
+/// guard rail, not a boundary: this test calls the endpoint directly, which is
+/// what an attacker holding a legitimately-granted platform_admin token would
+/// do.
+#[tokio::test]
+async fn test_revoke_is_subject_to_the_same_priority_ceiling_as_assign() {
+    let app = TestApp::new().await;
+
+    let (attacker_id, attacker_token) = register_user(&app, "revoke_ceiling_attacker").await;
+    grant_role(&app, &attacker_id, "platform_admin").await;
+
+    // A super_admin the attacker must not be able to demote.
+    let victim_id = create_test_user(&app, "revoke_ceiling_victim").await;
+    grant_role(&app, &victim_id, "super_admin").await;
+
+    let super_admin_role = role_id_by_name(&app, "super_admin").await;
+    let response = app
+        .delete_with_token(
+            &format!("/v1/admin/users/{victim_id}/roles/{super_admin_role}"),
+            &attacker_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Same tier is refused too — mirroring assign, where 900 >= 900 is blocked.
+    let peer_id = create_test_user(&app, "revoke_ceiling_peer").await;
+    grant_role(&app, &peer_id, "platform_admin").await;
+    let platform_admin_role = role_id_by_name(&app, "platform_admin").await;
+    let response = app
+        .delete_with_token(
+            &format!("/v1/admin/users/{peer_id}/roles/{platform_admin_role}"),
+            &attacker_token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // The refusals above must not be an artefact of revoke being broken for
+    // everyone: a role strictly below the attacker still revokes.
+    let subordinate_id = create_test_user(&app, "revoke_ceiling_subordinate").await;
+    grant_role(&app, &subordinate_id, "moderator").await;
+    let moderator_role = role_id_by_name(&app, "moderator").await;
+    let response = app
+        .delete_with_token(
+            &format!("/v1/admin/users/{subordinate_id}/roles/{moderator_role}"),
+            &attacker_token,
+        )
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+
+    // And the victim really did keep the role — a 403 that still revoked would
+    // pass every assertion above.
+    let still_super: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1 AND r.name = 'super_admin' AND ur.revoked_at IS NULL",
+    )
+    .bind(victim_id.parse::<Uuid>().expect("victim id is a uuid"))
+    .fetch_one(app.pool())
+    .await
+    .expect("query user_roles");
+    assert_eq!(
+        still_super, 1,
+        "the super_admin assignment must survive the refused revoke"
+    );
+}
+
+/// A super_admin is exempt from the ceiling on revoke, exactly as on assign.
+#[tokio::test]
+async fn test_super_admin_can_revoke_super_admin() {
+    let app = TestApp::new().await;
+
+    let (admin_id, admin_token) = register_user(&app, "revoke_super_actor").await;
+    grant_role(&app, &admin_id, "super_admin").await;
+
+    let target_id = create_test_user(&app, "revoke_super_target").await;
+    grant_role(&app, &target_id, "super_admin").await;
+
+    let super_admin_role = role_id_by_name(&app, "super_admin").await;
+    let response = app
+        .delete_with_token(
+            &format!("/v1/admin/users/{target_id}/roles/{super_admin_role}"),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+}
+
+/// Revoking a role id that does not exist must stay a 404, not become a 403.
+/// The ceiling check needs the role's priority, so it has to resolve the role
+/// first — if that resolution 403'd instead of 404ing, the endpoint would leak
+/// which role ids exist to any caller who can read the difference.
+#[tokio::test]
+async fn test_revoking_an_unknown_role_is_still_not_found() {
+    let app = TestApp::new().await;
+
+    let (admin_id, admin_token) = register_user(&app, "revoke_unknown_actor").await;
+    grant_role(&app, &admin_id, "platform_admin").await;
+    let target_id = create_test_user(&app, "revoke_unknown_target").await;
+
+    let response = app
+        .delete_with_token(
+            &format!("/v1/admin/users/{target_id}/roles/{}", Uuid::now_v7()),
+            &admin_token,
+        )
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
+}
+
+/// P-151 — a permission used as a bare string literal is invisible to the
+/// registry, and therefore invisible to
+/// `test_every_declared_permission_is_seeded_and_granted`.
+///
+/// `admin.games.manage` was exactly that: seeded by migration 0019, gated on at
+/// six sites in `handlers/games.rs`, and present in no `ALL` array. The P-140
+/// guard would not have caught P-139 had it happened to this permission
+/// instead, because a registry is only a safety net for what is in it.
+///
+/// This closes the other direction: every permission string in the code must
+/// come from a declared constant. Together the two tests mean a permission
+/// cannot exist in code without also existing in the registry, in a migration,
+/// and on at least one role.
+///
+/// Deliberately scans the SOURCE rather than the binary: a literal that is
+/// equal to a registered permission's value still fails, because the defect is
+/// the missing indirection, not a wrong string. Copying a correct value is what
+/// produced all ten sites.
+#[tokio::test]
+async fn test_no_permission_is_used_as_a_bare_literal() {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// Anything shaped like `"segment.segment.segment"` in the permission
+    /// namespaces the product uses.
+    fn looks_like_a_permission(literal: &str) -> bool {
+        const NAMESPACES: &[&str] = &[
+            "admin.",
+            "team.",
+            "league.",
+            "tournament.",
+            "match.",
+            "service.",
+        ];
+        NAMESPACES.iter().any(|ns| literal.starts_with(ns))
+            && literal.matches('.').count() >= 2
+            && literal
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '.' || c == '_')
+    }
+
+    fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                rs_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rs_files(&src, &mut files);
+    assert!(
+        files.len() > 50,
+        "only {} source files found under {} — the walk is broken and this test \
+         would pass vacuously",
+        files.len(),
+        src.display()
+    );
+
+    let mut offenders = Vec::new();
+    for file in &files {
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        for (idx, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            // Documentation is allowed to name a permission — `dto/responses/role.rs`
+            // legitimately carries `"team.roster.manage"` as a schema example and in
+            // a doc comment. Skipping these is not a loophole: neither reaches a gate.
+            if trimmed.starts_with("//") || trimmed.starts_with("#[schema(") {
+                continue;
+            }
+            for literal in line.split('"').skip(1).step_by(2) {
+                if looks_like_a_permission(literal) {
+                    offenders.push(format!(
+                        "{}:{}  {:?}",
+                        file.strip_prefix(&src).unwrap_or(file).display(),
+                        idx + 1,
+                        literal
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "permission strings must come from `portal_core::permissions::*`, not \
+         literals — a literal is absent from the registry, so nothing verifies it \
+         is seeded or granted to any role (P-139/P-151):\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+// ============================================================================
+// P-142 CANARY: the PermissionChecker dev bypass has a boundary, and the
+// real enforcement path is actually exercised
+// ============================================================================
+
+/// P-142: every integration test that calls as `dev-token` sails through
+/// `PermissionChecker` without consulting the permissions table — the bypass
+/// is deliberate (test usability), but a suite that only ever ran as the dev
+/// user would certify handlers whose permission gates are wrong or missing,
+/// and P-139/P-163 (declared-but-unseeded permissions 403ing everyone) were
+/// invisible for exactly this reason. This canary pins BOTH sides of the
+/// boundary on one `PermissionChecker`-gated route
+/// (`POST /v1/admin/roles` ← `admin.users.manage`):
+///
+/// 1. the dev token is admitted with NO grants — the bypass, working as
+///    designed and now stated rather than assumed;
+/// 2. a real registered user with no grants is refused 403 — proof the
+///    permissions table is consulted the moment the bypass does not apply;
+/// 3. the same user is admitted once granted a role carrying the permission
+///    — proof the DB path can also admit, so the gate discriminates instead
+///    of refusing everything (a gate that cannot pass is as unverified as
+///    one that cannot fail).
+#[tokio::test]
+async fn test_p142_canary_permission_checker_consults_the_table_beyond_the_dev_bypass() {
+    let app = TestApp::new().await;
+
+    // 1. Dev token, no grants: the test-utils bypass admits.
+    let response = app
+        .post_json(
+            "/v1/admin/roles",
+            &json!({
+                "name": "p142_dev_made",
+                "display_name": "P142 Dev Made",
+                "category": "custom"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // 2. Real user, no grants: the table is consulted and refuses.
+    let (user_id, token) = register_user(&app, "p142_canary").await;
+    let response = app
+        .post_json_with_token(
+            "/v1/admin/roles",
+            &json!({
+                "name": "p142_refused",
+                "display_name": "P142 Refused",
+                "category": "custom"
+            }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // 3. Granted, same token: the same DB path admits.
+    grant_role(&app, &user_id, "platform_admin").await;
+    let response = app
+        .post_json_with_token(
+            "/v1/admin/roles",
+            &json!({
+                "name": "p142_granted",
+                "display_name": "P142 Granted",
+                "category": "custom"
+            }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+}

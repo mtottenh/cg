@@ -47,15 +47,17 @@ use super::{
     AppAvailabilityService, AppAwardService, AppBanService, AppCheckInService, AppDemoService,
     AppDiscoveredMatchService, AppDisputeService, AppEligibilityService, AppEvidenceService,
     AppForfeitService, AppLeagueSeasonParticipantService, AppLeagueSeasonService, AppLeagueService,
-    AppLeagueTeamInvitationService, AppLeagueTeamService, AppMatchLifecycleService,
-    AppPermissionService, AppPlayerGameProfileService, AppPlayerService, AppProgressionService,
-    AppRegistrationService, AppResultReviewService, AppResultService, AppSchedulingService,
-    AppSeedingService, AppStandingsService, AppState, AppSteamTrackingService,
-    AppSystemSettingsService, AppTournamentService, AppUserService, AppVetoAuthorizationService,
-    AppVetoLobbyChatService, AppVetoService, TokenConfig,
+    AppLeagueTeamInvitationService, AppLeagueTeamService, AppLineupService,
+    AppMatchLifecycleService, AppPermissionService, AppPlayerGameProfileService, AppPlayerService,
+    AppProgressionService, AppRegistrationService, AppResultReviewService, AppResultService,
+    AppSchedulingService, AppSeedingService, AppStandingsService, AppState,
+    AppSteamTrackingService, AppSystemSettingsService, AppTournamentService, AppUserService,
+    AppVetoAuthorizationService, AppVetoLobbyChatService, AppVetoService, TokenConfig,
 };
 use crate::steam_openid::{SteamAuthConfig, SteamOpenIdVerifier};
 use crate::websocket::VetoLobbyManager;
+use crate::websocket::agent_manager::AgentConnectionManager;
+use portal_domain::services::game_server::CertificateAuthority;
 use portal_plugins::PluginManager;
 
 // ============================================================================
@@ -211,6 +213,8 @@ pub struct GamesState {
     pub plugin_manager: Arc<PluginManager>,
     /// Permission repository (admin.games.manage check).
     pub permission_repo: PermissionRepository,
+    /// Steam Workshop metadata lookup (admin map-catalog prefill).
+    pub workshop_metadata: Arc<dyn crate::steam_workshop::WorkshopMetadataProvider>,
 }
 
 impl FromRef<AppState> for GamesState {
@@ -219,6 +223,7 @@ impl FromRef<AppState> for GamesState {
             game_repo: s.game_repo.clone(),
             plugin_manager: Arc::clone(&s.plugin_manager),
             permission_repo: s.permission_repo.clone(),
+            workshop_metadata: Arc::clone(&s.workshop_metadata),
         }
     }
 }
@@ -285,6 +290,40 @@ impl FromRef<AppState> for SteamTrackingState {
             steam_tracking_service: s.steam_tracking_service.clone(),
             game_repo: s.game_repo.clone(),
             player_service: s.player_service.clone(),
+        }
+    }
+}
+
+/// State slice for game-server integration handlers (admin registry,
+/// agent enrollment, and the agent WebSocket channel).
+#[derive(Clone)]
+pub struct GameServerState {
+    /// Registry service (CRUD, enrollment, heartbeats, bookings).
+    pub registry: super::AppGameServerRegistryService,
+    /// Connected-agent manager.
+    pub agent_manager: Arc<AgentConnectionManager>,
+    /// Portal CA (None = enrollment disabled).
+    pub agent_ca: Option<Arc<CertificateAuthority>>,
+    /// Accept `X-Dev-Server-Id` auth (tests/dev only).
+    pub insecure_dev_auth: bool,
+    /// Public https base URL (demo upload / config URLs in responses).
+    pub public_base_url: String,
+    /// Reservation lookups (heartbeat §6.7 ours-vs-external detection).
+    pub server_reservation_repo: Arc<portal_db::PgServerReservationRepository>,
+    /// Event rows (admin-command audit trail).
+    pub server_event_repo: Arc<portal_db::PgServerEventRepository>,
+}
+
+impl FromRef<AppState> for GameServerState {
+    fn from_ref(s: &AppState) -> Self {
+        Self {
+            registry: s.game_server_registry.clone(),
+            agent_manager: Arc::clone(&s.agent_manager),
+            agent_ca: s.agent_ca.clone(),
+            insecure_dev_auth: s.agent_insecure_dev_auth,
+            public_base_url: s.public_base_url.clone(),
+            server_reservation_repo: Arc::clone(&s.server_reservation_repo),
+            server_event_repo: Arc::clone(&s.server_event_repo),
         }
     }
 }
@@ -398,6 +437,8 @@ pub struct TournamentState {
     /// Match lifecycle service (status / check-in / schedule / forfeit
     /// / admin transition).
     pub match_lifecycle_service: AppMatchLifecycleService,
+    /// Match lineup service (provisional declaration + locking).
+    pub lineup_service: AppLineupService,
     /// Match scheduling service (proposal workflow).
     pub scheduling_service: AppSchedulingService,
     /// Standings service (RR / Swiss).
@@ -411,6 +452,11 @@ pub struct TournamentState {
     pub eligibility_service: AppEligibilityService,
     /// Veto service (auto-bootstrapped on PickBan transition).
     pub veto_service: AppVetoService,
+    /// Registration-actor authorization (captain / owner / delegate /
+    /// registered player). Despite the name it is not veto-specific:
+    /// check-in endpoints use it to decide who may act for a
+    /// registration (P-24).
+    pub veto_authorization_service: AppVetoAuthorizationService,
     /// Tournament match repository (direct access by scheduling +
     /// veto auto-create).
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
@@ -426,6 +472,9 @@ pub struct TournamentState {
     /// Award service — `complete_tournament` auto-finalizes the
     /// tournament's active awards.
     pub award_service: AppAwardService,
+    /// Veto-completion / check-in server-assignment trigger (§6.6).
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
 }
 
 impl FromRef<AppState> for TournamentState {
@@ -436,18 +485,21 @@ impl FromRef<AppState> for TournamentState {
             checkin_service: s.checkin_service.clone(),
             seeding_service: s.seeding_service.clone(),
             match_lifecycle_service: s.match_lifecycle_service.clone(),
+            lineup_service: s.lineup_service.clone(),
             scheduling_service: s.scheduling_service.clone(),
             standings_service: s.standings_service.clone(),
             league_service: s.league_service.clone(),
             league_team_service: s.league_team_service.clone(),
             eligibility_service: s.eligibility_service.clone(),
             veto_service: s.veto_service.clone(),
+            veto_authorization_service: s.veto_authorization_service.clone(),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             tournament_map_pool_repo: Arc::clone(&s.tournament_map_pool_repo),
             game_repo: s.game_repo.clone(),
             plugin_manager: Arc::clone(&s.plugin_manager),
             role_repo: s.role_repo.clone(),
             award_service: s.award_service.clone(),
+            server_assignment_tx: s.server_assignment_tx.clone(),
         }
     }
 }
@@ -538,6 +590,10 @@ pub struct ResultState {
     pub match_completion_saga: super::AppMatchCompletionSaga,
     /// Player service (claim history resolves submitter display names).
     pub player_service: AppPlayerService,
+    /// Entity-change repository — the read side of the P-72 admin score
+    /// override. The write side goes through the match repository so the
+    /// audit row and the score share a transaction.
+    pub entity_change_repo: Arc<dyn portal_domain::repositories::EntityChangeRepository>,
 }
 
 impl FromRef<AppState> for ResultState {
@@ -547,6 +603,7 @@ impl FromRef<AppState> for ResultState {
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             match_completion_saga: s.match_completion_saga.clone(),
             player_service: s.player_service.clone(),
+            entity_change_repo: Arc::clone(&s.entity_change_repo),
         }
     }
 }
@@ -666,18 +723,35 @@ pub struct DemoState {
     pub demo_stats_repo: Arc<PgDemoPlayerStatsRepository>,
     /// System settings service (auto-link kill-switch).
     pub system_settings_service: AppSystemSettingsService,
+    /// Steam tracking service — the admin pipeline view reads token health
+    /// (P-73). The write side stays on the `X-API-Key` internal routes.
+    pub steam_tracking_service: AppSteamTrackingService,
+    /// Discovered-match service — the admin pipeline view reads queue depth
+    /// and enrichment failures (P-73).
+    pub discovered_match_service: AppDiscoveredMatchService,
+    /// Evidence service — `get_demos_for_match` names the `match_evidence` row
+    /// behind each link so the frontend can detach it (P-135), and
+    /// `unlink_demo_from_match` deletes that row alongside the link so the two
+    /// representations of "this demo is evidence for this match" cannot diverge
+    /// (P-158). Read-only when P-135 introduced it; that one pairing invariant
+    /// is the only mutation here, and every other evidence write stays on
+    /// `EvidenceState`.
+    pub evidence_service: AppEvidenceService,
 }
 
 impl FromRef<AppState> for DemoState {
     fn from_ref(s: &AppState) -> Self {
         Self {
             demo_service: s.demo_service.clone(),
+            evidence_service: s.evidence_service.clone(),
             cs2_demo_base_url: s.cs2_demo_base_url.clone(),
             permission_service: s.permission_service.clone(),
             game_repo: s.game_repo.clone(),
             plugin_manager: Arc::clone(&s.plugin_manager),
             demo_stats_repo: Arc::clone(&s.demo_stats_repo),
             system_settings_service: s.system_settings_service.clone(),
+            steam_tracking_service: s.steam_tracking_service.clone(),
+            discovered_match_service: s.discovered_match_service.clone(),
         }
     }
 }
@@ -765,6 +839,9 @@ pub struct VetoState {
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
     /// Tournament map pool repository (resolve effective map pool).
     pub tournament_map_pool_repo: Arc<PgTournamentMapPoolRepository>,
+    /// Veto-completion trigger for server assignment (MatchZy, §6.6).
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
     /// Game repository (default map pool fallback).
     pub game_repo: GameRepository,
 }
@@ -780,6 +857,7 @@ impl FromRef<AppState> for VetoState {
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             tournament_map_pool_repo: Arc::clone(&s.tournament_map_pool_repo),
             game_repo: s.game_repo.clone(),
+            server_assignment_tx: s.server_assignment_tx.clone(),
         }
     }
 }
@@ -825,6 +903,9 @@ pub struct VetoWsState {
     pub veto_lobby_manager: Arc<VetoLobbyManager>,
     /// Tournament match repository.
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
+    /// Veto-completion trigger for server assignment (MatchZy, §6.6).
+    pub server_assignment_tx:
+        tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
 }
 
 impl FromRef<AppState> for VetoWsState {
@@ -838,6 +919,7 @@ impl FromRef<AppState> for VetoWsState {
             veto_lobby_chat_service: s.veto_lobby_chat_service.clone(),
             veto_lobby_manager: Arc::clone(&s.veto_lobby_manager),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
+            server_assignment_tx: s.server_assignment_tx.clone(),
         }
     }
 }

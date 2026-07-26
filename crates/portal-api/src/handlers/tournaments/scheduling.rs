@@ -4,8 +4,8 @@
 //!
 //! * The proposal/counter-proposal workflow used for match scheduling
 //!   (`propose_schedule`, `accept_schedule_proposal`,
-//!   `reject_schedule_proposal`, `counter_propose`, `get_active_proposal`,
-//!   `get_proposal_history`).
+//!   `reject_schedule_proposal`, `cancel_schedule_proposal`,
+//!   `counter_propose`, `get_active_proposal`, `get_proposal_history`).
 //! * The admin direct-schedule bypass (`admin_schedule_match`).
 //! * The bracket-standings read (`get_bracket_standings`) and Swiss-round
 //!   generation (`admin_generate_next_swiss_round`), which sit next to
@@ -14,8 +14,8 @@
 use super::get_request_id;
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
-    AcceptScheduleProposalRequest, AdminScheduleRequest, CounterProposeRequest,
-    ProposeScheduleRequest, RejectScheduleProposalRequest,
+    AcceptScheduleProposalRequest, AdminScheduleRequest, CancelScheduleProposalRequest,
+    CounterProposeRequest, ProposeScheduleRequest, RejectScheduleProposalRequest,
 };
 use crate::dto::responses::{
     ScheduleProposalResponse, TournamentMatchResponse, TournamentStandingResponse,
@@ -28,8 +28,9 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{ScheduleProposalId, TournamentId, TournamentMatchId};
 use portal_domain::entities::schedule_proposal::{
-    AcceptProposalCommand, CounterProposeCommand, RejectProposalCommand,
+    AcceptProposalCommand, CancelProposalCommand, CounterProposeCommand, RejectProposalCommand,
 };
+use portal_domain::services::tournament::RegistrationActor;
 
 /// Propose schedule times for a match.
 #[utoipa::path(
@@ -65,7 +66,12 @@ pub async fn propose_schedule(
 
     let proposal = state
         .scheduling_service
-        .propose_schedule(match_id, req.proposed_times, auth.user_id, req.notes)
+        .propose_schedule(
+            match_id,
+            req.proposed_times,
+            RegistrationActor::new(auth.user_id, auth.player_id),
+            req.notes,
+        )
         .await?;
 
     Ok((
@@ -112,7 +118,7 @@ pub async fn accept_schedule_proposal(
     let command = AcceptProposalCommand {
         proposal_id,
         selected_time: req.selected_time,
-        accepted_by_user_id: auth.user_id,
+        accepted_by: RegistrationActor::new(auth.user_id, auth.player_id),
     };
 
     let (_proposal, match_) = state.scheduling_service.accept_proposal(command).await?;
@@ -157,11 +163,65 @@ pub async fn reject_schedule_proposal(
 
     let command = RejectProposalCommand {
         proposal_id,
-        rejected_by_user_id: auth.user_id,
+        rejected_by: RegistrationActor::new(auth.user_id, auth.player_id),
         reason: req.reason,
     };
 
     let proposal = state.scheduling_service.reject_proposal(command).await?;
+
+    Ok(Json(DataResponse::new(
+        ScheduleProposalResponse::from(proposal),
+        request_id,
+    )))
+}
+
+/// Withdraw a schedule proposal you made yourself.
+#[utoipa::path(
+    post,
+    path = "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/cancel",
+    request_body = CancelScheduleProposalRequest,
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        ("match_id" = String, Path, description = "Match ID")
+    ),
+    responses(
+        (status = 200, description = "Proposal withdrawn", body = DataResponse<ScheduleProposalResponse>),
+        (status = 400, description = "Proposal is no longer pending", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Only the proposer may withdraw", body = ApiError),
+        (status = 404, description = "Proposal not found on this match", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "match_scheduling"
+)]
+pub async fn cancel_schedule_proposal(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path((_tournament_id, match_id)): Path<(String, String)>,
+    ValidatedJson(req): ValidatedJson<CancelScheduleProposalRequest>,
+) -> ApiResult<Json<DataResponse<ScheduleProposalResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    let proposal_id: ScheduleProposalId = req
+        .proposal_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid proposal ID format"))?;
+
+    // Authorization lives in the service, matching accept/reject: the
+    // binding that matters is "is this your own pending proposal", which
+    // needs the proposal row. `NotAuthorized` maps to 403.
+    let command = CancelProposalCommand {
+        proposal_id,
+        cancelled_by_user_id: auth.user_id,
+        match_id,
+    };
+
+    let proposal = state.scheduling_service.cancel_proposal(command).await?;
 
     Ok(Json(DataResponse::new(
         ScheduleProposalResponse::from(proposal),
@@ -239,7 +299,7 @@ pub async fn counter_propose(
         original_proposal_id,
         match_id,
         proposed_by_registration_id: registration_id,
-        proposed_by_user_id: auth.user_id,
+        proposed_by: RegistrationActor::new(auth.user_id, auth.player_id),
         proposed_times: req.proposed_times,
         expires_at: chrono::Utc::now() + chrono::Duration::hours(48),
         notes: req.notes,
@@ -369,7 +429,7 @@ pub async fn admin_schedule_match(
 
     let match_ = state
         .scheduling_service
-        .admin_schedule(match_id, req.scheduled_at, auth.user_id)
+        .admin_schedule(match_id, req.scheduled_at, auth.user_id, req.notes)
         .await?;
 
     Ok(Json(DataResponse::new(

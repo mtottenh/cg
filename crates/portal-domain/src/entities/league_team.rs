@@ -95,22 +95,55 @@ impl LeagueSeason {
         true
     }
 
-    /// Check if roster changes are allowed based on season status and lock.
+    /// Check if *any* roster change is allowed.
+    ///
+    /// # P-148 — the lock decides, not the season status
+    ///
+    /// These three predicates used to AND the lock with
+    /// `SeasonStatus::allows_roster_changes()`, which was true only for
+    /// `draft` / `registration`. Season status was therefore the outer gate:
+    /// once a season reached `active` or `playoffs` **no** roster change was
+    /// possible no matter what the lock said, and `roster_lock_status` only
+    /// ever had a say during the two phases before the competition started —
+    /// i.e. the lock was inert in exactly the window it was built for.
+    ///
+    /// The owner ruled that the roster lock is an **optional, per-season
+    /// decision**: *"I think the roster lock should really be an 'optional'
+    /// thing/thing that is a per tournament decision, (again, this is a casual
+    /// league, so adding team members half way through may be okay)."*
+    ///
+    /// So the status conjunct is now a **terminal-state** check only:
+    ///
+    /// * `draft`, `registration`, `active` and `playoffs` all defer entirely to
+    ///   `roster_lock_status`. A casual league leaves the lock `open` (the DB
+    ///   default, migration 0025) and can add members mid-season; a league that
+    ///   wants strictness sets `soft_lock` or `hard_lock` when it chooses to.
+    /// * `completed` and `cancelled` refuse every roster change regardless of
+    ///   the lock. Mutating the roster of a finished season rewrites history,
+    ///   which is not what "optional" means.
+    ///
+    /// Granularity note: the knob is per **league season**
+    /// (`league_seasons.roster_lock_status`). The ruling said "per tournament";
+    /// no tournament-level roster lock exists in the schema.
     #[must_use]
     pub const fn allows_roster_changes(&self) -> bool {
-        self.status.allows_roster_changes() && self.roster_lock_status.allows_any_changes()
+        !self.status.is_terminal() && self.roster_lock_status.allows_any_changes()
     }
 
-    /// Check if primary roster changes are allowed.
+    /// Check if primary roster changes are allowed. See
+    /// [`Self::allows_roster_changes`] for why the status conjunct is
+    /// `is_terminal` and not a phase check (P-148).
     #[must_use]
     pub const fn allows_primary_roster_changes(&self) -> bool {
-        self.status.allows_roster_changes() && self.roster_lock_status.allows_primary_changes()
+        !self.status.is_terminal() && self.roster_lock_status.allows_primary_changes()
     }
 
-    /// Check if substitute changes are allowed.
+    /// Check if substitute changes are allowed. See
+    /// [`Self::allows_roster_changes`] for why the status conjunct is
+    /// `is_terminal` and not a phase check (P-148).
     #[must_use]
     pub const fn allows_substitute_changes(&self) -> bool {
-        self.status.allows_roster_changes() && self.roster_lock_status.allows_substitute_changes()
+        !self.status.is_terminal() && self.roster_lock_status.allows_substitute_changes()
     }
 
     /// Check if the season is currently active (competition ongoing).
@@ -555,7 +588,13 @@ pub struct LeagueSeasonParticipant {
 }
 
 /// Status of a participant in an individual format league.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// Without `rename_all`, serde emits PascalCase ("Registered") while `Display`,
+// `FromStr` and the DB CHECK constraint
+// (migrations/0026_restructure_league_teams.sql:354) all use lowercase. Every
+// variant disagreed. Latent only because the DTO round-trips through String --
+// caught by `wire_compat_tests` (P-34).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum LeagueSeasonParticipantStatus {
     Registered,
     Active,

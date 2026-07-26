@@ -14,16 +14,20 @@ use portal_core::{
 };
 use tracing::{info, instrument, warn};
 
+use crate::entities::match_lifecycle::TransitionTrigger;
 use crate::entities::result_claim::{
     ClaimStatus, GameResult, GameResultInput, ResultClaim, ResultValidationError,
 };
 use crate::entities::tournament::TournamentMatch;
 use crate::entities::veto::VetoStatus;
 use crate::repositories::demo::DemoMatchLinkRepository;
+use crate::repositories::league_team::LeagueTeamMemberRepository;
 use crate::repositories::tournament::{
     CreateResultClaim, ResultClaimRepository, TournamentMatchRepository,
     TournamentRegistrationRepository, VetoSessionRepository,
 };
+use crate::services::tournament::match_lifecycle::MatchStatusTransitioner;
+use crate::services::tournament::registration_actor::{RegistrationActor, find_actor_registration};
 
 // =============================================================================
 // PROVIDER TRAITS
@@ -48,6 +52,16 @@ pub trait MapPoolProvider: Send + Sync {
         stage_id: Option<TournamentStageId>,
     ) -> Result<Vec<String>, DomainError>;
 }
+
+/// `entity_changes.entity_type` used for admin score corrections (P-72).
+///
+/// Exported so the read side (`list_result_overrides`) and the write side
+/// cannot drift — an audit row written under one key and read under another
+/// is an audit trail that silently shows nothing.
+pub const MATCH_RESULT_OVERRIDE_ENTITY: &str = "tournament_match";
+
+/// `entity_changes.field_name` used for admin score corrections (P-72).
+pub const MATCH_RESULT_OVERRIDE_FIELD: &str = "result_override";
 
 /// Which authority a submitted map ID was checked against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,30 +96,38 @@ fn check_map_ids(
 
 /// Service for managing match result submissions.
 #[derive(Clone)]
-pub struct ResultService<RCR, TMR, TRR, DMLR, VSR>
+pub struct ResultService<RCR, TMR, TRR, DMLR, VSR, LTMR>
 where
     RCR: ResultClaimRepository,
     TMR: TournamentMatchRepository,
     TRR: TournamentRegistrationRepository,
     DMLR: DemoMatchLinkRepository,
     VSR: VetoSessionRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     claim_repo: Arc<RCR>,
     match_repo: Arc<TMR>,
     registration_repo: Arc<TRR>,
     demo_link_repo: Arc<DMLR>,
     veto_session_repo: Arc<VSR>,
+    /// Roster lookups behind [`speaks_for_registration`] — the single
+    /// definition of who may act for a participant (P-168). Mandatory rather
+    /// than an `Option` builder: a service missing it would silently fall back
+    /// to "only the person who clicked register", which is the defect.
+    member_repo: Arc<LTMR>,
     map_pool_provider: Option<Arc<dyn MapPoolProvider>>,
+    match_transitioner: Option<Arc<dyn MatchStatusTransitioner>>,
     auto_confirm_timeout_seconds: i64,
 }
 
-impl<RCR, TMR, TRR, DMLR, VSR> ResultService<RCR, TMR, TRR, DMLR, VSR>
+impl<RCR, TMR, TRR, DMLR, VSR, LTMR> ResultService<RCR, TMR, TRR, DMLR, VSR, LTMR>
 where
     RCR: ResultClaimRepository,
     TMR: TournamentMatchRepository,
     TRR: TournamentRegistrationRepository,
     DMLR: DemoMatchLinkRepository,
     VSR: VetoSessionRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     /// Create a new result service with default 15-minute auto-confirm timeout.
     pub fn new(
@@ -114,6 +136,7 @@ where
         registration_repo: Arc<TRR>,
         demo_link_repo: Arc<DMLR>,
         veto_session_repo: Arc<VSR>,
+        member_repo: Arc<LTMR>,
     ) -> Self {
         Self {
             claim_repo,
@@ -121,8 +144,17 @@ where
             registration_repo,
             demo_link_repo,
             veto_session_repo,
+            member_repo,
             map_pool_provider: None,
-            auto_confirm_timeout_seconds: 15 * 60, // 15 minutes
+            match_transitioner: None,
+            // P-57: 24 hours, raised from 15 minutes. Auto-confirm makes a score
+            // OFFICIAL, and the countdown starts at submission — not when the
+            // opponent first sees it — so 15 minutes meant a submit at a bad hour
+            // became final unseen, across time zones and sleep. Now that P-50
+            // actually notifies the opponent, a day is enough to act and short
+            // enough that an ignored claim still cannot stall a bracket (the
+            // dispute/review path covers genuinely wrong results either way).
+            auto_confirm_timeout_seconds: 24 * 60 * 60, // 24 hours
         }
     }
 
@@ -141,6 +173,19 @@ where
         self
     }
 
+    /// Attach the transitioner used to move a match `in_progress ->
+    /// awaiting_result` when a claim is submitted. Without it the match stays
+    /// `in_progress`, the opponent never receives a confirm-result action
+    /// item, and the claim auto-confirms unseen (P-50).
+    #[must_use]
+    pub fn with_match_transitioner(
+        mut self,
+        transitioner: Arc<dyn MatchStatusTransitioner>,
+    ) -> Self {
+        self.match_transitioner = Some(transitioner);
+        self
+    }
+
     /// Submit a result claim for a match.
     #[instrument(skip(self, game_results, evidence_ids, demo_link_ids))]
     pub async fn submit_claim(
@@ -153,7 +198,7 @@ where
         evidence_ids: Vec<EvidenceId>,
         demo_link_ids: Vec<DemoMatchLinkId>,
         notes: Option<String>,
-        submitted_by_user: UserId,
+        submitted_by: RegistrationActor,
     ) -> Result<ResultClaim, DomainError> {
         // Get the match
         let match_ = self.get_match(match_id).await?;
@@ -166,10 +211,10 @@ where
             )));
         }
 
-        // Determine which participant the submitter is acting for
-        let submitter_registration = self
-            .find_user_registration(&match_, submitted_by_user)
-            .await?;
+        // Determine which participant the submitter is acting for. Any active
+        // member of the registered team's roster speaks for it (P-168) — not
+        // just whoever happened to click "register".
+        let submitter_registration = self.find_actor_registration(&match_, submitted_by).await?;
 
         // Validate the claim
         self.validate_claim(
@@ -231,8 +276,9 @@ where
             .claim_repo
             .create_and_supersede_pending(CreateResultClaim {
                 match_id,
-                submitted_by_registration_id: submitter_registration,
-                submitted_by_user_id: submitted_by_user,
+                submitted_by_registration_id: Some(submitter_registration),
+                submitted_by_user_id: Some(submitted_by.user_id),
+                source: "participant".to_string(),
                 claimed_winner_registration_id: claimed_winner,
                 participant1_score,
                 participant2_score,
@@ -252,7 +298,108 @@ where
             "Result claim submitted"
         );
 
+        // Move the match into `awaiting_result` so the opponent gets a
+        // confirm-result action item and the auto-confirm deadline is
+        // enforced against a state that actually surfaces to them. The
+        // action-item query keys the confirm/dispute item off
+        // `awaiting_result` specifically; a match left `in_progress` never
+        // produced that item, so a submitted result auto-confirmed in 15
+        // minutes against an opponent who was never notified (P-50).
+        //
+        // Only the first submission needs the transition — a resubmission
+        // supersedes the prior claim while the match is already
+        // `awaiting_result`, and `awaiting_result -> awaiting_result` is not
+        // a legal edge. The transition is driven through
+        // `MatchStatusTransitioner` (the `MatchLifecycleService` path) so it
+        // is written to `match_status_log` like every other transition
+        // rather than as a silent raw UPDATE.
+        if match_.status == portal_core::types::TournamentMatchStatus::InProgress
+            && let Some(transitioner) = &self.match_transitioner
+        {
+            transitioner
+                .transition_status(
+                    match_id,
+                    portal_core::types::TournamentMatchStatus::AwaitingResult,
+                    TransitionTrigger::System {
+                        job_name: "result_submitted".to_string(),
+                    },
+                    Some("Result claim submitted; awaiting opponent confirmation".to_string()),
+                )
+                .await?;
+        }
+
         Ok(claim)
+    }
+
+    /// Submit a server-sourced result claim (MatchZy `series_end`, §6.5).
+    ///
+    /// No submitting participant: `source = "server"`, both captains may
+    /// confirm or dispute, and the existing overdue sweep auto-confirms at
+    /// `auto_confirm_at`. Refused when a participant claim is already
+    /// pending or resolved — first claim wins; conflicts land in review.
+    pub async fn submit_server_claim(
+        &self,
+        match_id: TournamentMatchId,
+        claimed_winner: TournamentRegistrationId,
+        participant1_score: i32,
+        participant2_score: i32,
+        game_results: Vec<GameResultInput>,
+        auto_confirm_at: chrono::DateTime<Utc>,
+    ) -> Result<ResultClaim, DomainError> {
+        let match_ = self.get_match(match_id).await?;
+        if !match_.can_submit_result() {
+            return Err(DomainError::InvalidState(format!(
+                "Cannot submit result for match in {} status",
+                match_.status
+            )));
+        }
+        if let Some(existing) = self.claim_repo.find_current_by_match(match_id).await?
+            && existing.is_pending()
+        {
+            return Err(DomainError::Conflict(format!(
+                "a result claim ({}) is already pending for this match",
+                existing.id
+            )));
+        }
+
+        self.validate_claim(
+            &match_,
+            claimed_winner,
+            participant1_score,
+            participant2_score,
+            &game_results,
+        )
+        .await?;
+
+        let game_results: Vec<GameResult> = game_results
+            .into_iter()
+            .map(|g| {
+                self.convert_game_result(
+                    &match_,
+                    g,
+                    claimed_winner,
+                    participant1_score,
+                    participant2_score,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.claim_repo
+            .create_and_supersede_pending(CreateResultClaim {
+                match_id,
+                submitted_by_registration_id: None,
+                submitted_by_user_id: None,
+                source: "server".to_string(),
+                claimed_winner_registration_id: claimed_winner,
+                participant1_score,
+                participant2_score,
+                game_results,
+                auto_confirm_at,
+                evidence_ids: Vec::new(),
+                demo_link_ids: Vec::new(),
+                notes: Some("Automatically reported by the game server".to_string()),
+            })
+            .await
     }
 
     /// Confirm a result claim (by opponent).
@@ -260,7 +407,7 @@ where
     pub async fn confirm_claim(
         &self,
         claim_id: ResultClaimId,
-        confirmed_by_user: UserId,
+        confirmed_by: RegistrationActor,
     ) -> Result<ResultClaim, DomainError> {
         let claim = self.get_claim(claim_id).await?;
 
@@ -274,13 +421,12 @@ where
         // Get the match
         let match_ = self.get_match(claim.match_id).await?;
 
-        // Determine which participant the confirmer is acting for
-        let confirmer_registration = self
-            .find_user_registration(&match_, confirmed_by_user)
-            .await?;
+        // Determine which participant the confirmer is acting for (P-168:
+        // roster membership, not "who registered the team").
+        let confirmer_registration = self.find_actor_registration(&match_, confirmed_by).await?;
 
         // Verify confirmer is not the submitter
-        if confirmer_registration == claim.submitted_by_registration_id {
+        if Some(confirmer_registration) == claim.submitted_by_registration_id {
             return Err(DomainError::NotAuthorized(
                 "Cannot confirm your own result claim".to_string(),
             ));
@@ -303,7 +449,7 @@ where
             .confirm_and_apply_to_match(
                 claim_id,
                 confirmer_registration,
-                confirmed_by_user,
+                Some(confirmed_by.user_id),
                 false,
                 match_.id,
                 claim.claimed_winner_registration_id,
@@ -316,11 +462,114 @@ where
         info!(
             claim_id = %claim_id,
             match_id = %claim.match_id,
-            confirmed_by = %confirmed_by_user,
+            confirmed_by = %confirmed_by.user_id,
             "Result claim confirmed"
         );
 
         Ok(claim)
+    }
+
+    /// Administratively correct the score already recorded against a match.
+    ///
+    /// # Why this exists (P-72)
+    ///
+    /// The score-writing admin paths were: `resolve/overturn`,
+    /// `resolve/adjusted` and `resolve/double-dq` — **all** of which take a
+    /// `dispute_id` and refuse to run without a dispute row. So the failure
+    /// mode "both parties confirmed the wrong score" (or "nobody looked and it
+    /// auto-confirmed after 24h"), with nobody disputing, produced a match no
+    /// operator could correct by any means, while the bracket kept advancing
+    /// on it. `revert`/`reapply` exist and move the bracket, but they replay
+    /// the recorded score — they cannot change it.
+    ///
+    /// # Why it goes through the repository's audited write
+    ///
+    /// `override_result_audited` performs the score write and the audit row in
+    /// one transaction, using the same statement
+    /// (`submit_result_in_tx`) as opponent-confirmation and adjusted-dispute
+    /// resolution. So (a) the resulting match row is indistinguishable from a
+    /// normally-recorded one, which is what keeps standings and progression
+    /// consistent, and (b) there is no code path that changes a score without
+    /// recording who changed it, from what, to what, and why.
+    ///
+    /// Bracket progression is **not** re-run here — deliberately, and for the
+    /// same reason `resolve_adjusted` does not: moving participants that have
+    /// already advanced is the job of the explicit
+    /// revert/reapply-progression controls, which an admin uses after the
+    /// correction if the winner changed. Silently reshaping downstream
+    /// pairings as a side effect of a score edit would be worse than the
+    /// defect being fixed.
+    #[instrument(skip(self, reason))]
+    pub async fn override_result(
+        &self,
+        match_id: TournamentMatchId,
+        participant1_score: i32,
+        participant2_score: i32,
+        reason: String,
+        changed_by: portal_core::PlayerId,
+        request_id: Option<String>,
+    ) -> Result<TournamentMatch, DomainError> {
+        let match_ = self.get_match(match_id).await?;
+
+        // Only a match that already carries a recorded result can be
+        // "corrected". Writing a score onto a match that was never played
+        // would be a different operation with different consequences
+        // (it would complete the match), and the admin transition + forfeit
+        // controls already own that.
+        if match_.winner_registration_id.is_none() {
+            return Err(DomainError::InvalidState(
+                "Match has no recorded result to correct".to_string(),
+            ));
+        }
+
+        let (winner_id, loser_id) = crate::services::tournament::helpers::derive_result_outcome(
+            &match_,
+            participant1_score,
+            participant2_score,
+        )?;
+
+        let old_value = serde_json::json!({
+            "participant1_score": match_.participant1_score,
+            "participant2_score": match_.participant2_score,
+            "winner_registration_id": match_.winner_registration_id.map(|id| id.to_string()),
+        });
+        let new_value = serde_json::json!({
+            "participant1_score": participant1_score,
+            "participant2_score": participant2_score,
+            "winner_registration_id": winner_id.to_string(),
+            "reason": reason,
+        });
+
+        let updated = self
+            .match_repo
+            .override_result_audited(
+                match_id,
+                participant1_score,
+                participant2_score,
+                winner_id,
+                loser_id,
+                crate::repositories::CreateEntityChange {
+                    entity_type: MATCH_RESULT_OVERRIDE_ENTITY.to_string(),
+                    entity_id: match_id.as_uuid(),
+                    change_type: crate::entities::audit::ChangeType::Update,
+                    field_name: Some(MATCH_RESULT_OVERRIDE_FIELD.to_string()),
+                    old_value: Some(old_value),
+                    new_value: Some(new_value),
+                    changed_by,
+                    request_id,
+                    ip_address: None,
+                    user_agent: None,
+                },
+            )
+            .await?;
+
+        info!(
+            match_id = %match_id,
+            changed_by = %changed_by,
+            "Match result corrected by admin override"
+        );
+
+        Ok(updated)
     }
 
     /// Authorize a dispute against a result claim, without writing
@@ -341,7 +590,7 @@ where
     pub async fn authorize_claim_dispute(
         &self,
         claim_id: ResultClaimId,
-        disputed_by_user: UserId,
+        disputed_by: RegistrationActor,
     ) -> Result<(ResultClaim, TournamentRegistrationId), DomainError> {
         let claim = self.get_claim(claim_id).await?;
 
@@ -355,13 +604,12 @@ where
         // Get the match
         let match_ = self.get_match(claim.match_id).await?;
 
-        // Determine which participant the disputer is acting for
-        let disputer_registration = self
-            .find_user_registration(&match_, disputed_by_user)
-            .await?;
+        // Determine which participant the disputer is acting for — the same
+        // rule the submission it disputes was authorized under (P-168).
+        let disputer_registration = self.find_actor_registration(&match_, disputed_by).await?;
 
         // Verify disputer is not the submitter
-        if disputer_registration == claim.submitted_by_registration_id {
+        if Some(disputer_registration) == claim.submitted_by_registration_id {
             return Err(DomainError::NotAuthorized(
                 "Cannot dispute your own result claim".to_string(),
             ));
@@ -387,7 +635,7 @@ where
         }
 
         // Verify canceller is the submitter
-        if claim.submitted_by_user_id != cancelled_by_user {
+        if claim.submitted_by_user_id != Some(cancelled_by_user) {
             return Err(DomainError::NotAuthorized(
                 "Only the submitter can cancel their own claim".to_string(),
             ));
@@ -429,12 +677,15 @@ where
         Ok(confirmed)
     }
 
-    /// Get the pending claim for a match, if any.
-    pub async fn get_pending_claim(
+    /// Get the current (authoritative) claim for a match, if any.
+    ///
+    /// While the match is live that is the pending claim; once it has been
+    /// confirmed the confirmed claim remains the match's result.
+    pub async fn get_current_claim(
         &self,
         match_id: TournamentMatchId,
     ) -> Result<Option<ResultClaim>, DomainError> {
-        self.claim_repo.find_pending_by_match(match_id).await
+        self.claim_repo.find_current_by_match(match_id).await
     }
 
     /// Get a specific result claim by ID.
@@ -471,34 +722,26 @@ where
             .ok_or(DomainError::ResultClaimNotFound(id))
     }
 
-    async fn find_user_registration(
+    /// Which of this match's registrations the actor speaks for.
+    ///
+    /// Delegates to [`find_actor_registration`], the single definition shared
+    /// with disputes, evidence, scheduling and withdrawal. The version this
+    /// replaced tested `registration.registered_by == user_id`, so exactly one
+    /// human per team could submit or confirm a result — while the frontend,
+    /// which gates on roster membership, offered the panel to all of them
+    /// (P-168).
+    async fn find_actor_registration(
         &self,
         match_: &TournamentMatch,
-        user_id: UserId,
+        actor: RegistrationActor,
     ) -> Result<TournamentRegistrationId, DomainError> {
-        // Check participant 1
-        if let Some(reg_id) = match_.participant1_registration_id {
-            let reg = self.registration_repo.find_by_id(reg_id).await?;
-            if let Some(r) = reg
-                && r.registered_by == user_id
-            {
-                return Ok(reg_id);
-            }
-        }
-
-        // Check participant 2
-        if let Some(reg_id) = match_.participant2_registration_id {
-            let reg = self.registration_repo.find_by_id(reg_id).await?;
-            if let Some(r) = reg
-                && r.registered_by == user_id
-            {
-                return Ok(reg_id);
-            }
-        }
-
-        Err(DomainError::NotAuthorized(
-            "User is not authorized to act for any participant in this match".to_string(),
-        ))
+        find_actor_registration(
+            self.registration_repo.as_ref(),
+            self.member_repo.as_ref(),
+            match_,
+            actor,
+        )
+        .await
     }
 
     async fn validate_claim(
@@ -688,14 +931,18 @@ where
         // Get the match
         let match_ = self.get_match(claim.match_id).await?;
 
-        // Find opponent registration
-        let opponent =
-            if match_.participant1_registration_id == Some(claim.submitted_by_registration_id) {
-                match_.participant2_registration_id
-            } else {
-                match_.participant1_registration_id
-            }
-            .ok_or_else(|| DomainError::InvalidState("Opponent not found".to_string()))?;
+        // Find the registration recorded as the (auto-)confirmer: the
+        // submitter's opponent — or, for server-sourced claims with no
+        // submitter, the losing side (they held the dispute window).
+        let reference = claim
+            .submitted_by_registration_id
+            .unwrap_or(claim.claimed_winner_registration_id);
+        let opponent = if match_.participant1_registration_id == Some(reference) {
+            match_.participant2_registration_id
+        } else {
+            match_.participant1_registration_id
+        }
+        .ok_or_else(|| DomainError::InvalidState("Opponent not found".to_string()))?;
 
         // Atomic auto-confirm + result application. See audit I5.
         let loser =
@@ -827,6 +1074,7 @@ mod tests {
     use crate::entities::tournament::TournamentMatch;
     use crate::entities::veto::VetoSession;
     use crate::repositories::demo::MockDemoMatchLinkRepository;
+    use crate::repositories::league_team::MockLeagueTeamMemberRepository;
     use crate::repositories::tournament::{
         MockResultClaimRepository, MockTournamentMatchRepository,
         MockTournamentRegistrationRepository, MockVetoSessionRepository,
@@ -842,6 +1090,7 @@ mod tests {
         MockTournamentRegistrationRepository,
         MockDemoMatchLinkRepository,
         MockVetoSessionRepository,
+        MockLeagueTeamMemberRepository,
     >;
 
     fn make_service(veto_repo: MockVetoSessionRepository) -> TestService {
@@ -851,6 +1100,7 @@ mod tests {
             Arc::new(MockTournamentRegistrationRepository::new()),
             Arc::new(MockDemoMatchLinkRepository::new()),
             Arc::new(veto_repo),
+            Arc::new(MockLeagueTeamMemberRepository::new()),
         )
     }
 

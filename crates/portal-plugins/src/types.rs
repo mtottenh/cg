@@ -182,29 +182,6 @@ pub struct DemoPlayerData {
 // Ranking Types
 // ============================================================================
 
-/// A participant with their current rating for rating calculations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RankedParticipant {
-    pub player_id: Uuid,
-    pub team_id: u32,
-    pub rating: i32,
-    pub rating_deviation: f64,
-    pub volatility: f64,
-    pub is_winner: bool,
-}
-
-/// A rating change to apply.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RatingChange {
-    pub player_id: Uuid,
-    pub old_rating: i32,
-    pub new_rating: i32,
-    pub old_deviation: f64,
-    pub new_deviation: f64,
-    pub old_volatility: f64,
-    pub new_volatility: f64,
-}
-
 // ============================================================================
 // Map Pick/Ban Types
 // ============================================================================

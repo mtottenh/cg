@@ -23,6 +23,7 @@
 
 pub mod brackets;
 pub mod lifecycle;
+pub mod lineup;
 pub mod map_pool;
 pub mod match_lifecycle;
 pub mod registration;
@@ -37,6 +38,7 @@ pub mod stages;
 // that same module path (utoipa's `paths(...)` resolves against it).
 pub use brackets::*;
 pub use lifecycle::*;
+pub use lineup::*;
 pub use map_pool::*;
 pub use match_lifecycle::*;
 pub use registration::*;
@@ -45,10 +47,11 @@ pub use seeding::*;
 pub use stages::*;
 
 use crate::error::ApiError;
+use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::state::TournamentState;
 use axum::http::HeaderMap;
 use portal_core::types::MatchFormat;
-use portal_core::{PlayerId, VetoFormatConfig};
+use portal_core::{PlayerId, ScopeType, TournamentRegistrationId, VetoFormatConfig};
 
 /// Extract the request id from incoming headers, falling back to
 /// `"unknown"` if absent or not ASCII.
@@ -60,6 +63,69 @@ pub(super) fn get_request_id(headers: &HeaderMap) -> &str {
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
+}
+
+/// Require that the caller may act *on behalf of* `registration_id`.
+///
+/// P-24: check-in used to accept any authenticated caller and any
+/// registration id, so a stranger could check a team in — and because
+/// both-checked-in auto-advances a match to `pick_ban` / `in_progress`,
+/// force someone else's match to start. The stored
+/// `participantN_checked_in_by` was therefore meaningless as audit.
+///
+/// Rather than invent a second notion of "speaks for this participant"
+/// we reuse the one veto already established
+/// (`VetoAuthorizationService::can_act_for_registration`): registration
+/// → team-season → captain / team owner / active veto delegate, and for
+/// individual registrations (`team_season_id IS NULL`, `player_id` set)
+/// the registered player themself.
+///
+/// Tournament staff are allowed through as an override, using the same
+/// scoped `tournament.participants.manage` permission that gates
+/// `admin_check_in` / `approve_registration` next door — with the usual
+/// automatic fallback to the global `admin.tournaments.manage_any`.
+/// Checking staff first keeps the participant model's more specific
+/// error message for the (common) non-staff denial.
+///
+/// Failure is `403` — `DomainError::NotAuthorized` and
+/// `ApiError::forbidden` both map there.
+pub(super) async fn require_registration_actor(
+    state: &TournamentState,
+    auth: &AuthenticatedUser,
+    perm_checker: &PermissionChecker,
+    registration_id: TournamentRegistrationId,
+) -> Result<(), ApiError> {
+    // Resolve the tournament from the registration row rather than the
+    // path segment — same reasoning as `require_registration_manage`:
+    // otherwise staff of tournament A could act on tournament B's
+    // registration by crafting the URL.
+    let registration = state
+        .registration_service
+        .get_registration(registration_id)
+        .await?;
+
+    let tournament_uuid = registration.tournament_id.as_uuid();
+    if perm_checker
+        .has_scoped_permission(
+            auth,
+            portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+            ScopeType::Tournament,
+            tournament_uuid,
+        )
+        .await
+        || perm_checker
+            .has_admin_override(auth, ScopeType::Tournament)
+            .await
+    {
+        return Ok(());
+    }
+
+    state
+        .veto_authorization_service
+        .can_act_for_registration(registration_id, auth.user_id, auth.player_id)
+        .await?;
+
+    Ok(())
 }
 
 /// Check eligibility restrictions for a set of player IDs against a tournament.

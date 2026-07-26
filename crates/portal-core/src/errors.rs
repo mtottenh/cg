@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ids::{
-    BanId, DemoId, DemoMatchLinkId, DisputeId, EvidenceId, ForfeitRecordId, GameId, LeagueId,
-    LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LobbyId, MatchId, PlayerId,
-    ResultClaimId, ResultReviewId, TournamentBracketId, TournamentId, TournamentMatchId,
-    TournamentRegistrationId, TournamentStageId, UserId, VetoSessionId,
+    BanId, DemoId, DemoMatchLinkId, DisputeId, EvidenceId, ForfeitRecordId, GameId, GameServerId,
+    LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LobbyId, MatchId, PlayerId,
+    ResultClaimId, ResultReviewId, ServerBookingId, TournamentBracketId, TournamentId,
+    TournamentInvitationId, TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId,
+    VetoSessionId,
 };
 
 /// A single validation error for a specific field.
@@ -198,6 +199,14 @@ pub enum DomainError {
     #[error("league not found: {0}")]
     LeagueNotFound(LeagueId),
 
+    /// The requested game server was not found.
+    #[error("game server not found: {0}")]
+    GameServerNotFound(GameServerId),
+
+    /// The requested server booking was not found.
+    #[error("server booking not found: {0}")]
+    ServerBookingNotFound(ServerBookingId),
+
     /// The requested lobby was not found.
     #[error("lobby not found: {0}")]
     LobbyNotFound(LobbyId),
@@ -233,6 +242,10 @@ pub enum DomainError {
     /// The requested tournament registration was not found.
     #[error("tournament registration not found: {0}")]
     TournamentRegistrationNotFound(TournamentRegistrationId),
+
+    /// The requested tournament invitation was not found.
+    #[error("tournament invitation not found: {0}")]
+    TournamentInvitationNotFound(TournamentInvitationId),
 
     /// The requested dispute was not found.
     #[error("dispute not found: {0}")]
@@ -307,6 +320,11 @@ pub enum DomainError {
     /// Tournament is at maximum capacity.
     #[error("tournament is at maximum capacity")]
     TournamentFull,
+
+    /// Tournament registration is invite-only and the participant has no
+    /// outstanding invitation.
+    #[error("tournament is invite-only")]
+    TournamentInviteOnly,
 
     /// Registration violates eligibility restrictions.
     #[error("eligibility violation: {0}")]
@@ -566,6 +584,7 @@ impl DomainError {
                 | Self::TournamentBracketNotFound(_)
                 | Self::TournamentMatchNotFound(_)
                 | Self::TournamentRegistrationNotFound(_)
+                | Self::TournamentInvitationNotFound(_)
                 | Self::DisputeNotFound(_)
                 | Self::ForfeitRecordNotFound(_)
                 | Self::EvidenceNotFound(_)

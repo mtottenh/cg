@@ -8,6 +8,7 @@ use crate::repositories::league_team::{
     LeagueTeamInvitationRepository, LeagueTeamMemberRepository, LeagueTeamRepository,
     LeagueTeamSeasonRepository,
 };
+use crate::services::league_team::roster_lock::{RosterChange, enforce_roster_lock};
 use portal_core::types::{LeagueTeamInvitationStatus, LeagueTeamInvitationType, LeagueTeamRole};
 use portal_core::{DomainError, LeagueTeamInvitationId, LeagueTeamSeasonId, PlayerId, UserId};
 use std::sync::Arc;
@@ -30,6 +31,10 @@ where
     team_season_repo: Arc<TSR>,
     member_repo: Arc<TMR>,
     season_repo: Arc<SR>,
+    /// League membership, for the "league member before team membership"
+    /// rule (§9.3) — trait object, same reasoning as the team service's
+    /// audit sink.
+    league_member_repo: Arc<dyn crate::repositories::league::LeagueMemberRepository>,
 }
 
 impl<IR, TR, TSR, TMR, SR> LeagueTeamInvitationService<IR, TR, TSR, TMR, SR>
@@ -47,6 +52,7 @@ where
         team_season_repo: Arc<TSR>,
         member_repo: Arc<TMR>,
         season_repo: Arc<SR>,
+        league_member_repo: Arc<dyn crate::repositories::league::LeagueMemberRepository>,
     ) -> Self {
         Self {
             invitation_repo,
@@ -54,6 +60,7 @@ where
             team_season_repo,
             member_repo,
             season_repo,
+            league_member_repo,
         }
     }
 
@@ -82,12 +89,22 @@ where
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
-        // Check roster lock status
-        if role.is_primary() && !season.allows_primary_roster_changes() {
-            return Err(DomainError::InvalidState(
-                "roster is locked for primary member invitations".to_string(),
-            ));
-        }
+        // P-15: this used to ask only the *primary* question, so a substitute
+        // could be invited onto a hard-locked roster that
+        // `add_member_authorized` would have refused. Both paths now go through
+        // the one enforcement point, which applies both predicates.
+        enforce_roster_lock(
+            &season,
+            team_season_id,
+            RosterChange::Membership(role),
+            None,
+        )
+        .await?;
+
+        // §9.3 deliberately does NOT gate invite CREATION: an invite to a
+        // not-yet-member doubles as the nudge to join the league, and the
+        // rule is enforced where it matters — at accept, the seat. Compare
+        // `create_join_request`, whose applicant IS gated up front.
 
         // Check if player is already a member
         if self
@@ -166,9 +183,33 @@ where
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
-        if !season.is_registration_open() {
-            return Err(DomainError::RegistrationClosed);
-        }
+        // P-148: this used to open with `if !season.is_registration_open()`,
+        // which made the join path the ONLY roster path still frozen by the
+        // season's phase — a player could be *invited* onto a mid-season roster
+        // whose lock was open, but could not *ask* to join the same roster.
+        // That is the P-15 defect shape (two roster paths disagreeing about the
+        // same rule) reappearing through a different predicate, and it
+        // contradicts the owner's ruling directly: the lock decides whether a
+        // roster may gain a member, not the phase. `is_registration_open()`
+        // answers a different question — whether the season is taking new
+        // *teams* — and `create_team` / `register_for_season` still ask it.
+        //
+        // P-15: a join request checked neither lock predicate, so a hard-locked
+        // roster still accumulated pending requests that could never be
+        // accepted. Same enforcement point as every other roster mutation, and
+        // now the only gate on this path.
+        enforce_roster_lock(
+            &season,
+            team_season_id,
+            RosterChange::Membership(role),
+            None,
+        )
+        .await?;
+
+        // §9.3: applying is the applicant's first touchpoint with the rule —
+        // refuse HERE with the join-the-league guidance rather than letting
+        // an unacceptable application sit pending.
+        super::ensure_league_member(&self.league_member_repo, season.league_id, player_id).await?;
 
         // Check if player is already a member
         if self
@@ -285,12 +326,29 @@ where
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
 
-        // Re-verify roster lock status
-        if invitation.role.is_primary() && !season.allows_primary_roster_changes() {
-            return Err(DomainError::InvalidState(
-                "roster is locked for primary member changes".to_string(),
-            ));
-        }
+        // §9.3: the SEATED player (the invitee/applicant, not necessarily the
+        // acceptor) must belong to the league at seat time — an application
+        // checked at creation could outlive the applicant's membership, and an
+        // invite is checkable only here (invitees may join the league between
+        // invite and accept, deliberately).
+        super::ensure_league_member(
+            &self.league_member_repo,
+            season.league_id,
+            invitation.player_id,
+        )
+        .await?;
+
+        // P-15: re-verify through the one enforcement point. This is the seat
+        // that actually lands a player on the roster, and it used to apply only
+        // the primary predicate — so an invitation issued before a lock, for a
+        // substitute, could still be accepted after a hard lock.
+        enforce_roster_lock(
+            &season,
+            invitation.team_season_id,
+            RosterChange::Membership(invitation.role),
+            None,
+        )
+        .await?;
 
         // Re-verify one-team-per-season constraint for primary roles
         if invitation.role.is_primary()
@@ -422,7 +480,16 @@ where
         Ok(updated)
     }
 
-    /// Cancel an invitation (by a team captain).
+    /// Cancel a pending invitation or withdraw a pending join request.
+    ///
+    /// Who may cancel depends on the row's direction (Discord-design §9.4 —
+    /// this used to be captain-only for BOTH directions, so a player could
+    /// apply to a team and then never take it back; the application sat
+    /// pending until a captain noticed):
+    /// - `Invite` (captain → player): a team captain retracts it.
+    /// - `Request` (player → team): the REQUESTER withdraws their own
+    ///   application. Captains already have `decline_invitation` for
+    ///   requests they don't want; cancel is the applicant's verb.
     #[instrument(skip(self))]
     pub async fn cancel_invitation(
         &self,
@@ -439,14 +506,24 @@ where
             return Err(DomainError::InvitationInvalid);
         }
 
-        // Verify the canceller is a team captain
-        if !self
-            .member_repo
-            .is_captain(invitation.team_season_id, cancelled_by_player_id)
-            .await?
-        {
+        let may_cancel = match invitation.invitation_type {
+            LeagueTeamInvitationType::Invite => {
+                self.member_repo
+                    .is_captain(invitation.team_season_id, cancelled_by_player_id)
+                    .await?
+            }
+            LeagueTeamInvitationType::Request => invitation.player_id == cancelled_by_player_id,
+        };
+        if !may_cancel {
             return Err(DomainError::NotAuthorized(
-                "only a team captain can cancel invitations".to_string(),
+                match invitation.invitation_type {
+                    LeagueTeamInvitationType::Invite => {
+                        "only a team captain can cancel an invitation".to_string()
+                    }
+                    LeagueTeamInvitationType::Request => {
+                        "only the applicant can withdraw their join request".to_string()
+                    }
+                },
             ));
         }
 
@@ -519,6 +596,7 @@ where
             team_season_repo: Arc::clone(&self.team_season_repo),
             member_repo: Arc::clone(&self.member_repo),
             season_repo: Arc::clone(&self.season_repo),
+            league_member_repo: Arc::clone(&self.league_member_repo),
         }
     }
 }

@@ -949,3 +949,272 @@ async fn test_add_dispute_message_requires_participant() {
         .await;
     response.assert_status(StatusCode::CREATED);
 }
+
+// ============================================================================
+// P-77 / P-78 — RESOLUTION ACTUALLY WRITES THE MATCH RESULT
+// ============================================================================
+
+/// Drive a match to `awaiting_result` with a submitted claim, then dispute that
+/// claim. Returns `(tournament_id, match_id, dispute_id, winner_reg)`.
+///
+/// This is the CLAIM path — the one P-77 broke. It matters that the claim is
+/// never confirmed: that is exactly the state in which the match row carries no
+/// winner and 0-0 scores, so anything reading "the original result" off the
+/// match instead of the claim gets nothing.
+async fn raise_dispute_on_a_claim(app: &TestApp, slug: &str) -> (String, String, String, String) {
+    let (tournament_id, match_id, _reg1, _reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(app, slug).await;
+
+    let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+        &json!({ "scheduled_at": scheduled_time.to_rfc3339(), "reason": "p77 setup" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
+        &json!({ "to_status": "in_progress", "override_reason": "p77 setup" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // `reg1` from the builder is not necessarily participant ONE on the match —
+    // read the slot from the match row, or the winner/score consistency check
+    // rejects the claim.
+    let p1_reg = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}"
+        ))
+        .await
+        .json::<serde_json::Value>()["data"]["participant1_registration_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // p1 claims a 2-0 win. Non-zero and asymmetric on purpose: a 0-0 claim
+    // would be indistinguishable from the empty match row this test is about.
+    // (2 games minimum — the seeded format rejects a single-game total.)
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The opponent disputes it (a player may not dispute their own claim).
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/result/{claim_id}/dispute"),
+            &json!({
+                "reason": "wrong_score",
+                "description": "That score is not what happened in the server logs.",
+                "evidence_ids": []
+            }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // `ResultDisputeResponse` carries the claim and match status but not the
+    // dispute id (the claim path returns the claim's view of the world), so
+    // read it back from the row the handler just created.
+    let dispute_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM disputes WHERE match_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .expect("the claim dispute should have created a disputes row");
+
+    (tournament_id, match_id, dispute_id.to_string(), p1_reg)
+}
+
+async fn match_row(app: &TestApp, match_id: &str) -> serde_json::Value {
+    let row = sqlx::query_as::<
+        _,
+        (
+            Option<uuid::Uuid>,
+            Option<uuid::Uuid>,
+            i32,
+            i32,
+            Option<chrono::DateTime<chrono::Utc>>,
+            String,
+        ),
+    >(
+        "SELECT winner_registration_id, loser_registration_id, participant1_score,
+                participant2_score, completed_at, status
+         FROM tournament_matches WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .expect("match row");
+    json!({
+        "winner": row.0.map(|u| u.to_string()),
+        "loser": row.1.map(|u| u.to_string()),
+        "p1": row.2,
+        "p2": row.3,
+        "completed_at": row.4.map(|t| t.to_rfc3339()),
+        "status": row.5,
+    })
+}
+
+/// P-77: upholding a dispute raised against a CLAIM must leave the claimed
+/// result on the match.
+///
+/// Before the fix this produced a `completed` match with **no winner and 0-0**,
+/// which then fed bracket progression: `raise_dispute` snapshotted `original_*`
+/// from the match row (empty on the claim path) and `resolve_uphold` only
+/// flipped the status without writing any result at all.
+#[tokio::test]
+async fn test_uphold_on_claim_path_leaves_the_claimed_result_on_the_match() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, dispute_id, winner_reg) =
+        raise_dispute_on_a_claim(&app, "p77-uphold").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/disputes/{dispute_id}/resolve/uphold"),
+            &json!({ "notes": "Server logs match the submitted score." }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let m = match_row(&app, &match_id).await;
+    assert_eq!(m["status"], "completed", "uphold completes the match");
+    assert_eq!(
+        m["winner"].as_str(),
+        Some(winner_reg.as_str()),
+        "the UPHELD claim's winner must be on the match — a completed match with \
+         no winner is what P-77 produced, and progression consumes it"
+    );
+    assert_eq!(m["p1"], 2, "the upheld claim's score must be on the match");
+    assert_eq!(m["p2"], 0);
+}
+
+/// P-78: a rematch un-completes the match, so the previous winner and score
+/// must not survive it.
+///
+/// Before the fix `resolve_with_status_change` updated `status` alone, so a
+/// match sitting in `ready` to be replayed still reported a winner, a score and
+/// a `completed_at` — and progression had already advanced that winner.
+///
+/// This uses the CONFIRMED path deliberately: the claim is confirmed first so
+/// the match genuinely carries a result, and the precondition asserts that.
+/// Ordering a rematch on an unconfirmed claim would clear a match that had
+/// nothing on it — an assertion that passes without the fix.
+#[tokio::test]
+async fn test_rematch_clears_the_previous_result_from_the_match() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _reg1, reg2, player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "p78-rematch").await;
+
+    let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+        &json!({ "scheduled_at": scheduled_time.to_rfc3339(), "reason": "p78 setup" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
+        &json!({ "to_status": "in_progress", "override_reason": "p78 setup" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let p1_reg = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}"
+        ))
+        .await
+        .json::<serde_json::Value>()["data"]["participant1_registration_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 1,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The opponent CONFIRMS, so the match really is completed with a result.
+    app.post_json_with_token(
+        &format!("/v1/matches/{match_id}/result/{claim_id}/confirm"),
+        &json!({}),
+        &player2_token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let before = match_row(&app, &match_id).await;
+    assert!(
+        before["winner"].as_str().is_some() && before["p1"] == 2,
+        "precondition: the match must carry a real result before the rematch, got {before}"
+    );
+
+    // Dispute the confirmed result, then order the replay.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/dispute"),
+            &json!({
+                "registration_id": reg2,
+                "reason": "wrong_score",
+                "description": "The recorded score does not match the server logs at all.",
+                "evidence_ids": []
+            }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let dispute_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    app.post_json(
+        &format!("/v1/admin/disputes/{dispute_id}/resolve/rematch"),
+        &json!({ "notes": "Both sides agreed to replay the map." }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let after = match_row(&app, &match_id).await;
+    assert_eq!(after["status"], "ready", "a rematch reopens the match");
+    assert!(
+        after["winner"].is_null(),
+        "P-78: a match ready to be replayed must not still record a winner, got {after}"
+    );
+    assert!(after["loser"].is_null(), "P-78: nor a loser");
+    assert_eq!(after["p1"], 0, "P-78: nor a score");
+    assert_eq!(after["p2"], 0);
+    assert!(
+        after["completed_at"].is_null(),
+        "P-78: nor a completion time"
+    );
+}

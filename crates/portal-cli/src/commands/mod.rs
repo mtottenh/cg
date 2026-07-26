@@ -7,6 +7,7 @@ pub mod bootstrap;
 pub mod db;
 pub mod demo;
 pub mod game;
+pub mod gameserver;
 pub mod league_team;
 pub mod player;
 pub mod role;

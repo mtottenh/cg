@@ -11,23 +11,28 @@
 pub mod demo_client;
 pub mod demo_stats;
 pub mod evidence_validator;
+pub mod matchzy;
 pub mod stats;
 
 pub use demo_client::{Cs2DemoClient, validate_base_url as validate_demo_service_url};
 pub use demo_stats::Cs2DemoStats;
 pub use evidence_validator::Cs2EvidenceValidator;
+pub use matchzy::{
+    MatchzyConfigInput, MatchzyMapRef, MatchzyTeam, build_matchzy_config, matchzy_map_tokens,
+    validate_input as validate_matchzy_input, workshop_numeric_id,
+};
 
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::error::{PluginError, RatingError, StatsError};
+use crate::error::{PluginError, StatsError};
 use crate::traits::{EvidencePlugin, GamePlugin, MapInfo, RankTier, SideOption, TournamentPlugin};
 use crate::types::{
     DemoMetadata, DiscoveredEvidence, DisplayStat, EvidenceStorage, EvidenceType,
     EvidenceValidation, ExtractedResult, GameResult, MapPickBanFormat, MapVetoAction, MatchContext,
-    MatchData, MatchFormat, MatchmakingCriteria, PlayerStatsContext, RankedParticipant,
-    RatingChange, TournamentFormatId, VetoActionType,
+    MatchData, MatchFormat, MatchmakingCriteria, PlayerStatsContext, TournamentFormatId,
+    VetoActionType,
 };
 use chrono::Utc;
 use portal_core::types::veto::{SideSelectionMode, VetoFormatConfig};
@@ -83,6 +88,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Dust II".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_dust2_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -91,6 +97,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Mirage".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_mirage_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -99,6 +106,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Inferno".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_inferno_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -107,6 +115,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Nuke".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_nuke_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -115,6 +124,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Ancient".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_ancient_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -123,6 +133,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Anubis".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_anubis_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -131,6 +142,7 @@ impl GamePlugin for Cs2Plugin {
                 display_name: "Vertigo".to_string(),
                 image_url: Some("https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/images/thumbs/de_vertigo_1_png.png".to_string()),
                 game_modes: vec!["competitive".to_string(), "casual".to_string()],
+                engine_name: None,
                 external_id: None,
                 external_url: None,
             },
@@ -585,97 +597,6 @@ impl GamePlugin for Cs2Plugin {
     }
 
     // ========================================================================
-    // Rating
-    // ========================================================================
-
-    fn calculate_rating_change(
-        &self,
-        participants: &[RankedParticipant],
-    ) -> Result<Vec<RatingChange>, RatingError> {
-        if participants.is_empty() {
-            return Err(RatingError::InsufficientParticipants);
-        }
-
-        // Simple Elo-like calculation (can be replaced with Glicko-2 later)
-        // K-factor varies by rating - scaled for CS2 Premier (0-35,000+)
-        // Higher K for lower ratings means faster progression at lower ranks
-        let get_k_factor = |rating: i32| -> f64 {
-            if rating < 10000 {
-                // Grey and Light Blue: faster progression
-                200.0
-            } else if rating < 20000 {
-                // Blue and Purple: moderate progression
-                150.0
-            } else {
-                // Pink, Red, Gold: slower, more stable ratings
-                100.0
-            }
-        };
-
-        // Group by team
-        let team1: Vec<_> = participants.iter().filter(|p| p.team_id == 1).collect();
-        let team2: Vec<_> = participants.iter().filter(|p| p.team_id == 2).collect();
-
-        if team1.is_empty() || team2.is_empty() {
-            return Err(RatingError::InsufficientParticipants);
-        }
-
-        // Calculate average ratings
-        let avg_rating_1: f64 =
-            team1.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team1.len() as f64;
-        let avg_rating_2: f64 =
-            team2.iter().map(|p| f64::from(p.rating)).sum::<f64>() / team2.len() as f64;
-
-        // Expected scores (Elo formula)
-        // Using 2000 as divisor instead of 400 due to the larger CS2 Premier scale (0-35,000+)
-        let expected_1 = 1.0 / (1.0 + 10.0_f64.powf((avg_rating_2 - avg_rating_1) / 2000.0));
-        let expected_2 = 1.0 - expected_1;
-
-        // Determine actual scores
-        let team1_won = team1.first().is_some_and(|p| p.is_winner);
-        let actual_1 = if team1_won { 1.0 } else { 0.0 };
-        let actual_2 = if team1_won { 0.0 } else { 1.0 };
-
-        let mut changes = Vec::new();
-
-        // Calculate changes for team 1
-        for p in &team1 {
-            let k = get_k_factor(p.rating);
-            let change = (k * (actual_1 - expected_1)).round() as i32;
-            let new_rating = (p.rating + change).max(0);
-
-            changes.push(RatingChange {
-                player_id: p.player_id,
-                old_rating: p.rating,
-                new_rating,
-                old_deviation: p.rating_deviation,
-                new_deviation: p.rating_deviation, // Keep same for simple Elo
-                old_volatility: p.volatility,
-                new_volatility: p.volatility,
-            });
-        }
-
-        // Calculate changes for team 2
-        for p in &team2 {
-            let k = get_k_factor(p.rating);
-            let change = (k * (actual_2 - expected_2)).round() as i32;
-            let new_rating = (p.rating + change).max(0);
-
-            changes.push(RatingChange {
-                player_id: p.player_id,
-                old_rating: p.rating,
-                new_rating,
-                old_deviation: p.rating_deviation,
-                new_deviation: p.rating_deviation,
-                old_volatility: p.volatility,
-                new_volatility: p.volatility,
-            });
-        }
-
-        Ok(changes)
-    }
-
-    // ========================================================================
     // Matchmaking
     // ========================================================================
 
@@ -1067,14 +988,26 @@ impl EvidencePlugin for Cs2Plugin {
 
 /// CS2 plugin with enhanced evidence support using the external demo service.
 ///
-/// This variant fetches demo stats from `https://demos.cs210mans.uk` and
-/// validates results against claimed match outcomes.
+/// This variant fetches demo stats from the operator-configured demo service
+/// (`CS2_DEMO_SERVICE_URL`) and validates results against claimed match
+/// outcomes. When no service is configured the plugin still registers — the
+/// portal's own demo catalog covers most of what evidence needs — but every
+/// operation that would have to leave the process fails with
+/// [`PluginError::InvalidConfiguration`] instead.
 #[derive(Clone)]
 pub struct Cs2PluginWithEvidence {
     /// Inner plugin (reserved for future game-specific operations).
     #[allow(dead_code)]
     inner: Cs2Plugin,
-    demo_client: Arc<Cs2DemoClient>,
+    /// `None` when no demo service is configured.
+    ///
+    /// P-137: this was `Arc<Cs2DemoClient>` filled from `Cs2DemoClient::default()`,
+    /// which pointed at the live `https://demos.cs210mans.uk`. An unset
+    /// `CS2_DEMO_SERVICE_URL` therefore did not disable the integration, it
+    /// pointed it at a third party — quietly, and from tests as readily as from
+    /// production. Absence is now representable, so misconfiguration reports
+    /// itself instead of resolving to somebody else's host.
+    demo_client: Option<Arc<Cs2DemoClient>>,
 }
 
 impl Default for Cs2PluginWithEvidence {
@@ -1086,31 +1019,41 @@ impl Default for Cs2PluginWithEvidence {
 impl std::fmt::Debug for Cs2PluginWithEvidence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cs2PluginWithEvidence")
-            .field("base_url", &self.demo_client.base_url())
+            .field("base_url", &self.demo_client.as_ref().map(|c| c.base_url()))
             .finish_non_exhaustive()
     }
 }
 
 impl Cs2PluginWithEvidence {
-    /// Create a new CS2 plugin with evidence support.
+    /// Create a CS2 plugin with **no** external demo service configured.
+    ///
+    /// Demo-service operations then fail with
+    /// [`PluginError::InvalidConfiguration`] naming the missing setting. That
+    /// is the point of P-137: this constructor used to reach
+    /// `Cs2DemoClient::default()` and silently talk to a hardcoded live host.
     pub fn new() -> Self {
         Self {
             inner: Cs2Plugin::new(),
-            demo_client: Arc::new(Cs2DemoClient::default()),
+            demo_client: None,
         }
     }
 
-    /// Create with a custom demo service URL.
+    /// Create with a demo service URL, which the caller must already have
+    /// validated with [`validate_demo_service_url`].
     pub fn with_demo_url(base_url: String) -> Self {
         Self {
             inner: Cs2Plugin::new(),
-            demo_client: Arc::new(Cs2DemoClient::new(base_url)),
+            demo_client: Some(Arc::new(Cs2DemoClient::new(base_url))),
         }
     }
 
-    /// Get the demo client for direct access.
-    pub fn demo_client(&self) -> &Cs2DemoClient {
-        &self.demo_client
+    /// The demo client, or a configuration error naming what is missing.
+    pub fn demo_client(&self) -> Result<&Cs2DemoClient, PluginError> {
+        self.demo_client.as_deref().ok_or_else(|| {
+            PluginError::InvalidConfiguration(
+                "CS2 demo service is not configured; set CS2_DEMO_SERVICE_URL".to_string(),
+            )
+        })
     }
 
     /// Fetch and validate a demo against a claimed result.
@@ -1128,7 +1071,7 @@ impl Cs2PluginWithEvidence {
         team2_steam_ids: &[String],
     ) -> Result<EvidenceValidation, PluginError> {
         // Fetch stats from external service
-        let stats = self.demo_client.get_demo_stats(demo_name).await?;
+        let stats = self.demo_client()?.get_demo_stats(demo_name).await?;
 
         // Validate against claimed result
         let validation = Cs2EvidenceValidator::validate(
@@ -1143,7 +1086,7 @@ impl Cs2PluginWithEvidence {
 
     /// Fetch demo stats without validation.
     pub async fn get_demo_stats(&self, demo_name: &str) -> Result<Cs2DemoStats, PluginError> {
-        self.demo_client.get_demo_stats(demo_name).await
+        self.demo_client()?.get_demo_stats(demo_name).await
     }
 
     /// Extract result from a demo without comparing to a claim.
@@ -1153,7 +1096,7 @@ impl Cs2PluginWithEvidence {
         team1_steam_ids: &[String],
         team2_steam_ids: &[String],
     ) -> Result<Option<ExtractedResult>, PluginError> {
-        let stats = self.demo_client.get_demo_stats(demo_name).await?;
+        let stats = self.demo_client()?.get_demo_stats(demo_name).await?;
         Ok(Cs2EvidenceValidator::extract_result(
             &stats,
             team1_steam_ids,
@@ -1162,13 +1105,17 @@ impl Cs2PluginWithEvidence {
     }
 
     /// Get the download URL for a demo.
-    pub fn get_demo_url(&self, demo_name: &str) -> String {
-        self.demo_client.get_demo_url(demo_name)
+    ///
+    /// Fallible now (P-137): with no demo service configured there is no host
+    /// to build a URL against, and inventing one pointed every caller at a
+    /// hardcoded third party.
+    pub fn get_demo_url(&self, demo_name: &str) -> Result<String, PluginError> {
+        Ok(self.demo_client()?.get_demo_url(demo_name))
     }
 
     /// Get the stats URL for a demo.
-    pub fn get_stats_url(&self, demo_name: &str) -> String {
-        self.demo_client.get_stats_url(demo_name)
+    pub fn get_stats_url(&self, demo_name: &str) -> Result<String, PluginError> {
+        Ok(self.demo_client()?.get_stats_url(demo_name))
     }
 }
 
@@ -1248,13 +1195,6 @@ impl GamePlugin for Cs2PluginWithEvidence {
 
     fn rank_tiers(&self) -> Vec<RankTier> {
         self.inner.rank_tiers()
-    }
-
-    fn calculate_rating_change(
-        &self,
-        participants: &[RankedParticipant],
-    ) -> Result<Vec<RatingChange>, RatingError> {
-        self.inner.calculate_rating_change(participants)
     }
 
     fn matchmaking_criteria(&self) -> MatchmakingCriteria {
@@ -1346,7 +1286,7 @@ impl EvidencePlugin for Cs2PluginWithEvidence {
             }
         };
 
-        let stats = self.demo_client.get_demo_stats(&demo_name).await?;
+        let stats = self.demo_client()?.get_demo_stats(&demo_name).await?;
 
         // Validate using the existing validator (Steam IDs unavailable at this layer)
         let validation = Cs2EvidenceValidator::validate(&stats, claimed_result, &[], &[]);
@@ -1368,7 +1308,7 @@ impl EvidencePlugin for Cs2PluginWithEvidence {
             }
         };
 
-        let stats = self.demo_client.get_demo_stats(&demo_name).await?;
+        let stats = self.demo_client()?.get_demo_stats(&demo_name).await?;
 
         let team_names = stats.team_names();
         let team1_score = team_names
@@ -1546,48 +1486,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rating_calculation() {
-        let plugin = Cs2Plugin::new();
-
-        // Using CS2 Premier scale ratings (0-35,000+)
-        // Both players at 15,000 (Purple tier)
-        let participants = vec![
-            RankedParticipant {
-                player_id: Uuid::new_v4(),
-                team_id: 1,
-                rating: 15000,
-                rating_deviation: 50.0,
-                volatility: 0.06,
-                is_winner: true,
-            },
-            RankedParticipant {
-                player_id: Uuid::new_v4(),
-                team_id: 2,
-                rating: 15000,
-                rating_deviation: 50.0,
-                volatility: 0.06,
-                is_winner: false,
-            },
-        ];
-
-        let changes = plugin.calculate_rating_change(&participants).unwrap();
-        assert_eq!(changes.len(), 2);
-
-        // Winner should gain rating
-        let winner_change = changes.iter().find(|c| c.new_rating > c.old_rating);
-        assert!(winner_change.is_some());
-
-        // Loser should lose rating
-        let loser_change = changes.iter().find(|c| c.new_rating < c.old_rating);
-        assert!(loser_change.is_some());
-
-        // With equal ratings, expected score is 0.5, so winner gains ~K/2 and loser loses ~K/2
-        // At Purple tier (15,000), K=150, so change should be ~75
-        let winner = winner_change.unwrap();
-        assert!(winner.new_rating - winner.old_rating > 50); // Should gain meaningful rating
-    }
-
-    #[test]
     fn test_stat_surface_exposed_via_tournament_plugin() {
         // The registered plugin type is Cs2PluginWithEvidence; consumers reach
         // the stat surface through GamePlugin::as_tournament_plugin.
@@ -1632,5 +1530,50 @@ mod tests {
         // Check K/D ratio is calculated
         let kd = formatted.iter().find(|s| s.key == "kd_ratio").unwrap();
         assert_eq!(kd.value, "1.25");
+    }
+
+    /// P-137. Without a configured demo service, every operation that would
+    /// have to leave the process must REFUSE.
+    ///
+    /// It used to silently resolve to `https://demos.cs210mans.uk`:
+    /// `Cs2PluginWithEvidence::new()` built `Cs2DemoClient::default()`, whose
+    /// `Default` impl handed out that hardcoded host. An unset
+    /// `CS2_DEMO_SERVICE_URL` therefore did not disable the integration, it
+    /// aimed it at a third party — from a test as readily as from production.
+    #[test]
+    fn unconfigured_demo_service_refuses_instead_of_picking_a_host() {
+        let plugin = Cs2PluginWithEvidence::new();
+
+        for result in [
+            plugin.get_demo_url("match_12345.dem"),
+            plugin.get_stats_url("match_12345.dem"),
+        ] {
+            let err = result.expect_err("no demo service is configured; this must not succeed");
+            assert!(
+                matches!(err, PluginError::InvalidConfiguration(_)),
+                "expected InvalidConfiguration, got {err:?}"
+            );
+            // The refusal names the setting, so an operator can act on it.
+            assert!(
+                err.to_string().contains("CS2_DEMO_SERVICE_URL"),
+                "the error should name the missing setting: {err}"
+            );
+        }
+    }
+
+    /// The positive control for the test above: with a service configured the
+    /// same calls succeed, and against the configured host — not a default.
+    #[test]
+    fn configured_demo_service_builds_urls_against_that_host() {
+        let plugin = Cs2PluginWithEvidence::with_demo_url("https://demos.test.invalid".to_string());
+
+        assert_eq!(
+            plugin.get_demo_url("match_12345.dem").unwrap(),
+            "https://demos.test.invalid/match_12345.dem"
+        );
+        assert_eq!(
+            plugin.get_stats_url("match_12345.dem").unwrap(),
+            "https://demos.test.invalid/stats/match_12345.dem.stats.json"
+        );
     }
 }

@@ -1,8 +1,11 @@
 //! Gaming Portal server entry point.
 
+mod telemetry;
+
 use anyhow::Result;
 use portal_api::{
-    AppState, TokenConfig, spawn_lifecycle_task, spawn_timeout_warning_task, try_create_app,
+    AppState, TokenConfig, spawn_lifecycle_task, spawn_metrics_sampler,
+    spawn_server_assignment_task, spawn_timeout_warning_task, try_create_app,
 };
 use portal_db::{PoolConfig, create_pool};
 use std::net::SocketAddr;
@@ -25,15 +28,22 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Loopback Prometheus exporter (METRICS_ADDR; no-op when unset). Must
+    // precede any metrics:: call so nothing lands before the recorder.
+    telemetry::install_from_env();
+
     // Database connection
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-    let pool = create_pool(&database_url, PoolConfig::default()).await?;
+    let pool_config = PoolConfig::default();
+    let pool_max = pool_config.max_connections;
+    let pool = create_pool(&database_url, pool_config).await?;
 
     // Run migrations
     info!("Running database migrations...");
     sqlx::migrate!("../../migrations").run(&pool).await?;
     info!("Migrations complete");
+    telemetry::record_migrations(&pool).await;
 
     // JWT secret — no fallback. Missing or weak secrets must hard-fail at startup
     // so a misconfigured deployment cannot serve traffic with a known signing key.
@@ -76,6 +86,8 @@ async fn main() -> Result<()> {
     // would be silently swallowed.
     let timeout_handle = spawn_timeout_warning_task(state.clone(), Arc::clone(&shutdown));
     let lifecycle_handle = spawn_lifecycle_task(state.clone(), Arc::clone(&shutdown));
+    let assignment_handle = spawn_server_assignment_task(state.clone(), Arc::clone(&shutdown));
+    let sampler_handle = spawn_metrics_sampler(state.clone(), Arc::clone(&shutdown), pool_max);
 
     // Keep a handle to the pool so we can drain it after the server stops.
     let pool_for_shutdown = state.db_pool.clone();
@@ -133,6 +145,16 @@ async fn main() -> Result<()> {
         Ok(Ok(())) => info!("lifecycle automation task exited cleanly"),
         Ok(Err(e)) => warn!(error = %e, "lifecycle automation task panicked"),
         Err(_) => warn!("lifecycle automation task did not exit within 10s; abandoning"),
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(10), assignment_handle).await {
+        Ok(Ok(())) => info!("server assignment task exited cleanly"),
+        Ok(Err(e)) => warn!(error = %e, "server assignment task panicked"),
+        Err(_) => warn!("server assignment task did not exit within 10s; abandoning"),
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(10), sampler_handle).await {
+        Ok(Ok(())) => info!("metrics sampler exited cleanly"),
+        Ok(Err(e)) => warn!(error = %e, "metrics sampler panicked"),
+        Err(_) => warn!("metrics sampler did not exit within 10s; abandoning"),
     }
 
     info!("closing database pool");

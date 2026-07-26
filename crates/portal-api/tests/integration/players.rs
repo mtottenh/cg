@@ -2,6 +2,7 @@
 
 use crate::common::TestApp;
 use axum::http::StatusCode;
+use portal_test::prelude::*;
 use serde_json::json;
 
 /// Generate a valid PNG image of the given dimensions.
@@ -187,6 +188,94 @@ async fn test_update_profile_validation_errors() {
         .patch_json("/v1/players/me", &json!({ "display_name": long_name }))
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// P-5: the schema itself now refuses duplicate display names
+/// (case-insensitively). This backs up the service-level checks — if
+/// either check regressed, the write would still be rejected rather than
+/// leaving the "registered a name you can never keep" state behind.
+#[tokio::test]
+async fn test_display_name_unique_constraint_is_enforced_by_the_schema() {
+    let app = TestApp::new().await;
+
+    let first = UserBuilder::new()
+        .username("uniq_display_a")
+        .build_persisted(app.pool())
+        .await;
+    sqlx::query("UPDATE players SET display_name = 'CaseProbe' WHERE id = $1")
+        .bind(first.id)
+        .execute(app.pool())
+        .await
+        .expect("first rename should succeed");
+
+    let second = UserBuilder::new()
+        .username("uniq_display_b")
+        .build_persisted(app.pool())
+        .await;
+
+    // Same name — rejected.
+    let err = sqlx::query("UPDATE players SET display_name = 'CaseProbe' WHERE id = $1")
+        .bind(second.id)
+        .execute(app.pool())
+        .await
+        .expect_err("duplicate display name must be rejected by the unique index");
+    assert!(
+        err.as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint)
+            == Some("idx_players_display_name_unique"),
+        "expected the display-name unique index to reject it, got: {err}"
+    );
+
+    // Different case, same name — also rejected (constraint is on
+    // display_name_normalized).
+    let err = sqlx::query("UPDATE players SET display_name = 'caseprobe' WHERE id = $1")
+        .bind(second.id)
+        .execute(app.pool())
+        .await
+        .expect_err("case-variant duplicate must also be rejected");
+    assert!(
+        err.as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint)
+            == Some("idx_players_display_name_unique")
+    );
+}
+
+/// A profile update onto someone else's display name is a clean 409 —
+/// and the loser of the race at the DB index is one too, not a 500.
+#[tokio::test]
+async fn test_update_profile_duplicate_display_name_conflicts() {
+    let app = TestApp::new().await;
+
+    let other = UserBuilder::new()
+        .username("takenname_owner")
+        .build_persisted(app.pool())
+        .await;
+    sqlx::query("UPDATE players SET display_name = 'TakenByOther' WHERE id = $1")
+        .bind(other.id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    let response = app
+        .patch_json("/v1/players/me", &json!({ "display_name": "TakenByOther" }))
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+
+    // Case-only variant is the same name as far as the platform is
+    // concerned, so it conflicts too.
+    let response = app
+        .patch_json("/v1/players/me", &json!({ "display_name": "takenbyother" }))
+        .await;
+    response.assert_status(StatusCode::CONFLICT);
+
+    // Renaming to your own current name is still allowed (the check
+    // excludes self).
+    let me: serde_json::Value = app.get_auth("/v1/players/me").await.json();
+    let my_name = me["data"]["display_name"].as_str().unwrap().to_string();
+    let response = app
+        .patch_json("/v1/players/me", &json!({ "display_name": my_name }))
+        .await;
+    response.assert_status(StatusCode::OK);
 }
 
 #[tokio::test]

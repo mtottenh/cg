@@ -115,6 +115,34 @@ where
     ) -> Result<DiscoveredMatch, DomainError> {
         self.repo.mark_failed(id, error).await
     }
+
+    /// Queue depth per status, optionally scoped to one game (admin
+    /// pipeline view — P-73).
+    #[instrument(skip(self))]
+    pub async fn count_by_status(
+        &self,
+        game_id: Option<GameId>,
+    ) -> Result<Vec<(String, i64)>, DomainError> {
+        self.repo.count_by_status(game_id).await
+    }
+
+    /// Count matches whose retry budget is spent — the enricher will never
+    /// pick these up again.
+    #[instrument(skip(self))]
+    pub async fn count_retry_exhausted(&self, game_id: Option<GameId>) -> Result<i64, DomainError> {
+        self.repo.count_retry_exhausted(game_id).await
+    }
+
+    /// List discovered matches newest-first for the admin pipeline view.
+    #[instrument(skip(self))]
+    pub async fn list_for_admin(
+        &self,
+        game_id: Option<GameId>,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<DiscoveredMatch>, DomainError> {
+        self.repo.list_by_status(game_id, status, limit).await
+    }
 }
 
 impl<DMR> Clone for DiscoveredMatchService<DMR>

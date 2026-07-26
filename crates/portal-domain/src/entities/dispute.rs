@@ -41,6 +41,11 @@ pub struct Dispute {
     pub status: DisputeStatus,
     pub priority: DisputePriority,
 
+    /// Admin who took the dispute for review (P-80). `None` until assigned —
+    /// before this existed "Assign to Me" recorded nothing, and two admins
+    /// could both "take" one dispute with no surface showing ownership.
+    pub assigned_to_user_id: Option<UserId>,
+
     /// Resolution
     pub resolved_at: Option<DateTime<Utc>>,
     pub resolved_by_user_id: Option<UserId>,
@@ -95,7 +100,7 @@ impl Dispute {
 }
 
 /// Reason for the dispute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DisputeReason {
     /// Submitted score is incorrect.
@@ -146,7 +151,9 @@ impl std::str::FromStr for DisputeReason {
 }
 
 /// Status of a dispute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DisputeStatus {
     /// Awaiting admin review.
@@ -200,7 +207,9 @@ impl std::str::FromStr for DisputeStatus {
 }
 
 /// Priority of a dispute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DisputePriority {
     Low,
@@ -250,7 +259,7 @@ pub struct DisputeResolution {
 }
 
 /// Type of resolution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionType {
     /// Original result stands.
@@ -338,7 +347,7 @@ impl DisputeMessage {
 }
 
 /// Type of message author.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorType {
     /// Message from a match participant.

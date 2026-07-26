@@ -5,6 +5,15 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  # Lets build-deb.yml run this as its test gate (`uses: ./.github/workflows/ci.yml`).
+  # skip_coverage: the coverage job is informational — a tag build shouldn't
+  # burn 60 minutes on it before publishing debs.
+  workflow_call:
+    inputs:
+      skip_coverage:
+        type: boolean
+        required: false
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -92,6 +101,9 @@ jobs:
     timeout-minutes: 60
     # Informational: publishes the measured coverage so gaps are visible.
     # Not a gate (yet) — add `--fail-under-lines N` once a baseline is agreed.
+    # Skipped when called from build-deb (inputs is empty on push/PR, so the
+    # expression stays true there).
+    if: ${{ !inputs.skip_coverage }}
     services:
       postgres:
         image: postgres:16-alpine

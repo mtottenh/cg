@@ -55,6 +55,28 @@ pub trait DiscoveredMatchRepository: Send + Sync {
         id: DiscoveredMatchId,
         error: &str,
     ) -> Result<DiscoveredMatch, DomainError>;
+
+    /// Count rows per status, optionally scoped to one game.
+    ///
+    /// Backs the operator queue-depth view (P-73): without it a stalled
+    /// enricher is only visible in the database.
+    async fn count_by_status(
+        &self,
+        game_id: Option<GameId>,
+    ) -> Result<Vec<(String, i64)>, DomainError>;
+
+    /// Count rows that have exhausted their retry budget (`status = 'failed'`
+    /// with `retry_count >= max_retries`) — the ones `find_pending` will never
+    /// hand back again, i.e. permanently stuck.
+    async fn count_retry_exhausted(&self, game_id: Option<GameId>) -> Result<i64, DomainError>;
+
+    /// List rows, newest first, optionally filtered by game and status.
+    async fn list_by_status(
+        &self,
+        game_id: Option<GameId>,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<DiscoveredMatch>, DomainError>;
 }
 
 /// Data for creating a discovered match.

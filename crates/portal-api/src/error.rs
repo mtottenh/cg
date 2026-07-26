@@ -103,6 +103,15 @@ impl ApiError {
         )
     }
 
+    /// Create a service unavailable error (feature not configured).
+    pub fn service_unavailable(detail: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Service Unavailable",
+            detail,
+        )
+    }
+
     /// Create a not implemented error.
     pub fn not_implemented(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_IMPLEMENTED, "Not Implemented", detail)
@@ -156,6 +165,12 @@ impl From<DomainError> for ApiError {
                 Self::not_found(format!("Tournament not found: {id}"))
             }
             DomainError::LeagueNotFound(id) => Self::not_found(format!("League not found: {id}")),
+            DomainError::GameServerNotFound(id) => {
+                Self::not_found(format!("Game server not found: {id}"))
+            }
+            DomainError::ServerBookingNotFound(id) => {
+                Self::not_found(format!("Server booking not found: {id}"))
+            }
             DomainError::LeagueSeasonNotFound(id) => {
                 Self::not_found(format!("League season not found: {id}"))
             }
@@ -178,6 +193,9 @@ impl From<DomainError> for ApiError {
             }
             DomainError::TournamentRegistrationNotFound(id) => {
                 Self::not_found(format!("Tournament registration not found: {id}"))
+            }
+            DomainError::TournamentInvitationNotFound(id) => {
+                Self::not_found(format!("Tournament invitation not found: {id}"))
             }
             DomainError::DisputeNotFound(id) => Self::not_found(format!("Dispute not found: {id}")),
             DomainError::ForfeitRecordNotFound(id) => {
@@ -273,7 +291,14 @@ impl From<DomainError> for ApiError {
                 Self::bad_request(format!("Requirements not met: {msg}"))
             }
             DomainError::NotLeagueMember => Self::bad_request("Not a league member"),
-            DomainError::LeagueInviteOnly => Self::bad_request("League is invite-only"),
+            // 403, aligned with `TournamentInviteOnly` below (P-46): the
+            // request is well-formed — the caller is simply not permitted to
+            // enter without an invitation. It previously returned 400,
+            // meaning the same conceptual refusal produced two different
+            // status codes depending on which entity refused.
+            DomainError::LeagueInviteOnly => {
+                Self::forbidden("League is invite-only and you have no invitation")
+            }
             DomainError::InvalidState(msg) => Self::bad_request(format!("Invalid state: {msg}")),
 
             // Tournament-specific errors
@@ -287,6 +312,13 @@ impl From<DomainError> for ApiError {
                 Self::bad_request("Tournament has already started")
             }
             DomainError::TournamentFull => Self::bad_request("Tournament is at maximum capacity"),
+            // 403 (matching `LeagueInviteOnly` above since P-46): the
+            // request is well-formed and the tournament is open — the
+            // caller is simply not permitted to enter it. That is an
+            // authorization refusal, and CLAUDE.md maps refusals to 403.
+            DomainError::TournamentInviteOnly => {
+                Self::forbidden("Tournament is invite-only and you have no invitation")
+            }
             DomainError::EligibilityViolation(msg) => Self::bad_request(msg),
             DomainError::NotRegisteredForTournament => {
                 Self::bad_request("Not registered for this tournament")

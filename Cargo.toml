@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 # aws-sdk-s3/sso/sts and `home` require >=1.88 (Dockerfile builds on rust:1.88)
 rust-version = "1.88"
@@ -64,6 +64,10 @@ argon2 = { version = "0.5", features = ["std"] }
 # Tracing / Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Metrics (loopback Prometheus exporter; see docs/observability-design.md)
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.17", default-features = false, features = ["http-listener"] }
 
 # Configuration
 config = "0.14"

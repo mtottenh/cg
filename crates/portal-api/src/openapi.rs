@@ -5,32 +5,33 @@ use crate::dto::requests::{
     AcceptScheduleProposalRequest, AddDisputeMessageRequest, AddLeagueTeamMemberRequest,
     AddLinkEvidenceRequest, AddMapRequest, AddPermissionToRoleRequest, AdminDisputeMessageRequest,
     AdminDisqualifyRequest, AdminDoubleForfeitRequest, AdminForfeitMatchRequest,
-    AdminMatchTransitionRequest, AdminScheduleRequest, ApplyToLeagueRequest,
-    ApplyToLeagueTeamRequest, AssignRoleRequest, AssociateDemoRequest, AutoSeedRequest,
-    BatchCatalogDemoEntry, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
+    AdminMatchTransitionRequest, AdminOverrideMatchResultRequest, AdminScheduleRequest,
+    ApplyToLeagueRequest, ApplyToLeagueTeamRequest, AssignRoleRequest, AssociateDemoRequest,
+    AutoSeedRequest, BatchCatalogDemoEntry, BatchCatalogDemosRequest,
+    CancelScheduleProposalRequest, CatalogDemoRequest, CategorizeDemoRequest,
     CounterProposeRequest, CreateAvailabilityOverrideRequest, CreateAvailabilityWindowRequest,
     CreateBanRequest, CreateLeagueRequest, CreateLeagueSeasonRequest, CreateLeagueTeamRequest,
     CreateRoleRequest, CreateTournamentRequest, CreateTournamentStageRequest,
-    CreateVetoSessionRequest, DemoPlayerInputDto, DisputeResultClaimRequest, DisqualifyRequest,
-    ForfeitMatchRequest, GenerateSuggestionsRequest, GetAvailabilityQuery, GetDemosForMatchQuery,
-    InitiateUploadRequest, InviteToLeagueRequest, InviteToLeagueTeamRequest, LiftBanRequest,
-    LinkDemoRequest, LinkDemoToMatchRequest, LinkDiscoveredEvidenceRequest, ListBansQuery,
-    ListDisputesQuery, LoginRequest, ManualSeedRequest, MarkDemoFailedRequest, MatchCheckInRequest,
-    PerformVetoActionRequest, ProcessProgressionRequest, ProposeScheduleRequest,
-    RaiseDisputeRequest, RankTierInput, ReapplyProgressionRequest, RecordCoinFlipRequest,
-    RefreshTokenRequest, RegisterPlayerRequest, RegisterRequest, RegisterTeamForSeasonRequest,
-    RegisterTeamRequest, RejectRegistrationRequest, RejectScheduleProposalRequest,
-    ResolveAdjustedRequest, ResolveDoubleDqRequest, ResolveOverturnRequest, ResolveRematchRequest,
-    ResolveUpholdRequest, RespondToInvitationRequest, RevokeRoleRequest, ScheduleMatchRequest,
-    SeedAssignment, SelectSideRequest, SetDemoNotesRequest, SetDemoVisibilityRequest,
-    SetMapPoolRequest, SetRankTiersRequest, SetTournamentMapPoolRequest, SocialLinksRequest,
-    SubmitDemoStatsRequest, SubmitMatchResultRequest, SubmitResultClaimRequest,
-    TransferOwnershipRequest, UpdateAutoLinkSettingRequest, UpdateAvailabilityWindowRequest,
-    UpdateGameRequest, UpdateLeagueMemberRoleRequest, UpdateLeagueRequest,
-    UpdateLeagueSeasonRequest, UpdateLeagueTeamMemberRequest, UpdateLeagueTeamRequest,
-    UpdateMapRequest, UpdatePlayerProfileRequest, UpdateRoleRequest, UpdateTeamSizeRequest,
-    UpdateTournamentRequest, ValidateDemoRequest, ValidateEvidenceRequest,
-    WithdrawFromTournamentRequest,
+    CreateVetoSessionRequest, DeclareLineupRequest, DemoPlayerInputDto, DisputeResultClaimRequest,
+    DisqualifyRequest, ForfeitMatchRequest, GenerateSuggestionsRequest, GetAvailabilityQuery,
+    GetDemosForMatchQuery, InitiateUploadRequest, InviteToLeagueRequest, InviteToLeagueTeamRequest,
+    LiftBanRequest, LinkDemoRequest, LinkDemoToMatchRequest, LinkDiscoveredEvidenceRequest,
+    ListBansQuery, ListDisputesQuery, LoginRequest, ManualSeedRequest, MarkDemoFailedRequest,
+    MatchCheckInRequest, PerformVetoActionRequest, ProcessProgressionRequest,
+    ProposeScheduleRequest, RaiseDisputeRequest, RankTierInput, ReapplyProgressionRequest,
+    RecordCoinFlipRequest, RefreshTokenRequest, RegisterPlayerRequest, RegisterRequest,
+    RegisterTeamForSeasonRequest, RegisterTeamRequest, RejectRegistrationRequest,
+    RejectScheduleProposalRequest, ResolveAdjustedRequest, ResolveDoubleDqRequest,
+    ResolveOverturnRequest, ResolveRematchRequest, ResolveUpholdRequest,
+    RespondToInvitationRequest, RevokeRoleRequest, SeedAssignment, SelectSideRequest,
+    SetDemoNotesRequest, SetDemoVisibilityRequest, SetMapPoolRequest, SetRankTiersRequest,
+    SetTournamentMapPoolRequest, SocialLinksRequest, SubmitDemoStatsRequest,
+    SubmitMatchResultRequest, SubmitResultClaimRequest, TransferOwnershipRequest,
+    UpdateAutoLinkSettingRequest, UpdateAvailabilityWindowRequest, UpdateGameRequest,
+    UpdateLeagueMemberRoleRequest, UpdateLeagueRequest, UpdateLeagueSeasonRequest,
+    UpdateLeagueTeamMemberRequest, UpdateLeagueTeamRequest, UpdateMapRequest,
+    UpdatePlayerProfileRequest, UpdateRoleRequest, UpdateTeamSizeRequest, UpdateTournamentRequest,
+    ValidateDemoRequest, ValidateEvidenceRequest, WithdrawFromTournamentRequest,
 };
 use crate::dto::responses::AutoLinkSettingResponse;
 use crate::dto::responses::demo::{
@@ -39,38 +40,44 @@ use crate::dto::responses::demo::{
     DemoPlayerStatsResponse as DemoCatalogPlayerStatsResponse, DemoResponse,
     DemoStatusCountsResponse, DemoValidationResultResponse, ProcessUnlinkedDemosResponse,
 };
+use crate::dto::responses::pipeline::{
+    DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, PipelineOverviewResponse,
+    TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
+};
 use crate::dto::responses::{
     AccessUrlResponse, AdvancementResponse, AvailabilityOverrideResponse,
     AvailabilityWindowResponse, BanListResponse, BanResponse, CheckInStatusResponse,
     DateAvailabilityResponse, DemoPlayerStatsResponse, DemoStatsResponse, DemoValidationResponse,
     DiscoveredEvidenceResponse, DisputeListResponse, DisputeMessageResponse,
     DisputeResolutionResponse, DisputeResolutionResultResponse, DisputeResponse,
-    DisputeWithThreadResponse, DisqualificationResponse, EvidenceResponse, EvidenceSummaryResponse,
-    ExtractedResultResponse, ForfeitRecordResponse, ForfeitResponse, GameDetailResponse,
-    GameResultResponse, GameSummaryResponse, LeagueInvitationResponse, LeagueMemberBasicResponse,
-    LeagueMemberResponse, LeagueResponse, LeagueSeasonResponse, LeagueTeamInvitationResponse,
-    LeagueTeamInvitationWithTeamResponse, LeagueTeamMemberResponse,
+    DisputeWithThreadResponse, DisqualificationResponse, EntityChangeResponse, EvidenceResponse,
+    EvidenceSummaryResponse, ExtractedResultResponse, ForfeitRecordResponse, ForfeitResponse,
+    GameDetailResponse, GameResultResponse, GameSummaryResponse, LeagueInvitationResponse,
+    LeagueMemberBasicResponse, LeagueMemberResponse, LeagueResponse, LeagueSeasonResponse,
+    LeagueTeamInvitationResponse, LeagueTeamInvitationWithTeamResponse, LeagueTeamMemberResponse,
     LeagueTeamMemberWithPlayerResponse, LeagueTeamResponse, LeagueTeamSeasonResponse,
     LeagueTeamSummaryResponse, LeagueTeamWithSeasonResponse, LoginResponse, LogoutResponse,
     LoserResultResponse, MapInfoResponse, MapPickBanFormatResponse, MapStatusResponse,
-    MatchStatusDetailsResponse, MatchStatusLogResponse, PaginationMetaResponse, PermissionResponse,
+    MatchLineupPlayerResponse, MatchLineupResponse, MatchParticipantsResponse,
+    MatchResultOverrideResponse, MatchStatusDetailsResponse, MatchStatusLogResponse,
+    MyTournamentRegistrationsResponse, PaginationMetaResponse, PermissionResponse,
     PlatformStatsResponse, PlayerLeagueTeamMembershipResponse, PlayerResponse,
     PlayerSearchResponse, ProgressionResponse, RankTierResponse, RegisterResponse,
     ResultClaimResponse, ResultClaimSubmissionResponse, ResultConfirmationResponse,
     ResultDisputeResponse, RoleResponse, RoleWithPermissionsResponse, ScheduleProposalResponse,
     SeededParticipantResponse, SocialLinksResponse, SuggestedTimeResponse, TeamSizeConfig,
-    TimeSlotResponse, TournamentBracketResponse, TournamentMapPoolResponse,
-    TournamentMatchResponse, TournamentRegistrationResponse, TournamentResponse,
-    TournamentStageResponse, TournamentSummaryResponse, UploadInfoResponse,
+    TimeSlotResponse, TournamentBracketResponse, TournamentInvitationResponse,
+    TournamentMapPoolResponse, TournamentMatchResponse, TournamentRegistrationResponse,
+    TournamentResponse, TournamentStageResponse, TournamentSummaryResponse, UploadInfoResponse,
     UserLeagueMembershipResponse, UserResponse, UserRoleAssignmentResponse,
     ValidationResultResponse, VetoActionResponse, VetoActionResultResponse, VetoFormatResponse,
-    VetoSessionResponse, VetoSessionStateResponse, WithdrawalResponse,
+    VetoSessionResponse, VetoSessionStateResponse, WithdrawalResponse, WorkshopMapDetailsResponse,
 };
 use crate::error::{ApiError, FieldErrorDto};
 use crate::handlers::{
-    admin, auth, availability, awards, bans, demos, dispute, evidence, forfeit, games,
-    league_teams, leagues, player_game_profiles, players, progression, result_reviews, results,
-    roles, steam_auth, steam_tracking, tournaments, uploads, users, veto, veto_delegates,
+    admin, auth, availability, awards, bans, demos, dispute, evidence, forfeit, game_servers,
+    games, league_teams, leagues, player_game_profiles, players, progression, result_reviews,
+    results, roles, steam_auth, steam_tracking, tournaments, uploads, users, veto, veto_delegates,
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -135,6 +142,7 @@ use utoipa_swagger_ui::SwaggerUi;
         games::disable_game,
         games::add_map,
         games::update_map,
+        games::get_workshop_map_details,
         games::remove_map,
         games::set_rank_tiers,
         games::update_team_size,
@@ -165,8 +173,6 @@ use utoipa_swagger_ui::SwaggerUi;
         players::get_my_profile,
         players::update_my_profile,
         player_game_profiles::list_player_game_profiles,
-        player_game_profiles::get_player_game_profile,
-        player_game_profiles::get_my_game_profiles,
         player_game_profiles::submit_player_rating,
         player_game_profiles::get_player_rating_history,
         player_game_profiles::get_player_mm_stats,
@@ -179,6 +185,11 @@ use utoipa_swagger_ui::SwaggerUi;
         users::get_current_user,
         users::get_my_roles,
         users::get_my_matches,
+        // P-65: the route (`routes/users.rs`) and the `#[utoipa::path]`
+        // annotation both existed; only this line was missing, so the operation
+        // never reached the spec and `captainActions.ts` had to cast the path to
+        // `never` to call it. Same family as P-52.
+        users::get_my_action_items,
         // League Seasons
         league_teams::season::create_season,
         league_teams::season::get_season,
@@ -228,12 +239,16 @@ use utoipa_swagger_ui::SwaggerUi;
         tournaments::finalize_tournament,
         tournaments::create_stage,
         tournaments::get_stages,
+        tournaments::create_invitation,
+        tournaments::list_invitations,
+        tournaments::revoke_invitation,
         tournaments::register_team,
         tournaments::register_player,
         tournaments::get_registrations,
+        tournaments::get_my_registrations,
+        tournaments::get_registration_counts,
         tournaments::check_in,
         // Registration management
-        tournaments::withdraw,
         tournaments::approve_registration,
         tournaments::reject_registration,
         tournaments::disqualify,
@@ -249,17 +264,20 @@ use utoipa_swagger_ui::SwaggerUi;
         tournaments::get_brackets,
         tournaments::get_matches,
         tournaments::get_match,
+        tournaments::get_match_participants,
         // Match lifecycle
         tournaments::get_match_status,
         tournaments::get_match_status_history,
         tournaments::match_check_in,
-        tournaments::schedule_match,
+        tournaments::declare_lineup,
+        tournaments::get_match_lineups,
         tournaments::forfeit_match,
         tournaments::admin_match_transition,
         // Match scheduling (proposal workflow)
         tournaments::propose_schedule,
         tournaments::accept_schedule_proposal,
         tournaments::reject_schedule_proposal,
+        tournaments::cancel_schedule_proposal,
         tournaments::counter_propose,
         tournaments::get_active_proposal,
         tournaments::get_proposal_history,
@@ -290,6 +308,9 @@ use utoipa_swagger_ui::SwaggerUi;
         results::list_result_claims,
         results::confirm_result,
         results::dispute_result,
+        results::admin_override_match_result,
+        results::admin_list_match_result_overrides,
+        results::admin_list_entity_changes,
         // Veto (map pick/ban)
         veto::create_veto_session,
         veto::get_veto_session,
@@ -317,7 +338,6 @@ use utoipa_swagger_ui::SwaggerUi;
         evidence::get_demo_stats,
         evidence::link_demo,
         // Progression (bracket advancement)
-        progression::get_progression,
         progression::revert_progression,
         progression::reapply_progression,
         progression::process_progression,
@@ -339,6 +359,28 @@ use utoipa_swagger_ui::SwaggerUi;
         dispute::admin_resolve_rematch,
         dispute::admin_resolve_adjusted,
         dispute::admin_resolve_double_dq,
+        // Game servers (admin registry)
+        game_servers::admin::list_game_servers,
+        game_servers::admin::create_game_server,
+        game_servers::admin::get_game_server,
+        game_servers::admin::update_game_server,
+        game_servers::admin::delete_game_server,
+        game_servers::admin::mint_enrollment_token,
+        game_servers::admin::revoke_agent,
+        game_servers::admin::list_bookings,
+        game_servers::admin::create_booking,
+        game_servers::admin::delete_booking,
+        game_servers::admin::send_command,
+        game_servers::match_server::get_match_server,
+        game_servers::match_server::assign_match_server,
+        game_servers::match_server::cancel_match_server,
+        game_servers::substitutions::create_substitution,
+        game_servers::substitutions::list_substitutions,
+        game_servers::substitutions::cancel_substitution,
+        game_servers::substitutions::approve_substitution,
+        game_servers::substitutions::reject_substitution,
+        game_servers::substitutions::substitution_options,
+        game_servers::match_server::restore_match_server,
         // Steam tracking
         steam_tracking::register_tracking,
         steam_tracking::get_tracking,
@@ -354,9 +396,9 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::categorize_demo,
         demos::set_demo_visibility,
         demos::associate_demo,
+        demos::requeue_demo,
         demos::link_demo_to_match,
         demos::get_demo_status_counts,
-        demos::get_pending_demos,
         demos::get_demos_for_match,
         demos::unlink_demo_from_match,
         demos::batch_catalog_demos,
@@ -367,6 +409,11 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::process_unlinked_demos,
         demos::get_auto_link_setting,
         demos::update_auto_link_setting,
+        // Ingestion pipeline operator reads (P-73) — admin-authenticated
+        // equivalents of the X-API-Key /v1/internal reads.
+        demos::get_pipeline_overview,
+        demos::list_pipeline_tracking,
+        demos::list_pipeline_discovered_matches,
         // Result reviews
         result_reviews::get_result_review,
         result_reviews::acknowledge_result_review,
@@ -411,6 +458,7 @@ use utoipa_swagger_ui::SwaggerUi;
             GameDetailResponse,
             TeamSizeConfig,
             MapInfoResponse,
+            WorkshopMapDetailsResponse,
             RankTierResponse,
             MapPickBanFormatResponse,
             UpdateGameRequest,
@@ -438,6 +486,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
             // Users
             UserResponse,
+            crate::dto::responses::ActionItemResponse,
             crate::dto::requests::tournament::MyMatchesQuery,
 
             // Auth
@@ -465,6 +514,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
             // Bans
             BanResponse,
+            portal_domain::entities::ban::BanType,
             BanListResponse,
             PaginationMetaResponse,
             CreateBanRequest,
@@ -519,6 +569,14 @@ use utoipa_swagger_ui::SwaggerUi;
             TournamentStageResponse,
             TournamentBracketResponse,
             TournamentRegistrationResponse,
+            MyTournamentRegistrationsResponse,
+            crate::dto::responses::TournamentRegistrationCountsResponse,
+            MatchParticipantsResponse,
+            MatchResultOverrideResponse,
+            AdminOverrideMatchResultRequest,
+            TournamentInvitationResponse,
+            portal_core::types::TournamentInvitationStatus,
+            crate::dto::requests::CreateTournamentInvitationRequest,
             TournamentMatchResponse,
             SeededParticipantResponse,
             crate::dto::responses::TournamentStandingResponse,
@@ -530,7 +588,6 @@ use utoipa_swagger_ui::SwaggerUi;
             CreateTournamentStageRequest,
             RegisterTeamRequest,
             RegisterPlayerRequest,
-            ScheduleMatchRequest,
             SubmitMatchResultRequest,
             RejectRegistrationRequest,
             DisqualifyRequest,
@@ -541,6 +598,12 @@ use utoipa_swagger_ui::SwaggerUi;
             MatchStatusDetailsResponse,
             MatchStatusLogResponse,
             MatchCheckInRequest,
+            DeclareLineupRequest,
+            MatchLineupResponse,
+            MatchLineupPlayerResponse,
+            portal_core::types::LineupStatus,
+            portal_core::types::LineupSource,
+            portal_core::types::ParticipationStatus,
             AdminMatchTransitionRequest,
             ForfeitMatchRequest,
             // Match scheduling
@@ -548,6 +611,37 @@ use utoipa_swagger_ui::SwaggerUi;
             ProposeScheduleRequest,
             AcceptScheduleProposalRequest,
             RejectScheduleProposalRequest,
+            CancelScheduleProposalRequest,
+            portal_core::types::TournamentMatchStatus,
+            portal_core::types::TournamentStatus,
+            portal_core::types::TournamentRegistrationStatus,
+            portal_core::types::StageStatus,
+            // P-112: every entry below this comment used to be stringified by the
+            // DTO in front of an enum that already derived `Serialize` +
+            // `ToSchema`, so no union reached the generated client and the
+            // matching `statusMaps.ts` entry could not be compile-locked.
+            portal_core::types::StageFormat,
+            portal_core::types::BracketStatus,
+            portal_core::types::ProposalStatus,
+            portal_core::types::SeasonStatus,
+            portal_core::types::RosterLockStatus,
+            portal_core::types::LeagueTeamStatus,
+            portal_core::types::LeagueTeamSeasonStatus,
+            portal_core::types::LeagueTeamMemberStatus,
+            portal_core::types::LeagueTeamRole,
+            portal_core::types::LeagueTeamInvitationStatus,
+            portal_core::types::DemoStatus,
+            portal_core::types::DemoCategory,
+            portal_domain::entities::result_claim::ClaimStatus,
+            portal_domain::entities::result_review::ResultReviewStatus,
+            portal_domain::entities::evidence::EvidenceStatus,
+            portal_core::types::EvidenceType,
+            portal_domain::entities::league::LeagueStatus,
+            portal_domain::entities::dispute::DisputeStatus,
+            portal_domain::entities::dispute::DisputePriority,
+            portal_domain::entities::dispute::DisputeReason,
+            portal_domain::entities::audit::ChangeType,
+            EntityChangeResponse,
             CounterProposeRequest,
             AdminScheduleRequest,
             // Availability
@@ -663,6 +757,33 @@ use utoipa_swagger_ui::SwaggerUi;
             ProcessUnlinkedDemosResponse,
             UpdateAutoLinkSettingRequest,
             AutoLinkSettingResponse,
+            // Ingestion pipeline (P-73)
+            PipelineOverviewResponse,
+            TrackingHealthSummaryResponse,
+            TrackingHealthEntryResponse,
+            DiscoveredMatchQueueResponse,
+            DiscoveredMatchAdminResponse,
+            // Game servers
+            crate::handlers::game_servers::admin::CreateGameServerRequest,
+            crate::handlers::game_servers::admin::UpdateGameServerRequest,
+            crate::handlers::game_servers::admin::GameServerResponse,
+            crate::handlers::game_servers::admin::EnrollmentTokenResponse,
+            crate::handlers::game_servers::admin::RevokeAgentResponse,
+            crate::handlers::game_servers::admin::CreateServerBookingRequest,
+            crate::handlers::game_servers::admin::ServerBookingResponse,
+            crate::handlers::game_servers::admin::SendCommandRequest,
+            crate::handlers::game_servers::admin::SendCommandResponse,
+            portal_core::types::GameServerStatus,
+            portal_core::types::ReservationStatus,
+            crate::handlers::game_servers::match_server::MatchServerResponse,
+            crate::handlers::game_servers::match_server::LiveScoreResponse,
+            crate::handlers::game_servers::substitutions::CreateSubstitutionRequest,
+            crate::handlers::game_servers::substitutions::SubstitutionResponse,
+            crate::handlers::game_servers::substitutions::SubstitutionOptionsSide,
+            crate::handlers::game_servers::substitutions::SubstitutionPlayerOption,
+            portal_core::types::SubstitutionStatus,
+            crate::handlers::game_servers::match_server::RestoreBackupRequest,
+            crate::handlers::game_servers::match_server::RestoreBackupResponse,
             // Steam Tracking
             crate::handlers::steam_tracking::RegisterSteamTrackingRequest,
             crate::handlers::steam_tracking::UpdateSteamTrackingRequest,
@@ -720,6 +841,7 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "demos", description = "Demo file catalog and browsing"),
         (name = "result_reviews", description = "Result review and validation discrepancy handling"),
         (name = "steam_tracking", description = "CS2 Steam match tracking registration"),
+        (name = "game_servers", description = "Game server registry and agent management"),
         (name = "awards", description = "Tournament/season awards, stat leaderboards, and trophy cases")
     ),
     modifiers(&SecurityAddon)
@@ -762,4 +884,251 @@ pub fn openapi_routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
 /// Provides interactive API documentation at `/swagger-ui`.
 pub fn swagger_routes() -> SwaggerUi {
     SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi())
+}
+
+#[cfg(test)]
+mod operation_id_uniqueness {
+    use super::*;
+    use std::collections::HashMap;
+    use utoipa::OpenApi;
+
+    /// Every `operationId` in the served spec must be unique.
+    ///
+    /// utoipa defaults `operationId` to the handler's function name, so two
+    /// handlers with the same name in different modules collide silently — the
+    /// spec still serves, but `openapi-typescript` emits a client that does not
+    /// compile (`TS2300: Duplicate identifier`). That is exactly what happened
+    /// with `leagues::list_invitations` vs `tournaments::list_invitations`: the
+    /// tournament invitation endpoints could not be typed at all until one was
+    /// renamed with an explicit `operation_id`. A spec that serves fine but
+    /// breaks every generated client is the kind of defect nothing else here
+    /// would catch.
+    #[test]
+    fn every_operation_id_is_unique() {
+        let doc = ApiDoc::openapi();
+        let mut seen: HashMap<String, Vec<String>> = HashMap::new();
+
+        for (path, item) in doc.paths.paths {
+            let ops = [
+                ("GET", item.get),
+                ("PUT", item.put),
+                ("POST", item.post),
+                ("DELETE", item.delete),
+                ("PATCH", item.patch),
+                ("HEAD", item.head),
+                ("OPTIONS", item.options),
+                ("TRACE", item.trace),
+            ];
+            for (method, op) in ops {
+                if let Some(id) = op.and_then(|o| o.operation_id) {
+                    seen.entry(id).or_default().push(format!("{method} {path}"));
+                }
+            }
+        }
+
+        let dupes: Vec<_> = seen.iter().filter(|(_, v)| v.len() > 1).collect();
+        assert!(
+            dupes.is_empty(),
+            "duplicate operationId(s) would produce an uncompilable generated client: {dupes:#?}\n\
+             Fix by adding `operation_id = \"...\"` to the #[utoipa::path] of one handler."
+        );
+    }
+}
+
+#[cfg(test)]
+mod enum_fields_are_not_stringified {
+    use super::*;
+    use utoipa::OpenApi;
+
+    /// Response fields that MUST publish an enum union, not a bare `string`:
+    /// `(schema, field, referenced enum)`.
+    const TYPED: &[(&str, &str, &str)] = &[
+        ("DisputeResponse", "priority", "DisputePriority"),
+        ("DisputeResponse", "reason", "DisputeReason"),
+        ("DemoResponse", "category", "DemoCategory"),
+        ("BanResponse", "ban_type", "BanType"),
+        ("TournamentStageResponse", "format", "StageFormat"),
+        ("LeagueTeamMemberResponse", "role", "LeagueTeamRole"),
+        (
+            "LeagueTeamMemberWithPlayerResponse",
+            "role",
+            "LeagueTeamRole",
+        ),
+        (
+            "PlayerLeagueTeamMembershipResponse",
+            "role",
+            "LeagueTeamRole",
+        ),
+        ("LeagueTeamInvitationResponse", "role", "LeagueTeamRole"),
+        (
+            "LeagueTeamInvitationWithTeamResponse",
+            "role",
+            "LeagueTeamRole",
+        ),
+        // P-175/P-178 follow-through: the two fields typed so
+        // `evidenceTypeMap` and `leagueStatusMap` could be keyed.
+        ("EvidenceResponse", "evidence_type", "EvidenceType"),
+        ("EvidenceSummaryResponse", "evidence_type", "EvidenceType"),
+        (
+            "DiscoveredEvidenceResponse",
+            "evidence_type",
+            "EvidenceType",
+        ),
+        ("LeagueResponse", "status", "LeagueStatus"),
+    ];
+
+    /// P-112: a DTO field typed `String` in front of an enum that already derives
+    /// `Serialize` + `ToSchema` throws the union away, and the frontend's status
+    /// map for that field then cannot be keyed — so it becomes the only kind of
+    /// map that can still drift. That is precisely where P-79 (`critical` vs
+    /// `urgent`) and P-91 happened.
+    ///
+    /// This asserts the shape of the PUBLISHED SCHEMA rather than the Rust type,
+    /// because the published schema is what the generated client is built from: a
+    /// `#[schema(value_type = String)]`, a revert to `.to_string()`, or dropping
+    /// the enum from `components(schemas)` all regress the client while the DTO
+    /// still looks enum-typed at a glance.
+    #[test]
+    fn declared_enums_reach_the_client_as_unions() {
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("serialise spec");
+        let schemas = &doc["components"]["schemas"];
+
+        let mut problems = Vec::new();
+        for (schema, field, want) in TYPED {
+            let prop = &schemas[schema]["properties"][field];
+            if prop.is_null() {
+                problems.push(format!("{schema}.{field} is absent from the spec"));
+                continue;
+            }
+            // utoipa emits either a bare `$ref` or `allOf: [{$ref}]` for a
+            // referenced schema; both become a union in the generated client.
+            let reference = prop["$ref"]
+                .as_str()
+                .or_else(|| prop["allOf"][0]["$ref"].as_str());
+            match reference {
+                Some(r) if r.ends_with(&format!("/{want}")) => {}
+                Some(r) => problems.push(format!("{schema}.{field} references {r}, want {want}")),
+                None => problems.push(format!(
+                    "{schema}.{field} publishes `{}` instead of a $ref to {want} — the enum \
+                     exists and the DTO is throwing it away (P-112)",
+                    prop["type"].as_str().unwrap_or("<no type>")
+                )),
+            }
+            if !schemas[want]["enum"].is_array() {
+                problems.push(format!(
+                    "{want} is not registered in components(schemas), so no union is generated"
+                ));
+            }
+        }
+
+        assert!(problems.is_empty(), "P-112 regressions: {problems:#?}");
+    }
+}
+
+#[cfg(test)]
+mod every_route_is_documented {
+    use std::collections::BTreeSet;
+
+    /// Handler modules whose routes are deliberately absent from the public spec.
+    ///
+    /// `internal.rs` is the API-key surface the demo scanner and enricher call;
+    /// it is not part of the client contract and publishing it would put
+    /// service-to-service endpoints in the generated browser client.
+    /// `veto_ws::ws_upgrade` is a WebSocket upgrade, not an HTTP operation —
+    /// OpenAPI has no way to describe it.
+    // `agent` and `matchzy` are game-server plumbing (token/X-API-Key
+    // authenticated service-to-service routes from the MatchZy integration),
+    // deliberately absent from the public spec for the same reason as
+    // `internal` — no browser client should ever call them in a typed way.
+    const EXEMPT: &[&str] = &["internal", "veto_ws", "agent", "matchzy"];
+
+    /// Every handler the router serves must appear in `paths(...)`.
+    ///
+    /// P-65: `GET /v1/users/me/action-items` had a live route AND a complete
+    /// `#[utoipa::path]` annotation, and was still invisible to every client for
+    /// months, because the one-line registration in `paths(...)` was never added.
+    /// Nothing failed: the endpoint worked when called by hand, the annotation
+    /// looked like proof it was documented, and the frontend papered over the
+    /// missing type with `api.GET('…' as never)` — a cast that then silently
+    /// disabled type checking on the whole call. That is the same shape as P-52
+    /// (a spec that serves fine but breaks the generated client), and this is the
+    /// guard that makes the class self-detecting: registration is now something
+    /// you cannot forget, only deliberately exempt.
+    ///
+    /// Matching is by handler FUNCTION NAME, not by the full path, because
+    /// `routes/*.rs` reaches handlers through re-exports (`league_teams::get_team`)
+    /// while `paths(...)` names them fully (`league_teams::team::get_team`).
+    #[test]
+    fn every_router_handler_appears_in_paths() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+        // Handler idents in route position: `get(users::get_my_action_items)`.
+        let mut routed: BTreeSet<(String, String)> = BTreeSet::new();
+        for entry in std::fs::read_dir(manifest.join("src/routes")).expect("routes dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("read route file");
+            for (idx, _) in src.match_indices("::") {
+                // Walk back over `a::b::c` and forward to the closing token, then
+                // require the whole thing to sit inside a method-router call.
+                let head =
+                    src[..idx].rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'));
+                let start = head.map_or(0, |p| p + 1);
+                let rest = &src[idx + 2..];
+                let end = rest
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                    .unwrap_or(rest.len());
+                let full = &src[start..idx + 2 + end];
+                let prefix = src[..start].trim_end();
+                let is_route_position = ["get(", "post(", "put(", "patch(", "delete("]
+                    .iter()
+                    .any(|m| prefix.ends_with(m));
+                if !is_route_position || !full.contains("::") {
+                    continue;
+                }
+                let module = full.split("::").next().unwrap_or_default().to_string();
+                let func = full.rsplit("::").next().unwrap_or_default().to_string();
+                if EXEMPT.contains(&module.as_str()) {
+                    continue;
+                }
+                routed.insert((func, full.to_string()));
+            }
+        }
+        assert!(
+            routed.len() > 200,
+            "route extraction found only {} handlers — the parser has stopped matching, \
+             which would make this guard vacuous",
+            routed.len()
+        );
+
+        // Handler idents inside the `paths(...)` block of the #[openapi] attribute.
+        let doc =
+            std::fs::read_to_string(manifest.join("src/openapi.rs")).expect("read openapi.rs");
+        let block_start = doc.find("    paths(").expect("paths( block");
+        let block_end = doc[block_start..]
+            .find("    components(")
+            .expect("components( block")
+            + block_start;
+        let documented: BTreeSet<&str> = doc[block_start..block_end]
+            .lines()
+            .map(|l| l.trim().trim_end_matches(','))
+            .filter(|l| !l.starts_with("//") && l.contains("::"))
+            .filter_map(|l| l.rsplit("::").next())
+            .collect();
+
+        let missing: Vec<&String> = routed
+            .iter()
+            .filter(|(func, _)| !documented.contains(func.as_str()))
+            .map(|(_, full)| full)
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "these handlers are routed but missing from `paths(...)` in openapi.rs, so no \
+             client can call them in a typed way (P-65): {missing:#?}\n\
+             Add each to the `paths(...)` list, or add its module to EXEMPT with a reason."
+        );
+    }
 }

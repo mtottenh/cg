@@ -30,6 +30,10 @@ pub fn routes() -> Router<AppState> {
             "/{game_id}/maps/catalog/{map_id}",
             patch(games::update_map).delete(games::remove_map),
         )
+        .route(
+            "/{game_id}/workshop-maps/{workshop_id}",
+            get(games::get_workshop_map_details),
+        )
         // Rank tiers management (admin)
         .route("/{game_id}/rank-tiers", put(games::set_rank_tiers))
         // Team size management (admin)

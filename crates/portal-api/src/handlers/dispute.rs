@@ -23,6 +23,7 @@ use portal_domain::entities::dispute::{
     AuthorType, Dispute, DisputePriority, DisputeReason, DisputeStatus,
 };
 use portal_domain::repositories::tournament::TournamentMatchRepository;
+use portal_domain::services::tournament::RegistrationActor;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -77,27 +78,25 @@ pub async fn raise_dispute(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid registration ID format"))?;
 
-    // The caller must belong to the registration they claim to dispute for —
-    // directly as the registered player, or as an active member of the
-    // registration's team-season. Tournament admins may dispute on behalf of
-    // a registration.
+    // The caller must belong to the registration they claim to dispute for.
+    // `speaks_for` is the single definition of that (P-168) — the same one
+    // result submission and confirmation now use, so a dispute can no longer
+    // be raised by someone who would have been refused the submission.
+    // Tournament admins may dispute on behalf of a registration.
     if !perm.has_admin_override(&auth, ScopeType::Tournament).await {
         let registration = state
             .registration_service
             .get_registration(registration_id)
             .await?;
 
-        let is_registered_player = registration.player_id == Some(auth.player_id);
-        let is_team_member = if let Some(ts_id) = registration.team_season_id {
-            state
-                .league_team_service
-                .is_member(ts_id, auth.player_id)
-                .await?
-        } else {
-            false
-        };
-
-        if !is_registered_player && !is_team_member {
+        if !state
+            .registration_service
+            .speaks_for(
+                &registration,
+                RegistrationActor::new(auth.user_id, auth.player_id),
+            )
+            .await?
+        {
             return Err(ApiError::forbidden(
                 "Not authorized to raise a dispute for this registration",
             ));
@@ -335,15 +334,13 @@ async fn is_dispute_participant(
     {
         let registration = state.registration_service.get_registration(reg_id).await?;
 
-        if registration.player_id == Some(auth.player_id) {
-            return Ok(true);
-        }
-
-        if let Some(ts_id) = registration.team_season_id
-            && state
-                .league_team_service
-                .is_member(ts_id, auth.player_id)
-                .await?
+        if state
+            .registration_service
+            .speaks_for(
+                &registration,
+                RegistrationActor::new(auth.user_id, auth.player_id),
+            )
+            .await?
         {
             return Ok(true);
         }

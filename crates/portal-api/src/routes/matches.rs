@@ -1,6 +1,6 @@
 //! Match routes for veto, result submission, and evidence.
 
-use crate::handlers::{demos, evidence, progression, result_reviews, results, veto};
+use crate::handlers::{demos, evidence, result_reviews, results, veto};
 use crate::state::AppState;
 use axum::Router;
 use axum::routing::{delete, get, post};
@@ -79,8 +79,6 @@ pub fn routes() -> Router<AppState> {
             "/{match_id}/evidence/{evidence_id}/access",
             get(evidence::get_access_url),
         )
-        // Progression endpoints
-        .route("/{match_id}/progression", get(progression::get_progression))
         // Demo endpoints
         .route("/{match_id}/demos", get(demos::get_demos_for_match))
         // Result review endpoints

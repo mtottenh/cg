@@ -5,7 +5,9 @@ use portal_core::types::{
     MatchFormat, RegistrationType, SchedulingMode, StageFormat, TournamentFormat,
     TournamentParticipantType, WithdrawalPolicy,
 };
-use portal_core::{GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentId};
+use portal_core::{
+    GameId, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId, TournamentId, UserId,
+};
 use portal_domain::entities::tournament::{
     CreateTournamentCommand, CreateTournamentStageCommand, UpdateTournamentCommand,
 };
@@ -593,6 +595,49 @@ impl RegisterPlayerRequest {
     }
 }
 
+/// Request to invite a user or team to an invite-only tournament.
+///
+/// Exactly one target must be supplied: `user_id` for individual
+/// tournaments, `team_season_id` for team tournaments. Sending both, or
+/// neither, is a 400.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct CreateTournamentInvitationRequest {
+    /// User to invite (individual tournaments).
+    #[serde(default)]
+    pub user_id: Option<String>,
+
+    /// Team-season to invite (team tournaments).
+    #[serde(default)]
+    pub team_season_id: Option<String>,
+
+    /// Optional note shown to the invitee.
+    #[validate(length(max = 500))]
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+impl CreateTournamentInvitationRequest {
+    /// Parse the invite target IDs.
+    pub fn parse_target(
+        &self,
+    ) -> Result<(Option<UserId>, Option<LeagueTeamSeasonId>), crate::error::ApiError> {
+        let user_id = self
+            .user_id
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| crate::error::ApiError::bad_request("Invalid user ID format"))?;
+        let team_season_id = self
+            .team_season_id
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| crate::error::ApiError::bad_request("Invalid team season ID format"))?;
+
+        Ok((user_id, team_season_id))
+    }
+}
+
 /// Request to check in for a tournament.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CheckInRequest {
@@ -656,13 +701,6 @@ pub struct SeedAssignment {
 // =============================================================================
 // TOURNAMENT MATCH REQUESTS
 // =============================================================================
-
-/// Request to schedule a match.
-#[derive(Debug, Deserialize, Validate, ToSchema)]
-pub struct ScheduleMatchRequest {
-    /// Scheduled start time.
-    pub scheduled_at: DateTime<Utc>,
-}
 
 /// Request to submit match results.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -761,11 +799,57 @@ pub struct AdminMatchTransitionRequest {
     pub override_reason: String,
 }
 
+/// Request for an admin to correct a match's recorded score (P-72).
+///
+/// The only score-writing admin path used to be
+/// `POST /v1/admin/disputes/{id}/resolve/adjusted`, which requires a dispute
+/// row to exist. A result that both parties confirmed — or that auto-confirmed
+/// after the 24h window — with nobody disputing it therefore had **no**
+/// operator-reachable correction path at all, while the bracket kept
+/// progressing on the wrong number.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct AdminOverrideMatchResultRequest {
+    /// Corrected score for participant 1.
+    #[validate(range(min = 0, max = 1000))]
+    pub participant1_score: i32,
+
+    /// Corrected score for participant 2.
+    #[validate(range(min = 0, max = 1000))]
+    pub participant2_score: i32,
+
+    /// Why the score is being corrected. Recorded in the audit trail; an
+    /// unexplained override is indistinguishable from tampering, so this is
+    /// required rather than optional.
+    #[validate(length(min = 5, max = 500))]
+    pub reason: String,
+}
+
 /// Request to forfeit a match.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct ForfeitMatchRequest {
     /// Registration ID of the participant forfeiting.
     pub registration_id: String,
+}
+
+/// Request to declare a provisional lineup for a match.
+///
+/// The lineup is a captain's *promise* of who will play, for opponent
+/// visibility and an advisory eligibility pre-check. It is optional; the
+/// authoritative lineup is derived from the demo after the match is played.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct DeclareLineupRequest {
+    /// Registration ID this lineup is for (must be a participant in the match).
+    pub registration_id: String,
+    /// Player IDs expected to play (up to 20).
+    #[validate(length(max = 20))]
+    pub player_ids: Vec<String>,
+    /// If true the lineup is marked `submitted`; otherwise left `draft`.
+    #[serde(default)]
+    pub submit: bool,
+    /// Optional captain note.
+    #[validate(length(max = 1000))]
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 // =============================================================================
@@ -805,6 +889,14 @@ pub struct RejectScheduleProposalRequest {
     #[validate(length(max = 1000))]
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+/// Request to withdraw a schedule proposal you made yourself.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct CancelScheduleProposalRequest {
+    /// ID of the proposal to withdraw. Must be a pending proposal on this
+    /// match that the caller proposed.
+    pub proposal_id: String,
 }
 
 /// Request to counter-propose new times.

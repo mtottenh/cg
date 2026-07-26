@@ -76,6 +76,7 @@ rand = "0.9"
 
 # Tracing
 tracing = { workspace = true }
+metrics = { workspace = true }
 
 [dev-dependencies]
 portal-test = { path = "../portal-test" }
@@ -87,6 +88,7 @@ mime = "0.3"
 sqlx = { workspace = true }
 tokio-tungstenite = "0.26"
 futures-util = { workspace = true }
+rcgen = { version = "0.13", features = ["pem"] }
 image = { workspace = true }
 tracing-subscriber = { workspace = true }
 portal-scanner = { path = "../portal-scanner" }

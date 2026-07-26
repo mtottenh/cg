@@ -124,12 +124,20 @@ pub struct LifecyclePassSummary {
     pub check_in_deadlines_repaired: u32,
     /// Result claims auto-confirmed past their `auto_confirm_at` deadline.
     pub claims_auto_confirmed: u32,
+    /// Pending schedule proposals expired past their deadline.
+    pub proposals_expired: u32,
     /// Failed/stuck `match_completion` sagas successfully re-driven.
     pub sagas_redriven: u32,
     /// Evidence records expired.
     pub evidence_expired: u32,
     /// Stale pending evidence records cleaned.
     pub evidence_stale_cleaned: u32,
+    /// Game servers marked offline for missing agent heartbeats.
+    pub game_servers_marked_offline: u32,
+    /// Queued reservations allocated + loaded this pass.
+    pub reservations_allocated: u32,
+    /// Stuck/silent reservations re-driven or reconciled.
+    pub reservations_reconciled: u32,
     /// Errors encountered (each already logged; the pass continues).
     pub errors: u32,
 }
@@ -207,6 +215,26 @@ pub async fn run_lifecycle_pass(
     }
 
     // ------------------------------------------------------------------
+    // 3b: expire dead schedule proposals
+    //
+    // `SchedulingService::expire_proposals` existed with NO caller
+    // (Discord-design §9.2), so a proposal whose deadline passed sat
+    // `pending` forever — still rendered as the match's active proposal,
+    // still blocking a new one (`canPropose` keys off "no active
+    // proposal"), and still listed as a to-do. Exactly the shape of the
+    // other sweep phases.
+    // ------------------------------------------------------------------
+    match state.scheduling_service.expire_proposals().await {
+        Ok(expired) => {
+            summary.proposals_expired = u32::try_from(expired.len()).unwrap_or(u32::MAX);
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: expire_proposals failed");
+            summary.errors += 1;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 4: auto-confirm overdue result claims + run their completion sagas
     // ------------------------------------------------------------------
     process_overdue_result_claims(state, &mut summary).await;
@@ -222,6 +250,9 @@ pub async fn run_lifecycle_pass(
     if sweep_evidence {
         match state.evidence_service.process_expired().await {
             Ok(expired) => {
+                for _ in &expired {
+                    crate::observability::record_evidence("any", "expired");
+                }
                 summary.evidence_expired = u32::try_from(expired.len()).unwrap_or(u32::MAX);
             }
             Err(e) => {
@@ -241,6 +272,30 @@ pub async fn run_lifecycle_pass(
                 error!(error = %e, "lifecycle: stale-pending evidence sweep failed");
                 summary.errors += 1;
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 7: game-server reservations — allocate queued, retry stuck loads,
+    //    reconcile silent matches (§6.6)
+    // ------------------------------------------------------------------
+    let reservation_summary = crate::game_server_flow::run_reservation_pass(state).await;
+    summary.reservations_allocated = reservation_summary.allocated;
+    summary.reservations_reconciled =
+        reservation_summary.load_retried + reservation_summary.reconciled;
+    summary.errors += reservation_summary.errors;
+
+    // ------------------------------------------------------------------
+    // 8: game servers with stale agent heartbeats → offline (§6.7)
+    // ------------------------------------------------------------------
+    match state.game_server_registry.sweep_stale(now).await {
+        Ok(transitioned) => {
+            summary.game_servers_marked_offline =
+                u32::try_from(transitioned.len()).unwrap_or(u32::MAX);
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: game-server staleness sweep failed");
+            summary.errors += 1;
         }
     }
 
@@ -511,6 +566,28 @@ async fn redrive_stuck_completion_sagas(
     for mut execution in candidates {
         let saga_id = execution.id;
 
+        let input =
+            match serde_json::from_value::<MatchCompletionInput>(execution.input_data.clone()) {
+                Ok(input) => MatchCompletionInput {
+                    // A fresh execution record tracks the re-drive; the old
+                    // row stays as the audit trail of the failure.
+                    saga_id: None,
+                    ..input
+                },
+                Err(e) => {
+                    // Cannot raise a stall review without the claim/captains
+                    // the input carries; the error log is the only trace.
+                    // (Rare by construction: the row was written by our own
+                    // serializer.)
+                    error!(%saga_id, error = %e, "lifecycle: unreadable saga input, retiring");
+                    if let Err(e) = coordinator.record_retry(&mut execution, true).await {
+                        error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
+                    }
+                    summary.errors += 1;
+                    continue;
+                }
+            };
+
         // Never re-run a saga that already applied its standings deltas.
         // Burn its remaining retries so it stops being a candidate, and
         // leave it for the admin progression endpoints. Note the step also
@@ -530,6 +607,7 @@ async fn redrive_stuck_completion_sagas(
                 %saga_id,
                 "lifecycle: skipping saga re-drive — standings already applied"
             );
+            raise_progression_stall(state, &input, saga_id).await;
             if let Err(e) = coordinator.record_retry(&mut execution, true).await {
                 error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
                 summary.errors += 1;
@@ -537,26 +615,13 @@ async fn redrive_stuck_completion_sagas(
             continue;
         }
 
-        let input =
-            match serde_json::from_value::<MatchCompletionInput>(execution.input_data.clone()) {
-                Ok(input) => MatchCompletionInput {
-                    // A fresh execution record tracks the re-drive; the old
-                    // row stays as the audit trail of the failure.
-                    saga_id: None,
-                    ..input
-                },
-                Err(e) => {
-                    error!(%saga_id, error = %e, "lifecycle: unreadable saga input, retiring");
-                    if let Err(e) = coordinator.record_retry(&mut execution, true).await {
-                        error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
-                    }
-                    summary.errors += 1;
-                    continue;
-                }
-            };
-
         let match_id = input.match_id;
-        match state.match_completion_saga.execute_completion(input).await {
+        let saga_result = state
+            .match_completion_saga
+            .execute_completion(input.clone())
+            .await;
+        crate::observability::record_saga("match-completion", &saga_result);
+        match saga_result {
             Ok(result) if result.is_paused() => {
                 // Waiting on a result review — not our problem to retry.
                 info!(%saga_id, %match_id, "lifecycle: saga re-drive paused for review");
@@ -579,8 +644,63 @@ async fn redrive_stuck_completion_sagas(
                 if let Err(e) = coordinator.record_retry(&mut execution, false).await {
                     error!(%saga_id, error = %e, "lifecycle: failed to bump saga retry count");
                 }
+                // That bump may have been the last retry — after it, this
+                // row never re-enters find_retryable, so the give-up must
+                // be operator-visible (P-180).
+                if execution.retry_count >= execution.max_retries {
+                    raise_progression_stall(state, &input, saga_id).await;
+                }
             }
         }
+    }
+}
+
+/// P-180: a completion saga leaving the retry pool with bracket progression
+/// possibly half-applied must be operator-visible, not a log line — the old
+/// `compensate()` stamped such rows "compensated" having undone nothing,
+/// and the bracket sat stalled until someone happened to look. Raises a
+/// `progression_stalled` review in the admin queue (idempotent per match).
+///
+/// Completions with no result claim (forfeit-driven) cannot carry a review
+/// row — `result_reviews.result_claim_id` is NOT NULL — so those still only
+/// log, at error level.
+async fn raise_progression_stall(
+    state: &AppState,
+    input: &MatchCompletionInput,
+    saga_id: portal_core::SagaId,
+) {
+    let Some(claim_id) = input.result_claim_id else {
+        error!(
+            %saga_id,
+            match_id = %input.match_id,
+            "lifecycle: completion saga permanently failed with no result claim — \
+             bracket may be stalled; verify via admin match tools"
+        );
+        return;
+    };
+    match state
+        .result_review_service
+        .create_for_progression_stall(
+            claim_id,
+            input.match_id,
+            input.winner_registration_id,
+            input.loser_registration_id,
+        )
+        .await
+    {
+        Ok(Some(review)) => warn!(
+            %saga_id,
+            review_id = %review.id,
+            match_id = %input.match_id,
+            "lifecycle: raised progression-stall review"
+        ),
+        Ok(None) => {}
+        Err(e) => error!(
+            %saga_id,
+            error = %e,
+            match_id = %input.match_id,
+            "lifecycle: failed to raise progression-stall review"
+        ),
     }
 }
 
@@ -616,7 +736,7 @@ async fn run_completion_saga_for_claim(
         )
     };
 
-    state
+    let saga_result = state
         .match_completion_saga
         .execute_completion(MatchCompletionInput {
             match_id: claim.match_id,
@@ -628,8 +748,9 @@ async fn run_completion_saga_for_claim(
             saga_id: None,
             result_claim_id: Some(claim.id),
         })
-        .await
-        .map(|_| ())
+        .await;
+    crate::observability::record_saga("match-completion", &saga_result);
+    saga_result.map(|_| ())
 }
 
 /// Forfeit whichever side failed to check in before the deadline.

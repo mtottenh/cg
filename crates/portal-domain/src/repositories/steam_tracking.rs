@@ -43,6 +43,65 @@ pub trait SteamTrackingRepository: Send + Sync {
         id: SteamTrackingId,
         cmd: UpdatePollResultCommand,
     ) -> Result<SteamTracking, DomainError>;
+
+    /// List tracking entries with their player's identity, worst health
+    /// first, for the admin pipeline view (P-73).
+    ///
+    /// Unlike [`SteamTrackingRepository::find_active_by_game`] this includes
+    /// deactivated entries: an operator asking "why did ingestion stop" needs
+    /// to see a token that was switched off, not only the ones the poller is
+    /// still working through.
+    async fn list_health(
+        &self,
+        game_id: Option<GameId>,
+        limit: i64,
+    ) -> Result<Vec<TrackingHealthEntry>, DomainError>;
+
+    /// Aggregate tracking health counts, optionally scoped to one game.
+    ///
+    /// `stale_after_hours` classifies an entry as stale when its last poll is
+    /// older than that. Never-polled entries are counted separately — a token
+    /// the poller has never touched is a different failure from one it has
+    /// stopped touching.
+    async fn tracking_health_summary(
+        &self,
+        game_id: Option<GameId>,
+        stale_after_hours: i64,
+    ) -> Result<TrackingHealthSummary, DomainError>;
+}
+
+/// A tracking entry joined with the identity of the player it belongs to.
+///
+/// `game_auth_code` is a live Steam credential and is deliberately **not**
+/// part of this projection — the admin surface needs to know that a token is
+/// failing, never what the token is.
+#[derive(Debug, Clone)]
+pub struct TrackingHealthEntry {
+    pub id: SteamTrackingId,
+    pub player_id: PlayerId,
+    pub player_display_name: String,
+    pub game_id: GameId,
+    pub game_slug: String,
+    pub steam_id_64: i64,
+    pub is_active: bool,
+    pub poll_errors: i32,
+    pub last_poll_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_error: Option<String>,
+    /// Whether a share-code cursor has been recorded yet.
+    pub has_share_code: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Aggregate counts over the tracking table.
+#[derive(Debug, Clone, Default)]
+pub struct TrackingHealthSummary {
+    pub total: i64,
+    pub active: i64,
+    pub inactive: i64,
+    pub with_errors: i64,
+    pub never_polled: i64,
+    pub stale: i64,
+    pub last_poll_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Data for creating a new steam tracking entry.

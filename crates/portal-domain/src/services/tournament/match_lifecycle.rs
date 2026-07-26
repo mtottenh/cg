@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::types::TournamentMatchStatus;
 use portal_core::{DomainError, TournamentMatchId, TournamentRegistrationId, UserId};
@@ -16,6 +17,47 @@ use crate::repositories::match_lifecycle::{CreateMatchStatusLog, MatchStatusLogR
 use crate::repositories::tournament::{
     ParticipantSlot, TournamentMatchRepository, TournamentRegistrationRepository,
 };
+
+/// Seam for driving an audited match status transition without depending on
+/// the concrete [`MatchLifecycleService`] generics.
+///
+/// [`crate::services::tournament::ResultService`] uses this to move a match
+/// `in_progress -> awaiting_result` when a result claim is submitted, so the
+/// transition is recorded in `match_status_log` like every other lifecycle
+/// transition instead of being skipped entirely (P-50). Without the
+/// transition the opponent never receives a confirm-result action item and
+/// the claim auto-confirms unseen.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait MatchStatusTransitioner: Send + Sync {
+    /// Transition a match to `to_status`, validating and logging it.
+    async fn transition_status(
+        &self,
+        match_id: TournamentMatchId,
+        to_status: TournamentMatchStatus,
+        triggered_by: TransitionTrigger,
+        reason: Option<String>,
+    ) -> Result<TournamentMatch, DomainError>;
+}
+
+#[async_trait]
+impl<TMR, TRR, MSLR> MatchStatusTransitioner for MatchLifecycleService<TMR, TRR, MSLR>
+where
+    TMR: TournamentMatchRepository,
+    TRR: TournamentRegistrationRepository,
+    MSLR: MatchStatusLogRepository,
+{
+    async fn transition_status(
+        &self,
+        match_id: TournamentMatchId,
+        to_status: TournamentMatchStatus,
+        triggered_by: TransitionTrigger,
+        reason: Option<String>,
+    ) -> Result<TournamentMatch, DomainError> {
+        self.transition(match_id, to_status, triggered_by, reason)
+            .await
+    }
+}
 
 /// Service for managing match lifecycle and state transitions.
 pub struct MatchLifecycleService<TMR, TRR, MSLR>
@@ -166,6 +208,15 @@ where
     /// Record participant check-in for a match.
     ///
     /// Both participants must check in before the match can proceed.
+    ///
+    /// # Authorization
+    ///
+    /// This only binds `registration_id` to the match. Whether
+    /// `checked_in_by` may *act for* that registration (captain / owner /
+    /// delegate / the registered player / tournament staff) is decided one
+    /// layer up — see `handlers::tournaments::require_registration_actor`.
+    /// Callers that bypass the handler (background jobs) are trusted by
+    /// construction.
     #[instrument(skip(self))]
     pub async fn check_in(
         &self,
@@ -174,6 +225,20 @@ where
         checked_in_by: UserId,
     ) -> Result<TournamentMatch, DomainError> {
         let match_ = self.get_match(match_id).await?;
+
+        // Determine which participant is checking in.
+        //
+        // This runs *before* the Scheduled -> CheckingIn auto-transition
+        // below: a registration that isn't in this match must not be able
+        // to move the match's status as a side effect of being rejected.
+        let is_participant1 = match_.participant1_registration_id == Some(registration_id);
+        let is_participant2 = match_.participant2_registration_id == Some(registration_id);
+
+        if !is_participant1 && !is_participant2 {
+            return Err(DomainError::NotAuthorized(
+                "Registration is not a participant in this match".to_string(),
+            ));
+        }
 
         // Check if match is in checking_in status (or transition to it)
         if match_.status != TournamentMatchStatus::CheckingIn {
@@ -195,16 +260,6 @@ where
                     match_.status
                 )));
             }
-        }
-
-        // Determine which participant is checking in
-        let is_participant1 = match_.participant1_registration_id == Some(registration_id);
-        let is_participant2 = match_.participant2_registration_id == Some(registration_id);
-
-        if !is_participant1 && !is_participant2 {
-            return Err(DomainError::NotAuthorized(
-                "Registration is not a participant in this match".to_string(),
-            ));
         }
 
         let slot = if is_participant1 {

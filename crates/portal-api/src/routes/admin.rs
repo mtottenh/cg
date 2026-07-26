@@ -4,7 +4,7 @@ use axum::Router;
 use axum::routing::{delete, get, patch, post};
 
 use crate::handlers::{
-    admin, bans, demos, dispute, forfeit, progression, result_reviews, roles, tournaments,
+    admin, bans, demos, dispute, forfeit, progression, result_reviews, results, roles, tournaments,
 };
 use crate::state::AppState;
 
@@ -57,6 +57,24 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/tournaments/{tournament_id}/generate-next-round",
             post(tournaments::admin_generate_next_swiss_round),
+        )
+        // P-72: the only operator-reachable way to correct a score that was
+        // confirmed (or auto-confirmed) wrong with no dispute raised. Every
+        // other score-writing admin path is keyed on a dispute id.
+        .route(
+            "/tournaments/{tournament_id}/matches/{match_id}/result-override",
+            post(results::admin_override_match_result),
+        )
+        .route(
+            "/tournaments/{tournament_id}/matches/{match_id}/result-overrides",
+            get(results::admin_list_match_result_overrides),
+        )
+        // P-149: the generic entity-changes audit read the route above is a
+        // specialisation of — until it existed, only portal-cli could read
+        // the audit spine.
+        .route(
+            "/audit/entity-changes",
+            get(results::admin_list_entity_changes),
         )
         // Progression admin routes
         .route(
@@ -120,7 +138,6 @@ pub fn routes() -> Router<AppState> {
         .route("/demos", post(demos::catalog_demo))
         .route("/demos/batch", post(demos::batch_catalog_demos))
         .route("/demos/stats", get(demos::get_demo_status_counts))
-        .route("/demos/pending", get(demos::get_pending_demos))
         .route("/demos/{id}/stats", post(demos::submit_demo_stats))
         .route(
             "/demos/{id}/stats-failed",
@@ -129,6 +146,8 @@ pub fn routes() -> Router<AppState> {
         .route("/demos/{id}/categorize", post(demos::categorize_demo))
         .route("/demos/{id}/visibility", post(demos::set_demo_visibility))
         .route("/demos/{id}/associate", post(demos::associate_demo))
+        // P-74: requeue a failed demo (the "Retry Processing" control)
+        .route("/demos/{id}/requeue", post(demos::requeue_demo))
         .route("/demos/{id}/link", post(demos::link_demo_to_match))
         .route(
             "/demos/process-unlinked",
@@ -141,6 +160,15 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/demos/{demo_id}/link/{match_id}",
             delete(demos::unlink_demo_from_match),
+        )
+        // Ingestion-pipeline operator reads (P-73). Admin-authenticated
+        // equivalents of the `X-API-Key` /v1/internal reads — the internal
+        // routes stay service-only and are never exposed to the browser.
+        .route("/pipeline/overview", get(demos::get_pipeline_overview))
+        .route("/pipeline/tracking", get(demos::list_pipeline_tracking))
+        .route(
+            "/pipeline/discovered-matches",
+            get(demos::list_pipeline_discovered_matches),
         )
         // Result review admin routes
         .route("/result-reviews", get(result_reviews::list_pending_reviews))

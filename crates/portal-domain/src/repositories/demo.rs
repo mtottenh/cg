@@ -85,7 +85,15 @@ pub trait DemoRepository: Send + Sync {
     async fn find_ready_unlinked(&self, limit: i64) -> Result<Vec<Demo>, DomainError>;
 
     /// Count demos by status (for admin dashboard).
-    async fn count_by_status(&self) -> Result<Vec<(DemoStatus, i64)>, DomainError>;
+    ///
+    /// `game_id` scopes the rollup to one game; `None` counts every game.
+    /// P-144: this took no argument at all, so per-game admin surfaces rendered
+    /// a cross-game total and a CS2 admin saw numbers inflated by every other
+    /// game's demos.
+    async fn count_by_status(
+        &self,
+        game_id: Option<GameId>,
+    ) -> Result<Vec<(DemoStatus, i64)>, DomainError>;
 
     /// Delete a demo (hard delete, use with caution).
     async fn delete(&self, id: DemoId) -> Result<(), DomainError>;
@@ -158,10 +166,20 @@ pub trait DemoMatchLinkRepository: Send + Sync {
     /// Create a new demo-match link.
     async fn create(&self, link: CreateDemoMatchLink) -> Result<DemoMatchLink, DomainError>;
 
-    /// Update link validation result.
+    /// Record the outcome of validating this link's demo against the match's
+    /// claimed result.
+    ///
+    /// `validated` is the *verdict*, not "a validation ran". P-111: this took
+    /// only the result JSON and unconditionally set `validated = true`, so a
+    /// validation that found the demo contradicting the claim would have lit
+    /// the green "Validated" chip on `DemoBrowser` and `EvidenceDisplay` —
+    /// worse than the dead chip it replaced. The failing verdict is still
+    /// persisted (in `validation_result`, with `validated_at`) so the operator
+    /// can see the errors; it just does not claim the demo corroborates.
     async fn mark_validated(
         &self,
         id: DemoMatchLinkId,
+        validated: bool,
         validation_result: serde_json::Value,
     ) -> Result<DemoMatchLink, DomainError>;
 
@@ -222,6 +240,17 @@ pub trait DemoPlayerRepository: Send + Sync {
     ///
     /// Returns the number of rows that were linked.
     async fn resolve_player_links(&self, demo_id: DemoId) -> Result<u64, DomainError>;
+
+    // NOTE (§0b correction 2026-07-24): a `restrict_attribution_to_lineup`
+    // method briefly lived here, NULLing player_id for demo players outside the
+    // match's lineup. REMOVED: attribution follows registration — a registered
+    // player in a map's demo is attributed for that map, full stop; only
+    // accountless players stay NULL (the base Steam-ID join already does this).
+    // The original P-25 worry — a registered player credited for a match whose
+    // demo they are not in — is already bounded by the demo→match link plus the
+    // per-demo scoping of every stat row: a player absent from the demo has no
+    // rows to attribute. The lineup is review/eligibility input, never an
+    // attribution gate.
 
     /// Delete all player entries for a demo.
     async fn delete_by_demo(&self, demo_id: DemoId) -> Result<(), DomainError>;

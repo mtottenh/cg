@@ -14,7 +14,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use portal_core::{ResultReviewId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::repositories::tournament::TournamentMatchRepository;
-use portal_domain::services::tournament::MatchCompletionInput;
+use portal_domain::services::tournament::{MatchCompletionInput, RegistrationActor};
 use tracing::warn;
 
 /// Extract request ID from headers.
@@ -118,17 +118,14 @@ pub async fn acknowledge_result_review(
             .get_registration(registration_id)
             .await?;
 
-        let is_registered_player = registration.player_id == Some(auth.player_id);
-        let is_team_member = if let Some(ts_id) = registration.team_season_id {
-            state
-                .league_team_service
-                .is_member(ts_id, auth.player_id)
-                .await?
-        } else {
-            false
-        };
-
-        if !is_registered_player && !is_team_member {
+        if !state
+            .registration_service
+            .speaks_for(
+                &registration,
+                RegistrationActor::new(auth.user_id, auth.player_id),
+            )
+            .await?
+        {
             return Err(ApiError::forbidden(
                 "Not authorized to acknowledge for this registration",
             ));
@@ -191,15 +188,28 @@ pub struct AcknowledgeParams {
 // ADMIN ENDPOINTS
 // =============================================================================
 
+/// Query parameters specific to the pending-review queue.
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+pub struct ListReviewsParams {
+    /// Sort order: `newest` (default) or `oldest` (P-129 — work the backlog
+    /// from the far end without paging to it). Declared in the utoipa block
+    /// so the generated client carries it (the P-54 lesson).
+    pub sort: Option<String>,
+}
+
 /// List pending result reviews for admin queue.
 ///
-/// Returns all reviews pending admin action, ordered by creation date.
+/// Returns all reviews pending admin action, **newest first** by default —
+/// the queue is paginated, so a fresh escalation ordered onto the last page
+/// is one nobody ever sees (P-55). `?sort=oldest` flips the order
+/// server-side (P-129).
 #[utoipa::path(
     get,
     path = "/v1/admin/result-reviews",
-    params(PaginationParams),
+    params(PaginationParams, ListReviewsParams),
     responses(
         (status = 200, description = "List of pending reviews", body = DataResponse<ResultReviewListResponse>),
+        (status = 400, description = "Unknown sort value", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Admin only", body = ApiError),
     ),
@@ -212,6 +222,7 @@ pub async fn list_pending_reviews(
     perm_checker: PermissionChecker,
     headers: HeaderMap,
     Query(params): Query<PaginationParams>,
+    Query(list_params): Query<ListReviewsParams>,
 ) -> ApiResult<Json<DataResponse<ResultReviewListResponse>>> {
     let request_id = get_request_id(&headers);
 
@@ -222,12 +233,22 @@ pub async fn list_pending_reviews(
         )
         .await?;
 
+    let oldest_first = match list_params.sort.as_deref() {
+        None | Some("newest") => false,
+        Some("oldest") => true,
+        Some(other) => {
+            return Err(ApiError::bad_request(format!(
+                "Unknown sort '{other}' — use 'newest' or 'oldest'"
+            )));
+        }
+    };
+
     let limit = params.limit();
     let offset = params.offset();
 
     let (reviews, total) = state
         .result_review_service
-        .list_pending_reviews(limit, offset)
+        .list_pending_reviews(limit, offset, oldest_first)
         .await?;
 
     Ok(Json(DataResponse::new(
@@ -465,10 +486,12 @@ async fn resume_saga_after_review(
         result_claim_id: None,
     };
 
-    state
+    let saga_result = state
         .match_completion_saga
         .continue_after_review(match_id, saga_input)
-        .await?;
+        .await;
+    crate::observability::record_saga("match-completion-review", &saga_result);
+    saga_result?;
 
     Ok(())
 }

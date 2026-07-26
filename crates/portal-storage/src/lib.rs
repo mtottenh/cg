@@ -94,6 +94,9 @@ pub trait StorageBackend: Send + Sync + 'static {
     /// Check if a file exists.
     async fn exists(&self, key: &str) -> Result<bool, StorageError>;
 
+    /// Read a stored file's bytes by key.
+    async fn read(&self, key: &str) -> Result<Bytes, StorageError>;
+
     /// Get the public URL for a storage key.
     fn public_url(&self, key: &str) -> String;
 }

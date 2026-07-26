@@ -183,13 +183,6 @@ mod tests {
             vec![]
         }
 
-        fn calculate_rating_change(
-            &self,
-            _participants: &[RankedParticipant],
-        ) -> Result<Vec<RatingChange>, crate::error::RatingError> {
-            Ok(vec![])
-        }
-
         fn map_pick_ban_formats(&self) -> Vec<MapPickBanFormat> {
             vec![]
         }

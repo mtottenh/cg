@@ -2,11 +2,12 @@
 
 use crate::DbPool;
 use crate::entities::{
-    LeagueInvitationRow, LeagueMemberRow, LeagueMemberWithUserRow, LeagueRow,
-    UserLeagueMembershipRow,
+    LeagueMemberRow, LeagueMemberWithUserRow, LeagueRow, UserLeagueMembershipRow,
 };
 use async_trait::async_trait;
-use portal_core::{DomainError, GameId, LeagueId, LeagueInvitationId, LeagueMemberId, UserId};
+use portal_core::{
+    DomainError, GameId, LeagueId, LeagueInvitationId, LeagueMemberId, PlayerId, UserId,
+};
 use portal_domain::entities::league::{
     League, LeagueAccessType, LeagueInvitation, LeagueInvitationStatus, LeagueInvitationType,
     LeagueMember, LeagueMemberWithUser, LeagueMembershipType, LeagueStatus, UserLeagueMembership,
@@ -69,12 +70,54 @@ impl From<LeagueMemberWithUserRow> for LeagueMemberWithUser {
     }
 }
 
-impl From<LeagueInvitationRow> for LeagueInvitation {
-    fn from(row: LeagueInvitationRow) -> Self {
+/// A `league_invitations` row joined to the invited user's identity.
+///
+/// P-115: the domain `LeagueInvitation` carries `username`/`display_name`, so
+/// every query that produces one must join. Declared here rather than beside
+/// `LeagueInvitationRow` in `entities/` because that row maps the table
+/// one-to-one and is still used by the raw `repositories::league` layer, whose
+/// `SELECT *` / `RETURNING *` queries have no user columns to bind.
+///
+/// The `users` join is INNER (`league_invitations.user_id` is a NOT NULL FK,
+/// and `users.username` is NOT NULL); the `players` join is LEFT, because a
+/// user need not have a player profile and an invitation must never disappear
+/// from a listing merely because they do not.
+#[derive(Debug, sqlx::FromRow)]
+struct LeagueInvitationWithUserRow {
+    id: uuid::Uuid,
+    league_id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    invitation_type: String,
+    status: String,
+    message: Option<String>,
+    invited_by: Option<uuid::Uuid>,
+    responded_by: Option<uuid::Uuid>,
+    responded_at: Option<chrono::DateTime<chrono::Utc>>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    username: String,
+    display_name: Option<String>,
+}
+
+/// The columns every invitation query selects, aliased to match
+/// `LeagueInvitationWithUserRow`. Kept in one place so a new query cannot
+/// quietly omit the identity columns (P-115).
+const INVITATION_WITH_USER_COLUMNS: &str = "li.id, li.league_id, li.user_id, li.invitation_type,
+     li.status, li.message, li.invited_by, li.responded_by, li.responded_at,
+     li.expires_at, li.created_at, u.username, p.display_name";
+
+/// The joins those columns require. `li` must already be in scope.
+const INVITATION_USER_JOINS: &str = "INNER JOIN users u ON u.id = li.user_id
+     LEFT JOIN players p ON p.user_id = li.user_id";
+
+impl From<LeagueInvitationWithUserRow> for LeagueInvitation {
+    fn from(row: LeagueInvitationWithUserRow) -> Self {
         Self {
             id: LeagueInvitationId::from(row.id),
             league_id: LeagueId::from(row.league_id),
             user_id: UserId::from(row.user_id),
+            username: row.username,
+            display_name: row.display_name,
             invitation_type: LeagueInvitationType::from_str(&row.invitation_type)
                 .unwrap_or(LeagueInvitationType::Invite),
             status: LeagueInvitationStatus::from_str(&row.status)
@@ -471,6 +514,29 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
         Ok(exists.0)
     }
 
+    async fn is_member_by_player(
+        &self,
+        league_id: LeagueId,
+        player_id: PlayerId,
+    ) -> Result<bool, DomainError> {
+        // The players JOIN resolves player -> owning user in SQL rather than
+        // assuming the ids coincide (P-155).
+        let exists: (bool,) = sqlx::query_as(
+            "SELECT EXISTS(
+                 SELECT 1 FROM league_members lm
+                 JOIN players p ON p.user_id = lm.user_id
+                 WHERE lm.league_id = $1 AND p.id = $2
+             )",
+        )
+        .bind(league_id.as_uuid())
+        .bind(player_id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(exists.0)
+    }
+
     async fn is_admin(&self, league_id: LeagueId, user_id: UserId) -> Result<bool, DomainError> {
         let exists: (bool,) = sqlx::query_as(
             r"
@@ -574,9 +640,12 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         &self,
         id: LeagueInvitationId,
     ) -> Result<Option<LeagueInvitation>, DomainError> {
-        let invitation = sqlx::query_as::<_, LeagueInvitationRow>(
-            "SELECT * FROM league_invitations WHERE id = $1",
-        )
+        let invitation = sqlx::query_as::<_, LeagueInvitationWithUserRow>(&format!(
+            "SELECT {INVITATION_WITH_USER_COLUMNS}
+             FROM league_invitations li
+             {INVITATION_USER_JOINS}
+             WHERE li.id = $1"
+        ))
         .bind(id.as_uuid())
         .fetch_optional(&self.pool)
         .await
@@ -589,13 +658,20 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         &self,
         invitation: CreateLeagueInvitation,
     ) -> Result<LeagueInvitation, DomainError> {
-        let row = sqlx::query_as::<_, LeagueInvitationRow>(
-            r"
-            INSERT INTO league_invitations (league_id, user_id, invitation_type, message, invited_by, expires_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING *
-            ",
-        )
+        // The insert is wrapped in a CTE so the returned row can be joined to
+        // the user's identity in one round trip -- `RETURNING *` alone cannot
+        // reach `users`/`players` (P-115).
+        let row = sqlx::query_as::<_, LeagueInvitationWithUserRow>(&format!(
+            "WITH inserted AS (
+                 INSERT INTO league_invitations
+                     (league_id, user_id, invitation_type, message, invited_by, expires_at)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 RETURNING *
+             )
+             SELECT {INVITATION_WITH_USER_COLUMNS}
+             FROM inserted li
+             {INVITATION_USER_JOINS}"
+        ))
         .bind(invitation.league_id.as_uuid())
         .bind(invitation.user_id.as_uuid())
         .bind(&invitation.invitation_type)
@@ -615,14 +691,17 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         status: LeagueInvitationStatus,
         responded_by: UserId,
     ) -> Result<LeagueInvitation, DomainError> {
-        let row = sqlx::query_as::<_, LeagueInvitationRow>(
-            r"
-            UPDATE league_invitations
-            SET status = $2, responded_by = $3, responded_at = NOW()
-            WHERE id = $1
-            RETURNING *
-            ",
-        )
+        let row = sqlx::query_as::<_, LeagueInvitationWithUserRow>(&format!(
+            "WITH updated AS (
+                 UPDATE league_invitations
+                 SET status = $2, responded_by = $3, responded_at = NOW()
+                 WHERE id = $1
+                 RETURNING *
+             )
+             SELECT {INVITATION_WITH_USER_COLUMNS}
+             FROM updated li
+             {INVITATION_USER_JOINS}"
+        ))
         .bind(id.as_uuid())
         .bind(status.as_str())
         .bind(responded_by.as_uuid())
@@ -700,12 +779,12 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         league_id: LeagueId,
         user_id: UserId,
     ) -> Result<Option<LeagueInvitation>, DomainError> {
-        let invitation = sqlx::query_as::<_, LeagueInvitationRow>(
-            r"
-            SELECT * FROM league_invitations
-            WHERE league_id = $1 AND user_id = $2 AND status = 'pending'
-            ",
-        )
+        let invitation = sqlx::query_as::<_, LeagueInvitationWithUserRow>(&format!(
+            "SELECT {INVITATION_WITH_USER_COLUMNS}
+             FROM league_invitations li
+             {INVITATION_USER_JOINS}
+             WHERE li.league_id = $1 AND li.user_id = $2 AND li.status = 'pending'"
+        ))
         .bind(league_id.as_uuid())
         .bind(user_id.as_uuid())
         .fetch_optional(&self.pool)
@@ -719,14 +798,41 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         &self,
         league_id: LeagueId,
     ) -> Result<Vec<LeagueInvitation>, DomainError> {
-        let invitations = sqlx::query_as::<_, LeagueInvitationRow>(
-            r"
-            SELECT * FROM league_invitations
-            WHERE league_id = $1 AND status = 'pending'
-            ORDER BY created_at DESC
-            ",
-        )
+        let invitations = sqlx::query_as::<_, LeagueInvitationWithUserRow>(&format!(
+            "SELECT {INVITATION_WITH_USER_COLUMNS}
+             FROM league_invitations li
+             {INVITATION_USER_JOINS}
+             WHERE li.league_id = $1 AND li.status = 'pending'
+             ORDER BY li.created_at DESC"
+        ))
         .bind(league_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(invitations
+            .into_iter()
+            .map(LeagueInvitation::from)
+            .collect())
+    }
+
+    async fn list_by_league(
+        &self,
+        league_id: LeagueId,
+        status: Option<LeagueInvitationStatus>,
+    ) -> Result<Vec<LeagueInvitation>, DomainError> {
+        // P-39: unlike `list_pending_by_league`, this keeps terminal rows
+        // (accepted / rejected / expired) visible so the admin surface can
+        // distinguish "they declined" from "never invited".
+        let invitations = sqlx::query_as::<_, LeagueInvitationWithUserRow>(&format!(
+            "SELECT {INVITATION_WITH_USER_COLUMNS}
+             FROM league_invitations li
+             {INVITATION_USER_JOINS}
+             WHERE li.league_id = $1 AND ($2::text IS NULL OR li.status = $2)
+             ORDER BY li.created_at DESC"
+        ))
+        .bind(league_id.as_uuid())
+        .bind(status.map(|s| s.as_str()))
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
@@ -741,13 +847,19 @@ impl LeagueInvitationRepository for PgLeagueInvitationRepository {
         &self,
         user_id: UserId,
     ) -> Result<Vec<LeagueInvitation>, DomainError> {
-        let invitations = sqlx::query_as::<_, LeagueInvitationRow>(
-            r"
-            SELECT * FROM league_invitations
-            WHERE user_id = $1 AND status = 'pending' AND invitation_type = 'invite'
-            ORDER BY created_at DESC
-            ",
-        )
+        // P-48: this must return BOTH invites (admin -> user) and applications
+        // (user -> league). The old `AND invitation_type = 'invite'` filter hid a
+        // user's own pending application from `GET /v1/users/me/league-invitations`,
+        // so the frontend's `myApplications` derivation was permanently empty and the
+        // "application is pending" branch on LeagueDetailPage was dead. The response
+        // DTO carries `invitation_type`, so the client distinguishes the two.
+        let invitations = sqlx::query_as::<_, LeagueInvitationWithUserRow>(&format!(
+            "SELECT {INVITATION_WITH_USER_COLUMNS}
+             FROM league_invitations li
+             {INVITATION_USER_JOINS}
+             WHERE li.user_id = $1 AND li.status = 'pending'
+             ORDER BY li.created_at DESC"
+        ))
         .bind(user_id.as_uuid())
         .fetch_all(&self.pool)
         .await

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Utc};
-use portal_core::{DomainError, EvidenceId, TournamentMatchId, TournamentRegistrationId, UserId};
+use portal_core::{DomainError, EvidenceId, TournamentMatchId, TournamentRegistrationId};
 use tracing::{info, instrument, warn};
 
 use crate::entities::evidence::{
@@ -18,9 +18,11 @@ use crate::entities::evidence::{
 };
 use crate::entities::result_claim::GameResult;
 use crate::repositories::evidence::{CreateEvidence, CreateEvidenceAccessLog, EvidenceRepository};
+use crate::repositories::league_team::LeagueTeamMemberRepository;
 use crate::repositories::tournament::{
     TournamentMatchRepository, TournamentRegistrationRepository,
 };
+use crate::services::tournament::registration_actor::{RegistrationActor, find_actor_registration};
 
 /// S3 client trait for presigned URLs.
 ///
@@ -98,20 +100,23 @@ impl Default for EvidenceServiceConfig {
 
 /// Service for managing match evidence.
 #[derive(Clone)]
-pub struct EvidenceService<ER, TMR, TRR, S3C> {
+pub struct EvidenceService<ER, TMR, TRR, S3C, LTMR> {
     evidence_repo: Arc<ER>,
     match_repo: Arc<TMR>,
     registration_repo: Arc<TRR>,
     s3_client: Arc<S3C>,
+    /// Roster lookups for `speaks_for_registration` (P-168).
+    member_repo: Arc<LTMR>,
     config: EvidenceServiceConfig,
 }
 
-impl<ER, TMR, TRR, S3C> EvidenceService<ER, TMR, TRR, S3C>
+impl<ER, TMR, TRR, S3C, LTMR> EvidenceService<ER, TMR, TRR, S3C, LTMR>
 where
     ER: EvidenceRepository,
     TMR: TournamentMatchRepository,
     TRR: TournamentRegistrationRepository,
     S3C: EvidenceS3Client,
+    LTMR: LeagueTeamMemberRepository,
 {
     /// Create a new evidence service.
     pub fn new(
@@ -119,6 +124,7 @@ where
         match_repo: Arc<TMR>,
         registration_repo: Arc<TRR>,
         s3_client: Arc<S3C>,
+        member_repo: Arc<LTMR>,
         config: EvidenceServiceConfig,
     ) -> Self {
         Self {
@@ -126,6 +132,7 @@ where
             match_repo,
             registration_repo,
             s3_client,
+            member_repo,
             config,
         }
     }
@@ -152,7 +159,7 @@ where
         file_name: String,
         file_size_bytes: i64,
         mime_type: String,
-        uploaded_by: UserId,
+        uploaded_by: RegistrationActor,
         acting_as_admin: bool,
     ) -> Result<EvidenceUploadInfo, DomainError> {
         // Validate file size
@@ -208,7 +215,7 @@ where
                 },
                 plugin_metadata: serde_json::json!({}),
                 uploaded_by_registration_id: registration_id,
-                uploaded_by_user_id: Some(uploaded_by),
+                uploaded_by_user_id: Some(uploaded_by.user_id),
                 discovered_by_plugin: None,
                 discovered_at: None,
                 expires_at: Some(expires_at),
@@ -307,7 +314,7 @@ where
         url: String,
         name: String,
         description: Option<String>,
-        added_by: UserId,
+        added_by: RegistrationActor,
         acting_as_admin: bool,
     ) -> Result<Evidence, DomainError> {
         // Validate evidence type allows URL storage
@@ -347,7 +354,7 @@ where
                 storage: EvidenceStorage::Url { url },
                 plugin_metadata: serde_json::json!({}),
                 uploaded_by_registration_id: registration_id,
-                uploaded_by_user_id: Some(added_by),
+                uploaded_by_user_id: Some(added_by.user_id),
                 discovered_by_plugin: None,
                 discovered_at: None,
                 expires_at: Some(expires_at),
@@ -399,7 +406,7 @@ where
     pub async fn get_access_url(
         &self,
         evidence_id: EvidenceId,
-        accessed_by: UserId,
+        accessed_by: RegistrationActor,
         acting_as_admin: bool,
         ip_address: Option<std::net::IpAddr>,
         user_agent: Option<String>,
@@ -413,14 +420,14 @@ where
         // Authorization: uploader, match participant, or admin — evidence
         // downloads (dispute screenshots, demos) are not public. Mirrors
         // delete_evidence.
-        if !acting_as_admin && evidence.uploaded_by_user_id != Some(accessed_by) {
+        if !acting_as_admin && evidence.uploaded_by_user_id != Some(accessed_by.user_id) {
             let match_ = self
                 .match_repo
                 .find_by_id(evidence.match_id)
                 .await?
                 .ok_or(DomainError::TournamentMatchNotFound(evidence.match_id))?;
             // Propagates NotAuthorized when the caller is not a participant.
-            self.find_user_registration(&match_, accessed_by).await?;
+            self.find_actor_registration(&match_, accessed_by).await?;
         }
 
         // Check if evidence is accessible
@@ -442,7 +449,7 @@ where
         self.evidence_repo
             .log_access(CreateEvidenceAccessLog {
                 evidence_id,
-                accessed_by_user_id: Some(accessed_by),
+                accessed_by_user_id: Some(accessed_by.user_id),
                 access_type: EvidenceAccessType::Download,
                 ip_address,
                 user_agent,
@@ -480,15 +487,24 @@ where
         })
     }
 
-    /// Delete evidence.
+    /// Check that `deleted_by` is allowed to delete this evidence, without
+    /// deleting anything.
     ///
-    /// Only the original uploader, a participant of the evidence's match, or
-    /// an admin (`acting_as_admin`, verified by the handler) may delete.
+    /// Only the original uploader, a participant of the evidence's match, or an
+    /// admin (`acting_as_admin`, verified by the handler) may delete.
+    ///
+    /// P-157: deleting a demo's evidence also has to detach the demo, and the
+    /// detach must happen *first* so a failure cannot leave a `demo_match_link`
+    /// row pointing at a deleted evidence row. That reorders a mutation ahead
+    /// of `delete_evidence`'s own authorization check, so the check is exposed
+    /// separately for the caller to run before it touches anything.
+    /// `delete_evidence` still runs it, so this is a pre-flight, never a
+    /// substitute.
     #[instrument(skip(self))]
-    pub async fn delete_evidence(
+    pub async fn authorize_delete(
         &self,
         evidence_id: EvidenceId,
-        deleted_by: UserId,
+        deleted_by: RegistrationActor,
         acting_as_admin: bool,
     ) -> Result<(), DomainError> {
         let evidence = self
@@ -497,16 +513,38 @@ where
             .await?
             .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
 
-        // Authorization: uploader, match participant, or admin.
-        if !acting_as_admin && evidence.uploaded_by_user_id != Some(deleted_by) {
+        if !acting_as_admin && evidence.uploaded_by_user_id != Some(deleted_by.user_id) {
             let match_ = self
                 .match_repo
                 .find_by_id(evidence.match_id)
                 .await?
                 .ok_or(DomainError::TournamentMatchNotFound(evidence.match_id))?;
             // Propagates NotAuthorized when the caller is not a participant.
-            self.find_user_registration(&match_, deleted_by).await?;
+            self.find_actor_registration(&match_, deleted_by).await?;
         }
+
+        Ok(())
+    }
+
+    /// Delete evidence.
+    ///
+    /// Only the original uploader, a participant of the evidence's match, or
+    /// an admin (`acting_as_admin`, verified by the handler) may delete.
+    #[instrument(skip(self))]
+    pub async fn delete_evidence(
+        &self,
+        evidence_id: EvidenceId,
+        deleted_by: RegistrationActor,
+        acting_as_admin: bool,
+    ) -> Result<(), DomainError> {
+        self.authorize_delete(evidence_id, deleted_by, acting_as_admin)
+            .await?;
+
+        let evidence = self
+            .evidence_repo
+            .find_by_id(evidence_id)
+            .await?
+            .ok_or(DomainError::EvidenceNotFound(evidence_id))?;
 
         // Delete from storage if S3
         if let EvidenceStorage::S3 { bucket, key } = &evidence.storage {
@@ -520,7 +558,7 @@ where
 
         info!(
             evidence_id = %evidence_id,
-            deleted_by = %deleted_by,
+            deleted_by = %deleted_by.user_id,
             "Evidence deleted"
         );
 
@@ -613,50 +651,45 @@ where
     async fn resolve_uploader_registration(
         &self,
         match_: &crate::entities::TournamentMatch,
-        user_id: UserId,
+        actor: RegistrationActor,
         acting_as_admin: bool,
     ) -> Result<Option<TournamentRegistrationId>, DomainError> {
-        match self.find_user_registration(match_, user_id).await {
+        match self.find_actor_registration(match_, actor).await {
             Ok(reg_id) => Ok(Some(reg_id)),
             Err(DomainError::NotAuthorized(_)) if acting_as_admin => Ok(None),
             Err(e) => Err(e),
         }
     }
 
-    async fn find_user_registration(
+    /// Which of the match's registrations the actor speaks for.
+    ///
+    /// Was a hand-copy of `registered_by == user_id`, so only the person who
+    /// registered a team could attach or read its evidence — the rest of the
+    /// roster got 403 from an upload button the match page had already shown
+    /// them (P-168).
+    async fn find_actor_registration(
         &self,
         match_: &crate::entities::TournamentMatch,
-        user_id: UserId,
+        actor: RegistrationActor,
     ) -> Result<TournamentRegistrationId, DomainError> {
-        // Check participant 1
-        if let Some(reg_id) = match_.participant1_registration_id
-            && let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
-            && reg.registered_by == user_id
-        {
-            return Ok(reg_id);
-        }
-
-        // Check participant 2
-        if let Some(reg_id) = match_.participant2_registration_id
-            && let Some(reg) = self.registration_repo.find_by_id(reg_id).await?
-            && reg.registered_by == user_id
-        {
-            return Ok(reg_id);
-        }
-
-        Err(DomainError::NotAuthorized(
-            "User is not a participant in this match".to_string(),
-        ))
+        find_actor_registration(
+            self.registration_repo.as_ref(),
+            self.member_repo.as_ref(),
+            match_,
+            actor,
+        )
+        .await
     }
 }
 
 /// Extension for evidence discovery integration.
-impl<ER, TMR, TRR, S3C> EvidenceService<ER, TMR, TRR, S3C>
+impl<ER, TMR, TRR, S3C, LTMR> EvidenceService<ER, TMR, TRR, S3C, LTMR>
 where
     ER: EvidenceRepository,
     TMR: TournamentMatchRepository,
     TRR: TournamentRegistrationRepository,
     S3C: EvidenceS3Client,
+    LTMR: LeagueTeamMemberRepository,
 {
     /// Discover available evidence for a match using a plugin.
     ///
@@ -681,13 +714,29 @@ where
     }
 
     /// Link discovered evidence to a match.
+    ///
+    /// `source` records **who put this row here**, and the caller must state it
+    /// rather than inherit it from the fact that the artifact was *found* by a
+    /// plugin. P-109: this used to hard-code [`EvidenceSource::PluginDiscovery`]
+    /// for every caller, including the three HTTP handlers a human reaches by
+    /// clicking "Link demo" — and `list_evidence` drops `PluginDiscovery` rows
+    /// from its default listing, so a demo a person deliberately attached was
+    /// invisible on every evidence surface in the product, including the one an
+    /// admin uses to resolve the dispute the demo is evidence for.
+    ///
+    /// A human clicking a button is not plugin discovery. `add_link` (a human
+    /// attaching an external URL) already stamps [`EvidenceSource::ManualUpload`];
+    /// a human attaching a catalogued demo is the same act on a different
+    /// artifact, so it gets the same source. The variant stays available for a
+    /// future automated linker, which is the only caller it was ever right for.
     #[instrument(skip(self))]
     pub async fn link_discovered(
         &self,
         match_id: TournamentMatchId,
         discovered: DiscoveredEvidence,
         game_number: Option<i32>,
-        linked_by: UserId,
+        linked_by: RegistrationActor,
+        source: EvidenceSource,
     ) -> Result<Evidence, DomainError> {
         // Verify match exists
         let match_ = self
@@ -697,7 +746,7 @@ where
             .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
         // Find user's registration
-        let registration_id = self.find_user_registration(&match_, linked_by).await.ok();
+        let registration_id = self.find_actor_registration(&match_, linked_by).await.ok();
 
         // Calculate expiration
         let expires_at = Utc::now() + ChronoDuration::days(self.config.default_retention_days);
@@ -708,7 +757,7 @@ where
                 match_id,
                 game_number,
                 evidence_type: discovered.evidence_type,
-                evidence_source: EvidenceSource::PluginDiscovery,
+                evidence_source: source,
                 name: discovered.name,
                 description: None,
                 file_size_bytes: discovered.file_size_bytes,
@@ -716,7 +765,7 @@ where
                 storage: discovered.storage,
                 plugin_metadata: discovered.metadata,
                 uploaded_by_registration_id: registration_id,
-                uploaded_by_user_id: Some(linked_by),
+                uploaded_by_user_id: Some(linked_by.user_id),
                 discovered_by_plugin: None, // Plugin ID would come from context
                 discovered_at: Some(discovered.discovered_at),
                 expires_at: Some(expires_at),
@@ -750,14 +799,44 @@ where
 
         let validation = plugin.validate_evidence(&evidence, result).await?;
 
-        // Update evidence with validation result
+        // Record the verdict. P-138: the outcome is `validation.is_valid` —
+        // the adapter used to write "true, always", which is what let a
+        // contradicted demo read as corroborating the claim.
         self.evidence_repo
             .mark_validated(
                 evidence_id,
+                validation.is_valid,
                 serde_json::to_value(&validation).unwrap_or_default(),
             )
             .await?;
 
         Ok(validation)
+    }
+
+    /// Persist a validation outcome that was computed outside the plugin.
+    ///
+    /// P-111: every validation route in the product went through the external
+    /// CS2 stats service, so in any deployment without that service running
+    /// nothing could ever be validated — which is why
+    /// `demo_match_links.validated` had never been `true` for any row. But the
+    /// portal already stores the extracted result of every catalogued demo
+    /// (`demos.metadata`, written by `save_demo_stats`); for a demo the catalog
+    /// has parsed, validation is a comparison the portal can make on its own.
+    /// This records the outcome of that comparison against the same columns
+    /// `validate_against_result` writes, so both routes are indistinguishable
+    /// to every reader.
+    #[instrument(skip(self, validation))]
+    pub async fn record_validation(
+        &self,
+        evidence_id: EvidenceId,
+        validation: &EvidenceValidation,
+    ) -> Result<Evidence, DomainError> {
+        self.evidence_repo
+            .mark_validated(
+                evidence_id,
+                validation.is_valid,
+                serde_json::to_value(validation).unwrap_or_default(),
+            )
+            .await
     }
 }

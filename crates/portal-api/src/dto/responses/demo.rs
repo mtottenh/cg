@@ -1,6 +1,7 @@
 //! Demo catalog response DTOs.
 
 use chrono::{DateTime, Utc};
+use portal_core::types::{DemoCategory, DemoStatus};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -27,7 +28,9 @@ pub struct DemoResponse {
     pub file_size_bytes: Option<i64>,
 
     /// Category (uncategorized, pug, league, scrim, ignored).
-    pub category: String,
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
+    pub category: DemoCategory,
     /// Whether the demo is hidden.
     pub is_hidden: bool,
 
@@ -40,7 +43,9 @@ pub struct DemoResponse {
     pub metadata: Option<DemoMetadataResponse>,
 
     /// Processing status.
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub status: DemoStatus,
     /// When stats were fetched.
     pub stats_fetched_at: Option<DateTime<Utc>>,
     /// Stats fetch error message.
@@ -74,12 +79,12 @@ impl From<Demo> for DemoResponse {
             s3_bucket: demo.s3_bucket,
             s3_key: demo.s3_key,
             file_size_bytes: demo.file_size_bytes,
-            category: demo.category.to_string(),
+            category: demo.category,
             is_hidden: demo.is_hidden,
             league_id: demo.league_id.map(|id| id.as_uuid()),
             tournament_id: demo.tournament_id.map(|id| id.as_uuid()),
             metadata: demo.metadata.map(DemoMetadataResponse::from),
-            status: demo.status.to_string(),
+            status: demo.status,
             stats_fetched_at: demo.stats_fetched_at,
             stats_fetch_error: demo.stats_fetch_error,
             categorized_by_user_id: demo.categorized_by_user_id.map(|id| id.as_uuid()),
@@ -331,6 +336,20 @@ pub struct DemoMatchLinkWithDemoResponse {
     /// Players in this demo (optional, depends on include_stats query).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub players: Option<Vec<DemoPlayerResponse>>,
+    /// The `match_evidence` row this link was created alongside, if any.
+    ///
+    /// P-135: attaching a demo writes *two* rows — a `demo_match_link` and a
+    /// `match_evidence` record carrying `catalog_demo_id` — and detaching it
+    /// goes through `DELETE /v1/matches/{id}/evidence/{evidence_id}`, which
+    /// cleans up both. Nothing in this response named the evidence row, so the
+    /// frontend could only remember the pairing in memory from the link call
+    /// in the same session: after a reload it had no id, sent no DELETE, and
+    /// still told the operator the demo was unlinked. Serving the pairing is
+    /// what makes the destructive action performable at all.
+    ///
+    /// `None` means no evidence row backs this link — an auto-matched or
+    /// admin-created link, or one whose evidence has already been deleted.
+    pub evidence_id: Option<Uuid>,
 }
 
 impl DemoMatchLinkWithDemoResponse {
@@ -341,6 +360,7 @@ impl DemoMatchLinkWithDemoResponse {
         demo: portal_domain::entities::demo::Demo,
         players: Vec<portal_domain::entities::demo::DemoPlayer>,
         include_players: bool,
+        evidence_id: Option<Uuid>,
     ) -> Self {
         Self {
             link: DemoMatchLinkResponse::from(link),
@@ -350,6 +370,7 @@ impl DemoMatchLinkWithDemoResponse {
             } else {
                 None
             },
+            evidence_id,
         }
     }
 }

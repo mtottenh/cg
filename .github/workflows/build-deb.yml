@@ -13,9 +13,23 @@ on:
 permissions:
   contents: write   # upload to the release
 
+# One build per ref at a time; never cancel a release build midway.
+concurrency:
+  group: build-deb-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # A tag on a broken commit must not publish debs. Coverage is skipped —
+  # it's informational and costs ~60 minutes.
+  test:
+    uses: ./.github/workflows/ci.yml
+    with:
+      skip_coverage: true
+
   build:
+    needs: test
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,6 +37,8 @@ jobs:
 
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
 
       # Build deps the workspace needs. libpq-dev is for SQLx's postgres
       # feature; pkg-config + libssl-dev for reqwest's native-tls backend
@@ -37,6 +53,21 @@ jobs:
         with:
           shared-key: deb-build
 
+      # The deb version comes from Cargo.toml ([workspace.package]), NOT the
+      # tag — a mismatched tag would silently publish differently-versioned
+      # debs and `just deploy vX.Y.Z` would install the wrong thing while
+      # reporting success.
+      - name: Tag matches Cargo version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO_V=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "portal-app") | .version')
+          if [ "$TAG" != "$CARGO_V" ]; then
+            echo "::error::tag v$TAG != workspace version $CARGO_V — bump [workspace.package] version, re-tag, and push again"
+            exit 1
+          fi
+
       - name: Install cargo-deb
         run: cargo install --locked cargo-deb
 
@@ -46,7 +77,7 @@ jobs:
       - name: Build release binaries
         run: |
           export SQLX_OFFLINE=true
-          cargo build --release -p portal-app -p portal-scanner -p portal-cli
+          cargo build --release --locked -p portal-app -p portal-scanner -p portal-cli
 
       - name: Package portal-api
         run: cargo deb --no-build -p portal-app
@@ -54,22 +85,85 @@ jobs:
       - name: Package portal-scanner
         run: cargo deb --no-build -p portal-scanner
 
-      - name: Stage artifacts
+      - name: Stage artifacts + checksums
         run: |
-          mkdir -p dist
-          cp target/debian/*.deb dist/
-          ls -la dist/
+          mkdir -p out
+          cp target/debian/*.deb out/
+          (cd out && sha256sum *.deb > SHA256SUMS)
+          ls -la out/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: debs
-          path: dist/*.deb
+          path: out/*
           if-no-files-found: error
 
+  # Install both debs on a clean runner: catches a broken postinst, a unit
+  # shipped without enable hooks (the silent cargo-deb unit-scripts trap),
+  # and an unseeded env file. The purge order also proves the postrm
+  # co-tenancy guard: purging portal-api while portal-scanner remains must
+  # NOT take down /etc/portal or the shared portal user.
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: debs
+          path: out
+
+      - name: Checksums verify
+        run: cd out && sha256sum -c SHA256SUMS
+
+      - name: Install
+        run: sudo apt-get install -y ./out/portal-api_*.deb ./out/portal-scanner_*.deb
+
+      - name: Package sanity
+        run: |
+          set -x
+          dpkg-query -W portal-api portal-scanner
+          test -x /usr/bin/portal-api
+          test -x /usr/bin/portal-cli
+          test -x /usr/bin/portal-scanner
+          getent passwd portal
+          sudo test -f /etc/portal/api.env
+          sudo test -f /etc/portal/scanner.env
+          # Enabled is what matters; the services crash-loop here (no DB,
+          # CHANGE_ME env) and that's expected.
+          systemctl is-enabled portal-api
+          systemctl is-enabled portal-scanner
+
+      - name: Purge co-tenancy guard
+        run: |
+          set -x
+          # portal-api leaves first: shared state must survive
+          sudo dpkg --purge portal-api
+          sudo test -f /etc/portal/scanner.env
+          getent passwd portal
+          # last one out turns off the lights
+          sudo dpkg --purge portal-scanner
+          ! sudo test -e /etc/portal/scanner.env
+          ! getent passwd portal
+
+  # Attach to the GitHub release only after the smoke install passed.
+  # softprops creates the release if the tag push is the first sighting.
+  release:
+    needs: smoke
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: debs
+          path: out
+
       - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.deb
+          files: |
+            out/*.deb
+            out/SHA256SUMS
           fail_on_unmatched_files: true

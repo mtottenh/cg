@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use portal_core::ids::{ScheduleProposalId, TournamentMatchId, TournamentRegistrationId, UserId};
 use portal_core::types::ProposalStatus;
 
+use crate::services::tournament::RegistrationActor;
+
 /// A schedule proposal for a match.
 ///
 /// Represents a team's proposal for match times that the opponent
@@ -79,15 +81,31 @@ pub struct CreateScheduleProposalCommand {
 pub struct AcceptProposalCommand {
     pub proposal_id: ScheduleProposalId,
     pub selected_time: DateTime<Utc>,
-    pub accepted_by_user_id: UserId,
+    /// Who is accepting. Both halves of the identity are carried because
+    /// "speaks for this registration" is decided by roster membership, which
+    /// is keyed by player (P-168) — this used to be a bare `UserId` compared
+    /// against `registered_by`, so only the team-mate who created the
+    /// registration could answer a scheduling proposal.
+    pub accepted_by: RegistrationActor,
 }
 
 /// Command to reject a schedule proposal.
 #[derive(Debug, Clone)]
 pub struct RejectProposalCommand {
     pub proposal_id: ScheduleProposalId,
-    pub rejected_by_user_id: UserId,
+    pub rejected_by: RegistrationActor,
     pub reason: Option<String>,
+}
+
+/// Command to withdraw (cancel) a proposal you made yourself.
+#[derive(Debug, Clone)]
+pub struct CancelProposalCommand {
+    pub proposal_id: ScheduleProposalId,
+    /// Must be the proposer — nobody else may withdraw a proposal.
+    pub cancelled_by_user_id: UserId,
+    /// The match the caller addressed, used to reject a proposal ID that
+    /// belongs to a different match.
+    pub match_id: TournamentMatchId,
 }
 
 /// Command to counter-propose with new times.
@@ -96,7 +114,7 @@ pub struct CounterProposeCommand {
     pub original_proposal_id: ScheduleProposalId,
     pub match_id: TournamentMatchId,
     pub proposed_by_registration_id: TournamentRegistrationId,
-    pub proposed_by_user_id: UserId,
+    pub proposed_by: RegistrationActor,
     pub proposed_times: Vec<DateTime<Utc>>,
     pub expires_at: DateTime<Utc>,
     pub notes: Option<String>,

@@ -1,6 +1,7 @@
 //! Ban response DTOs.
 
 use portal_domain::entities::Ban;
+use portal_domain::entities::ban::BanType;
 use portal_domain::repositories::PaginatedBans;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -16,9 +17,29 @@ pub struct BanResponse {
     #[schema(example = "550e8400-e29b-41d4-a716-446655440001")]
     pub user_id: String,
 
+    /// Username of the banned user. Always present.
+    ///
+    /// P-123: the admin bans table had only `user_id` to show and truncated it
+    /// to 8 characters — and that same truncation was quoted back inside the
+    /// lift-ban CONFIRM DIALOG. UUID v7 prefixes are timestamps, so two bans
+    /// created minutes apart are indistinguishable: an operator was confirming
+    /// a destructive moderation action against an ambiguous target.
+    #[schema(example = "cheater_99")]
+    pub username: String,
+
+    /// The banned user's display name, when they have a player profile. This
+    /// is the name `UserSearchAutocomplete` shows the admin who issues the
+    /// ban, so it is what the ban row and the confirm dialog lead with;
+    /// `username` is the fallback and the always-present anchor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Cheater 99")]
+    pub display_name: Option<String>,
+
     /// Type of ban (platform, matchmaking, chat, league, tournament).
+    // P-112: typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string`. Wire-compatible per `wire_compat_tests`.
     #[schema(example = "platform")]
-    pub ban_type: String,
+    pub ban_type: BanType,
 
     /// Reason for the ban.
     #[schema(example = "Cheating violation detected")]
@@ -72,7 +93,9 @@ impl From<Ban> for BanResponse {
         Self {
             id: ban.id.to_string(),
             user_id: ban.user_id.to_string(),
-            ban_type: ban.ban_type.to_string(),
+            username: ban.username,
+            display_name: ban.display_name,
+            ban_type: ban.ban_type,
             reason: ban.reason,
             scope_type: ban.scope_type,
             scope_id: ban.scope_id.map(|id| id.to_string()),

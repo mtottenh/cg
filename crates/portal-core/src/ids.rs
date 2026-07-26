@@ -274,6 +274,11 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for a tournament invitation (invite-only entry list).
+    TournamentInvitationId
+);
+
+define_id!(
     /// Unique identifier for a match within a tournament bracket.
     TournamentMatchId
 );
@@ -286,6 +291,16 @@ define_id!(
 define_id!(
     /// Unique identifier for a tournament map pool configuration.
     TournamentMapPoolId
+);
+
+define_id!(
+    /// Unique identifier for a match lineup (who played a match, per registration).
+    MatchLineupId
+);
+
+define_id!(
+    /// Unique identifier for a single player row within a match lineup.
+    MatchLineupPlayerId
 );
 
 define_id!(
@@ -400,6 +415,31 @@ define_id!(
 define_id!(
     /// Unique identifier for a game server.
     GameServerId
+);
+
+define_id!(
+    /// Unique identifier for an issued server-agent client certificate.
+    ServerAgentCertId
+);
+
+define_id!(
+    /// Unique identifier for a server booking (scheduled event hold).
+    ServerBookingId
+);
+
+define_id!(
+    /// Unique identifier for a match's server reservation.
+    ServerReservationId
+);
+
+define_id!(
+    /// Unique identifier for a raw game-server webhook event.
+    ServerEventId
+);
+
+define_id!(
+    /// Unique identifier for a mid-series substitution.
+    MatchSubstitutionId
 );
 
 define_id!(

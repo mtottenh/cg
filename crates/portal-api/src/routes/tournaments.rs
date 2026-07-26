@@ -50,10 +50,35 @@ pub fn routes() -> Router<AppState> {
         // Tournament stages
         .route("/{tournament_id}/stages", post(tournaments::create_stage))
         .route("/{tournament_id}/stages", get(tournaments::get_stages))
+        // Tournament invitations (invite-only registration, P-27)
+        .route(
+            "/{tournament_id}/invitations",
+            post(tournaments::create_invitation),
+        )
+        .route(
+            "/{tournament_id}/invitations",
+            get(tournaments::list_invitations),
+        )
+        .route(
+            "/{tournament_id}/invitations/{invitation_id}",
+            delete(tournaments::revoke_invitation),
+        )
         // Tournament registrations
         .route(
             "/{tournament_id}/registrations",
             get(tournaments::get_registrations),
+        )
+        // P-167: the caller's own registrations, and real per-status counts.
+        // Both replace client-side arithmetic over ONE PAGE of the list above,
+        // which told everyone past row 20 that they were not registered and
+        // reported a 64-slot tournament as "20 / 64".
+        .route(
+            "/{tournament_id}/registrations/me",
+            get(tournaments::get_my_registrations),
+        )
+        .route(
+            "/{tournament_id}/registrations/counts",
+            get(tournaments::get_registration_counts),
         )
         .route(
             "/{tournament_id}/registrations/team",
@@ -66,11 +91,6 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/{tournament_id}/registrations/{registration_id}/check-in",
             post(tournaments::check_in),
-        )
-        // Registration management
-        .route(
-            "/{tournament_id}/registrations/{registration_id}",
-            delete(tournaments::withdraw),
         )
         .route(
             "/{tournament_id}/registrations/{registration_id}/approve",
@@ -122,6 +142,14 @@ pub fn routes() -> Router<AppState> {
             "/{tournament_id}/matches/{match_id}",
             get(tournaments::get_match),
         )
+        // P-53/P-56: resolve BOTH of a match's registrations, and which one is
+        // the caller's, in O(1). Replaces the client-side scan over the
+        // paginated registrations list, whose 100-row ceiling silently broke
+        // result submission for everyone past row 100.
+        .route(
+            "/{tournament_id}/matches/{match_id}/participants",
+            get(tournaments::get_match_participants),
+        )
         // Match lifecycle
         .route(
             "/{tournament_id}/matches/{match_id}/status",
@@ -135,9 +163,14 @@ pub fn routes() -> Router<AppState> {
             "/{tournament_id}/matches/{match_id}/check-in",
             post(tournaments::match_check_in),
         )
+        // Provisional lineup declaration + read (§0b)
         .route(
-            "/{tournament_id}/matches/{match_id}/schedule",
-            post(tournaments::schedule_match),
+            "/{tournament_id}/matches/{match_id}/lineup",
+            post(tournaments::declare_lineup),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/lineups",
+            get(tournaments::get_match_lineups),
         )
         .route(
             "/{tournament_id}/matches/{match_id}/forfeit",
@@ -155,6 +188,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/{tournament_id}/matches/{match_id}/schedule/reject",
             post(tournaments::reject_schedule_proposal),
+        )
+        .route(
+            "/{tournament_id}/matches/{match_id}/schedule/cancel",
+            post(tournaments::cancel_schedule_proposal),
         )
         .route(
             "/{tournament_id}/matches/{match_id}/schedule/counter",

@@ -14,8 +14,10 @@ mod discovered_match;
 mod dispute;
 mod evidence;
 mod forfeit;
+mod game_server;
 mod league;
 mod league_team;
+mod match_lineup;
 mod permission;
 mod player_game_profile;
 mod player_match_history;
@@ -44,12 +46,17 @@ pub use discovered_match::PgDiscoveredMatchRepository;
 pub use dispute::{PgDisputeMessageRepository, PgDisputeRepository};
 pub use evidence::PgEvidenceRepository;
 pub use forfeit::PgForfeitRecordRepository;
+pub use game_server::{
+    PgAgentCertRepository, PgGameServerRepository, PgMatchSubstitutionRepository,
+    PgServerBookingRepository, PgServerEventRepository, PgServerReservationRepository,
+};
 pub use league::{PgLeagueInvitationRepository, PgLeagueMemberRepository, PgLeagueRepository};
 pub use league_team::{
     PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
     PgLeagueTeamSeasonRepository,
 };
+pub use match_lineup::PgMatchLineupRepository;
 pub use permission::PgPermissionRepository;
 pub use player_game_profile::PgPlayerGameProfileRepository;
 pub use player_match_history::PgPlayerMatchHistoryRepository;
@@ -63,7 +70,8 @@ pub use system_settings::PgSystemSettingsRepository;
 pub use tournament::{
     MatchCompletionTxInput, MatchCompletionTxOutput, PgMatchStatusLogRepository,
     PgResultClaimRepository, PgScheduleProposalRepository, PgTournamentBracketRepository,
-    PgTournamentMapPoolRepository, PgTournamentMatchGameRepository, PgTournamentMatchRepository,
+    PgTournamentInvitationRepository, PgTournamentMapPoolRepository,
+    PgTournamentMatchGameRepository, PgTournamentMatchRepository,
     PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
     PgTournamentStandingsRepository, PgVetoActionRepository, PgVetoSessionRepository,
     complete_match_in_transaction,

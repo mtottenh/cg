@@ -14,9 +14,11 @@ pub mod discovered_match;
 pub mod dispute;
 pub mod evidence;
 pub mod forfeit;
+pub mod game_server;
 pub mod league;
 pub mod league_team;
 pub mod match_lifecycle;
+pub mod match_lineup;
 pub mod permission;
 pub mod player_game_profile;
 pub mod player_match_history;
@@ -59,6 +61,12 @@ pub use evidence::{
     SagaExecutionRepository, UpdateEvidence,
 };
 pub use forfeit::{CreateForfeitRecord, ForfeitRecordRepository};
+pub use game_server::{
+    AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateMatchSubstitution,
+    CreateServerBooking, CreateServerEvent, CreateServerReservation, GameServerRepository,
+    MatchSubstitutionRepository, RecordHeartbeat, ServerBookingRepository, ServerEventRepository,
+    ServerReservationRepository, UpdateGameServer,
+};
 pub use league::{
     AddLeagueMember, CreateLeague, CreateLeagueInvitation, LeagueInvitationRepository,
     LeagueMemberRepository, LeagueRepository, UpdateLeague,
@@ -69,6 +77,7 @@ pub use league_team::{
     LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueSeason, UpdateLeagueTeam,
 };
 pub use match_lifecycle::{CreateMatchStatusLog, MatchStatusLogRepository};
+pub use match_lineup::{MatchLineupRepository, MaterializeDemoLineup};
 pub use permission::PermissionRepository;
 pub use player_game_profile::PlayerGameProfileRepository;
 pub use player_match_history::{CreatePlayerMatchHistory, PlayerMatchHistoryRepository};
@@ -81,16 +90,16 @@ pub use result_review::{CreateResultReview, ResultReviewRepository};
 pub use schedule_proposal::ScheduleProposalRepository;
 pub use steam_tracking::{CreateSteamTracking, SteamTrackingRepository};
 pub use tournament::{
-    CreateResultClaim, CreateTournament, CreateTournamentBracket, CreateTournamentMatch,
-    CreateTournamentMatchGame, CreateTournamentRegistration, CreateTournamentStage,
-    CreateTournamentStanding, CreateVetoAction, CreateVetoSession, ParticipantSlot,
-    ResultClaimRepository, TournamentBracketRepository, TournamentFilters,
-    TournamentMapPoolRepository, TournamentMatchGameRepository, TournamentMatchRepository,
-    TournamentRegistrationRepository, TournamentRepository, TournamentStageRepository,
-    TournamentStandingsRepository, UpdateResultClaim, UpdateTournament, UpdateTournamentBracket,
-    UpdateTournamentMatch, UpdateTournamentMatchGame, UpdateTournamentRegistration,
-    UpdateTournamentStage, UpdateVetoSession, UpsertTournamentMapPool, VetoActionRepository,
-    VetoSessionRepository,
+    CreateResultClaim, CreateTournament, CreateTournamentBracket, CreateTournamentInvitation,
+    CreateTournamentMatch, CreateTournamentMatchGame, CreateTournamentRegistration,
+    CreateTournamentStage, CreateTournamentStanding, CreateVetoAction, CreateVetoSession,
+    ParticipantSlot, ResultClaimRepository, TournamentBracketRepository, TournamentFilters,
+    TournamentInvitationRepository, TournamentMapPoolRepository, TournamentMatchGameRepository,
+    TournamentMatchRepository, TournamentRegistrationRepository, TournamentRepository,
+    TournamentStageRepository, TournamentStandingsRepository, UpdateResultClaim, UpdateTournament,
+    UpdateTournamentBracket, UpdateTournamentMatch, UpdateTournamentMatchGame,
+    UpdateTournamentRegistration, UpdateTournamentStage, UpdateVetoSession,
+    UpsertTournamentMapPool, VetoActionRepository, VetoSessionRepository,
 };
 pub use user::{
     CreatePlayer, CreateUser, PlayerRepository, PlayerSearchFilters, UpdatePlayer, UserRepository,

@@ -241,7 +241,9 @@ impl SagaContext {
 }
 
 /// Status of a saga execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SagaStatus {
     /// Not yet started
@@ -314,7 +316,9 @@ pub struct StepRecord {
 }
 
 /// Status of a saga step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StepStatus {
     /// Not yet executed

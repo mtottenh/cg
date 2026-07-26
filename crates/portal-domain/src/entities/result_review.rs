@@ -17,7 +17,9 @@ use super::demo_validation::{DemoValidationResult, UnrecognizedPlayer};
 // =============================================================================
 
 /// Status of a result review.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultReviewStatus {
     /// Roster mismatch only, waiting for both captains to acknowledge.
@@ -97,6 +99,10 @@ pub struct ResultReview {
     pub roster_mismatch: bool,
     pub score_mismatch: bool,
     pub winner_mismatch: bool,
+    /// The completion saga gave up before bracket progression finished
+    /// (P-180) — the match is completed but downstream pairings/standings
+    /// may be missing; an admin must verify and repair via revert/reapply.
+    pub progression_stalled: bool,
 
     // Demo validation details
     pub demo_link_id: Option<DemoMatchLinkId>,
@@ -148,6 +154,7 @@ impl ResultReview {
             roster_mismatch: true,
             score_mismatch: false,
             winner_mismatch: false,
+            progression_stalled: false,
             demo_link_id,
             validation_result: Some(validation_result),
             unrecognized_players,
@@ -192,9 +199,51 @@ impl ResultReview {
             roster_mismatch: !unrecognized_players.is_empty(),
             score_mismatch,
             winner_mismatch,
+            progression_stalled: false,
             demo_link_id,
             validation_result: Some(validation_result),
             unrecognized_players,
+            status: ResultReviewStatus::PendingAdminReview,
+            captain1_registration_id,
+            captain1_acknowledged: false,
+            captain1_acknowledged_at: None,
+            captain1_acknowledged_by_user_id: None,
+            captain2_registration_id,
+            captain2_acknowledged: false,
+            captain2_acknowledged_at: None,
+            captain2_acknowledged_by_user_id: None,
+            reviewed_by_user_id: None,
+            reviewed_at: None,
+            admin_notes: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Create a review for a permanently failed completion saga (P-180).
+    ///
+    /// Raised by the lifecycle re-drive pass when it gives up on a saga —
+    /// the match is completed, but bracket progression may be half-applied.
+    /// Admin-only: there is nothing for captains to acknowledge.
+    #[must_use]
+    pub fn for_progression_stall(
+        result_claim_id: ResultClaimId,
+        match_id: TournamentMatchId,
+        captain1_registration_id: TournamentRegistrationId,
+        captain2_registration_id: TournamentRegistrationId,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: ResultReviewId::new(),
+            result_claim_id,
+            match_id,
+            roster_mismatch: false,
+            score_mismatch: false,
+            winner_mismatch: false,
+            progression_stalled: true,
+            demo_link_id: None,
+            validation_result: None,
+            unrecognized_players: Vec::new(),
             status: ResultReviewStatus::PendingAdminReview,
             captain1_registration_id,
             captain1_acknowledged: false,
@@ -227,7 +276,7 @@ impl ResultReview {
     /// Check if this review requires admin action.
     #[must_use]
     pub const fn requires_admin(&self) -> bool {
-        self.score_mismatch || self.winner_mismatch
+        self.score_mismatch || self.winner_mismatch || self.progression_stalled
     }
 
     /// Check if the review has any mismatch.
@@ -366,6 +415,26 @@ mod tests {
         assert!(!review.winner_mismatch);
         assert_eq!(review.status, ResultReviewStatus::PendingAdminReview);
         assert!(review.requires_admin());
+    }
+
+    #[test]
+    fn test_for_progression_stall() {
+        let review = ResultReview::for_progression_stall(
+            ResultClaimId::new(),
+            TournamentMatchId::new(),
+            TournamentRegistrationId::new(),
+            TournamentRegistrationId::new(),
+        );
+
+        assert!(review.progression_stalled);
+        assert!(!review.roster_mismatch);
+        assert!(!review.score_mismatch);
+        assert!(!review.winner_mismatch);
+        assert_eq!(review.status, ResultReviewStatus::PendingAdminReview);
+        assert!(
+            review.requires_admin(),
+            "a stall review must land in the admin queue, not captain acknowledgment"
+        );
     }
 
     #[test]

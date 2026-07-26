@@ -54,6 +54,7 @@ impl From<DisputeRow> for Dispute {
             original_participant2_score: row.original_participant2_score,
             status: row.status.parse().unwrap_or_default(),
             priority: row.priority.parse().unwrap_or_default(),
+            assigned_to_user_id: row.assigned_to_user_id.map(UserId::from),
             resolved_at: row.resolved_at,
             resolved_by_user_id: row.resolved_by_user_id.map(UserId::from),
             resolution,
@@ -360,6 +361,11 @@ impl DisputeRepository for PgDisputeRepository {
             updates.push(format!("resolved_by_user_id = ${param_count}"));
         }
 
+        if data.assigned_to_user_id.is_some() {
+            param_count += 1;
+            updates.push(format!("assigned_to_user_id = ${param_count}"));
+        }
+
         if data.resolution.is_some() {
             param_count += 1;
             updates.push(format!("resolution_type = ${param_count}"));
@@ -390,6 +396,11 @@ impl DisputeRepository for PgDisputeRepository {
         }
 
         if let Some(user_id) = &data.resolved_by_user_id {
+            builder = builder.bind(user_id.as_uuid());
+        }
+
+        // Bind order mirrors the SET-building order above.
+        if let Some(user_id) = &data.assigned_to_user_id {
             builder = builder.bind(user_id.as_uuid());
         }
 
@@ -487,6 +498,7 @@ impl DisputeRepository for PgDisputeRepository {
         resolution: DisputeResolution,
         match_id: TournamentMatchId,
         new_match_status: portal_core::types::TournamentMatchStatus,
+        clear_match_result: bool,
         resolution_message: CreateDisputeMessage,
     ) -> Result<Dispute, DomainError> {
         // Atomic counterpart of the `dispute_repo.resolve + match_repo.
@@ -530,19 +542,45 @@ impl DisputeRepository for PgDisputeRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?
         .ok_or(DomainError::DisputeNotFound(dispute_id))?;
 
-        sqlx::query(
-            r"
-            UPDATE tournament_matches SET
-                status = $2,
-                updated_at = NOW()
-            WHERE id = $1
-            ",
-        )
-        .bind(match_id.as_uuid())
-        .bind(new_match_status.to_string())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        // P-78: this used to update `status` and nothing else, so a rematch
+        // left the old winner, loser, scores and completed_at on the row — a
+        // match "ready to replay" still recorded a winner, and progression had
+        // already advanced them. Callers that move the match out of a completed
+        // state pass `clear_match_result`.
+        if clear_match_result {
+            sqlx::query(
+                r"
+                UPDATE tournament_matches SET
+                    status = $2,
+                    winner_registration_id = NULL,
+                    loser_registration_id = NULL,
+                    participant1_score = 0,
+                    participant2_score = 0,
+                    completed_at = NULL,
+                    updated_at = NOW()
+                WHERE id = $1
+                ",
+            )
+            .bind(match_id.as_uuid())
+            .bind(new_match_status.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        } else {
+            sqlx::query(
+                r"
+                UPDATE tournament_matches SET
+                    status = $2,
+                    updated_at = NOW()
+                WHERE id = $1
+                ",
+            )
+            .bind(match_id.as_uuid())
+            .bind(new_match_status.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        }
 
         let msg_evidence_ids: Vec<uuid::Uuid> = resolution_message
             .evidence_ids
@@ -823,27 +861,23 @@ impl DisputeRepository for PgDisputeRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?
         .ok_or(DomainError::DisputeNotFound(dispute_id))?;
 
-        sqlx::query(
-            r"
-            UPDATE tournament_matches SET
-                participant1_score = $2,
-                participant2_score = $3,
-                winner_registration_id = $4,
-                loser_registration_id = $5,
-                completed_at = NOW(),
-                status = 'completed',
-                updated_at = NOW()
-            WHERE id = $1
-            ",
+        // Score write delegated to the ONE statement that records a match
+        // result (P-72). This used to be a hand-copied `UPDATE
+        // tournament_matches` — identical to the one in
+        // `PgTournamentMatchRepository::submit_result_in_tx`, and free to drift
+        // from it. The admin score-override added for P-72 writes through the
+        // same helper, so "corrected by an admin", "resolved as adjusted" and
+        // "confirmed by the opponent" all leave the match row in exactly the
+        // same shape.
+        crate::adapters::tournament::PgTournamentMatchRepository::submit_result_in_tx(
+            &mut tx,
+            match_id,
+            new_participant1_score,
+            new_participant2_score,
+            new_winner_registration_id,
+            new_loser_registration_id,
         )
-        .bind(match_id.as_uuid())
-        .bind(new_participant1_score)
-        .bind(new_participant2_score)
-        .bind(new_winner_registration_id.as_uuid())
-        .bind(new_loser_registration_id.as_uuid())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .await?;
 
         let msg_evidence_ids: Vec<uuid::Uuid> = resolution_message
             .evidence_ids

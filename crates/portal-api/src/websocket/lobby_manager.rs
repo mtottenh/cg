@@ -66,6 +66,15 @@ impl VetoLobbyManager {
     pub fn active_match_ids(&self) -> Vec<TournamentMatchId> {
         self.lobbies.iter().map(|entry| *entry.key()).collect()
     }
+
+    /// Total open connections across all lobbies (metrics gauge source).
+    #[must_use]
+    pub fn total_connections(&self) -> usize {
+        self.lobbies
+            .iter()
+            .map(|entry| entry.value().connection_count())
+            .sum()
+    }
 }
 
 impl Default for VetoLobbyManager {

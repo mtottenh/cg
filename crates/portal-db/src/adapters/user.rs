@@ -228,7 +228,7 @@ impl UserRepository for PgUserRepository {
         .bind(&player.display_name)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(map_player_write_error)?;
 
         tx.commit()
             .await
@@ -320,6 +320,23 @@ impl UserRepository for PgUserRepository {
 // =============================================================================
 // Player Repository Adapter
 // =============================================================================
+
+/// Map a players-table write error, turning the display-name unique
+/// violation into a domain `Conflict` rather than a 500.
+///
+/// The service layer read-checks the name first, but that check and the
+/// write are not atomic — two concurrent registrations of the same name
+/// both pass it and one loses at the index (`idx_players_display_name_unique`,
+/// migration 0077). The loser should see the same 409 as the sequential
+/// case.
+fn map_player_write_error(e: sqlx::Error) -> DomainError {
+    if let sqlx::Error::Database(db_err) = &e
+        && db_err.constraint() == Some("idx_players_display_name_unique")
+    {
+        return DomainError::Conflict("Display name is already taken".to_string());
+    }
+    DomainError::Internal(e.to_string())
+}
 
 /// `PostgreSQL` implementation of the domain `PlayerRepository` trait.
 #[derive(Clone)]
@@ -423,7 +440,7 @@ impl PlayerRepository for PgPlayerRepository {
         .bind(&cmd.display_name)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(map_player_write_error)?;
 
         Ok(Player::from(player))
     }
@@ -594,7 +611,7 @@ impl PlayerRepository for PgPlayerRepository {
         let player = query_builder
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?
+            .map_err(map_player_write_error)?
             .ok_or(DomainError::PlayerNotFound(id))?;
 
         Ok(Player::from(player))

@@ -21,7 +21,14 @@ fn has_stats_json_extension(filename: &str) -> bool {
     filename.to_ascii_lowercase().ends_with(".stats.json")
 }
 
-const DEMO_BASE_URL: &str = "https://demos.cs210mans.uk";
+// P-137: there is deliberately NO default base URL and no `Default` impl.
+//
+// This const used to be `https://demos.cs210mans.uk` and `Cs2DemoClient::default()`
+// handed it out, so any construction that forgot to pass a URL — a test, a
+// misconfigured deployment, an unset `CS2_DEMO_SERVICE_URL` — silently issued
+// live requests to a third party instead of failing. `Cs2DemoClient` now only
+// exists with an explicit base URL; callers that have none must say so
+// (`Cs2PluginWithEvidence::new()` holds `None` and errors at the point of use).
 const STATS_PATH: &str = "/stats";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -114,12 +121,6 @@ fn is_private_or_loopback_host(host: &str) -> bool {
 pub struct Cs2DemoClient {
     client: reqwest::Client,
     base_url: String,
-}
-
-impl Default for Cs2DemoClient {
-    fn default() -> Self {
-        Self::new(DEMO_BASE_URL.to_string())
-    }
 }
 
 impl Cs2DemoClient {
@@ -243,43 +244,52 @@ impl Cs2DemoClient {
 mod tests {
     use super::*;
 
+    /// The URL every test in this module builds against.
+    ///
+    /// P-137: these tests used `Cs2DemoClient::default()` and asserted against
+    /// the real `demos.cs210mans.uk`, which is how a live third-party host
+    /// ended up baked into the test suite's expectations. A test URL is not a
+    /// real host, and there is no longer a way to construct a client without
+    /// naming one.
+    const TEST_BASE_URL: &str = "https://demos.test.invalid";
+
     #[test]
     fn test_demo_url_generation() {
-        let client = Cs2DemoClient::default();
+        let client = Cs2DemoClient::new(TEST_BASE_URL.to_string());
 
         // With .dem extension
         assert_eq!(
             client.get_demo_url("match_12345.dem"),
-            "https://demos.cs210mans.uk/match_12345.dem"
+            "https://demos.test.invalid/match_12345.dem"
         );
 
         // Without extension
         assert_eq!(
             client.get_demo_url("match_12345"),
-            "https://demos.cs210mans.uk/match_12345.dem"
+            "https://demos.test.invalid/match_12345.dem"
         );
     }
 
     #[test]
     fn test_stats_url_generation() {
-        let client = Cs2DemoClient::default();
+        let client = Cs2DemoClient::new(TEST_BASE_URL.to_string());
 
         // With .dem extension
         assert_eq!(
             client.get_stats_url("match_12345.dem"),
-            "https://demos.cs210mans.uk/stats/match_12345.dem.stats.json"
+            "https://demos.test.invalid/stats/match_12345.dem.stats.json"
         );
 
         // Without extension
         assert_eq!(
             client.get_stats_url("match_12345"),
-            "https://demos.cs210mans.uk/stats/match_12345.dem.stats.json"
+            "https://demos.test.invalid/stats/match_12345.dem.stats.json"
         );
 
         // Full stats name
         assert_eq!(
             client.get_stats_url("match_12345.dem.stats.json"),
-            "https://demos.cs210mans.uk/stats/match_12345.dem.stats.json"
+            "https://demos.test.invalid/stats/match_12345.dem.stats.json"
         );
     }
 
@@ -340,10 +350,27 @@ mod tests {
         assert!(validate_base_url("https://").is_err());
     }
 
+    /// Manual probe against a real stats service, off by default.
+    ///
+    /// P-137: this used to construct the client with `default()`, so `cargo
+    /// test -- --ignored` reached a hardcoded live third party. It now demands
+    /// the operator name the service, and skips when they have not — a test
+    /// must never pick an external host on the author's behalf.
+    ///
+    /// P-206: the opt-in variable is deliberately NOT `CS2_DEMO_SERVICE_URL`.
+    /// That is the production config var, exported in any shell that runs the
+    /// stack — reading it here meant `cargo test -- --ignored` in such a
+    /// shell still issued live outbound requests, with the `#[ignore]`
+    /// attribute as the only guard. A test-only variable nothing else sets
+    /// makes the probe fire only when someone aims it on purpose.
     #[tokio::test]
-    #[ignore = "requires external demo-stats service"]
+    #[ignore = "manual probe; set PORTAL_TEST_DEMO_SERVICE_URL to a stats service you mean to hit"]
     async fn test_fetch_demo_stats_integration() {
-        let client = Cs2DemoClient::default();
+        let Ok(base_url) = std::env::var("PORTAL_TEST_DEMO_SERVICE_URL") else {
+            println!("PORTAL_TEST_DEMO_SERVICE_URL unset; nothing to probe");
+            return;
+        };
+        let client = Cs2DemoClient::new(validate_base_url(&base_url).unwrap());
         let demo_name = "2024-09-14_20-17-30_9_de_inferno_team_Zan_vs_team_Maxymimi.dem";
         let result = client.get_demo_stats(demo_name).await;
 

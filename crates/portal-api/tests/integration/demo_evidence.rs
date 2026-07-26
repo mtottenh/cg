@@ -463,3 +463,86 @@ async fn test_live_demo_stats_service_roundtrip() {
         + body["data"]["team2_score"].as_i64().unwrap();
     assert_eq!(total, 14, "de_nuke demo finished 13-1");
 }
+
+// ============================================================================
+// DEMO ASSOCIATION REPAIR PATH (P-75)
+// ============================================================================
+
+/// P-75. `POST /v1/admin/demos/{id}/associate` is the repair path for the P-42
+/// failure mode — the auto-linker stamping a demo onto the wrong league or
+/// tournament — and it had **zero** callers in the frontend, so a mis-stamped
+/// demo could only be corrected in SQL. `demos.rs::test_associate_demo` covers
+/// the first stamp; the repair is re-stamping and clearing, which is what an
+/// operator actually needs and what nothing exercised.
+#[tokio::test]
+async fn test_associate_demo_corrects_and_clears_a_wrong_stamp() {
+    let app = TestApp::new().await;
+    let dev_user_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    assign_role_to_user(app.pool(), dev_user_id, "platform_admin").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let response = app
+        .post_json(
+            "/v1/admin/demos",
+            &json!({
+                "game_id": game_id,
+                "file_name": "p75-misassociated.dem",
+                "s3_bucket": "portal-demos-test",
+                "s3_key": "demos/p75-misassociated.dem",
+                "file_size_bytes": 4096,
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    let demo_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    let wrong = LeagueBuilder::new()
+        .name("P75 Wrong League")
+        .build_persisted(app.pool())
+        .await;
+    let right = LeagueBuilder::new()
+        .name("P75 Right League")
+        .build_persisted(app.pool())
+        .await;
+
+    // The bad stamp.
+    app.post_json(
+        &format!("/v1/admin/demos/{demo_id}/associate"),
+        &json!({ "league_id": wrong.id.to_string() }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // The correction.
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/associate"),
+            &json!({ "league_id": right.id.to_string() }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["league_id"], right.id.to_string());
+
+    let response = app.get_auth(&format!("/v1/demos/{demo_id}")).await;
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["league_id"],
+        right.id.to_string(),
+        "re-association must persist, not merge: {body}"
+    );
+
+    // And it can be taken off entirely — a demo stamped onto a league it was
+    // never played in has to be removable, not just movable.
+    let response = app
+        .post_json(
+            &format!("/v1/admin/demos/{demo_id}/associate"),
+            &json!({ "league_id": null, "tournament_id": null }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"]["league_id"].is_null(), "{body}");
+    assert!(body["data"]["tournament_id"].is_null(), "{body}");
+}

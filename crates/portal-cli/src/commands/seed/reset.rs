@@ -409,7 +409,16 @@ pub async fn reset_seed_data(pool: &PgPool) -> Result<()> {
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query("UPDATE entity_changes SET changed_by = NULL WHERE changed_by = ANY($1)")
+    // This was `UPDATE entity_changes SET changed_by = NULL`, which can never
+    // succeed: `changed_by` is `NOT NULL REFERENCES players(id) ON DELETE SET
+    // NULL` (migration 0015) — a self-contradictory pair, since the FK action
+    // would itself violate the NOT NULL. The statement was harmless only
+    // because nothing had ever written to `entity_changes`; the audit trail was
+    // CLI-read-only. The roster-lock override (P-18) is its first writer, so
+    // this would have started failing the whole reset transaction. Deleting the
+    // rows is what the block above already does for every other non-cascading
+    // player reference, and the players themselves are deleted next.
+    sqlx::query("DELETE FROM entity_changes WHERE changed_by = ANY($1)")
         .bind(&player_ids)
         .execute(&mut *tx)
         .await?;

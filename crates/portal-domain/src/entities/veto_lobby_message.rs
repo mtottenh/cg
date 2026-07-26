@@ -56,7 +56,7 @@ impl VetoLobbyMessage {
 }
 
 /// Type of veto lobby message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VetoMessageType {
     /// Private message visible only to one team.

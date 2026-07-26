@@ -13,6 +13,7 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use portal_core::{TournamentId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::entities::forfeit::{ForfeitTrigger, ForfeitType};
+use portal_domain::services::tournament::RegistrationActor;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -57,27 +58,23 @@ pub async fn withdraw_from_tournament(
 ) -> ApiResult<Json<DataResponse<WithdrawalResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // Authorization: the caller must be bound to the registration they are
-    // withdrawing — either they registered it, they are the registered
-    // player, or they are an active member of the registration's
-    // team-season. Anyone else needs the tournament admin permission.
+    // Authorization: the caller must speak for the registration they are
+    // withdrawing — see `registration_actor` for the one definition of that
+    // (P-168). Anyone else needs the tournament admin permission.
     let registration = state
         .registration_service
         .get_registration(registration_id)
         .await?;
 
-    let is_registrant = registration.registered_by == auth.user_id;
-    let is_registered_player = registration.player_id == Some(auth.player_id);
-    let is_team_member = if let Some(ts_id) = registration.team_season_id {
-        state
-            .league_team_service
-            .is_member(ts_id, auth.player_id)
-            .await?
-    } else {
-        false
-    };
+    let speaks_for = state
+        .registration_service
+        .speaks_for(
+            &registration,
+            RegistrationActor::new(auth.user_id, auth.player_id),
+        )
+        .await?;
 
-    if !is_registrant && !is_registered_player && !is_team_member {
+    if !speaks_for {
         perm_checker
             .require_permission(
                 &auth,

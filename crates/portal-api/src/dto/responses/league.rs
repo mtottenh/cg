@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use portal_domain::entities::league::{
-    League, LeagueInvitation, LeagueMemberWithUser, UserLeagueMembership,
+    League, LeagueInvitation, LeagueMemberWithUser, LeagueStatus, UserLeagueMembership,
 };
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -19,7 +19,10 @@ pub struct LeagueResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logo_url: Option<String>,
     pub access_type: String,
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string` (P-112/P-178). Wire-compatible: serde
+    // snake_case matches the old `as_str()` strings.
+    pub status: LeagueStatus,
     /// League configuration including entry requirements.
     /// Entry requirements are stored under the `"eligibility"` key.
     pub settings: serde_json::Value,
@@ -38,7 +41,7 @@ impl From<League> for LeagueResponse {
             description: league.description,
             logo_url: league.logo_url,
             access_type: league.access_type.as_str().to_string(),
-            status: league.status.as_str().to_string(),
+            status: league.status,
             settings: league.settings,
             created_by: league.created_by.to_string(),
             created_at: league.created_at,
@@ -54,9 +57,26 @@ pub struct LeagueMemberResponse {
     pub league_id: String,
     pub user_id: String,
     pub username: String,
-    pub email: String,
+    /// Member email. **Only populated for callers holding
+    /// `league.members.manage` on this league.** It was previously always
+    /// present on an endpoint that required no authentication at all, so any
+    /// anonymous caller could enumerate member email addresses (P-37).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     pub membership_type: String,
     pub joined_at: DateTime<Utc>,
+}
+
+impl LeagueMemberResponse {
+    /// Build a member row, including the email only when the caller is
+    /// authorised to see it. See the `email` field docs (P-37).
+    #[must_use]
+    pub fn from_member(member: LeagueMemberWithUser, include_email: bool) -> Self {
+        let email = member.email.clone();
+        let mut this = Self::from(member);
+        this.email = include_email.then_some(email);
+        this
+    }
 }
 
 impl From<LeagueMemberWithUser> for LeagueMemberResponse {
@@ -66,7 +86,8 @@ impl From<LeagueMemberWithUser> for LeagueMemberResponse {
             league_id: member.league_id.to_string(),
             user_id: member.user_id.to_string(),
             username: member.username,
-            email: member.email,
+            // Omitted by default -- opt in via `from_member` (P-37).
+            email: None,
             membership_type: member.membership_type.as_str().to_string(),
             joined_at: member.joined_at,
         }
@@ -127,7 +148,25 @@ impl From<UserLeagueMembership> for UserLeagueMembershipResponse {
 pub struct LeagueInvitationResponse {
     pub id: String,
     pub league_id: String,
+    /// Name of the league the invitation is for. Without it, two pending
+    /// invitations are indistinguishable on the invitations page and
+    /// accept/decline is a blind choice (P-38) — team invitations already
+    /// carry `team_name`/`league_name`, so the asymmetry was unintended.
+    pub league_name: String,
     pub user_id: String,
+    /// Username of the invited/applying user. Always present.
+    ///
+    /// P-115: the admin invitations and applications tables had only `user_id`
+    /// to show and truncated it to 8 characters — and UUID v7 prefixes are
+    /// timestamps, so rows created seconds apart were indistinguishable rather
+    /// than merely cryptic. `LeagueMemberResponse` has carried `username`
+    /// since it existed; this closes the asymmetry.
+    pub username: String,
+    /// The user's display name, when they have a player profile. This is the
+    /// name the invite search shows the organiser, so it is what the resulting
+    /// row should lead with; `username` is the fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub invitation_type: String,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,12 +182,22 @@ pub struct LeagueInvitationResponse {
     pub created_at: DateTime<Utc>,
 }
 
-impl From<LeagueInvitation> for LeagueInvitationResponse {
-    fn from(inv: LeagueInvitation) -> Self {
+impl LeagueInvitationResponse {
+    /// Build the response from a domain invitation plus the league's name.
+    ///
+    /// Deliberately not a `From<LeagueInvitation>` impl: the domain entity
+    /// does not carry the league name, and forcing every call site to supply
+    /// it keeps the P-38 fix compile-checked (a new endpoint cannot silently
+    /// ship a nameless invitation).
+    #[must_use]
+    pub fn from_invitation(inv: LeagueInvitation, league_name: String) -> Self {
         Self {
             id: inv.id.to_string(),
             league_id: inv.league_id.to_string(),
+            league_name,
             user_id: inv.user_id.to_string(),
+            username: inv.username,
+            display_name: inv.display_name,
             invitation_type: inv.invitation_type.as_str().to_string(),
             status: inv.status.as_str().to_string(),
             message: inv.message,

@@ -7,14 +7,17 @@ use crate::dto::requests::{
 };
 use crate::dto::responses::{
     GameDetailResponse, GameSummaryResponse, MapInfoResponse, RankTierResponse, TeamSizeConfig,
+    WorkshopMapDetailsResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, ValidatedJson};
+use crate::extractors::{AuthenticatedUser, OptionalAuthenticatedUser, ValidatedJson};
 use crate::state::GamesState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_db::entities::{GameRow, UpdateGame};
+use serde::Deserialize;
+use utoipa::IntoParams;
 
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
@@ -28,28 +31,78 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 // PUBLIC ENDPOINTS
 // ============================================================================
 
-/// List all active games.
+/// Extra query parameters for [`list_games`], alongside [`PaginationParams`].
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+pub struct ListGamesParams {
+    /// Include games whose status is not `active` (i.e. `maintenance`,
+    /// `deprecated`). Requires the `admin.games.manage` permission.
+    ///
+    /// P-88: this list is the *only* game catalog the product has, and the admin
+    /// games table reads it. Because it was unconditionally `list_active()`, a
+    /// game that an admin disabled left the table on the very next fetch — and
+    /// the Enable control exists only *inside* a row, so disabling a game deleted
+    /// the button that re-enables it. The game became unreachable from the portal
+    /// permanently, with no admin remedy short of SQL.
+    ///
+    /// Non-admin callers that ask for it are **refused**, not silently downgraded
+    /// to the active list: a client must never be able to believe it is holding
+    /// the full catalog when it is holding a filtered one.
+    #[serde(default)]
+    #[param(default = false)]
+    pub include_inactive: bool,
+}
+
+/// List games — active only by default; the whole catalog for an admin that asks.
 #[utoipa::path(
     get,
     path = "/v1/games",
-    params(PaginationParams),
+    params(PaginationParams, ListGamesParams),
     responses(
-        (status = 200, description = "List of active games", body = PaginatedResponse<GameSummaryResponse>),
+        (status = 200, description = "List of games", body = PaginatedResponse<GameSummaryResponse>),
+        (status = 403, description = "Forbidden - `include_inactive` requires admin", body = ApiError),
     ),
     tag = "games"
 )]
 pub async fn list_games(
     State(state): State<GamesState>,
+    auth: OptionalAuthenticatedUser,
     headers: HeaderMap,
     Query(params): Query<PaginationParams>,
+    Query(list_params): Query<ListGamesParams>,
 ) -> ApiResult<Json<PaginatedResponse<GameSummaryResponse>>> {
     let request_id = get_request_id(&headers);
 
-    // Fetch active games from database
-    let games = state.game_repo.list_active().await?;
+    // Fetch games from the database. The unfiltered catalog is admin-only.
+    let active_only = if list_params.include_inactive {
+        let is_admin = match &auth.0 {
+            Some(user) => state
+                .permission_repo
+                .user_has_permission(user.user_id, portal_core::permissions::admin::GAMES_MANAGE)
+                .await
+                .unwrap_or(false),
+            None => false,
+        };
+        if !is_admin {
+            return Err(ApiError::forbidden(
+                "Admin permission required to list inactive games",
+            ));
+        }
+        false
+    } else {
+        true
+    };
 
-    // Convert to response DTOs
-    let game_responses: Vec<GameSummaryResponse> = games
+    // P-121 established that `params` must actually govern the list and that
+    // `total` is the catalog count, not the page length. P-156 finishes the
+    // job: the LIMIT/OFFSET now runs in SQL (`list_paged`) instead of
+    // fetching the whole table and skip/taking in memory — honest at a
+    // handful of rows, but a read that grows with the catalog forever.
+    let (games, total) = state
+        .game_repo
+        .list_paged(active_only, params.limit(), params.offset())
+        .await?;
+
+    let page_of_games: Vec<GameSummaryResponse> = games
         .into_iter()
         .map(|g| GameSummaryResponse {
             id: g.id.to_string(),
@@ -61,15 +114,14 @@ pub async fn list_games(
             team_size_default: g.team_size_default,
             status: g.status,
             is_featured: g.is_featured,
+            sort_order: g.sort_order,
         })
         .collect();
 
-    let total = game_responses.len() as u64;
-
     Ok(Json(PaginatedResponse::new(
-        game_responses,
+        page_of_games,
         &params,
-        total,
+        u64::try_from(total).unwrap_or(0),
         request_id,
     )))
 }
@@ -180,6 +232,7 @@ pub async fn get_game(
         map_pool,
         status: game.status,
         is_featured: game.is_featured,
+        sort_order: game.sort_order,
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
@@ -314,7 +367,7 @@ pub async fn update_game(
     // Check admin permission
     let is_admin = state
         .permission_repo
-        .user_has_permission(auth.user_id, "admin.games.manage")
+        .user_has_permission(auth.user_id, portal_core::permissions::admin::GAMES_MANAGE)
         .await
         .unwrap_or(false);
 
@@ -418,6 +471,7 @@ pub async fn update_game(
         map_pool,
         status: game.status,
         is_featured: game.is_featured,
+        sort_order: game.sort_order,
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
@@ -453,7 +507,7 @@ pub async fn set_map_pool(
     // Check admin permission
     let is_admin = state
         .permission_repo
-        .user_has_permission(auth.user_id, "admin.games.manage")
+        .user_has_permission(auth.user_id, portal_core::permissions::admin::GAMES_MANAGE)
         .await
         .unwrap_or(false);
 
@@ -505,7 +559,12 @@ pub async fn set_map_pool(
         ..Default::default()
     };
 
-    let _ = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(Json(DataResponse::new(pool_maps, request_id)))
 }
@@ -537,7 +596,7 @@ pub async fn enable_game(
     // Check admin permission
     let is_admin = state
         .permission_repo
-        .user_has_permission(auth.user_id, "admin.games.manage")
+        .user_has_permission(auth.user_id, portal_core::permissions::admin::GAMES_MANAGE)
         .await
         .unwrap_or(false);
 
@@ -563,6 +622,7 @@ pub async fn enable_game(
         team_size_default: game.team_size_default,
         status: game.status,
         is_featured: game.is_featured,
+        sort_order: game.sort_order,
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
@@ -595,7 +655,7 @@ pub async fn disable_game(
     // Check admin permission
     let is_admin = state
         .permission_repo
-        .user_has_permission(auth.user_id, "admin.games.manage")
+        .user_has_permission(auth.user_id, portal_core::permissions::admin::GAMES_MANAGE)
         .await
         .unwrap_or(false);
 
@@ -621,6 +681,7 @@ pub async fn disable_game(
         team_size_default: game.team_size_default,
         status: game.status,
         is_featured: game.is_featured,
+        sort_order: game.sort_order,
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
@@ -697,7 +758,7 @@ pub(crate) fn game_catalog_map_ids(
 async fn require_games_admin(state: &GamesState, auth: &AuthenticatedUser) -> ApiResult<()> {
     let is_admin = state
         .permission_repo
-        .user_has_permission(auth.user_id, "admin.games.manage")
+        .user_has_permission(auth.user_id, portal_core::permissions::admin::GAMES_MANAGE)
         .await
         .unwrap_or(false);
 
@@ -759,8 +820,10 @@ pub async fn add_map(
         )));
     }
 
-    // Append new map
+    // Append new map. An engine_name equal to the id is noise — store None
+    // so "absent = same as id" stays the single representation.
     maps.push(MapInfoResponse {
+        engine_name: req.engine_name.filter(|n| n != &req.id),
         id: req.id,
         display_name: req.display_name,
         image_url: req.image_url,
@@ -775,7 +838,12 @@ pub async fn add_map(
         available_maps: Some(maps_json),
         ..Default::default()
     };
-    let _ = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(Json(DataResponse::new(maps, request_id)))
 }
@@ -833,11 +901,20 @@ pub async fn update_map(
     if let Some(game_modes) = req.game_modes {
         map.game_modes = game_modes;
     }
+    if let Some(engine_name) = req.engine_name {
+        // Empty string (or the id itself) clears the override back to
+        // "absent = same as id".
+        map.engine_name = Some(engine_name)
+            .filter(|n| !n.is_empty())
+            .filter(|n| n != &map.id);
+    }
+    // Empty string clears — `Some("")` would read as "is a workshop map"
+    // downstream and then fail token translation.
     if let Some(external_id) = req.external_id {
-        map.external_id = Some(external_id);
+        map.external_id = Some(external_id).filter(|x| !x.is_empty());
     }
     if let Some(external_url) = req.external_url {
-        map.external_url = Some(external_url);
+        map.external_url = Some(external_url).filter(|x| !x.is_empty());
     }
 
     let updated_map = map.clone();
@@ -848,7 +925,12 @@ pub async fn update_map(
         available_maps: Some(maps_json),
         ..Default::default()
     };
-    let _ = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(Json(DataResponse::new(updated_map, request_id)))
 }
@@ -899,9 +981,75 @@ pub async fn remove_map(
         available_maps: Some(maps_json),
         ..Default::default()
     };
-    let _ = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Look up Steam Workshop metadata for a map (admin only).
+///
+/// Validates an admin-pasted workshop item id and returns prefill data
+/// for the map-catalog form (title, preview image, engine-name hint,
+/// size, app, visibility). Read-only pass-through to Steam's keyless
+/// `GetPublishedFileDetails` endpoint — nothing is stored.
+#[utoipa::path(
+    get,
+    path = "/v1/games/{game_id}/workshop-maps/{workshop_id}",
+    params(
+        ("game_id" = String, Path, description = "Game ID (slug)"),
+        ("workshop_id" = String, Path, description = "Workshop item id (decimal digits)")
+    ),
+    responses(
+        (status = 200, description = "Workshop item details", body = DataResponse<WorkshopMapDetailsResponse>),
+        (status = 400, description = "Not a workshop item id", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden - admin role required", body = ApiError),
+        (status = 404, description = "Game or workshop item not found", body = ApiError),
+        (status = 503, description = "Steam Web API unreachable", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "games"
+)]
+pub async fn get_workshop_map_details(
+    State(state): State<GamesState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path((game_id, workshop_id)): Path<(String, String)>,
+) -> ApiResult<Json<DataResponse<WorkshopMapDetailsResponse>>> {
+    let request_id = get_request_id(&headers);
+    require_games_admin(&state, &auth).await?;
+
+    // The lookup is game-scoped for route cohesion; the game must exist.
+    let _ = state
+        .game_repo
+        .find_by_id_or_slug(&game_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("Game not found: {game_id}")))?;
+
+    // Liberal in what we accept: bare digits or a pasted filedetails URL
+    // fragment still containing `id=`.
+    let numeric_id = portal_plugins::games::cs2::workshop_numeric_id(&workshop_id)
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .ok_or_else(|| {
+            ApiError::bad_request("workshop_id must be a numeric Steam Workshop item id")
+        })?;
+
+    let details = state
+        .workshop_metadata
+        .published_file_details(numeric_id)
+        .await
+        .map_err(ApiError::service_unavailable)?
+        .ok_or_else(|| ApiError::not_found(format!("Workshop item not found: {numeric_id}")))?;
+
+    Ok(Json(DataResponse::new(
+        WorkshopMapDetailsResponse::from(details),
+        request_id,
+    )))
 }
 
 // ============================================================================
@@ -936,8 +1084,11 @@ pub async fn set_rank_tiers(
     let request_id = get_request_id(&headers);
     require_games_admin(&state, &auth).await?;
 
-    // Verify game exists
-    let _ = state
+    // Verify game exists. P-87: bind it rather than discarding into `_` — the
+    // write below is keyed on slug and this lookup already knows it. Throwing
+    // the row away is what left that write reaching for the raw `game_id` path
+    // parameter, which is a UUID and never matches.
+    let game = state
         .game_repo
         .find_by_id_or_slug(&game_id)
         .await?
@@ -986,7 +1137,12 @@ pub async fn set_rank_tiers(
         rank_tiers: Some(tiers_json),
         ..Default::default()
     };
-    let _ = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let _ = state.game_repo.update(&game.slug, update).await?;
 
     Ok(Json(DataResponse::new(tiers, request_id)))
 }
@@ -1052,7 +1208,12 @@ pub async fn update_team_size(
         team_size_default: req.default,
         ..Default::default()
     };
-    let updated = state.game_repo.update(&game_id, update).await?;
+    // P-87: `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+    // repositories/game.rs:106) and 404s otherwise. Since migration 0024 made
+    // games.id a UUID, `game_id` here is whatever the client sent — and the
+    // client sends the UUID, so every one of these writes 404'd. The game is
+    // already resolved above; pass its slug.
+    let updated = state.game_repo.update(&game.slug, update).await?;
 
     let config = TeamSizeConfig {
         min: updated.team_size_min,

@@ -5,6 +5,9 @@
 //! - `TournamentService`: Core tournament management
 //! - `BracketGenerator`: Bracket generation for various formats
 //! - `RegistrationService`: Registration management (withdraw, approve, reject)
+//! - `registration_actor`: the single definition of "who speaks for a
+//!   registration", shared by result submission/confirmation, disputes,
+//!   evidence, scheduling and withdrawal (P-168)
 //! - `CheckInService`: Check-in operations
 //! - `SeedingService`: Participant seeding algorithms
 //! - `MatchLifecycleService`: Match state machine and lifecycle management
@@ -26,10 +29,12 @@ mod dispute;
 mod evidence;
 mod forfeit;
 pub(crate) mod helpers;
+mod lineup;
 mod match_completion;
 mod match_lifecycle;
 mod progression;
 mod registration;
+mod registration_actor;
 mod result;
 mod result_review;
 mod saga;
@@ -53,14 +58,18 @@ pub use evidence::{
     EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig,
 };
 pub use forfeit::ForfeitService;
+pub use lineup::LineupService;
 pub use match_completion::{
     DemoValidationOutcome, MatchCompletionInput, MatchCompletionOutput, MatchCompletionSaga,
     MatchDemoValidator, MatchStatsUpdater, ReviewCreator,
 };
-pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails};
+pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails, MatchStatusTransitioner};
 pub use progression::{Advancement, LoserResult, ProgressionResult, ProgressionService};
-pub use registration::RegistrationService;
-pub use result::{MapPoolProvider, ResultService};
+pub use registration::{RegistrationCounts, RegistrationService, initial_registration_status};
+pub use registration_actor::{RegistrationActor, find_actor_registration, speaks_for_registration};
+pub use result::{
+    MATCH_RESULT_OVERRIDE_ENTITY, MATCH_RESULT_OVERRIDE_FIELD, MapPoolProvider, ResultService,
+};
 pub use result_review::ResultReviewService;
 pub use saga::{Saga, SagaCoordinator, SagaDefinition, SagaResult, SagaStep};
 pub use scheduling::SchedulingService;

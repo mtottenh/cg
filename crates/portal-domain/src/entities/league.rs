@@ -36,7 +36,7 @@ pub struct League {
 }
 
 /// League access type determines how users can join.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueAccessType {
     /// Anyone can join without approval.
@@ -75,7 +75,7 @@ impl std::fmt::Display for LeagueAccessType {
 }
 
 /// League status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueStatus {
     /// League is operational.
@@ -148,7 +148,7 @@ pub struct LeagueMemberWithUser {
 }
 
 /// League membership type/role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueMembershipType {
     /// Full control over the league.
@@ -205,6 +205,20 @@ pub struct LeagueInvitation {
     pub league_id: LeagueId,
     /// The user being invited or applying.
     pub user_id: UserId,
+    /// The invited/applying user's username (`users.username`, always present).
+    ///
+    /// Carried on the entity for the same reason `LeagueMemberWithUser` carries
+    /// it: an invitation row identified only by `user_id` cannot be read by a
+    /// human, and truncating the id is worse than useless because UUID v7
+    /// prefixes are timestamps — two invitations created seconds apart share
+    /// theirs (P-115).
+    pub username: String,
+    /// The user's display name (`players.display_name`), when they have a
+    /// player profile. This is the name every search surface shows, including
+    /// the one an organiser types into when sending the invitation, so it is
+    /// what the invitation row should lead with. `None` for a user with no
+    /// player row — hence a LEFT join, never an inner one.
+    pub display_name: Option<String>,
     /// Whether this is an invite or application.
     pub invitation_type: LeagueInvitationType,
     /// Current status of the invitation.
@@ -224,7 +238,7 @@ pub struct LeagueInvitation {
 }
 
 /// Type of league invitation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueInvitationType {
     /// Admin invites a user.
@@ -259,7 +273,7 @@ impl std::fmt::Display for LeagueInvitationType {
 }
 
 /// Status of a league invitation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueInvitationStatus {
     /// Waiting for response.

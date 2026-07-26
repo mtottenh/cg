@@ -58,12 +58,10 @@ async fn register_player(app: &TestApp, tournament_id: &str, participant_name: &
 
 /// Helper to approve a registration.
 async fn approve_registration(app: &TestApp, tournament_id: &str, registration_id: &str) {
-    let response = app
-        .post_auth(&format!(
-            "/v1/tournaments/{tournament_id}/registrations/{registration_id}/approve"
-        ))
-        .await;
-    response.assert_status(StatusCode::OK);
+    // Delegates to the shared helper, which is a no-op when the
+    // registration is already approved — `open` tournaments auto-approve
+    // on registration (P-2).
+    crate::tournaments::approve_registration(app, tournament_id, registration_id).await;
 }
 
 /// Match info returned by the helper
@@ -1490,7 +1488,15 @@ async fn test_resolved_claim_updates_conflict_at_repo_level() {
 
     let err = repo
         .confirm_and_apply_to_match(
-            claim_uuid, p1_reg_id, user_id, false, match_uuid, p1_reg_id, p1_reg_id, 2, 0,
+            claim_uuid,
+            p1_reg_id,
+            Some(user_id),
+            false,
+            match_uuid,
+            p1_reg_id,
+            p1_reg_id,
+            2,
+            0,
         )
         .await
         .expect_err("second confirm must be rejected");
@@ -1508,4 +1514,681 @@ async fn test_resolved_claim_updates_conflict_at_repo_level() {
         .await
         .expect_err("disputing a resolved claim must be rejected");
     assert!(matches!(err, portal_core::DomainError::Conflict(_)));
+}
+
+// ============================================================================
+// CURRENT-CLAIM SEMANTICS (P-1)
+// ============================================================================
+
+/// `GET /v1/matches/{id}/result` must keep serving the match's result once it
+/// has been confirmed.
+///
+/// It used to look for a `pending` claim only. Confirming a claim both flips
+/// it to `confirmed` and completes the match, so from the instant a match
+/// finished the endpoint 404'd — and the per-map breakdown of the finished
+/// series, which is exactly what a completed match page wants to show, became
+/// unreachable (P-1). The pending path is asserted in the same test so the
+/// live flow cannot regress in exchange.
+#[tokio::test]
+async fn test_get_result_claim_serves_pending_then_confirmed_claim() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, p1_reg, _p2_reg, opponent_token, _bracket_id) =
+        create_rr_match_in_progress(&app, "rr-current-claim").await;
+
+    // Dev (participant 1's registrant) claims a 2-0 series win, carrying the
+    // per-map scorelines.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [
+                    {
+                        "game_number": 1,
+                        "map_id": "de_mirage",
+                        "participant1_score": 13,
+                        "participant2_score": 7,
+                        "evidence_ids": []
+                    },
+                    {
+                        "game_number": 2,
+                        "map_id": "de_inferno",
+                        "participant1_score": 13,
+                        "participant2_score": 11,
+                        "evidence_ids": []
+                    }
+                ],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Live match: the open claim is the current claim.
+    let response = app.get(&format!("/v1/matches/{match_id}/result")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"], claim_id.as_str());
+    assert_eq!(body["data"]["status"], "pending");
+
+    // The opponent confirms: the claim becomes `confirmed` and the match
+    // completes.
+    let response = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/result/{claim_id}/confirm"),
+            &opponent_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let (match_status,): (String,) =
+        sqlx::query_as("SELECT status::text FROM tournament_matches WHERE id = $1")
+            .bind(Uuid::parse_str(&match_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        match_status, "completed",
+        "the confirm must have completed the match"
+    );
+
+    // Completed match: the confirmed claim is now the current claim, with the
+    // per-map results intact.
+    let response = app.get(&format!("/v1/matches/{match_id}/result")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["id"], claim_id.as_str());
+    assert_eq!(body["data"]["status"], "confirmed");
+
+    let games = body["data"]["game_results"].as_array().unwrap();
+    assert_eq!(games.len(), 2, "both maps must survive confirmation");
+    assert_eq!(games[0]["game_number"], 1);
+    assert_eq!(games[0]["map_id"], "de_mirage");
+    assert_eq!(games[0]["participant1_score"], 13);
+    assert_eq!(games[0]["participant2_score"], 7);
+    assert_eq!(games[1]["game_number"], 2);
+    assert_eq!(games[1]["map_id"], "de_inferno");
+    assert_eq!(games[1]["participant1_score"], 13);
+    assert_eq!(games[1]["participant2_score"], 11);
+}
+
+/// A disputed claim is history, not a result: it must not be served as the
+/// match's current claim. Otherwise the match page would present a contested
+/// scoreline as settled.
+#[tokio::test]
+async fn test_get_result_claim_excludes_disputed_claim() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, p1_reg, _p2_reg, opponent_token, _bracket_id) =
+        create_rr_match_in_progress(&app, "rr-disputed-claim").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/result/{claim_id}/dispute"),
+            &json!({
+                "reason": "Those scores are not what we played.",
+                "evidence_ids": []
+            }),
+            &opponent_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // The claim is still reachable through the history endpoint, but it is no
+    // longer the match's result.
+    let response = app
+        .get(&format!("/v1/matches/{match_id}/result/history"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let history: serde_json::Value = response.json();
+    let claims = history["data"].as_array().unwrap();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0]["status"], "disputed");
+
+    let response = app.get(&format!("/v1/matches/{match_id}/result")).await;
+    response.assert_status(StatusCode::NOT_FOUND);
+}
+
+/// P-50: submitting a result claim must move the match to `awaiting_result`
+/// AND surface a `confirm_result` action item to the opponent.
+///
+/// Before the fix `submit_claim` left the match `in_progress`. The
+/// action-item query keys the confirm/dispute item off `awaiting_result`
+/// specifically, so the opponent was NEVER told a result had been submitted —
+/// yet `auto_confirm_at` was set to now+15min and the background sweeper made
+/// the score official regardless. This test pins both halves: the audited
+/// state transition, and the action item the opponent depends on.
+#[tokio::test]
+async fn test_submit_claim_moves_to_awaiting_result_and_notifies_opponent() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, p1_reg, _p2_reg, opponent_token, _bracket_id) =
+        create_rr_match_in_progress(&app, "rr-p50-awaiting").await;
+
+    // Dev submits a 2-0 claim for participant 1.
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1_reg,
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [
+                    {
+                        "game_number": 1,
+                        "map_id": "de_mirage",
+                        "participant1_score": 13,
+                        "participant2_score": 7,
+                        "evidence_ids": []
+                    },
+                    {
+                        "game_number": 2,
+                        "map_id": "de_inferno",
+                        "participant1_score": 13,
+                        "participant2_score": 9,
+                        "evidence_ids": []
+                    }
+                ],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // 1. The match must have transitioned to `awaiting_result`...
+    let (match_status,): (String,) =
+        sqlx::query_as("SELECT status::text FROM tournament_matches WHERE id = $1")
+            .bind(Uuid::parse_str(&match_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        match_status, "awaiting_result",
+        "submitting a claim must move the match out of in_progress"
+    );
+
+    // ...and the transition must be audited in match_status_log (the
+    // MatchLifecycleService path), not applied as a silent raw UPDATE.
+    let (log_count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM match_status_log \
+         WHERE match_id = $1 AND to_status = 'awaiting_result'",
+    )
+    .bind(Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        log_count, 1,
+        "the in_progress -> awaiting_result transition must be logged"
+    );
+
+    // 2. The opponent (the non-submitter) must now see a confirm_result
+    // action item for this match.
+    let response = app
+        .get_with_token("/v1/users/me/action-items", &opponent_token)
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let items = body["data"].as_array().unwrap();
+    let confirm_item = items
+        .iter()
+        .find(|i| i["action_type"] == "confirm_result" && i["match_id"] == match_id.as_str());
+    assert!(
+        confirm_item.is_some(),
+        "opponent must get a confirm_result action item after a claim is submitted; got {items:?}"
+    );
+}
+
+// ============================================================================
+// ADMIN RESULT OVERRIDE (P-72)
+// ============================================================================
+//
+// A score both parties confirmed — or that auto-confirmed after 24h — with
+// nobody disputing it used to be permanently uncorrectable: every admin path
+// that can write a score (`resolve/{overturn,adjusted,double-dq}`) takes a
+// dispute id and refuses to run without one, and `revert`/`reapply`
+// progression replay the recorded score rather than changing it.
+
+/// A completed match with a recorded (wrong) result, ready to be corrected.
+struct OverrideFixture {
+    tournament_id: Uuid,
+    match_id: Uuid,
+    participant1_reg_id: Uuid,
+    participant2_reg_id: Uuid,
+}
+
+async fn setup_completed_match(app: &TestApp, slug: &str) -> OverrideFixture {
+    let info = create_tournament_with_matches(app, slug).await;
+
+    let p1: Uuid = info.participant1_reg_id.parse().unwrap();
+    let p2: Uuid = info.participant2_reg_id.parse().unwrap();
+    let match_uuid: Uuid = info.match_id.parse().unwrap();
+
+    // Record the WRONG result directly, standing in for "both parties
+    // confirmed it" / "it auto-confirmed". What matters for this endpoint is
+    // the state it leaves behind: a completed match carrying a winner and a
+    // score, and no dispute row anywhere.
+    sqlx::query(
+        "UPDATE tournament_matches SET status = 'completed', \
+         participant1_score = 2, participant2_score = 0, \
+         winner_registration_id = $2, loser_registration_id = $3, \
+         completed_at = NOW() WHERE id = $1",
+    )
+    .bind(match_uuid)
+    .bind(p1)
+    .bind(p2)
+    .execute(app.pool())
+    .await
+    .expect("seed the wrong result");
+
+    OverrideFixture {
+        tournament_id: info.tournament_id.parse().unwrap(),
+        match_id: match_uuid,
+        participant1_reg_id: p1,
+        participant2_reg_id: p2,
+    }
+}
+
+#[tokio::test]
+async fn test_admin_override_rewrites_the_score_and_the_winner() {
+    let app = TestApp::new().await;
+    let f = setup_completed_match(&app, "override-rewrites").await;
+
+    let response = app
+        .post_json(
+            &format!(
+                "/v1/admin/tournaments/{}/matches/{}/result-override",
+                f.tournament_id, f.match_id
+            ),
+            &json!({
+                "participant1_score": 0,
+                "participant2_score": 2,
+                "reason": "Both parties confirmed the wrong scoreline; demo shows 0-2."
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["participant1_score"], 0);
+    assert_eq!(body["data"]["participant2_score"], 2);
+    assert_eq!(
+        body["data"]["winner_registration_id"].as_str(),
+        Some(f.participant2_reg_id.to_string().as_str()),
+        "flipping the score must move the winner, or the bracket keeps advancing \
+         the loser"
+    );
+
+    // …and the match row itself really moved, not just the response body.
+    let row = sqlx::query(
+        "SELECT participant1_score, participant2_score, winner_registration_id, \
+                loser_registration_id, status FROM tournament_matches WHERE id = $1",
+    )
+    .bind(f.match_id)
+    .fetch_one(app.pool())
+    .await
+    .expect("read back the match");
+    assert_eq!(row.get::<i32, _>("participant1_score"), 0);
+    assert_eq!(row.get::<i32, _>("participant2_score"), 2);
+    assert_eq!(
+        row.get::<Uuid, _>("winner_registration_id"),
+        f.participant2_reg_id
+    );
+    assert_eq!(
+        row.get::<Uuid, _>("loser_registration_id"),
+        f.participant1_reg_id
+    );
+    assert_eq!(
+        row.get::<String, _>("status"),
+        "completed",
+        "a corrected match stays completed — the correction is not a re-open"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_override_records_who_changed_what_from_what_to_what() {
+    let app = TestApp::new().await;
+    let f = setup_completed_match(&app, "override-audits").await;
+
+    let response = app
+        .post_json(
+            &format!(
+                "/v1/admin/tournaments/{}/matches/{}/result-override",
+                f.tournament_id, f.match_id
+            ),
+            &json!({
+                "participant1_score": 1,
+                "participant2_score": 2,
+                "reason": "Map 3 was scored for the wrong side."
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let rows = sqlx::query(
+        "SELECT changed_by, old_value, new_value FROM entity_changes \
+         WHERE entity_type = 'tournament_match' AND entity_id = $1 \
+           AND field_name = 'result_override'",
+    )
+    .bind(f.match_id)
+    .fetch_all(app.pool())
+    .await
+    .expect("read the audit trail");
+
+    assert_eq!(rows.len(), 1, "exactly one audit row per correction");
+    let old: serde_json::Value = rows[0].get("old_value");
+    let new: serde_json::Value = rows[0].get("new_value");
+
+    assert_eq!(old["participant1_score"], 2, "the pre-correction score");
+    assert_eq!(old["participant2_score"], 0);
+    assert_eq!(
+        old["winner_registration_id"].as_str(),
+        Some(f.participant1_reg_id.to_string().as_str())
+    );
+    assert_eq!(new["participant1_score"], 1, "the post-correction score");
+    assert_eq!(new["participant2_score"], 2);
+    assert_eq!(
+        new["winner_registration_id"].as_str(),
+        Some(f.participant2_reg_id.to_string().as_str())
+    );
+    assert_eq!(new["reason"], "Map 3 was scored for the wrong side.");
+    assert_eq!(
+        rows[0].get::<Uuid, _>("changed_by"),
+        get_dev_player_id(app.pool()).await,
+        "the audit row must name the operator who made the change"
+    );
+
+    // The read endpoint surfaces the same row — an audit trail no operator can
+    // read is barely better than none.
+    let listed = app
+        .get_auth(&format!(
+            "/v1/admin/tournaments/{}/matches/{}/result-overrides",
+            f.tournament_id, f.match_id
+        ))
+        .await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    let entries = listed["data"].as_array().expect("override list");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["previous_participant1_score"], 2);
+    assert_eq!(entries[0]["previous_participant2_score"], 0);
+    assert_eq!(entries[0]["new_participant1_score"], 1);
+    assert_eq!(entries[0]["new_participant2_score"], 2);
+    assert_eq!(entries[0]["reason"], "Map 3 was scored for the wrong side.");
+    assert!(
+        entries[0]["changed_by_name"].is_string(),
+        "the correction must name its author — a truncated UUID identifies nobody"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_override_rejects_a_tie() {
+    let app = TestApp::new().await;
+    let f = setup_completed_match(&app, "override-tie").await;
+
+    // The open-coded winner derivation this replaced was
+    // `if p1 > p2 { p1 } else { p2 }`, which silently handed an equal score to
+    // participant 2 and wrote that fabricated winner into the bracket.
+    let response = app
+        .post_json(
+            &format!(
+                "/v1/admin/tournaments/{}/matches/{}/result-override",
+                f.tournament_id, f.match_id
+            ),
+            &json!({
+                "participant1_score": 1,
+                "participant2_score": 1,
+                "reason": "Attempting to record a draw."
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let row = sqlx::query("SELECT participant1_score FROM tournament_matches WHERE id = $1")
+        .bind(f.match_id)
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        row.get::<i32, _>("participant1_score"),
+        2,
+        "a rejected correction must leave the recorded score untouched"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_override_refuses_a_match_with_no_recorded_result() {
+    let app = TestApp::new().await;
+    let info = create_tournament_with_matches(&app, "override-noresult").await;
+
+    // `create_tournament_with_matches` leaves the match in_progress with no
+    // winner. Writing a score here would COMPLETE a match that was never
+    // played, which is the admin transition/forfeit controls' job, not this
+    // endpoint's.
+    let response = app
+        .post_json(
+            &format!(
+                "/v1/admin/tournaments/{}/matches/{}/result-override",
+                info.tournament_id, info.match_id
+            ),
+            &json!({
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "reason": "There is nothing here to correct."
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_admin_override_is_refused_without_the_results_permission() {
+    let app = TestApp::new().await;
+    let f = setup_completed_match(&app, "override-perms").await;
+
+    // NOT the dev user: `PermissionChecker` short-circuits for `dev-token` in
+    // test-utils builds, so calling as dev proves nothing about the gate. This
+    // is an ordinary registered user with no roles at all.
+    let outsider = UserBuilder::new()
+        .username(format!(
+            "p72_outsider_{}",
+            &Uuid::new_v4().simple().to_string()[..8]
+        ))
+        .build_persisted(app.pool())
+        .await;
+    let token = create_test_token(
+        outsider.id,
+        outsider.id,
+        &outsider.username,
+        TEST_JWT_SECRET,
+    );
+
+    let response = app
+        .post_json_with_token(
+            &format!(
+                "/v1/admin/tournaments/{}/matches/{}/result-override",
+                f.tournament_id, f.match_id
+            ),
+            &json!({
+                "participant1_score": 0,
+                "participant2_score": 2,
+                "reason": "I should not be able to do this."
+            }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    let row = sqlx::query("SELECT participant1_score FROM tournament_matches WHERE id = $1")
+        .bind(f.match_id)
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(row.get::<i32, _>("participant1_score"), 2);
+
+    // The read side is gated too — the override history names operators and
+    // their reasoning, which is not public.
+    let listed = app
+        .get_with_token(
+            &format!(
+                "/v1/admin/tournaments/{}/matches/{}/result-overrides",
+                f.tournament_id, f.match_id
+            ),
+            &token,
+        )
+        .await;
+    listed.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_tournament_scoped_results_manage_is_enough_to_correct_a_score() {
+    let app = TestApp::new().await;
+    let f = setup_completed_match(&app, "override-scoped").await;
+
+    // The permission the endpoint declares (`tournament.results.manage`,
+    // "Report or override match results") must actually be reachable: a
+    // permission that is declared but held by nobody is a gate no one can
+    // pass, and it fails as a silent 403 for everyone.
+    let mod_user = UserBuilder::new()
+        .username(format!(
+            "p72_mod_{}",
+            &Uuid::new_v4().simple().to_string()[..8]
+        ))
+        .build_persisted(app.pool())
+        .await;
+    assign_scoped_role_to_user(
+        app.pool(),
+        mod_user.id,
+        "tournament_moderator",
+        portal_core::ScopeType::Tournament,
+        f.tournament_id,
+    )
+    .await;
+    let token = create_test_token(
+        mod_user.id,
+        mod_user.id,
+        &mod_user.username,
+        TEST_JWT_SECRET,
+    );
+
+    let response = app
+        .post_json_with_token(
+            &format!(
+                "/v1/admin/tournaments/{}/matches/{}/result-override",
+                f.tournament_id, f.match_id
+            ),
+            &json!({
+                "participant1_score": 0,
+                "participant2_score": 2,
+                "reason": "Scored from the demo after both sides confirmed wrongly."
+            }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+}
+
+/// P-149 + P-189: the generic audit read exists over HTTP, resolves its
+/// actors, refuses non-staff — and pagination governs both audit reads.
+///
+/// Until P-149 the `entity_changes` table was readable only through
+/// portal-cli, and until P-189 the match-scoped override list was hard-coded
+/// to its first hundred rows.
+#[tokio::test]
+async fn test_generic_entity_changes_read_and_override_pagination() {
+    let app = TestApp::new().await;
+    let f = setup_completed_match(&app, "audit-read").await;
+
+    // Two corrections, so pagination has something to page.
+    for (p1, p2, reason) in [(1, 2, "first correction"), (2, 1, "second correction")] {
+        app.post_json(
+            &format!(
+                "/v1/admin/tournaments/{}/matches/{}/result-override",
+                f.tournament_id, f.match_id
+            ),
+            &json!({
+                "participant1_score": p1,
+                "participant2_score": p2,
+                "reason": reason
+            }),
+        )
+        .await
+        .assert_status(StatusCode::OK);
+    }
+
+    // P-149: the generic read returns the same rows, newest first, with the
+    // actor resolved to a display name.
+    let listed = app
+        .get_auth(&format!(
+            "/v1/admin/audit/entity-changes?entity_type=tournament_match&entity_id={}",
+            f.match_id
+        ))
+        .await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    let entries = listed["data"].as_array().expect("audit list");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["change_type"], "update");
+    assert_eq!(entries[0]["new_value"]["reason"], "second correction");
+    assert!(
+        entries[0]["changed_by_display_name"].as_str().is_some(),
+        "an audit row that names its actor only by UUID is not usable audit"
+    );
+
+    // The read gate can fail: a real user with no grants is refused. (The
+    // dev token above passes via the test-utils bypass — the P-142 canary
+    // pins that boundary.)
+    let outsider = create_test_token(
+        uuid::Uuid::now_v7(),
+        uuid::Uuid::now_v7(),
+        "audit-outsider",
+        TEST_JWT_SECRET,
+    );
+    let refused = app
+        .get_with_token(
+            &format!(
+                "/v1/admin/audit/entity-changes?entity_type=tournament_match&entity_id={}",
+                f.match_id
+            ),
+            &outsider,
+        )
+        .await;
+    refused.assert_status(StatusCode::FORBIDDEN);
+
+    // P-189: pagination governs the match-scoped override list — page 2 at
+    // per_page=1 is the OLDER correction, previously unreachable past the
+    // hard-coded first hundred.
+    let page2 = app
+        .get_auth(&format!(
+            "/v1/admin/tournaments/{}/matches/{}/result-overrides?per_page=1&page=2",
+            f.tournament_id, f.match_id
+        ))
+        .await;
+    page2.assert_status(StatusCode::OK);
+    let page2: serde_json::Value = page2.json();
+    let rows = page2["data"].as_array().expect("override page");
+    assert_eq!(rows.len(), 1, "per_page must govern the page size");
+    assert_eq!(rows[0]["reason"], "first correction");
 }

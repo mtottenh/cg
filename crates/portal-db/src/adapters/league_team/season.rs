@@ -121,7 +121,21 @@ impl LeagueSeasonRepository for PgLeagueSeasonRepository {
                 max_teams = COALESCE($12, max_teams),
                 status = COALESCE($13, status),
                 settings = COALESCE($14, settings),
-                updated_at = $15
+                updated_at = $15,
+                -- P-198: the lock rides in the same statement so a combined
+                -- PATCH is atomic. Stamp semantics mirror update_roster_lock:
+                -- locked_at only for hard_lock, locked_by only when the lock
+                -- is being written at all.
+                roster_lock_status = COALESCE($16, roster_lock_status),
+                roster_locked_at = CASE
+                    WHEN $16 IS NULL THEN roster_locked_at
+                    WHEN $16 = 'hard_lock' THEN $15
+                    ELSE NULL
+                END,
+                roster_locked_by = CASE
+                    WHEN $16 IS NULL THEN roster_locked_by
+                    ELSE $17
+                END
             WHERE id = $1
             RETURNING *
             ",
@@ -141,6 +155,8 @@ impl LeagueSeasonRepository for PgLeagueSeasonRepository {
         .bind(update.status.map(|s| s.to_string()))
         .bind(&update.settings)
         .bind(now)
+        .bind(update.roster_lock_status.map(|s| s.to_string()))
+        .bind(update.roster_locked_by.map(|u| u.as_uuid()))
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;

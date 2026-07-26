@@ -1,6 +1,8 @@
 //! Result submission response DTOs.
 
 use chrono::{DateTime, Utc};
+use portal_core::types::TournamentMatchStatus;
+use portal_domain::entities::result_claim::ClaimStatus;
 use portal_domain::entities::result_claim::{GameResult, ResultClaim};
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -16,10 +18,15 @@ pub struct ResultClaimResponse {
     pub id: String,
     /// Match ID.
     pub match_id: String,
-    /// Registration ID of who submitted the claim.
-    pub submitted_by_registration_id: String,
-    /// User ID of who submitted the claim.
-    pub submitted_by_user_id: String,
+    /// Registration ID of who submitted the claim. Absent for
+    /// server-sourced claims (`source == "server"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitted_by_registration_id: Option<String>,
+    /// User ID of who submitted the claim. Absent for server claims.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitted_by_user_id: Option<String>,
+    /// Claim origin: `participant`, `server`, or `admin`.
+    pub source: String,
     /// Display name of the player who submitted the claim (enriched by
     /// history/list handlers; absent when the player could not be resolved).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -33,7 +40,9 @@ pub struct ResultClaimResponse {
     /// Game-by-game results.
     pub game_results: Vec<GameResultResponse>,
     /// Current claim status.
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub status: ClaimStatus,
     /// When the claim was confirmed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirmed_at: Option<DateTime<Utc>>,
@@ -70,14 +79,15 @@ impl From<ResultClaim> for ResultClaimResponse {
         Self {
             id: c.id.to_string(),
             match_id: c.match_id.to_string(),
-            submitted_by_registration_id: c.submitted_by_registration_id.to_string(),
-            submitted_by_user_id: c.submitted_by_user_id.to_string(),
+            submitted_by_registration_id: c.submitted_by_registration_id.map(|id| id.to_string()),
+            submitted_by_user_id: c.submitted_by_user_id.map(|id| id.to_string()),
             submitted_by_display_name: None,
+            source: c.source,
             claimed_winner_registration_id: c.claimed_winner_registration_id.to_string(),
             claimed_participant1_score: c.claimed_participant1_score,
             claimed_participant2_score: c.claimed_participant2_score,
             game_results: c.game_results.into_iter().map(Into::into).collect(),
-            status: c.status.to_string(),
+            status: c.status,
             confirmed_at: c.confirmed_at,
             confirmed_by_registration_id: c.confirmed_by_registration_id.map(|id| id.to_string()),
             confirmed_by_user_id: c.confirmed_by_user_id.map(|id| id.to_string()),
@@ -176,7 +186,9 @@ pub struct ResultConfirmationResponse {
     /// The confirmed result claim.
     pub claim: ResultClaimResponse,
     /// Updated match status.
-    pub match_status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub match_status: TournamentMatchStatus,
     /// Whether bracket was advanced.
     pub bracket_advanced: bool,
     /// Whether a review is pending (demo validation found issues).
@@ -193,7 +205,9 @@ pub struct ResultDisputeResponse {
     /// The disputed result claim.
     pub claim: ResultClaimResponse,
     /// Updated match status.
-    pub match_status: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
+    pub match_status: TournamentMatchStatus,
     /// Whether admin intervention is required.
     pub requires_admin: bool,
 }

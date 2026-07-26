@@ -16,8 +16,10 @@ mod dispute;
 mod evidence;
 mod forfeit;
 mod game;
+mod game_server;
 mod league;
 pub mod league_team;
+mod match_lineup;
 mod player;
 pub mod player_match_history;
 pub mod player_mm_stats;
@@ -46,6 +48,10 @@ pub use evidence::{
 };
 pub use forfeit::{ForfeitRecordRow, NewForfeitRecord};
 pub use game::{GameRow, NewGame, UpdateGame};
+pub use game_server::{
+    GameServerRow, MatchSubstitutionRow, ServerAgentCertRow, ServerBookingRow, ServerEventRow,
+    ServerReservationRow,
+};
 pub use league::{
     LeagueInvitationRow, LeagueMemberRow, LeagueMemberWithUserRow, LeagueRow, NewLeague,
     NewLeagueInvitation, NewLeagueMember, UpdateLeague, UpdateLeagueInvitation,
@@ -60,6 +66,7 @@ pub use league_team::{
     UpdateLeagueSeasonParticipant, UpdateLeagueTeam, UpdateLeagueTeamInvitation,
     UpdateLeagueTeamMember, UpdateLeagueTeamSeason,
 };
+pub use match_lineup::{MatchLineupPlayerRow, MatchLineupRow};
 pub use player::{
     NewPlayer, NewPlayerGameProfile, PlayerGameProfileRow, PlayerRow, UpdatePlayer,
     UpdatePlayerRating,
@@ -74,9 +81,9 @@ pub use steam_tracking::SteamTrackingRow;
 pub use tournament::{
     MatchStatusLogRow, NewMatchStatusLog, NewResultClaim, NewTournament, NewTournamentBracket,
     NewTournamentMatch, NewTournamentMatchGame, NewTournamentRegistration, NewTournamentStage,
-    NewVetoAction, NewVetoSession, ResultClaimRow, TournamentBracketRow, TournamentMapPoolRow,
-    TournamentMatchGameRow, TournamentMatchRow, TournamentRegistrationRow, TournamentRow,
-    TournamentStageRow, TournamentStandingRow, UpdateResultClaim, UpdateVetoAction,
+    NewVetoAction, NewVetoSession, ResultClaimRow, TournamentBracketRow, TournamentInvitationRow,
+    TournamentMapPoolRow, TournamentMatchGameRow, TournamentMatchRow, TournamentRegistrationRow,
+    TournamentRow, TournamentStageRow, TournamentStandingRow, UpdateResultClaim, UpdateVetoAction,
     UpdateVetoSession, VetoActionRow, VetoSessionRow,
 };
 pub use user::{NewUser, UpdateUser, UserRow, UserStatus};

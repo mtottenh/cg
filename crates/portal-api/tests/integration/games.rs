@@ -999,6 +999,154 @@ async fn test_update_team_size_requires_admin() {
 }
 
 // ============================================================================
+// P-88 — THE ADMIN CATALOG MUST BE ABLE TO SEE A DISABLED GAME
+// ============================================================================
+
+/// P-88: a disabled game vanished from every list the product has, taking the
+/// only control that could re-enable it with it.
+///
+/// `GET /v1/games` was unconditionally `list_active()` (`WHERE status =
+/// 'active'`), and the admin games table is its only consumer with an Enable
+/// button — a button that lives *inside a row*. Disable a game and the row is
+/// gone on the next fetch, permanently, with no admin remedy short of SQL.
+///
+/// The assertion that matters is the third one: not "the parameter is accepted"
+/// but "the disabled game is actually in the payload, still marked
+/// `maintenance`", because that is the row whose Enable button the admin needs.
+#[tokio::test]
+async fn test_list_games_include_inactive_returns_disabled_games() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Precondition: aoe4 is seeded active and visible on the default list.
+    let listed = app.get("/v1/games").await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    assert!(
+        listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["slug"] == "aoe4"),
+    );
+
+    let response = app.post_auth("/v1/games/aoe4/disable").await;
+    response.assert_status(StatusCode::OK);
+
+    // The default list still hides it — the public catalog is unchanged.
+    let listed = app.get("/v1/games").await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    assert!(
+        !listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["slug"] == "aoe4"),
+        "the default catalog must stay active-only"
+    );
+
+    // ...and the admin can still find it, with the status that explains why it
+    // is missing from the default list.
+    let listed = app.get_auth("/v1/games?include_inactive=true").await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    let aoe4 = listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["slug"] == "aoe4")
+        .expect("P-88: a disabled game must be reachable from the admin catalog");
+    assert_eq!(aoe4["status"], "maintenance");
+
+    // And it can be re-enabled from there, which is the whole point.
+    let response = app.post_auth("/v1/games/aoe4/enable").await;
+    response.assert_status(StatusCode::OK);
+    let listed = app.get("/v1/games").await;
+    let listed: serde_json::Value = listed.json();
+    assert!(
+        listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["slug"] == "aoe4"),
+    );
+}
+
+/// The unfiltered catalog is admin-only, and a caller that cannot have it is
+/// **refused** rather than quietly handed the active list — otherwise a client
+/// could believe it holds the whole catalog when it holds a filtered one.
+#[tokio::test]
+async fn test_list_games_include_inactive_requires_admin() {
+    let app = TestApp::new().await;
+
+    // Anonymous.
+    let response = app.get("/v1/games?include_inactive=true").await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // Authenticated, but the dev identity carries no roles by default.
+    let response = app.get_auth("/v1/games?include_inactive=true").await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // The default list stays public and unauthenticated.
+    let response = app.get("/v1/games").await;
+    response.assert_status(StatusCode::OK);
+
+    // ...and `include_inactive=false` is the default list, so it must not 403.
+    let response = app.get("/v1/games?include_inactive=false").await;
+    response.assert_status(StatusCode::OK);
+}
+
+// ============================================================================
+// P-90 — SORT ORDER IS READABLE, AND SETTABLE TO ZERO
+// ============================================================================
+
+/// P-90: `sort_order` was writable through `PATCH /v1/games/{id}` but appeared
+/// in no response, so the admin edit modal could not seed its "Sort Order"
+/// field and hardcoded `0` — a number that was never the truth (cs2 is 1, aoe4
+/// is 2). To avoid writing that fabricated `0` over the real value the modal
+/// then only sent the field when it was non-zero, which made `0` unsettable for
+/// every game.
+///
+/// Both halves are asserted here: the seeded values are visible on the list and
+/// the detail, and a round trip to `0` sticks.
+#[tokio::test]
+async fn test_game_responses_expose_sort_order_and_zero_is_settable() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // The migration seeds cs2 = 1, aoe4 = 2 (0003_create_games.sql:68-70).
+    let listed = app.get("/v1/games").await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    let games = listed["data"].as_array().unwrap();
+    let cs2 = games.iter().find(|g| g["slug"] == "cs2").unwrap();
+    let aoe4 = games.iter().find(|g| g["slug"] == "aoe4").unwrap();
+    assert_eq!(cs2["sort_order"], 1);
+    assert_eq!(aoe4["sort_order"], 2);
+
+    let detail = app.get("/v1/games/aoe4").await;
+    detail.assert_status(StatusCode::OK);
+    let detail: serde_json::Value = detail.json();
+    assert_eq!(detail["data"]["sort_order"], 2);
+
+    // Zero is a legal sort order and must round-trip.
+    let response = app
+        .patch_json("/v1/games/aoe4", &json!({ "sort_order": 0 }))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["data"]["sort_order"], 0,
+        "P-90: sort_order 0 must be settable"
+    );
+
+    let detail = app.get("/v1/games/aoe4").await;
+    let detail: serde_json::Value = detail.json();
+    assert_eq!(detail["data"]["sort_order"], 0, "and it must persist");
+}
+
+// ============================================================================
 // HEALTH PROBES (here rather than a dedicated file — two small tests)
 // ============================================================================
 
@@ -1020,4 +1168,404 @@ async fn test_health_ready_reports_dependencies() {
     assert_eq!(body["db"], "ok");
     // No CS2_DEMO_SERVICE_URL configured in tests.
     assert_eq!(body["demo_service"], "unconfigured");
+}
+
+// ============================================================================
+// P-87 — GAME-CONFIG WRITES ADDRESSED BY UUID
+// ============================================================================
+
+/// P-87: every game-config WRITE 404'd when the game was addressed by UUID.
+///
+/// `GameRepository::update` is keyed by SLUG ("Update a game by slug",
+/// repositories/game.rs:106) and returns not-found otherwise. Six handlers
+/// resolved the game with `find_by_id_or_slug` — which accepts either — and then
+/// passed the raw `{game_id}` path parameter to that slug-keyed write. Since
+/// migration `0024` made `games.id` a UUID, `GameSummaryResponse.id` is the
+/// UUID, and that is exactly what the admin UI sends. So Add Map, Edit Map,
+/// Delete Map and Save Pool were dead controls that popped a failure snackbar
+/// every time.
+///
+/// The reads were already covered by UUID (see the `*_by_uuid_matches_slug`
+/// tests above) — which is precisely why this went unnoticed. These drive the
+/// **writes** by UUID, and each asserts the mutation PERSISTED rather than
+/// merely returning 2xx: a handler that resolves the game, 404s on the write and
+/// still returns the pre-read state would satisfy a status-only assertion.
+#[tokio::test]
+async fn test_game_config_writes_by_uuid_persist() {
+    let app = TestApp::new().await;
+    let uuid = cs2_uuid(&app).await;
+
+    // These writes are gated on `admin.games.manage`; the dev-token identity
+    // carries no roles by default.
+    let dev_user = portal_test::helpers::get_dev_user_id(app.pool()).await;
+    portal_test::helpers::assign_role_to_user(app.pool(), dev_user, "super_admin").await;
+
+    // --- map catalog: add, addressed by UUID ---------------------------------
+    let map_id = "de_p87_probe";
+    let response = app
+        .post_json(
+            &format!("/v1/games/{uuid}/maps/catalog"),
+            &json!({
+                "id": map_id,
+                "display_name": "P-87 Probe",
+                "game_modes": ["competitive"],
+                "is_active": true
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    // The catalog is read back through `GET /maps` — it serves `available_maps`,
+    // the same column `add_map` writes. There is no `GET /maps/catalog` route.
+    let maps = app.get(&format!("/v1/games/{uuid}/maps")).await;
+    maps.assert_status(StatusCode::OK);
+    let maps: serde_json::Value = maps.json();
+    assert!(
+        maps["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == map_id),
+        "P-87: the added map must be persisted when the game is addressed by UUID"
+    );
+
+    // --- rank tiers, addressed by UUID ---------------------------------------
+    let response = app
+        .put_json(
+            &format!("/v1/games/{uuid}/rank-tiers"),
+            &json!({
+                "rank_tiers": [
+                    { "id": "p87_low", "display_name": "P87 Low", "min_rating": 0, "max_rating": 999, "order": 1 },
+                    { "id": "p87_high", "display_name": "P87 High", "min_rating": 1000, "order": 2 }
+                ]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let tiers = app.get(&format!("/v1/games/{uuid}/rank-tiers")).await;
+    tiers.assert_status(StatusCode::OK);
+    let tiers: serde_json::Value = tiers.json();
+    assert!(
+        tiers["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == "p87_high"),
+        "P-87: rank tiers must persist when the game is addressed by UUID"
+    );
+
+    // --- team size, addressed by UUID ----------------------------------------
+    let response = app
+        .patch_json(
+            &format!("/v1/games/{uuid}/team-size"),
+            &json!({ "min": 3, "max": 7, "default": 5 }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let game = app.get(&format!("/v1/games/{uuid}")).await;
+    game.assert_status(StatusCode::OK);
+    let game: serde_json::Value = game.json();
+    assert_eq!(
+        game["data"]["team_size"]["min"], 3,
+        "P-87: team size must persist when the game is addressed by UUID"
+    );
+    assert_eq!(game["data"]["team_size"]["max"], 7);
+}
+
+/// P-121: `GET /v1/games` threaded `PaginationParams` into the response
+/// metadata but never applied it to the list, so every page carried the
+/// COMPLETE catalog under page-N metadata. A paginating client renders page
+/// 1's items again under a "page 2" heading, or duplicates them by appending.
+///
+/// Asserted through the wire rather than the handler because the defect was
+/// precisely that metadata and payload disagreed — checking either alone
+/// reproduces the blind spot that let this ship.
+#[tokio::test]
+async fn test_list_games_actually_paginates() {
+    let app = TestApp::new().await;
+
+    // Establish the catalog size from an explicitly large page.
+    //
+    // Every assertion below is deliberately independent of this number staying
+    // stable across requests. It cannot change here — TestDb gives each test its
+    // own database — but a test that would break if it did is a test whose
+    // failures are ambiguous, and this one already produced one ambiguous report:
+    // a concurrent full-suite run saw it red while a red-proof probe for this
+    // very defect was momentarily in the shared tree, and it was reported as
+    // flakiness. Order-independence makes the next failure mean one thing.
+    let all = app.get("/v1/games?page=1&per_page=100").await;
+    all.assert_status(StatusCode::OK);
+    let all_body: serde_json::Value = all.json();
+    let total = all_body["pagination"]["total_items"]
+        .as_u64()
+        .expect("pagination.total_items present");
+    let all_len = all_body["data"].as_array().unwrap().len() as u64;
+    assert_eq!(
+        all_len, total,
+        "a page large enough to hold the catalog should return all of it"
+    );
+    assert!(
+        total >= 2,
+        "need at least 2 seeded games to prove pagination slices ({total} present); \
+         with fewer, per_page=1 would return the whole catalog and pass vacuously"
+    );
+
+    // A single-item page must contain exactly one game...
+    let first = app.get("/v1/games?page=1&per_page=1").await;
+    first.assert_status(StatusCode::OK);
+    let first_body: serde_json::Value = first.json();
+    let first_page = first_body["data"].as_array().unwrap();
+    assert_eq!(
+        first_page.len(),
+        1,
+        "per_page=1 must return 1 game, got {} — the list is not being sliced",
+        first_page.len()
+    );
+
+    // ...while `total` still reports the CATALOG, not the page. Counting after
+    // the slice would make this 1, collapsing total_pages and silently disabling
+    // the client's "next page" control. Asserted as `>= 2` rather than `== total`
+    // so it tests the property rather than the stability of an earlier read.
+    assert!(
+        first_body["pagination"]["total_items"].as_u64().unwrap() >= 2,
+        "total must count the catalog, not the returned page (got {})",
+        first_body["pagination"]["total_items"]
+    );
+
+    // Page 2 must be DIFFERENT items. This is the assertion that fails on the
+    // original bug: it returned the full catalog for every page, so page 2's
+    // first item was page 1's first item.
+    let second = app.get("/v1/games?page=2&per_page=1").await;
+    second.assert_status(StatusCode::OK);
+    let second_body: serde_json::Value = second.json();
+    let second_page = second_body["data"].as_array().unwrap();
+    assert_eq!(second_page.len(), 1, "page 2 must also hold exactly 1 game");
+    assert_ne!(
+        first_page[0]["id"], second_page[0]["id"],
+        "page 2 returned the same game as page 1 — pagination is decorative"
+    );
+
+    // Far past the end: empty page. A fixed, absurdly high page number rather
+    // than one derived from `total`, so this cannot depend on an earlier read.
+    let past_end = app.get("/v1/games?page=10000&per_page=100").await;
+    past_end.assert_status(StatusCode::OK);
+    let past_body: serde_json::Value = past_end.json();
+    assert!(
+        past_body["data"].as_array().unwrap().is_empty(),
+        "a page past the end must be empty, not a repeat of the catalog"
+    );
+}
+
+/// P-120: rank tiers could be set but never REMOVED — `SetRankTiersRequest`
+/// required at least one tier, so once a custom set existed the only way
+/// back to the plugin defaults was SQL. An empty list now clears the stored
+/// override, and reads fall back to the plugin's built-in tiers.
+#[tokio::test]
+async fn test_rank_tiers_can_be_cleared_back_to_plugin_defaults() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Baseline: the plugin defaults, before any override.
+    let defaults = app.get("/v1/games/cs2/rank-tiers").await;
+    defaults.assert_status(StatusCode::OK);
+    let defaults: serde_json::Value = defaults.json();
+    let default_count = defaults["data"].as_array().unwrap().len();
+    assert!(default_count > 0, "cs2's plugin ships default tiers");
+
+    // Install a one-tier custom override.
+    let response = app
+        .put_json(
+            "/v1/games/cs2/rank-tiers",
+            &json!({
+                "rank_tiers": [{
+                    "id": "only",
+                    "display_name": "Only Tier",
+                    "min_rating": 0,
+                    "max_rating": null,
+                    "color": "#ffffff",
+                    "order": 1
+                }]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let installed = app.get("/v1/games/cs2/rank-tiers").await;
+    let installed: serde_json::Value = installed.json();
+    assert_eq!(installed["data"].as_array().unwrap().len(), 1);
+
+    // Clear it: the empty list is a valid request, not a 400.
+    let cleared = app
+        .put_json("/v1/games/cs2/rank-tiers", &json!({ "rank_tiers": [] }))
+        .await;
+    cleared.assert_status(StatusCode::OK);
+
+    // Reads are back on the plugin defaults.
+    let after = app.get("/v1/games/cs2/rank-tiers").await;
+    after.assert_status(StatusCode::OK);
+    let after: serde_json::Value = after.json();
+    assert_eq!(
+        after["data"].as_array().unwrap().len(),
+        default_count,
+        "clearing the override must fall back to the plugin's tiers"
+    );
+}
+
+// ============================================================================
+// WORKSHOP MAP TESTS
+// ============================================================================
+
+/// Stub workshop metadata provider: one known CS2 map, everything else 404s.
+struct StubWorkshopProvider;
+
+#[async_trait::async_trait]
+impl portal_api::steam_workshop::WorkshopMetadataProvider for StubWorkshopProvider {
+    async fn published_file_details(
+        &self,
+        file_id: u64,
+    ) -> Result<Option<portal_api::steam_workshop::WorkshopFileDetails>, String> {
+        if file_id != 3437809122 {
+            return Ok(None);
+        }
+        Ok(Some(portal_api::steam_workshop::WorkshopFileDetails {
+            workshop_id: file_id.to_string(),
+            title: Some("Cache".to_string()),
+            preview_url: Some("https://img.example/cache.jpg".to_string()),
+            filename: Some("de_cache.vpk".to_string()),
+            file_size_bytes: Some(734_003_200),
+            time_updated: Some(1_750_000_000),
+            consumer_app_id: Some(730),
+            visibility: Some(0),
+            banned: false,
+        }))
+    }
+}
+
+#[tokio::test]
+async fn test_workshop_lookup_returns_prefill_metadata() {
+    let app = TestApp::new_with_workshop_metadata(std::sync::Arc::new(StubWorkshopProvider)).await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app.get_auth("/v1/games/cs2/workshop-maps/3437809122").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let data = &body["data"];
+    assert_eq!(data["workshop_id"], "3437809122");
+    assert_eq!(data["title"], "Cache");
+    assert_eq!(data["engine_name_hint"], "de_cache");
+    assert_eq!(data["consumer_app_id"], 730);
+    assert_eq!(data["visibility"], 0);
+    assert_eq!(data["banned"], false);
+    assert_eq!(
+        data["workshop_url"],
+        "https://steamcommunity.com/sharedfiles/filedetails/?id=3437809122"
+    );
+
+    // Unknown item → 404; non-numeric id → 400.
+    let response = app.get_auth("/v1/games/cs2/workshop-maps/999").await;
+    response.assert_status(StatusCode::NOT_FOUND);
+    let response = app.get_auth("/v1/games/cs2/workshop-maps/de_cache").await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_workshop_lookup_requires_games_admin() {
+    let app = TestApp::new_with_workshop_metadata(std::sync::Arc::new(StubWorkshopProvider)).await;
+    // No admin grant.
+    let response = app.get_auth("/v1/games/cs2/workshop-maps/3437809122").await;
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_map_engine_name_roundtrip_and_clear() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Add a workshop map whose engine name differs from the portal id.
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_cache_ws",
+                "display_name": "Cache (Workshop)",
+                "game_modes": ["competitive"],
+                "engine_name": "de_cache",
+                "external_id": "3437809122",
+                "external_url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3437809122"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let added = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "de_cache_ws")
+        .unwrap()
+        .clone();
+    assert_eq!(added["engine_name"], "de_cache");
+
+    // The stored catalog serves it back on public reads.
+    let response = app.get("/v1/games/cs2/maps").await;
+    let body: serde_json::Value = response.json();
+    let served = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "de_cache_ws")
+        .unwrap()
+        .clone();
+    assert_eq!(served["engine_name"], "de_cache");
+
+    // Patching with empty strings clears engine_name AND the workshop
+    // association (the UI's Unlink path) — Some("") stored for external_id
+    // would read as "is a workshop map" and then fail token translation.
+    let response = app
+        .patch_json(
+            "/v1/games/cs2/maps/catalog/de_cache_ws",
+            &json!({ "engine_name": "", "external_id": "", "external_url": "" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    for field in ["engine_name", "external_id", "external_url"] {
+        assert!(
+            body["data"].get(field).is_none() || body["data"][field].is_null(),
+            "empty {field} must clear, got: {}",
+            body["data"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_add_map_engine_name_equal_to_id_is_normalized_away() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    let response = app
+        .post_json(
+            "/v1/games/cs2/maps/catalog",
+            &json!({
+                "id": "de_season",
+                "display_name": "Season",
+                "game_modes": ["competitive"],
+                "engine_name": "de_season"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let added = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "de_season")
+        .unwrap()
+        .clone();
+    assert!(
+        added.get("engine_name").is_none() || added["engine_name"].is_null(),
+        "engine_name equal to the id is noise and must not be stored"
+    );
 }

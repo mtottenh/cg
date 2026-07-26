@@ -15,6 +15,7 @@ pub struct ResultReviewRow {
     pub roster_mismatch: bool,
     pub score_mismatch: bool,
     pub winner_mismatch: bool,
+    pub progression_stalled: bool,
     pub demo_link_id: Option<Uuid>,
     pub validation_result: Option<sqlx::types::Json<serde_json::Value>>,
     pub unrecognized_players: sqlx::types::Json<Vec<serde_json::Value>>,

@@ -22,41 +22,6 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 }
 
 // =============================================================================
-// PROGRESSION QUERY ENDPOINTS
-// =============================================================================
-
-/// Get progression details for a match.
-///
-/// Returns information about winner advancement and loser routing.
-/// Note: This returns progression info only if the match has been processed.
-#[utoipa::path(
-    get,
-    path = "/v1/matches/{match_id}/progression",
-    params(
-        ("match_id" = String, Path, description = "Match ID")
-    ),
-    responses(
-        (status = 200, description = "Progression details", body = DataResponse<ProgressionResponse>),
-        (status = 404, description = "Match not found", body = ApiError),
-    ),
-    security(("bearer_auth" = [])),
-    tag = "progression"
-)]
-pub async fn get_progression(
-    State(_state): State<ProgressionState>,
-    _auth: AuthenticatedUser,
-    _headers: HeaderMap,
-    Path(_match_id): Path<TournamentMatchId>,
-) -> ApiResult<Json<DataResponse<ProgressionResponse>>> {
-    // Progression info is typically computed/stored during match completion.
-    // This endpoint would need match progression history tracking to show past progression.
-    // For now, we return not implemented as progression is typically processed automatically.
-    Err(ApiError::not_implemented(
-        "Viewing progression history requires progression log storage (coming soon)",
-    ))
-}
-
-// =============================================================================
 // PROGRESSION ADMIN ENDPOINTS
 // =============================================================================
 

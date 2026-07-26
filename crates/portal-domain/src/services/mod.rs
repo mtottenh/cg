@@ -7,6 +7,7 @@ pub mod demo;
 pub mod discovered_match;
 pub mod eligibility;
 pub mod eligibility_service;
+pub mod game_server;
 pub mod league;
 pub mod league_team;
 pub mod permission;
@@ -20,13 +21,16 @@ pub mod user;
 pub use audit::{AuditService, ChangeContext, ChangeDetector, FieldChange};
 pub use award::{AwardService, CreateCustomAwardCommand, competition_ranks};
 pub use ban::BanService;
-pub use demo::{CatalogResult, DemoPlayerInput, DemoService, ProcessUnlinkedResult};
+pub use demo::{
+    CatalogResult, DemoLineupMaterializer, DemoPlayerInput, DemoResolvedPlayer, DemoService,
+    ProcessUnlinkedResult,
+};
 pub use discovered_match::DiscoveredMatchService;
 pub use eligibility_service::EligibilityService;
 pub use league::LeagueService;
 pub use league_team::{
     LeagueSeasonParticipantService, LeagueSeasonService, LeagueTeamInvitationService,
-    LeagueTeamService,
+    LeagueTeamService, RosterLockOverride,
 };
 pub use permission::PermissionService;
 pub use player::{PlayerSearchResult, PlayerService};

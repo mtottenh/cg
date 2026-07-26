@@ -204,6 +204,26 @@ where
             )));
         }
 
+        // Check the display name is free. `PlayerService::update_player`
+        // has always enforced this, but registration did not and the
+        // schema had no constraint — so you could sign up with a taken
+        // name and then never save your profile again (P-5). The wording
+        // matches the update path so the client sees one message.
+        // Case-insensitive: `find_by_display_name` matches on
+        // `display_name_normalized` (= lower(display_name)), and so does
+        // the unique index added in migration 0077.
+        if self
+            .player_repo
+            .find_by_display_name(&cmd.display_name)
+            .await?
+            .is_some()
+        {
+            return Err(DomainError::Conflict(format!(
+                "Display name '{}' is already taken",
+                cmd.display_name
+            )));
+        }
+
         // Hash the password (dispatched to spawn_blocking inside hash_password)
         let password_hash = hash_password(cmd.password).await?;
 
@@ -276,11 +296,15 @@ where
             // previous enrichment) actually chose.
             let player = match persona_name.map(str::trim).filter(|p| !p.is_empty()) {
                 Some(persona) if player.display_name == format!("steam_{steam_id_64}") => {
+                    // Display names are unique (migration 0077), so a
+                    // persona somebody else already holds must be
+                    // suffixed — never let a collision fail a sign-in.
+                    let display_name = self.derive_available_display_name(persona).await?;
                     self.player_repo
                         .update(
                             player.id,
                             UpdatePlayer {
-                                display_name: Some(persona.chars().take(32).collect()),
+                                display_name: Some(display_name),
                                 ..UpdatePlayer::default()
                             },
                         )
@@ -350,10 +374,14 @@ where
 
         // Display name: the Steam persona verbatim (truncated to the
         // 32-char column) when we have it, else the generated username.
-        let display_name = persona_name
+        // Suffixed if already taken — display names are unique
+        // (migration 0077) and Steam sign-in must not fail because
+        // another player got there first.
+        let preferred = persona_name
             .map(str::trim)
             .filter(|p| !p.is_empty())
-            .map_or_else(|| user.username.clone(), |p| p.chars().take(32).collect());
+            .map_or_else(|| user.username.clone(), ToString::to_string);
+        let display_name = self.derive_available_display_name(&preferred).await?;
 
         let player = self
             .player_repo
@@ -400,15 +428,58 @@ where
         if let Some(player) = self.player_repo.find_by_user_id(user.id).await? {
             return self.player_repo.update(player.id, update).await;
         }
+        let display_name = self.derive_available_display_name(&user.username).await?;
         let player = self
             .player_repo
             .create(CreatePlayer {
                 id: PlayerId::from(user.id.as_uuid()),
                 user_id: user.id,
-                display_name: user.username.clone(),
+                display_name,
             })
             .await?;
         self.player_repo.update(player.id, update).await
+    }
+
+    /// Find a free display name as close to `preferred` as possible.
+    ///
+    /// `players.display_name_normalized` carries a UNIQUE index
+    /// (migration 0077), so a taken name has to be suffixed rather than
+    /// inserted. Used only on the Steam provisioning paths, where the
+    /// name is derived for the user rather than chosen by them — a
+    /// self-chosen duplicate is a 409 (see `register_user`), but a Steam
+    /// sign-in must never fail because someone else already uses that
+    /// persona.
+    async fn derive_available_display_name(&self, preferred: &str) -> Result<String, DomainError> {
+        let base: String = preferred.chars().take(32).collect();
+        if self
+            .player_repo
+            .find_by_display_name(&base)
+            .await?
+            .is_none()
+        {
+            return Ok(base);
+        }
+
+        for n in 2..=99u32 {
+            let suffix = format!("_{n}");
+            let head: String = base
+                .chars()
+                .take(32_usize.saturating_sub(suffix.len()))
+                .collect();
+            let candidate = format!("{head}{suffix}");
+            if self
+                .player_repo
+                .find_by_display_name(&candidate)
+                .await?
+                .is_none()
+            {
+                return Ok(candidate);
+            }
+        }
+
+        Err(DomainError::Conflict(format!(
+            "could not derive an available display name from '{preferred}'"
+        )))
     }
 
     /// Derive a username satisfying the platform constraint

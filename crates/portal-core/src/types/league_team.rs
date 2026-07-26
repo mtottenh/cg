@@ -7,7 +7,9 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Status of a league season.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SeasonStatus {
     /// Season is being configured.
@@ -67,21 +69,46 @@ impl SeasonStatus {
         matches!(self, Self::Active | Self::Playoffs)
     }
 
-    /// Check if the season allows roster changes.
-    #[must_use]
-    pub const fn allows_roster_changes(&self) -> bool {
-        matches!(self, Self::Draft | Self::Registration)
-    }
+    // P-148 — `allows_roster_changes()` used to live here and answered
+    // `Draft | Registration`. It was deleted, not renamed, because the system
+    // no longer follows the rule its name stated: season *status* is no longer
+    // the outer gate on roster composition, the season's
+    // `roster_lock_status` is (see
+    // `portal_domain::services::league_team::roster_lock`). Keeping a helper
+    // whose name asserts the old rule is a trap for the next reader — the
+    // only status-derived rule left is `is_terminal()` below.
 
     /// Check if the season is in a terminal state.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::Cancelled)
     }
+
+    /// The statuses this one may legally transition to.
+    ///
+    /// THE season lifecycle chain, in one place (P-199/P-207): the status
+    /// endpoint and the generic season PATCH both enforce it via
+    /// `ensure_status_transition_allowed`, and `LeagueSeasonResponse` ships
+    /// it so the edit modal offers exactly these — the client holds no copy
+    /// of the rule (mirrors `TournamentMatchStatus::allowed_transitions`).
+    /// `Cancelled` is reachable from any non-terminal status; `Active` may
+    /// complete directly, skipping playoffs.
+    #[must_use]
+    pub fn allowed_transitions(&self) -> Vec<Self> {
+        match self {
+            Self::Draft => vec![Self::Registration, Self::Cancelled],
+            Self::Registration => vec![Self::Active, Self::Cancelled],
+            Self::Active => vec![Self::Playoffs, Self::Completed, Self::Cancelled],
+            Self::Playoffs => vec![Self::Completed, Self::Cancelled],
+            Self::Completed | Self::Cancelled => vec![],
+        }
+    }
 }
 
 /// Roster lock status for a season.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RosterLockStatus {
     /// Teams can modify rosters freely.
@@ -139,7 +166,9 @@ impl RosterLockStatus {
 /// Status of a league team (persistent identity).
 ///
 /// This is the status of the team entity itself, not its seasonal participation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamStatus {
     /// Team is active and can participate in seasons.
@@ -192,7 +221,9 @@ impl LeagueTeamStatus {
 ///
 /// This tracks the team's status within a specific season (forming roster,
 /// competing, eliminated, etc.)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamSeasonStatus {
     /// Still recruiting, roster incomplete.
@@ -270,7 +301,9 @@ impl LeagueTeamSeasonStatus {
 }
 
 /// Role of a member within a league team.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamRole {
     /// Team leader, can manage roster.
@@ -320,7 +353,9 @@ impl LeagueTeamRole {
 }
 
 /// Status of a league team member.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamMemberStatus {
     /// Currently on roster.
@@ -374,7 +409,9 @@ impl LeagueTeamMemberStatus {
 }
 
 /// Type of league team invitation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamInvitationType {
     /// Captain invites a player.
@@ -406,7 +443,9 @@ impl FromStr for LeagueTeamInvitationType {
 }
 
 /// Status of a league team invitation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LeagueTeamInvitationStatus {
     /// Waiting for response.
@@ -532,5 +571,42 @@ mod tests {
         assert!(LeagueTeamInvitationStatus::Pending.is_actionable());
         assert!(!LeagueTeamInvitationStatus::Accepted.is_actionable());
         assert!(!LeagueTeamInvitationStatus::Expired.is_actionable());
+    }
+
+    /// P-199/P-207: the season lifecycle chain, pinned both ways — the legal
+    /// hops exist and the jumps the PATCH bypass used to allow do not.
+    #[test]
+    fn test_season_status_allowed_transitions() {
+        use SeasonStatus as S;
+
+        assert_eq!(
+            S::Draft.allowed_transitions(),
+            vec![S::Registration, S::Cancelled]
+        );
+        assert_eq!(
+            S::Registration.allowed_transitions(),
+            vec![S::Active, S::Cancelled]
+        );
+        assert_eq!(
+            S::Active.allowed_transitions(),
+            vec![S::Playoffs, S::Completed, S::Cancelled]
+        );
+        assert_eq!(
+            S::Playoffs.allowed_transitions(),
+            vec![S::Completed, S::Cancelled]
+        );
+
+        // Terminal statuses go nowhere — not even to Cancelled.
+        assert!(S::Completed.allowed_transitions().is_empty());
+        assert!(S::Cancelled.allowed_transitions().is_empty());
+
+        // The jumps that shipped through the pre-P-199 PATCH stay illegal.
+        assert!(!S::Draft.allowed_transitions().contains(&S::Active));
+        assert!(!S::Draft.allowed_transitions().contains(&S::Completed));
+        assert!(
+            !S::Registration
+                .allowed_transitions()
+                .contains(&S::Completed)
+        );
     }
 }

@@ -44,11 +44,20 @@ pub trait ResultReviewRepository: Send + Sync + 'static {
         match_id: TournamentMatchId,
     ) -> Result<Option<ResultReview>, DomainError>;
 
-    /// Find all pending reviews for admin queue.
+    /// Find all pending reviews for the admin queue.
+    ///
+    /// The order is part of the contract, not an implementation detail: the
+    /// queue is paginated, so whichever end sorts last is unreachable in
+    /// practice. It was `created_at ASC` unconditionally (P-55), which
+    /// buried every fresh escalation on the final page. Newest-first is the
+    /// default; `oldest_first` (P-129) lets an admin work the backlog from
+    /// the other end WITHOUT paging to it — the server sorts, so the far
+    /// end is page 1 again.
     async fn find_pending_admin_reviews(
         &self,
         limit: i64,
         offset: i64,
+        oldest_first: bool,
     ) -> Result<Vec<ResultReview>, DomainError>;
 
     /// Count pending admin reviews.

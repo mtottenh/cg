@@ -132,13 +132,39 @@ pub enum ServerMessage {
         /// Final session state.
         session: VetoSessionResponse,
     },
+    /// Server assignment status change (MatchZy integration).
+    ServerAssignmentUpdate {
+        /// Reservation status.
+        status: String,
+        /// Connect info for ready/live states.
+        connect: Option<ServerConnectInfo>,
+        /// Failure reason, when terminal.
+        reason: Option<String>,
+    },
+    /// A substitution was applied — refetch lineups.
+    LineupUpdate,
+    /// Live per-map score update.
+    LiveScoreUpdate {
+        /// 0-based map number.
+        map_number: i64,
+        /// Participant 1 score.
+        team1_score: i32,
+        /// Participant 2 score.
+        team2_score: i32,
+        /// Rounds played, when known.
+        round_number: Option<i64>,
+    },
     /// Timeout warning.
+    ///
+    /// P-182: this used to also carry `current_team: String` — which was the
+    /// literal `"Current Team"` for every registration ever broadcast, and
+    /// which no client read (they resolve names from session state via the
+    /// registration id). A field that is fabricated AND unread is wire
+    /// surface pretending to be data; removed rather than populated.
     TimeoutWarning {
         /// Seconds remaining.
         seconds_remaining: u32,
-        /// Team that needs to act.
-        current_team: String,
-        /// Registration ID of the team.
+        /// Registration ID of the team that needs to act.
         current_team_registration_id: String,
     },
     /// Player connected to lobby.
@@ -284,6 +310,54 @@ pub enum LobbyBroadcast {
     ParticipantDisconnected(ParticipantConnectionBroadcast),
     /// Spectator count update broadcast.
     SpectatorCountUpdate(usize),
+    /// Server assignment status change (MatchZy integration, §7.3).
+    ServerAssignmentUpdate(ServerAssignmentBroadcast),
+    /// Live per-map score update from round_end/map_result events.
+    LiveScoreUpdate(LiveScoreBroadcast),
+    /// A substitution was applied — clients refetch lineups (§6.8).
+    LineupUpdate,
+}
+
+/// Connect details for a ready/live server (participant-facing).
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerConnectInfo {
+    /// Server IP address.
+    pub ip_address: String,
+    /// Game port.
+    pub port: u16,
+    /// `sv_password` for this reservation.
+    pub connect_password: String,
+    /// GOTV port, when enabled.
+    pub gotv_port: Option<u16>,
+    /// GOTV password.
+    pub gotv_password: Option<String>,
+}
+
+/// Server assignment status broadcast payload.
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerAssignmentBroadcast {
+    /// Reservation status (`pending`/`configuring`/`ready`/`live`/…).
+    pub status: String,
+    /// Connect info — present for `ready`/`live` only. Note: broadcast to
+    /// the whole lobby; the veto lobby is already participant+spectator
+    /// scoped and the password also guards the server itself. The REST
+    /// endpoint applies stricter participant gating for cold loads.
+    pub connect: Option<ServerConnectInfo>,
+    /// Failure/cancellation reason, when terminal.
+    pub reason: Option<String>,
+}
+
+/// Live score broadcast payload.
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveScoreBroadcast {
+    /// 0-based map number (MatchZy convention).
+    pub map_number: i64,
+    /// Team 1 (participant 1) score on the current map.
+    pub team1_score: i32,
+    /// Team 2 (participant 2) score on the current map.
+    pub team2_score: i32,
+    /// Rounds played on the current map, when known.
+    pub round_number: Option<i64>,
 }
 
 /// Chat message broadcast.
@@ -338,14 +412,16 @@ pub struct CoinFlipResultBroadcast {
 }
 
 /// Timeout warning broadcast.
+///
+/// No team NAME here (P-182): the only source ever wired up fabricated the
+/// literal `"Current Team"`, and clients resolve the name from session state
+/// by the registration id.
 #[derive(Debug, Clone)]
 pub struct TimeoutWarningBroadcast {
     /// Seconds remaining.
     pub seconds_remaining: u32,
     /// Team that needs to act.
     pub current_team_registration_id: TournamentRegistrationId,
-    /// Team name.
-    pub current_team_name: String,
 }
 
 /// Participant connection broadcast.

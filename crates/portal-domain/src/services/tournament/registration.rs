@@ -10,29 +10,210 @@ use portal_core::{DomainError, TournamentId, TournamentRegistrationId, UserId};
 use tracing::instrument;
 
 use crate::entities::tournament::TournamentRegistration;
+use crate::repositories::league_team::LeagueTeamMemberRepository;
 use crate::repositories::tournament::{TournamentRegistrationRepository, TournamentRepository};
+use crate::services::tournament::registration_actor::{RegistrationActor, speaks_for_registration};
+
+/// The status a brand-new registration is created with, given the
+/// tournament's `registration_type`.
+///
+/// - `Open`: `Approved` — anyone may enter, so there is nothing for an
+///   organiser to decide; making them click "approve" on every row was
+///   busywork the product never intended (see P-2).
+/// - `Approval`, `InviteOnly`, `Qualification`: `Pending` — an organiser
+///   (or a qualifier result) still has to sign the entry off.
+///
+/// Free function rather than a method so both `RegistrationService` and
+/// `TournamentService` (which owns `register_team` / `register_player`)
+/// apply exactly the same rule.
+#[must_use]
+pub const fn initial_registration_status(
+    registration_type: RegistrationType,
+) -> TournamentRegistrationStatus {
+    match registration_type {
+        RegistrationType::Open => TournamentRegistrationStatus::Approved,
+        RegistrationType::Approval
+        | RegistrationType::InviteOnly
+        | RegistrationType::Qualification => TournamentRegistrationStatus::Pending,
+    }
+}
+
+/// How many registrations a tournament has, per status.
+///
+/// Exists because the pages that show these numbers used to count the rows of
+/// a **page** of the registrations list — so a 128-player event reported "20
+/// participants" and "20 pending approvals" for as long as it had more than 20
+/// of either (P-167). A count needs a real count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RegistrationCounts {
+    /// Every row, whatever its status.
+    pub total: i64,
+    /// Rows that still represent someone taking part: everything except
+    /// `withdrawn` and `disqualified`. This is the number the participant
+    /// list and the `n / max_participants` capacity read are about.
+    pub participating: i64,
+    pub pending: i64,
+    pub approved: i64,
+    pub checked_in: i64,
+    pub active: i64,
+    pub eliminated: i64,
+    pub disqualified: i64,
+    pub withdrawn: i64,
+    pub no_show: i64,
+}
 
 /// Service for tournament registration management.
-pub struct RegistrationService<TR, TRR>
+pub struct RegistrationService<TR, TRR, LTMR>
 where
     TR: TournamentRepository,
     TRR: TournamentRegistrationRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     tournament_repo: Arc<TR>,
     registration_repo: Arc<TRR>,
+    member_repo: Arc<LTMR>,
 }
 
-impl<TR, TRR> RegistrationService<TR, TRR>
+impl<TR, TRR, LTMR> RegistrationService<TR, TRR, LTMR>
 where
     TR: TournamentRepository,
     TRR: TournamentRegistrationRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     /// Create a new registration service.
-    pub const fn new(tournament_repo: Arc<TR>, registration_repo: Arc<TRR>) -> Self {
+    pub const fn new(
+        tournament_repo: Arc<TR>,
+        registration_repo: Arc<TRR>,
+        member_repo: Arc<LTMR>,
+    ) -> Self {
         Self {
             tournament_repo,
             registration_repo,
+            member_repo,
         }
+    }
+
+    /// Whether `actor` may act on behalf of `registration`.
+    ///
+    /// The handler-side entry point to [`speaks_for_registration`] — the one
+    /// definition of the rule (P-168). Five handlers used to carry their own
+    /// open-coded copy of it and the domain services carried a *different*
+    /// one, which is how the same person could raise a dispute about a result
+    /// they were refused permission to submit.
+    #[instrument(skip(self, registration))]
+    pub async fn speaks_for(
+        &self,
+        registration: &TournamentRegistration,
+        actor: RegistrationActor,
+    ) -> Result<bool, DomainError> {
+        speaks_for_registration(self.member_repo.as_ref(), registration, actor).await
+    }
+
+    /// Every registration in this tournament that `actor` speaks for.
+    ///
+    /// # Why this exists (P-167)
+    ///
+    /// The tournament page answered "am I registered?" by fetching
+    /// `GET /v1/tournaments/{id}/registrations` — **at the default
+    /// `per_page` of 20** — and scanning the page for the caller. Past row 20
+    /// every participant was told they were not registered: no "Registered"
+    /// state, no withdraw control, and a "do I have an eligible team?" answer
+    /// computed from a 20-row sample. Raising the page size only moves the
+    /// ceiling (the same bug was already fixed once at 100), so identity is
+    /// resolved directly instead.
+    ///
+    /// Cost is bounded by the caller's own team count, not by the tournament's
+    /// size: one lookup by player, plus one per team-season they belong to.
+    /// Every candidate is then passed through [`Self::speaks_for`], so this
+    /// list and the authorization checks can never disagree.
+    #[instrument(skip(self))]
+    pub async fn list_for_actor(
+        &self,
+        tournament_id: TournamentId,
+        actor: RegistrationActor,
+    ) -> Result<Vec<TournamentRegistration>, DomainError> {
+        let mut found: Vec<TournamentRegistration> = Vec::new();
+
+        if let Some(registration) = self
+            .registration_repo
+            .find_by_player(tournament_id, actor.player_id)
+            .await?
+        {
+            found.push(registration);
+        }
+
+        // `list_memberships_for_player` is deliberately re-filtered through
+        // `speaks_for`: the view behind it does not exclude teams the player
+        // has left, and the authorization rule does.
+        let memberships = self
+            .member_repo
+            .list_memberships_for_player(actor.player_id)
+            .await?;
+
+        for membership in memberships {
+            if found
+                .iter()
+                .any(|r| r.team_season_id == Some(membership.team_season_id))
+            {
+                continue;
+            }
+            let Some(registration) = self
+                .registration_repo
+                .find_by_team_season(tournament_id, membership.team_season_id)
+                .await?
+            else {
+                continue;
+            };
+            if self.speaks_for(&registration, actor).await? {
+                found.push(registration);
+            }
+        }
+
+        Ok(found)
+    }
+
+    /// Real per-status counts for a tournament's registrations (P-167).
+    #[instrument(skip(self))]
+    pub async fn counts(
+        &self,
+        tournament_id: TournamentId,
+    ) -> Result<RegistrationCounts, DomainError> {
+        let by_status = self
+            .registration_repo
+            .count_all_by_status(tournament_id)
+            .await?;
+
+        let get = |status: TournamentRegistrationStatus| -> i64 {
+            by_status
+                .iter()
+                .find(|(s, _)| *s == status)
+                .map_or(0, |(_, n)| *n)
+        };
+
+        let counts = RegistrationCounts {
+            total: by_status.iter().map(|(_, n)| *n).sum(),
+            participating: by_status
+                .iter()
+                .filter(|(s, _)| {
+                    !matches!(
+                        s,
+                        TournamentRegistrationStatus::Withdrawn
+                            | TournamentRegistrationStatus::Disqualified
+                    )
+                })
+                .map(|(_, n)| *n)
+                .sum(),
+            pending: get(TournamentRegistrationStatus::Pending),
+            approved: get(TournamentRegistrationStatus::Approved),
+            checked_in: get(TournamentRegistrationStatus::CheckedIn),
+            active: get(TournamentRegistrationStatus::Active),
+            eliminated: get(TournamentRegistrationStatus::Eliminated),
+            disqualified: get(TournamentRegistrationStatus::Disqualified),
+            withdrawn: get(TournamentRegistrationStatus::Withdrawn),
+            no_show: get(TournamentRegistrationStatus::NoShow),
+        };
+
+        Ok(counts)
     }
 
     /// Get a registration by ID.
@@ -106,6 +287,22 @@ where
         registration_id: TournamentRegistrationId,
     ) -> Result<TournamentRegistration, DomainError> {
         let registration = self.get_registration(registration_id).await?;
+
+        // Approving something already approved is a no-op, not an error.
+        //
+        // This became load-bearing with P-2: `Open` tournaments now auto-approve
+        // on signup, so a registration an organiser sees may already be approved
+        // and pressing Approve on it would have returned 400. The same applied to
+        // a double-click, or two organisers acting at once. Returning the
+        // registration unchanged makes the endpoint idempotent, which is what
+        // every caller already assumed.
+        //
+        // Deliberately narrow: only `Approved` short-circuits. Approving a
+        // withdrawn, rejected or disqualified registration is still a genuine
+        // state error and still fails below.
+        if registration.status == TournamentRegistrationStatus::Approved {
+            return Ok(registration);
+        }
 
         // Only pending registrations can be approved
         if registration.status != TournamentRegistrationStatus::Pending {
@@ -252,31 +449,29 @@ where
 
     /// Get the initial registration status based on tournament settings.
     ///
-    /// - For `Open` tournaments: `Approved` (auto-approved)
-    /// - For `Approval`, `InviteOnly`, `Qualification`: `Pending`
-    pub fn initial_status_for_tournament(
+    /// Thin wrapper over [`initial_registration_status`], which is the
+    /// single definition of the rule.
+    #[must_use]
+    pub const fn initial_status_for_tournament(
         &self,
         registration_type: RegistrationType,
     ) -> TournamentRegistrationStatus {
-        match registration_type {
-            RegistrationType::Open => TournamentRegistrationStatus::Approved,
-            RegistrationType::Approval
-            | RegistrationType::InviteOnly
-            | RegistrationType::Qualification => TournamentRegistrationStatus::Pending,
-        }
+        initial_registration_status(registration_type)
     }
 }
 
 // Manual Clone implementation since derive(Clone) doesn't work with generic bounds
-impl<TR, TRR> Clone for RegistrationService<TR, TRR>
+impl<TR, TRR, LTMR> Clone for RegistrationService<TR, TRR, LTMR>
 where
     TR: TournamentRepository,
     TRR: TournamentRegistrationRepository,
+    LTMR: LeagueTeamMemberRepository,
 {
     fn clone(&self) -> Self {
         Self {
             tournament_repo: Arc::clone(&self.tournament_repo),
             registration_repo: Arc::clone(&self.registration_repo),
+            member_repo: Arc::clone(&self.member_repo),
         }
     }
 }

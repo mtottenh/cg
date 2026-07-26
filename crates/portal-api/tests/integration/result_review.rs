@@ -358,3 +358,159 @@ async fn test_acknowledge_requires_registration_binding() {
         .await;
     response.assert_status(StatusCode::NOT_FOUND);
 }
+
+// ============================================================================
+// ADMIN QUEUE ORDERING — P-55
+// ============================================================================
+
+/// Seed a `pending_admin_review` row whose `created_at` is exactly `age_hours`
+/// hours in the past, and return its id.
+///
+/// Reviews are normally raised by `MatchCompletionSaga::step_validate_demos`
+/// off a demo-vs-claim mismatch. Driving that three times would say nothing
+/// extra about ORDER while making the timestamps — the whole subject of this
+/// test — non-deterministic, so the rows are written directly with the exact
+/// `created_at` the assertion depends on.
+async fn seed_pending_review(
+    app: &TestApp,
+    match_id: &str,
+    reg1: &str,
+    reg2: &str,
+    submitter_user_id: uuid::Uuid,
+    age_hours: i64,
+) -> String {
+    let match_uuid: uuid::Uuid = match_id.parse().expect("match id");
+    let reg1_uuid: uuid::Uuid = reg1.parse().expect("reg1 id");
+    let reg2_uuid: uuid::Uuid = reg2.parse().expect("reg2 id");
+    let created_at = chrono::Utc::now() - chrono::Duration::hours(age_hours);
+
+    let claim_id: uuid::Uuid = sqlx::query_scalar(
+        r"
+        INSERT INTO result_claims (
+            match_id, submitted_by_registration_id, submitted_by_user_id,
+            claimed_winner_registration_id, claimed_participant1_score,
+            claimed_participant2_score, created_at
+        )
+        VALUES ($1, $2, $3, $2, 2, 0, $4)
+        RETURNING id
+        ",
+    )
+    .bind(match_uuid)
+    .bind(reg1_uuid)
+    .bind(submitter_user_id)
+    .bind(created_at)
+    .fetch_one(app.pool())
+    .await
+    .expect("insert result claim");
+
+    let review_id: uuid::Uuid = sqlx::query_scalar(
+        r"
+        INSERT INTO result_reviews (
+            result_claim_id, match_id, score_mismatch, status,
+            captain1_registration_id, captain2_registration_id, created_at
+        )
+        VALUES ($1, $2, true, 'pending_admin_review', $3, $4, $5)
+        RETURNING id
+        ",
+    )
+    .bind(claim_id)
+    .bind(match_uuid)
+    .bind(reg1_uuid)
+    .bind(reg2_uuid)
+    .bind(created_at)
+    .fetch_one(app.pool())
+    .await
+    .expect("insert result review");
+
+    review_id.to_string()
+}
+
+/// P-55 — the admin review queue must return NEWEST FIRST.
+///
+/// It returned `created_at ASC`. Combined with server-side pagination that
+/// meant the review which had just escalated sorted onto the LAST page, and an
+/// admin working the queue from the top saw it last — the same shape as P-43,
+/// where anything past page one was in practice unreachable.
+///
+/// The assertion is on ORDER, not on membership: an ASC queue contains exactly
+/// the same three rows, so `contains` would pass against the bug.
+#[tokio::test]
+async fn test_admin_pending_reviews_are_newest_first() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, reg1, reg2, _player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "review-order-p55")
+            .await;
+    let submitter = portal_test::helpers::get_dev_user_id(app.pool()).await;
+
+    // Seeded oldest-first so insertion order is the WRONG answer: if the
+    // handler ever returns rows in physical/insertion order the assertion
+    // still fails.
+    let oldest = seed_pending_review(&app, &match_id, &reg1, &reg2, submitter, 72).await;
+    let middle = seed_pending_review(&app, &match_id, &reg1, &reg2, submitter, 24).await;
+    let newest = seed_pending_review(&app, &match_id, &reg1, &reg2, submitter, 1).await;
+
+    let response = app.get_auth("/v1/admin/result-reviews").await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    let reviews = body["data"]["reviews"]
+        .as_array()
+        .expect("reviews array")
+        .clone();
+    assert_eq!(body["data"]["total"], 3, "all three reviews are pending");
+
+    let ids: Vec<String> = reviews
+        .iter()
+        .map(|r| r["id"].as_str().expect("review id").to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![newest.clone(), middle.clone(), oldest.clone()],
+        "admin queue must be newest-first, got {ids:?}"
+    );
+
+    // And the `created_at` values the page renders must descend, so the column
+    // header ("Created (newest first)") is not a claim the data contradicts.
+    let timestamps: Vec<&str> = reviews
+        .iter()
+        .map(|r| r["created_at"].as_str().expect("created_at"))
+        .collect();
+    let mut descending = timestamps.clone();
+    descending.sort_unstable();
+    descending.reverse();
+    assert_eq!(timestamps, descending, "created_at must descend");
+}
+
+/// The half of P-55 that pagination makes user-visible: the FIRST page must
+/// hold the newest escalation. With `created_at ASC` and one row per page, page
+/// 1 held the oldest and the fresh escalation was on the last page.
+#[tokio::test]
+async fn test_admin_pending_reviews_first_page_holds_the_newest() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, reg1, reg2, _player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "review-page-p55")
+            .await;
+    let submitter = portal_test::helpers::get_dev_user_id(app.pool()).await;
+
+    let _oldest = seed_pending_review(&app, &match_id, &reg1, &reg2, submitter, 72).await;
+    let _middle = seed_pending_review(&app, &match_id, &reg1, &reg2, submitter, 24).await;
+    let newest = seed_pending_review(&app, &match_id, &reg1, &reg2, submitter, 1).await;
+
+    let response = app
+        .get_auth("/v1/admin/result-reviews?page=1&per_page=1")
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let body: serde_json::Value = response.json();
+    let reviews = body["data"]["reviews"].as_array().expect("reviews array");
+    assert_eq!(reviews.len(), 1, "per_page=1 returns one row");
+    assert_eq!(
+        reviews[0]["id"].as_str().expect("review id"),
+        newest,
+        "page 1 of the queue must be the most recent escalation"
+    );
+    assert_eq!(
+        body["data"]["total"], 3,
+        "total still counts every pending review"
+    );
+}

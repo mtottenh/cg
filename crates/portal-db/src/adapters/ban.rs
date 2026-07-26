@@ -1,7 +1,6 @@
 //! Ban repository adapter.
 
 use crate::DbPool;
-use crate::entities::BanRow;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use portal_core::{BanId, DomainError, UserId};
@@ -13,11 +12,56 @@ use sqlx::Row;
 // Type Conversions
 // =============================================================================
 
-impl From<BanRow> for Ban {
-    fn from(row: BanRow) -> Self {
+/// A `bans` row joined to the banned user's identity.
+///
+/// P-123: the domain `Ban` carries `username`/`display_name`, so every query
+/// that produces one must join. Declared here rather than beside `BanRow` in
+/// `entities/` because that row maps the table one-to-one and is still used by
+/// the raw `repositories::rbac` layer (and the CLI on top of it), whose
+/// `SELECT *` / `RETURNING *` queries have no user columns to bind.
+///
+/// The `users` join is INNER (`bans.user_id` is a NOT NULL FK and
+/// `users.username` is NOT NULL); the `players` join is LEFT, because a user
+/// need not have a player profile and an active ban must never disappear from
+/// a moderation listing merely because they do not.
+#[derive(Debug, sqlx::FromRow)]
+struct BanWithUserRow {
+    id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    ban_type: String,
+    reason: String,
+    scope_type: Option<String>,
+    scope_id: Option<uuid::Uuid>,
+    issued_by: Option<uuid::Uuid>,
+    starts_at: chrono::DateTime<Utc>,
+    ends_at: Option<chrono::DateTime<Utc>>,
+    lifted_at: Option<chrono::DateTime<Utc>>,
+    lifted_by: Option<uuid::Uuid>,
+    lift_reason: Option<String>,
+    created_at: chrono::DateTime<Utc>,
+    updated_at: chrono::DateTime<Utc>,
+    username: String,
+    display_name: Option<String>,
+}
+
+/// The columns every ban query selects, aliased to match [`BanWithUserRow`].
+/// Kept in one place so a new query cannot quietly omit the identity columns
+/// and reintroduce P-123 on one surface while the others stay fixed.
+const BAN_WITH_USER_COLUMNS: &str = "b.id, b.user_id, b.ban_type, b.reason, b.scope_type,
+     b.scope_id, b.issued_by, b.starts_at, b.ends_at, b.lifted_at, b.lifted_by,
+     b.lift_reason, b.created_at, b.updated_at, u.username, p.display_name";
+
+/// The joins those columns require. `b` must already be in scope.
+const BAN_USER_JOINS: &str = "INNER JOIN users u ON u.id = b.user_id
+     LEFT JOIN players p ON p.user_id = b.user_id";
+
+impl From<BanWithUserRow> for Ban {
+    fn from(row: BanWithUserRow) -> Self {
         Self {
             id: BanId::from(row.id),
             user_id: UserId::from(row.user_id),
+            username: row.username,
+            display_name: row.display_name,
             ban_type: row.ban_type.parse().unwrap_or(BanType::Platform),
             reason: row.reason,
             scope_type: row.scope_type,
@@ -55,11 +99,16 @@ impl PgBanRepository {
 #[async_trait]
 impl BanRepository for PgBanRepository {
     async fn find_by_id(&self, id: BanId) -> Result<Option<Ban>, DomainError> {
-        let ban = sqlx::query_as::<_, BanRow>("SELECT * FROM bans WHERE id = $1")
-            .bind(id.as_uuid())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let ban = sqlx::query_as::<_, BanWithUserRow>(&format!(
+            "SELECT {BAN_WITH_USER_COLUMNS}
+             FROM bans b
+             {BAN_USER_JOINS}
+             WHERE b.id = $1"
+        ))
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(ban.map(Ban::from))
     }
@@ -70,13 +119,20 @@ impl BanRepository for PgBanRepository {
             .duration_seconds
             .map(|secs| starts_at + Duration::seconds(secs));
 
-        let ban = sqlx::query_as::<_, BanRow>(
-            r"
-            INSERT INTO bans (user_id, ban_type, reason, scope_type, scope_id, issued_by, starts_at, ends_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING *
-            ",
-        )
+        // The insert is wrapped in a CTE so the returned row can be joined to
+        // the user's identity in one round trip — `RETURNING *` alone cannot
+        // reach `users`/`players` (P-123).
+        let ban = sqlx::query_as::<_, BanWithUserRow>(&format!(
+            "WITH inserted AS (
+                 INSERT INTO bans
+                     (user_id, ban_type, reason, scope_type, scope_id, issued_by, starts_at, ends_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 RETURNING *
+             )
+             SELECT {BAN_WITH_USER_COLUMNS}
+             FROM inserted b
+             {BAN_USER_JOINS}"
+        ))
         .bind(cmd.user_id.as_uuid())
         .bind(cmd.ban_type.to_string())
         .bind(&cmd.reason)
@@ -127,13 +183,17 @@ impl BanRepository for PgBanRepository {
             .await
             .map_err(|e| DomainError::Internal(format!("Failed to begin transaction: {e}")))?;
 
-        let row = sqlx::query_as::<_, BanRow>(
-            r"
-            INSERT INTO bans (user_id, ban_type, reason, scope_type, scope_id, issued_by, starts_at, ends_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING *
-            ",
-        )
+        let row = sqlx::query_as::<_, BanWithUserRow>(&format!(
+            "WITH inserted AS (
+                 INSERT INTO bans
+                     (user_id, ban_type, reason, scope_type, scope_id, issued_by, starts_at, ends_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 RETURNING *
+             )
+             SELECT {BAN_WITH_USER_COLUMNS}
+             FROM inserted b
+             {BAN_USER_JOINS}"
+        ))
         .bind(cmd.user_id.as_uuid())
         .bind(cmd.ban_type.to_string())
         .bind(&cmd.reason)
@@ -213,17 +273,20 @@ impl BanRepository for PgBanRepository {
         lifted_by: UserId,
         lift_reason: Option<&str>,
     ) -> Result<Ban, DomainError> {
-        let ban = sqlx::query_as::<_, BanRow>(
-            r"
-            UPDATE bans SET
-                lifted_at = NOW(),
-                lifted_by = $2,
-                lift_reason = $3,
-                updated_at = NOW()
-            WHERE id = $1
-            RETURNING *
-            ",
-        )
+        let ban = sqlx::query_as::<_, BanWithUserRow>(&format!(
+            "WITH updated AS (
+                 UPDATE bans SET
+                     lifted_at = NOW(),
+                     lifted_by = $2,
+                     lift_reason = $3,
+                     updated_at = NOW()
+                 WHERE id = $1
+                 RETURNING *
+             )
+             SELECT {BAN_WITH_USER_COLUMNS}
+             FROM updated b
+             {BAN_USER_JOINS}"
+        ))
         .bind(id.as_uuid())
         .bind(lifted_by.as_uuid())
         .bind(lift_reason)
@@ -236,16 +299,16 @@ impl BanRepository for PgBanRepository {
     }
 
     async fn get_active_for_user(&self, user_id: UserId) -> Result<Vec<Ban>, DomainError> {
-        let bans = sqlx::query_as::<_, BanRow>(
-            r"
-            SELECT * FROM bans
-            WHERE user_id = $1
-              AND lifted_at IS NULL
-              AND starts_at <= NOW()
-              AND (ends_at IS NULL OR ends_at > NOW())
-            ORDER BY starts_at DESC
-            ",
-        )
+        let bans = sqlx::query_as::<_, BanWithUserRow>(&format!(
+            "SELECT {BAN_WITH_USER_COLUMNS}
+             FROM bans b
+             {BAN_USER_JOINS}
+             WHERE b.user_id = $1
+               AND b.lifted_at IS NULL
+               AND b.starts_at <= NOW()
+               AND (b.ends_at IS NULL OR b.ends_at > NOW())
+             ORDER BY b.starts_at DESC"
+        ))
         .bind(user_id.as_uuid())
         .fetch_all(&self.pool)
         .await
@@ -281,55 +344,62 @@ impl BanRepository for PgBanRepository {
     ) -> Result<PaginatedBans, DomainError> {
         let offset = (page - 1) * per_page;
 
-        // Build WHERE clauses dynamically
+        // Build WHERE clauses dynamically.
+        //
+        // Every column is qualified with the `b` alias. That is not style: the
+        // identity join (P-123) brings in `players`, which also has a
+        // `user_id` column, so an unqualified `user_id = $1` is now an
+        // ambiguous-reference error from Postgres rather than a filter.
         let mut conditions = vec!["1=1".to_string()];
         let mut param_count = 0;
 
         if filters.user_id.is_some() {
             param_count += 1;
-            conditions.push(format!("user_id = ${param_count}"));
+            conditions.push(format!("b.user_id = ${param_count}"));
         }
 
         if filters.ban_type.is_some() {
             param_count += 1;
-            conditions.push(format!("ban_type = ${param_count}"));
+            conditions.push(format!("b.ban_type = ${param_count}"));
         }
 
         if filters.active_only {
             conditions.push(
-                "lifted_at IS NULL AND starts_at <= NOW() AND (ends_at IS NULL OR ends_at > NOW())"
+                "b.lifted_at IS NULL AND b.starts_at <= NOW() AND (b.ends_at IS NULL OR b.ends_at > NOW())"
                     .to_string(),
             );
         }
 
         if filters.scope_type.is_some() {
             param_count += 1;
-            conditions.push(format!("scope_type = ${param_count}"));
+            conditions.push(format!("b.scope_type = ${param_count}"));
         }
 
         if filters.scope_id.is_some() {
             param_count += 1;
-            conditions.push(format!("scope_id = ${param_count}"));
+            conditions.push(format!("b.scope_id = ${param_count}"));
         }
 
         let where_clause = conditions.join(" AND ");
 
-        // Count query
-        let count_query = format!("SELECT COUNT(*) as count FROM bans WHERE {where_clause}");
+        // Count query. It needs no identity join (nothing filters on the
+        // joined columns), but it must keep the `b` alias so it can share the
+        // WHERE clause with the items query.
+        let count_query = format!("SELECT COUNT(*) as count FROM bans b WHERE {where_clause}");
         let items_query = format!(
-            r"
-            SELECT * FROM bans
-            WHERE {where_clause}
-            ORDER BY created_at DESC
-            LIMIT ${} OFFSET ${}
-            ",
+            "SELECT {BAN_WITH_USER_COLUMNS}
+             FROM bans b
+             {BAN_USER_JOINS}
+             WHERE {where_clause}
+             ORDER BY b.created_at DESC
+             LIMIT ${} OFFSET ${}",
             param_count + 1,
             param_count + 2
         );
 
         // Build count query
         let mut count_builder = sqlx::query(&count_query);
-        let mut items_builder = sqlx::query_as::<_, BanRow>(&items_query);
+        let mut items_builder = sqlx::query_as::<_, BanWithUserRow>(&items_query);
 
         // Bind parameters in order
         if let Some(user_id) = &filters.user_id {
@@ -381,13 +451,13 @@ impl BanRepository for PgBanRepository {
     }
 
     async fn get_user_ban_history(&self, user_id: UserId) -> Result<Vec<Ban>, DomainError> {
-        let bans = sqlx::query_as::<_, BanRow>(
-            r"
-            SELECT * FROM bans
-            WHERE user_id = $1
-            ORDER BY created_at DESC
-            ",
-        )
+        let bans = sqlx::query_as::<_, BanWithUserRow>(&format!(
+            "SELECT {BAN_WITH_USER_COLUMNS}
+             FROM bans b
+             {BAN_USER_JOINS}
+             WHERE b.user_id = $1
+             ORDER BY b.created_at DESC"
+        ))
         .bind(user_id.as_uuid())
         .fetch_all(&self.pool)
         .await

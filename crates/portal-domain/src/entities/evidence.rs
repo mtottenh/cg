@@ -101,7 +101,7 @@ impl Evidence {
 // EvidenceType is re-exported from portal-core above.
 
 /// Source of the evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceSource {
     /// Manually uploaded by a user
@@ -142,7 +142,9 @@ impl std::str::FromStr for EvidenceSource {
 // EvidenceStorage is re-exported from portal-core above.
 
 /// Status of evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceStatus {
     /// Upload initiated, file not yet confirmed
@@ -202,7 +204,7 @@ pub struct EvidenceAccessLog {
 }
 
 /// Type of evidence access.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceAccessType {
     /// Viewed evidence metadata

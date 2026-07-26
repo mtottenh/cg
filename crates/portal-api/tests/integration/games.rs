@@ -1519,20 +1519,24 @@ async fn test_map_engine_name_roundtrip_and_clear() {
         .clone();
     assert_eq!(served["engine_name"], "de_cache");
 
-    // Patching with an empty engine_name clears the override.
+    // Patching with empty strings clears engine_name AND the workshop
+    // association (the UI's Unlink path) — Some("") stored for external_id
+    // would read as "is a workshop map" and then fail token translation.
     let response = app
         .patch_json(
             "/v1/games/cs2/maps/catalog/de_cache_ws",
-            &json!({ "engine_name": "" }),
+            &json!({ "engine_name": "", "external_id": "", "external_url": "" }),
         )
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
-    assert!(
-        body["data"].get("engine_name").is_none() || body["data"]["engine_name"].is_null(),
-        "empty engine_name must clear the override, got: {}",
-        body["data"]
-    );
+    for field in ["engine_name", "external_id", "external_url"] {
+        assert!(
+            body["data"].get(field).is_none() || body["data"][field].is_null(),
+            "empty {field} must clear, got: {}",
+            body["data"]
+        );
+    }
 }
 
 #[tokio::test]

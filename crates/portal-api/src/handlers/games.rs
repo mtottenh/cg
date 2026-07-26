@@ -72,7 +72,7 @@ pub async fn list_games(
     let request_id = get_request_id(&headers);
 
     // Fetch games from the database. The unfiltered catalog is admin-only.
-    let games = if list_params.include_inactive {
+    let active_only = if list_params.include_inactive {
         let is_admin = match &auth.0 {
             Some(user) => state
                 .permission_repo
@@ -86,13 +86,22 @@ pub async fn list_games(
                 "Admin permission required to list inactive games",
             ));
         }
-        state.game_repo.list().await?
+        false
     } else {
-        state.game_repo.list_active().await?
+        true
     };
 
-    // Convert to response DTOs
-    let all_games: Vec<GameSummaryResponse> = games
+    // P-121 established that `params` must actually govern the list and that
+    // `total` is the catalog count, not the page length. P-156 finishes the
+    // job: the LIMIT/OFFSET now runs in SQL (`list_paged`) instead of
+    // fetching the whole table and skip/taking in memory — honest at a
+    // handful of rows, but a read that grows with the catalog forever.
+    let (games, total) = state
+        .game_repo
+        .list_paged(active_only, params.limit(), params.offset())
+        .await?;
+
+    let page_of_games: Vec<GameSummaryResponse> = games
         .into_iter()
         .map(|g| GameSummaryResponse {
             id: g.id.to_string(),
@@ -108,30 +117,10 @@ pub async fn list_games(
         })
         .collect();
 
-    // P-121: `params` was threaded into `PaginatedResponse::new` but never
-    // applied to the list, so the response carried page-N metadata attached to
-    // the COMPLETE catalog. A client asking for `?page=2&per_page=10` was told
-    // it was on page 2 and handed every game — so a paginating UI renders page
-    // 1's items again under a "page 2" heading, or duplicates them by appending.
-    //
-    // `total` must be counted BEFORE the slice. It previously read
-    // `game_responses.len()`, which was accidentally correct only because
-    // nothing sliced; adding the slice without moving this would have made
-    // `total` the page size and collapsed `total_pages` to 1 — a subtler lie
-    // than the one being fixed.
-    //
-    // The catalog is a handful of rows that the repo returns whole, so slicing
-    // in memory is honest here rather than a stand-in for a LIMIT/OFFSET query.
-    let total = all_games.len() as u64;
-    let offset = usize::try_from(params.offset()).unwrap_or(0);
-    let limit = usize::try_from(params.limit()).unwrap_or(0);
-    let page_of_games: Vec<GameSummaryResponse> =
-        all_games.into_iter().skip(offset).take(limit).collect();
-
     Ok(Json(PaginatedResponse::new(
         page_of_games,
         &params,
-        total,
+        u64::try_from(total).unwrap_or(0),
         request_id,
     )))
 }

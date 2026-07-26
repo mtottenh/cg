@@ -1,18 +1,19 @@
 //! Result submission handlers.
 
-use crate::dto::common::DataResponse;
+use crate::dto::common::{DataResponse, PaginationParams};
 use crate::dto::requests::{
     AdminOverrideMatchResultRequest, DisputeResultClaimRequest, SubmitResultClaimRequest,
 };
 use crate::dto::responses::{
-    MatchResultOverrideResponse, ResultClaimResponse, ResultClaimSubmissionResponse,
-    ResultConfirmationResponse, ResultDisputeResponse, TournamentMatchResponse,
+    EntityChangeResponse, MatchResultOverrideResponse, ResultClaimResponse,
+    ResultClaimSubmissionResponse, ResultConfirmationResponse, ResultDisputeResponse,
+    TournamentMatchResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::{DisputeState, ResultState};
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{
     DemoMatchLinkId, EvidenceId, ResultClaimId, TournamentMatchId, TournamentRegistrationId,
@@ -576,6 +577,7 @@ pub async fn admin_override_match_result(
     params(
         ("tournament_id" = String, Path, description = "Tournament ID"),
         ("match_id" = String, Path, description = "Match ID"),
+        PaginationParams,
     ),
     responses(
         (status = 200, description = "Recorded score corrections, newest first", body = DataResponse<Vec<MatchResultOverrideResponse>>),
@@ -592,6 +594,7 @@ pub async fn admin_list_match_result_overrides(
     perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path((_tournament_id, match_id)): Path<(String, String)>,
+    Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<DataResponse<Vec<MatchResultOverrideResponse>>>> {
     let request_id = get_request_id(&headers);
 
@@ -613,14 +616,18 @@ pub async fn admin_list_match_result_overrides(
         )
         .await?;
 
+    // P-189: this read was hard-coded to `100, 0`. The caller's pagination
+    // now governs it (the defaults reproduce the old first page), so a
+    // history deeper than one page is reachable instead of silently
+    // truncated.
     let changes = state
         .entity_change_repo
         .list_by_field(
             MATCH_RESULT_OVERRIDE_ENTITY,
             match_id.as_uuid(),
             MATCH_RESULT_OVERRIDE_FIELD,
-            100,
-            0,
+            params.limit(),
+            params.offset(),
         )
         .await?;
 
@@ -671,4 +678,82 @@ pub async fn admin_list_match_result_overrides(
         .collect();
 
     Ok(Json(DataResponse::new(overrides, request_id)))
+}
+
+/// Query parameters for the generic entity-changes audit read (P-149).
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+pub struct EntityChangesQuery {
+    /// Entity type to read history for (e.g. `league_season`,
+    /// `tournament_match`).
+    pub entity_type: String,
+    /// ID of the entity.
+    pub entity_id: uuid::Uuid,
+}
+
+/// Admin: read the audit trail for one entity, newest first.
+///
+/// P-149: `entity_changes` — the audit spine that roster-lock overrides,
+/// score corrections and every other audited write land in — was readable
+/// only through `portal-cli`. An audit trail an operator cannot reach over
+/// HTTP is barely better than none; this is the generic read the
+/// match-scoped `result-overrides` endpoint is a specialisation of.
+///
+/// Gated on `admin.users.view` — the platform's read gate (staff and up),
+/// per the reads-on-view / mutations-on-manage split ruled in P-204.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/audit/entity-changes",
+    params(EntityChangesQuery, PaginationParams),
+    responses(
+        (status = 200, description = "Recorded changes for the entity, newest first", body = DataResponse<Vec<EntityChangeResponse>>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing admin.users.view", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn admin_list_entity_changes(
+    State(state): State<ResultState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Query(query): Query<EntityChangesQuery>,
+    Query(params): Query<PaginationParams>,
+) -> ApiResult<Json<DataResponse<Vec<EntityChangeResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_permission(&auth, portal_core::permissions::admin::USERS_VIEW)
+        .await?;
+
+    let changes = state
+        .entity_change_repo
+        .list_by_entity(
+            &query.entity_type,
+            query.entity_id,
+            params.limit(),
+            params.offset(),
+        )
+        .await?;
+
+    // Resolve actor display names in one round-trip — an audit row that
+    // names its actor only by UUID is not usable audit (P-115/P-123).
+    let player_ids: Vec<portal_core::PlayerId> = changes.iter().map(|c| c.changed_by).collect();
+    let names: HashMap<portal_core::PlayerId, String> = state
+        .player_service
+        .get_players_by_ids(&player_ids)
+        .await?
+        .into_iter()
+        .map(|p| (p.id, p.display_name))
+        .collect();
+
+    let responses: Vec<EntityChangeResponse> = changes
+        .into_iter()
+        .map(|c| {
+            let name = names.get(&c.changed_by).cloned();
+            EntityChangeResponse::from_change(c, name)
+        })
+        .collect();
+
+    Ok(Json(DataResponse::new(responses, request_id)))
 }

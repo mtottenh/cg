@@ -134,6 +134,12 @@ pub struct PlayerSearchResponse {
     #[schema(example = "550e8400-e29b-41d4-a716-446655440000")]
     pub id: String,
 
+    /// Owning user's ID (P-155). Callers acting on the ACCOUNT — bans, role
+    /// grants — must send this, not the player id: the two are equal today
+    /// only by the seed's deliberate 1:1 id invariant, whose own doc
+    /// reserves the right to migrate away.
+    pub user_id: String,
+
     /// Display name.
     #[schema(example = "ProGamer123")]
     pub display_name: String,
@@ -158,6 +164,7 @@ impl PlayerSearchResponse {
     pub fn with_display_stats(player: Player, display_stats: Vec<DisplayStat>) -> Self {
         Self {
             id: player.id.to_string(),
+            user_id: player.user_id.to_string(),
             display_name: player.display_name,
             avatar_url: player.avatar_url,
             country_code: player.country_code,
@@ -174,6 +181,7 @@ impl From<Player> for PlayerSearchResponse {
     fn from(player: Player) -> Self {
         Self {
             id: player.id.to_string(),
+            user_id: player.user_id.to_string(),
             display_name: player.display_name,
             avatar_url: player.avatar_url,
             country_code: player.country_code,

@@ -1208,3 +1208,68 @@ async fn test_assign_dispute_records_the_assignee() {
         "assignment must persist the assignee"
     );
 }
+
+/// P-129: the admin review queue's server-side sort. Newest-first is the
+/// default (P-55); `?sort=oldest` flips the order server-side so the backlog
+/// end is page 1 rather than the page nobody reaches; an unknown sort is a
+/// 400, not a silent default.
+#[tokio::test]
+async fn test_review_queue_sort_is_server_side() {
+    let app = TestApp::new().await;
+    let t = create_4player_tournament(&app, "review-sort").await;
+
+    let claim_id = submit_claim(&app, &t.test_match_id, &t.dev_reg_id, t.dev_is_p1, &[]).await;
+    let claim_uuid: Uuid = claim_id.parse().unwrap();
+    let test_match_uuid: Uuid = t.test_match_id.parse().unwrap();
+    let final_match_uuid: Uuid = t.final_match_id.parse().unwrap();
+    let reg_uuid: Uuid = t.dev_reg_id.parse().unwrap();
+
+    // Two pending reviews a minute apart. Staged directly: the queue's
+    // ORDER BY is what is under test, not review creation.
+    for (match_uuid, offset_min) in [(test_match_uuid, 10), (final_match_uuid, 5)] {
+        sqlx::query(
+            "INSERT INTO result_reviews
+                 (result_claim_id, match_id, score_mismatch, status,
+                  captain1_registration_id, captain2_registration_id, created_at)
+             VALUES ($1, $2, true, 'pending_admin_review', $3, $3,
+                     NOW() - ($4 * INTERVAL '1 minute'))",
+        )
+        .bind(claim_uuid)
+        .bind(match_uuid)
+        .bind(reg_uuid)
+        .bind(f64::from(offset_min))
+        .execute(app.pool())
+        .await
+        .unwrap();
+    }
+
+    let ids = |body: &serde_json::Value| -> Vec<String> {
+        body["data"]["reviews"]
+            .as_array()
+            .expect("review queue")
+            .iter()
+            .map(|r| r["match_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Default: newest first — the 5-minute-old review leads.
+    let newest = app.get_auth("/v1/admin/result-reviews").await;
+    newest.assert_status(StatusCode::OK);
+    let newest: serde_json::Value = newest.json();
+    let order_newest = ids(&newest);
+    assert_eq!(order_newest[0], t.final_match_id);
+    assert_eq!(order_newest[1], t.test_match_id);
+
+    // sort=oldest flips it server-side.
+    let oldest = app.get_auth("/v1/admin/result-reviews?sort=oldest").await;
+    oldest.assert_status(StatusCode::OK);
+    let oldest: serde_json::Value = oldest.json();
+    let order_oldest = ids(&oldest);
+    assert_eq!(order_oldest[0], t.test_match_id);
+    assert_eq!(order_oldest[1], t.final_match_id);
+
+    // An unknown sort is refused, not silently defaulted.
+    app.get_auth("/v1/admin/result-reviews?sort=sideways")
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+}

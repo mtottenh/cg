@@ -2,6 +2,7 @@
 
 pub mod action_item;
 pub mod admin;
+pub mod audit;
 pub mod auth;
 pub mod availability;
 pub mod award;
@@ -28,6 +29,7 @@ pub mod veto_delegate;
 
 pub use action_item::ActionItemResponse;
 pub use admin::PlatformStatsResponse;
+pub use audit::EntityChangeResponse;
 pub use auth::{LoginResponse, LogoutResponse, RegisterResponse};
 pub use availability::{
     AvailabilityOverrideResponse, AvailabilityWindowResponse, DateAvailabilityResponse,

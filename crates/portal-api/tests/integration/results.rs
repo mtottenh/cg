@@ -2109,3 +2109,86 @@ async fn test_tournament_scoped_results_manage_is_enough_to_correct_a_score() {
         .await;
     response.assert_status(StatusCode::OK);
 }
+
+/// P-149 + P-189: the generic audit read exists over HTTP, resolves its
+/// actors, refuses non-staff — and pagination governs both audit reads.
+///
+/// Until P-149 the `entity_changes` table was readable only through
+/// portal-cli, and until P-189 the match-scoped override list was hard-coded
+/// to its first hundred rows.
+#[tokio::test]
+async fn test_generic_entity_changes_read_and_override_pagination() {
+    let app = TestApp::new().await;
+    let f = setup_completed_match(&app, "audit-read").await;
+
+    // Two corrections, so pagination has something to page.
+    for (p1, p2, reason) in [(1, 2, "first correction"), (2, 1, "second correction")] {
+        app.post_json(
+            &format!(
+                "/v1/admin/tournaments/{}/matches/{}/result-override",
+                f.tournament_id, f.match_id
+            ),
+            &json!({
+                "participant1_score": p1,
+                "participant2_score": p2,
+                "reason": reason
+            }),
+        )
+        .await
+        .assert_status(StatusCode::OK);
+    }
+
+    // P-149: the generic read returns the same rows, newest first, with the
+    // actor resolved to a display name.
+    let listed = app
+        .get_auth(&format!(
+            "/v1/admin/audit/entity-changes?entity_type=tournament_match&entity_id={}",
+            f.match_id
+        ))
+        .await;
+    listed.assert_status(StatusCode::OK);
+    let listed: serde_json::Value = listed.json();
+    let entries = listed["data"].as_array().expect("audit list");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["change_type"], "update");
+    assert_eq!(entries[0]["new_value"]["reason"], "second correction");
+    assert!(
+        entries[0]["changed_by_display_name"].as_str().is_some(),
+        "an audit row that names its actor only by UUID is not usable audit"
+    );
+
+    // The read gate can fail: a real user with no grants is refused. (The
+    // dev token above passes via the test-utils bypass — the P-142 canary
+    // pins that boundary.)
+    let outsider = create_test_token(
+        uuid::Uuid::now_v7(),
+        uuid::Uuid::now_v7(),
+        "audit-outsider",
+        TEST_JWT_SECRET,
+    );
+    let refused = app
+        .get_with_token(
+            &format!(
+                "/v1/admin/audit/entity-changes?entity_type=tournament_match&entity_id={}",
+                f.match_id
+            ),
+            &outsider,
+        )
+        .await;
+    refused.assert_status(StatusCode::FORBIDDEN);
+
+    // P-189: pagination governs the match-scoped override list — page 2 at
+    // per_page=1 is the OLDER correction, previously unreachable past the
+    // hard-coded first hundred.
+    let page2 = app
+        .get_auth(&format!(
+            "/v1/admin/tournaments/{}/matches/{}/result-overrides?per_page=1&page=2",
+            f.tournament_id, f.match_id
+        ))
+        .await;
+    page2.assert_status(StatusCode::OK);
+    let page2: serde_json::Value = page2.json();
+    let rows = page2["data"].as_array().expect("override page");
+    assert_eq!(rows.len(), 1, "per_page must govern the page size");
+    assert_eq!(rows[0]["reason"], "first correction");
+}

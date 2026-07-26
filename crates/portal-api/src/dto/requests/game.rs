@@ -100,8 +100,12 @@ pub struct UpdateMapRequest {
 /// Replace the full set of rank tiers for a game.
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct SetRankTiersRequest {
-    /// Rank tiers (1-20 items).
-    #[validate(length(min = 1, max = 20))]
+    /// Rank tiers (0-20 items). An empty list CLEARS the stored override,
+    /// and reads then fall back to the game plugin's default tiers
+    /// (`get_rank_tiers` already treats `[]` that way) — P-120: with
+    /// `min = 1` here, a custom tier set could be installed but never
+    /// removed again.
+    #[validate(length(max = 20))]
     pub rank_tiers: Vec<RankTierInput>,
 }
 

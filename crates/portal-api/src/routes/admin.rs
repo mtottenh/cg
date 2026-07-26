@@ -69,6 +69,13 @@ pub fn routes() -> Router<AppState> {
             "/tournaments/{tournament_id}/matches/{match_id}/result-overrides",
             get(results::admin_list_match_result_overrides),
         )
+        // P-149: the generic entity-changes audit read the route above is a
+        // specialisation of — until it existed, only portal-cli could read
+        // the audit spine.
+        .route(
+            "/audit/entity-changes",
+            get(results::admin_list_entity_changes),
+        )
         // Progression admin routes
         .route(
             "/matches/{match_id}/progression/revert",

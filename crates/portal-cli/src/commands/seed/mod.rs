@@ -13,7 +13,7 @@ use portal_db::PgPool;
 
 use crate::output::{OutputFormat, info, success};
 use chrono::{Duration, NaiveTime, Utc};
-use scenario::{PERSONAS, Persona, SEED_PASSWORD, TEAMS};
+use scenario::{PERSONAS, Persona, SEED_INTERNAL_API_KEY, SEED_PASSWORD, TEAMS};
 
 /// Seed commands for frontend development.
 #[derive(Args)]
@@ -78,6 +78,46 @@ fn hash_password(password: &str) -> Result<String> {
     Ok(hash)
 }
 
+/// Seed the well-known internal API key (P-143). Idempotent: the key hash
+/// is UNIQUE and conflicts just re-activate the row.
+async fn seed_internal_api_key(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    created_by: uuid::Uuid,
+) -> Result<()> {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(SEED_INTERNAL_API_KEY.as_bytes());
+    let key_hash = hex::encode(hasher.finalize());
+    let key_prefix = &SEED_INTERNAL_API_KEY[..8];
+
+    let (key_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO api_keys (service_name, key_hash, key_prefix, is_active, created_by)
+         VALUES ('e2e-internal', $1, $2, true, $3)
+         ON CONFLICT (key_hash) DO UPDATE SET is_active = true
+         RETURNING id",
+    )
+    .bind(&key_hash)
+    .bind(key_prefix)
+    .bind(created_by)
+    .fetch_one(&mut **tx)
+    .await
+    .context("Failed to seed internal API key")?;
+
+    // Same grants the scanner service holds — the demo-pipeline reads/writes.
+    sqlx::query(
+        "INSERT INTO api_key_permissions (api_key_id, permission_id)
+         SELECT $1, id FROM permissions WHERE name = ANY($2)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(key_id)
+    .bind(["demos.catalog", "demos.read", "demos.stats"])
+    .execute(&mut **tx)
+    .await
+    .context("Failed to grant internal API key permissions")?;
+
+    Ok(())
+}
+
 /// Look up the CS2 game UUID by slug.
 async fn get_cs2_game_id(pool: &PgPool) -> Result<uuid::Uuid> {
     let row: (uuid::Uuid,) = sqlx::query_as("SELECT id FROM games WHERE slug = 'cs2'")
@@ -119,6 +159,12 @@ async fn seed_full(pool: &PgPool) -> Result<()> {
     info("Assigning admin role...");
     let admin = scenario::persona("admin");
     seed_admin_role(&mut tx, admin.user_id()).await?;
+
+    // 3b. Internal API key (P-143) — lets e2e drive the X-API-Key pipeline
+    // routes (enrichment failures, discovered matches) that no browser
+    // identity can reach.
+    info("Seeding internal API key...");
+    seed_internal_api_key(&mut tx, admin.user_id()).await?;
 
     // 4. League (trigger auto-creates "Season 1" with a random UUID)
     info("Seeding league...");

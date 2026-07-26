@@ -314,10 +314,11 @@ where
         &self,
         limit: i64,
         offset: i64,
+        oldest_first: bool,
     ) -> Result<(Vec<ResultReview>, i64), DomainError> {
         let reviews = self
             .review_repo
-            .find_pending_admin_reviews(limit, offset)
+            .find_pending_admin_reviews(limit, offset, oldest_first)
             .await?;
         let total = self.review_repo.count_pending_admin_reviews().await?;
 

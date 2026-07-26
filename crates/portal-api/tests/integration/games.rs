@@ -1357,3 +1357,57 @@ async fn test_list_games_actually_paginates() {
         "a page past the end must be empty, not a repeat of the catalog"
     );
 }
+
+/// P-120: rank tiers could be set but never REMOVED — `SetRankTiersRequest`
+/// required at least one tier, so once a custom set existed the only way
+/// back to the plugin defaults was SQL. An empty list now clears the stored
+/// override, and reads fall back to the plugin's built-in tiers.
+#[tokio::test]
+async fn test_rank_tiers_can_be_cleared_back_to_plugin_defaults() {
+    let app = TestApp::new().await;
+    grant_games_admin_permission(&app).await;
+
+    // Baseline: the plugin defaults, before any override.
+    let defaults = app.get("/v1/games/cs2/rank-tiers").await;
+    defaults.assert_status(StatusCode::OK);
+    let defaults: serde_json::Value = defaults.json();
+    let default_count = defaults["data"].as_array().unwrap().len();
+    assert!(default_count > 0, "cs2's plugin ships default tiers");
+
+    // Install a one-tier custom override.
+    let response = app
+        .put_json(
+            "/v1/games/cs2/rank-tiers",
+            &json!({
+                "rank_tiers": [{
+                    "id": "only",
+                    "display_name": "Only Tier",
+                    "min_rating": 0,
+                    "max_rating": null,
+                    "color": "#ffffff",
+                    "order": 1
+                }]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let installed = app.get("/v1/games/cs2/rank-tiers").await;
+    let installed: serde_json::Value = installed.json();
+    assert_eq!(installed["data"].as_array().unwrap().len(), 1);
+
+    // Clear it: the empty list is a valid request, not a 400.
+    let cleared = app
+        .put_json("/v1/games/cs2/rank-tiers", &json!({ "rank_tiers": [] }))
+        .await;
+    cleared.assert_status(StatusCode::OK);
+
+    // Reads are back on the plugin defaults.
+    let after = app.get("/v1/games/cs2/rank-tiers").await;
+    after.assert_status(StatusCode::OK);
+    let after: serde_json::Value = after.json();
+    assert_eq!(
+        after["data"].as_array().unwrap().len(),
+        default_count,
+        "clearing the override must fall back to the plugin's tiers"
+    );
+}

@@ -72,9 +72,16 @@ impl EvidencePluginClient for EvidencePluginAdapter {
             participant2_score: claimed_result.participant2_score,
         };
 
-        // Storage type is now shared — direct pass-through
+        // Storage type is now shared — direct pass-through. P-183: a game
+        // with no validator now refuses instead of fabricating a pass; that
+        // refusal is the caller's mistake (validating an unsupported game),
+        // not an internal fault, so it maps to a 400, and crucially the
+        // error path means no verdict is ever written for it.
         ep.validate_evidence(&evidence.storage, &plugin_result)
             .await
-            .map_err(|e| DomainError::Internal(format!("Plugin validation error: {e}")))
+            .map_err(|e| match e {
+                portal_plugins::PluginError::NotSupported(msg) => DomainError::InvalidState(msg),
+                e => DomainError::Internal(format!("Plugin validation error: {e}")),
+            })
     }
 }

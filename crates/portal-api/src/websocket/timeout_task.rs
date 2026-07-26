@@ -135,10 +135,10 @@ async fn check_and_send_warnings(
                     continue;
                 };
 
-                // Look up team name (best effort)
-                let team_name = get_team_name_for_registration(state, current_team_reg_id);
-
-                // Send the warning
+                // Send the warning. No team name (P-182): the deleted
+                // `get_team_name_for_registration` fabricated the literal
+                // "Current Team" for every registration, and clients resolve
+                // the name from session state by the registration id.
                 if let Some(lobby) = lobby_manager.get_lobby(&match_id) {
                     trace!(
                         "Sending timeout warning for match {} - {} seconds remaining",
@@ -149,7 +149,6 @@ async fn check_and_send_warnings(
                         lobby.broadcast(LobbyBroadcast::TimeoutWarning(TimeoutWarningBroadcast {
                             seconds_remaining: threshold,
                             current_team_registration_id: current_team_reg_id,
-                            current_team_name: team_name,
                         }));
                 }
 
@@ -167,16 +166,3 @@ fn get_active_match_ids(manager: &Arc<VetoLobbyManager>) -> Vec<TournamentMatchI
     manager.active_match_ids()
 }
 
-/// Get team name for a registration ID.
-///
-/// For now, returns a placeholder since clients have the registration ID
-/// and can look up the team name themselves. In the future, this could
-/// be enhanced to cache team names from session state.
-fn get_team_name_for_registration(
-    _state: &AppState,
-    _registration_id: portal_core::TournamentRegistrationId,
-) -> String {
-    // The client has the registration ID and can look up the team name
-    // from the session state which they already have
-    "Current Team".to_string()
-}

@@ -54,6 +54,7 @@ impl From<DisputeRow> for Dispute {
             original_participant2_score: row.original_participant2_score,
             status: row.status.parse().unwrap_or_default(),
             priority: row.priority.parse().unwrap_or_default(),
+            assigned_to_user_id: row.assigned_to_user_id.map(UserId::from),
             resolved_at: row.resolved_at,
             resolved_by_user_id: row.resolved_by_user_id.map(UserId::from),
             resolution,
@@ -360,6 +361,11 @@ impl DisputeRepository for PgDisputeRepository {
             updates.push(format!("resolved_by_user_id = ${param_count}"));
         }
 
+        if data.assigned_to_user_id.is_some() {
+            param_count += 1;
+            updates.push(format!("assigned_to_user_id = ${param_count}"));
+        }
+
         if data.resolution.is_some() {
             param_count += 1;
             updates.push(format!("resolution_type = ${param_count}"));
@@ -390,6 +396,11 @@ impl DisputeRepository for PgDisputeRepository {
         }
 
         if let Some(user_id) = &data.resolved_by_user_id {
+            builder = builder.bind(user_id.as_uuid());
+        }
+
+        // Bind order mirrors the SET-building order above.
+        if let Some(user_id) = &data.assigned_to_user_id {
             builder = builder.bind(user_id.as_uuid());
         }
 

@@ -922,3 +922,73 @@ async fn test_no_permission_is_used_as_a_bare_literal() {
         offenders.join("\n  ")
     );
 }
+
+// ============================================================================
+// P-142 CANARY: the PermissionChecker dev bypass has a boundary, and the
+// real enforcement path is actually exercised
+// ============================================================================
+
+/// P-142: every integration test that calls as `dev-token` sails through
+/// `PermissionChecker` without consulting the permissions table — the bypass
+/// is deliberate (test usability), but a suite that only ever ran as the dev
+/// user would certify handlers whose permission gates are wrong or missing,
+/// and P-139/P-163 (declared-but-unseeded permissions 403ing everyone) were
+/// invisible for exactly this reason. This canary pins BOTH sides of the
+/// boundary on one `PermissionChecker`-gated route
+/// (`POST /v1/admin/roles` ← `admin.users.manage`):
+///
+/// 1. the dev token is admitted with NO grants — the bypass, working as
+///    designed and now stated rather than assumed;
+/// 2. a real registered user with no grants is refused 403 — proof the
+///    permissions table is consulted the moment the bypass does not apply;
+/// 3. the same user is admitted once granted a role carrying the permission
+///    — proof the DB path can also admit, so the gate discriminates instead
+///    of refusing everything (a gate that cannot pass is as unverified as
+///    one that cannot fail).
+#[tokio::test]
+async fn test_p142_canary_permission_checker_consults_the_table_beyond_the_dev_bypass() {
+    let app = TestApp::new().await;
+
+    // 1. Dev token, no grants: the test-utils bypass admits.
+    let response = app
+        .post_json(
+            "/v1/admin/roles",
+            &json!({
+                "name": "p142_dev_made",
+                "display_name": "P142 Dev Made",
+                "category": "custom"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    // 2. Real user, no grants: the table is consulted and refuses.
+    let (user_id, token) = register_user(&app, "p142_canary").await;
+    let response = app
+        .post_json_with_token(
+            "/v1/admin/roles",
+            &json!({
+                "name": "p142_refused",
+                "display_name": "P142 Refused",
+                "category": "custom"
+            }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::FORBIDDEN);
+
+    // 3. Granted, same token: the same DB path admits.
+    grant_role(&app, &user_id, "platform_admin").await;
+    let response = app
+        .post_json_with_token(
+            "/v1/admin/roles",
+            &json!({
+                "name": "p142_granted",
+                "display_name": "P142 Granted",
+                "category": "custom"
+            }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+}

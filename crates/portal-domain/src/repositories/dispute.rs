@@ -36,6 +36,8 @@ pub struct UpdateDispute {
     pub priority: Option<DisputePriority>,
     pub resolution: Option<DisputeResolution>,
     pub resolved_by_user_id: Option<UserId>,
+    /// P-80: who took the dispute for review; written by assign_for_review.
+    pub assigned_to_user_id: Option<UserId>,
 }
 
 /// Repository for disputes.

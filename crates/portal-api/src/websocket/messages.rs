@@ -155,12 +155,16 @@ pub enum ServerMessage {
         round_number: Option<i64>,
     },
     /// Timeout warning.
+    ///
+    /// P-182: this used to also carry `current_team: String` — which was the
+    /// literal `"Current Team"` for every registration ever broadcast, and
+    /// which no client read (they resolve names from session state via the
+    /// registration id). A field that is fabricated AND unread is wire
+    /// surface pretending to be data; removed rather than populated.
     TimeoutWarning {
         /// Seconds remaining.
         seconds_remaining: u32,
-        /// Team that needs to act.
-        current_team: String,
-        /// Registration ID of the team.
+        /// Registration ID of the team that needs to act.
         current_team_registration_id: String,
     },
     /// Player connected to lobby.
@@ -408,14 +412,16 @@ pub struct CoinFlipResultBroadcast {
 }
 
 /// Timeout warning broadcast.
+///
+/// No team NAME here (P-182): the only source ever wired up fabricated the
+/// literal `"Current Team"`, and clients resolve the name from session state
+/// by the registration id.
 #[derive(Debug, Clone)]
 pub struct TimeoutWarningBroadcast {
     /// Seconds remaining.
     pub seconds_remaining: u32,
     /// Team that needs to act.
     pub current_team_registration_id: TournamentRegistrationId,
-    /// Team name.
-    pub current_team_name: String,
 }
 
 /// Participant connection broadcast.

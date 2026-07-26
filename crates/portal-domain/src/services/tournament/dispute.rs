@@ -235,12 +235,16 @@ where
             )));
         }
 
+        // P-80: record WHO took it. Before the column existed this only
+        // flipped status, so two admins could both "take" one dispute and
+        // no surface showed ownership.
         let updated = self
             .dispute_repo
             .update(
                 dispute_id,
                 UpdateDispute {
                     status: Some(DisputeStatus::UnderReview),
+                    assigned_to_user_id: Some(assigned_by),
                     ..Default::default()
                 },
             )

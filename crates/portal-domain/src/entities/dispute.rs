@@ -41,6 +41,11 @@ pub struct Dispute {
     pub status: DisputeStatus,
     pub priority: DisputePriority,
 
+    /// Admin who took the dispute for review (P-80). `None` until assigned —
+    /// before this existed "Assign to Me" recorded nothing, and two admins
+    /// could both "take" one dispute with no surface showing ownership.
+    pub assigned_to_user_id: Option<UserId>,
+
     /// Resolution
     pub resolved_at: Option<DateTime<Utc>>,
     pub resolved_by_user_id: Option<UserId>,

@@ -58,6 +58,12 @@ pub struct DisputeResponse {
     // P-79 shipped (the map said `critical`; the enum says `urgent`).
     pub priority: DisputePriority,
 
+    /// Admin who took the dispute for review (P-80); absent until assigned.
+    /// Clients compare against their own user id for "assigned to me" —
+    /// ownership is the signal the queue needs, so no name join here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_to_user_id: Option<String>,
+
     /// When resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<DateTime<Utc>>,
@@ -96,6 +102,7 @@ impl From<Dispute> for DisputeResponse {
             original_participant2_score: d.original_participant2_score,
             status: d.status,
             priority: d.priority,
+            assigned_to_user_id: d.assigned_to_user_id.map(|id| id.to_string()),
             resolved_at: d.resolved_at,
             resolved_by_user_id: d.resolved_by_user_id.map(|id| id.to_string()),
             resolution: d.resolution.map(Into::into),

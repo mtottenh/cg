@@ -910,7 +910,6 @@ fn filter_broadcast_for_connection(
         }),
         LobbyBroadcast::TimeoutWarning(warning) => Some(ServerMessage::TimeoutWarning {
             seconds_remaining: warning.seconds_remaining,
-            current_team: warning.current_team_name.clone(),
             current_team_registration_id: warning.current_team_registration_id.to_string(),
         }),
         LobbyBroadcast::ParticipantConnected(conn) => Some(ServerMessage::PlayerConnected {

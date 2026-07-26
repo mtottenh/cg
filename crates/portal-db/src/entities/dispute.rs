@@ -20,6 +20,7 @@ pub struct DisputeRow {
     pub original_participant2_score: Option<i32>,
     pub status: String,
     pub priority: String,
+    pub assigned_to_user_id: Option<Uuid>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub resolved_by_user_id: Option<Uuid>,
     pub resolution_type: Option<String>,

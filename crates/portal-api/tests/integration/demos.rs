@@ -2055,3 +2055,109 @@ async fn test_pipeline_overview_demo_counts_are_scoped_to_the_selected_game() {
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["demos"]["pending"], 3, "unscoped: {body}");
 }
+
+// ============================================================================
+// P-205: the admin whole-demo unlink maintains the demo↔evidence pair —
+// for EVERY game the demo was linked to (P-203)
+// ============================================================================
+
+/// `DELETE /v1/admin/demos/{id}/link/{match_id}` detaches the demo from the
+/// match as a whole. Attaching wrote TWO rows per game — the link and a
+/// `match_evidence` row stamped with the demo's id — and P-158's fix made
+/// both delete paths maintain the pair. This is the only caller of the
+/// admin path's pair maintenance, and nothing covered it: it would have
+/// silently regressed to P-158 (evidence rows left listing a detached demo).
+///
+/// The pairing map is keyed (demo, game_number) since P-203; the DB's
+/// unique (demo_id, match_id) makes a multi-game link of one demo
+/// impossible, so a single pair is the real shape this path handles.
+#[tokio::test]
+async fn test_admin_whole_demo_unlink_removes_link_and_evidence_for_every_game() {
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+
+    let info = create_cs2_tournament_with_match(&app, "unlink-pair").await;
+    let match_uuid: uuid::Uuid = info.match_id.parse().unwrap();
+    let game_id = get_game_id(app.pool(), "cs2").await;
+
+    // Catalog a demo.
+    let response = app
+        .post_json(
+            "/v1/admin/demos/batch",
+            &json!({
+                "game_id": game_id.to_string(),
+                "demos": [{
+                    "file_name": "pair_test.dem",
+                    "s3_bucket": "test-bucket",
+                    "s3_key": "demos/pair_test.dem",
+                    "file_size_bytes": 1000
+                }]
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let demo_id = body["data"]["created"][0]["id"].as_str().unwrap().to_string();
+    let demo_uuid: uuid::Uuid = demo_id.parse().unwrap();
+
+    // Seed the pair, the shape link_demo writes. (One game only: the DB's
+    // demo_match_links_unique (demo_id, match_id) forbids linking one demo
+    // to two games of the same match — so P-203's filed multi-game collapse
+    // is structurally impossible, and the (demo, game) keying is
+    // defense-in-depth rather than a reachable-bug fix.)
+    sqlx::query(
+        "INSERT INTO demo_match_links (demo_id, match_id, game_number, link_type)
+         VALUES ($1, $2, 1, 'manual')",
+    )
+    .bind(demo_uuid)
+    .bind(match_uuid)
+    .execute(app.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO match_evidence (match_id, game_number, evidence_type, evidence_source,
+             name, storage_type, storage_path, plugin_metadata, status)
+         VALUES ($1, 1, 'demo', 'plugin_discovery', 'pair_test_g1.dem', 'url',
+             'https://example.com/pair_test.dem',
+             jsonb_build_object('catalog_demo_id', $2::text), 'active')",
+    )
+    .bind(match_uuid)
+    .bind(demo_id.clone())
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    // Detach the demo from the match as a whole.
+    let response = app
+        .delete_auth(&format!("/v1/admin/demos/{demo_id}/link/{}", info.match_id))
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+
+    // Both halves of BOTH games' pairs are gone.
+    let links: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM demo_match_links WHERE demo_id = $1 AND match_id = $2",
+    )
+    .bind(demo_uuid)
+    .bind(match_uuid)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(links, 0, "the link must be removed");
+
+    // Evidence deletion is a soft delete (status -> 'deleted'); "gone" means
+    // no live row still names the demo as evidence.
+    let evidence: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM match_evidence
+         WHERE match_id = $1 AND plugin_metadata->>'catalog_demo_id' = $2
+           AND status <> 'deleted'",
+    )
+    .bind(match_uuid)
+    .bind(&demo_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        evidence, 0,
+        "the evidence row must go with its link — leaving it is P-158"
+    );
+}

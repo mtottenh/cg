@@ -1145,3 +1145,66 @@ async fn test_claim_dispute_creates_dispute_record() {
         .any(|d| d["id"].as_str() == Some(dispute_id.to_string().as_str()));
     assert!(found, "the new dispute must appear in the admin queue");
 }
+
+/// P-80: "Assign to Me" used to record no assignee — the table had no
+/// column, so the button flipped status and two admins could both "take"
+/// one dispute with no surface showing ownership. Assignment now writes
+/// `assigned_to_user_id` and the response carries it.
+#[tokio::test]
+async fn test_assign_dispute_records_the_assignee() {
+    let app = TestApp::new().await;
+    let t = create_4player_tournament(&app, "dispute-assignee").await;
+
+    let claim_id = submit_claim(&app, &t.test_match_id, &t.dev_reg_id, t.dev_is_p1, &[]).await;
+    let token = create_test_token(
+        t.opponent_user_id,
+        t.opponent_user_id,
+        "assign-disputer",
+        TEST_JWT_SECRET,
+    );
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{}/result/{claim_id}/dispute", t.test_match_id),
+            &json!({
+                "reason": "Wrong score reported.",
+                "evidence_ids": []
+            }),
+            &token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let match_uuid: Uuid = t.test_match_id.parse().unwrap();
+    let dispute_id: Uuid = sqlx::query_scalar("SELECT id FROM disputes WHERE match_id = $1")
+        .bind(match_uuid)
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+
+    // Assign as the dev admin.
+    let response = app
+        .post_auth(&format!("/v1/admin/disputes/{dispute_id}/assign"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let dev_user_id = "00000000-0000-0000-0000-000000000001";
+    assert_eq!(
+        body["data"]["assigned_to_user_id"].as_str(),
+        Some(dev_user_id),
+        "the response must say who took the dispute"
+    );
+    assert_eq!(body["data"]["status"], "under_review");
+
+    // And the column is really written, not just echoed.
+    let assigned: Option<Uuid> =
+        sqlx::query_scalar("SELECT assigned_to_user_id FROM disputes WHERE id = $1")
+            .bind(dispute_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        assigned,
+        Some(Uuid::parse_str(dev_user_id).unwrap()),
+        "assignment must persist the assignee"
+    );
+}

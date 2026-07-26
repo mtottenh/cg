@@ -638,7 +638,7 @@ pub async fn get_match_participants(
         .ok_or_else(|| ApiError::not_found("Match not found"))?;
 
     let mut resolved: [Option<TournamentRegistrationResponse>; 2] = [None, None];
-    let mut my_registration_id: Option<String> = None;
+    let mut my_registration: Option<portal_core::TournamentRegistrationId> = None;
 
     for (slot, reg_id) in [
         match_.participant1_registration_id,
@@ -658,11 +658,26 @@ pub async fn get_match_participants(
             )
             .await?
         {
-            my_registration_id = Some(reg_id.to_string());
+            my_registration = Some(reg_id);
         }
 
         resolved[slot] = Some(TournamentRegistrationResponse::from(registration));
     }
+
+    // P-193: check-in is deliberately gated NARROWER than `speaks_for` —
+    // captain / team owner / active delegate / the registered player
+    // (`require_registration_actor`), because a check-in can auto-advance
+    // the match. The UI must not hand-copy that rule (P-15's lesson), so
+    // the authorized answer ships on the response and the check-in panel
+    // keys off it instead of guessing.
+    let my_registration_can_check_in = match my_registration {
+        Some(reg_id) => state
+            .veto_authorization_service
+            .can_act_for_registration(reg_id, auth.user_id, auth.player_id)
+            .await
+            .is_ok(),
+        None => false,
+    };
 
     let [participant1, participant2] = resolved;
 
@@ -671,7 +686,8 @@ pub async fn get_match_participants(
             match_id: match_id.to_string(),
             participant1,
             participant2,
-            my_registration_id,
+            my_registration_id: my_registration.map(|id| id.to_string()),
+            my_registration_can_check_in,
         },
         request_id,
     )))

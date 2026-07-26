@@ -957,6 +957,15 @@ pub struct MatchParticipantsResponse {
     /// team-season. `null` for spectators and staff.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub my_registration_id: Option<String>,
+    /// Whether the caller may CHECK IN for their registration (P-193).
+    ///
+    /// Check-in is gated narrower than `speaks_for` — captain, team owner,
+    /// active delegate, or the registered player — because a check-in can
+    /// auto-advance the match. A plain roster member speaks for the
+    /// registration (may submit and confirm results) yet cannot check it
+    /// in, so the check-in panel must key off THIS field rather than
+    /// `my_registration_id`, or it offers an action the backend refuses.
+    pub my_registration_can_check_in: bool,
 }
 
 // =============================================================================

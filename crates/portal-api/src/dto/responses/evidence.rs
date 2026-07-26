@@ -1,6 +1,7 @@
 //! Evidence response DTOs.
 
 use chrono::{DateTime, Utc};
+use portal_core::types::EvidenceType;
 use portal_domain::entities::evidence::EvidenceStatus;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -17,7 +18,10 @@ pub struct EvidenceResponse {
     pub id: Uuid,
     pub match_id: Uuid,
     pub game_number: Option<i32>,
-    pub evidence_type: String,
+    // Typed as the enum so the schema publishes its permitted values and clients
+    // get a union, not `string` (P-112/P-175). Wire-compatible: serde snake_case
+    // matches the old Display strings.
+    pub evidence_type: EvidenceType,
     pub evidence_source: String,
     pub name: String,
     pub description: Option<String>,
@@ -43,7 +47,7 @@ impl From<Evidence> for EvidenceResponse {
             id: e.id.as_uuid(),
             match_id: e.match_id.as_uuid(),
             game_number: e.game_number,
-            evidence_type: e.evidence_type.to_string(),
+            evidence_type: e.evidence_type,
             evidence_source: e.evidence_source.to_string(),
             name: e.name,
             description: e.description,
@@ -116,8 +120,8 @@ impl From<EvidenceAccessUrl> for AccessUrlResponse {
 pub struct DiscoveredEvidenceResponse {
     /// External identifier
     pub external_id: String,
-    /// Type of evidence
-    pub evidence_type: String,
+    /// Type of evidence. Typed as the enum (P-112/P-175); wire-compatible.
+    pub evidence_type: EvidenceType,
     /// Display name
     pub name: String,
     /// File size if known
@@ -134,7 +138,7 @@ impl From<DiscoveredEvidence> for DiscoveredEvidenceResponse {
     fn from(d: DiscoveredEvidence) -> Self {
         Self {
             external_id: d.external_id,
-            evidence_type: d.evidence_type.to_string(),
+            evidence_type: d.evidence_type,
             name: d.name,
             file_size_bytes: d.file_size_bytes,
             discovered_at: d.discovered_at,
@@ -189,7 +193,8 @@ pub struct ExtractedResultResponse {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct EvidenceSummaryResponse {
     pub id: Uuid,
-    pub evidence_type: String,
+    // Typed as the enum (P-112/P-175); wire-compatible.
+    pub evidence_type: EvidenceType,
     pub name: String,
     // Typed as the enum so the schema publishes its permitted values and clients
     // get a union, not `string` (P-31). Wire-compatible per `wire_compat_tests`.
@@ -218,7 +223,7 @@ impl From<Evidence> for EvidenceSummaryResponse {
     fn from(e: Evidence) -> Self {
         Self {
             id: e.id.as_uuid(),
-            evidence_type: e.evidence_type.to_string(),
+            evidence_type: e.evidence_type,
             name: e.name,
             status: e.status,
             validated: e.validated,

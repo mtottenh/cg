@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use portal_domain::entities::league::{
-    League, LeagueInvitation, LeagueMemberWithUser, UserLeagueMembership,
+    League, LeagueInvitation, LeagueMemberWithUser, LeagueStatus, UserLeagueMembership,
 };
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -19,7 +19,10 @@ pub struct LeagueResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logo_url: Option<String>,
     pub access_type: String,
-    pub status: String,
+    // Typed as the enum so the schema publishes its permitted values and
+    // clients get a union, not `string` (P-112/P-178). Wire-compatible: serde
+    // snake_case matches the old `as_str()` strings.
+    pub status: LeagueStatus,
     /// League configuration including entry requirements.
     /// Entry requirements are stored under the `"eligibility"` key.
     pub settings: serde_json::Value,
@@ -38,7 +41,7 @@ impl From<League> for LeagueResponse {
             description: league.description,
             logo_url: league.logo_url,
             access_type: league.access_type.as_str().to_string(),
-            status: league.status.as_str().to_string(),
+            status: league.status,
             settings: league.settings,
             created_by: league.created_by.to_string(),
             created_at: league.created_at,

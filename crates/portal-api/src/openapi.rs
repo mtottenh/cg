@@ -632,6 +632,8 @@ use utoipa_swagger_ui::SwaggerUi;
             portal_domain::entities::result_claim::ClaimStatus,
             portal_domain::entities::result_review::ResultReviewStatus,
             portal_domain::entities::evidence::EvidenceStatus,
+            portal_core::types::EvidenceType,
+            portal_domain::entities::league::LeagueStatus,
             portal_domain::entities::dispute::DisputeStatus,
             portal_domain::entities::dispute::DisputePriority,
             portal_domain::entities::dispute::DisputeReason,
@@ -958,6 +960,12 @@ mod enum_fields_are_not_stringified {
             "role",
             "LeagueTeamRole",
         ),
+        // P-175/P-178 follow-through: the two fields typed so
+        // `evidenceTypeMap` and `leagueStatusMap` could be keyed.
+        ("EvidenceResponse", "evidence_type", "EvidenceType"),
+        ("EvidenceSummaryResponse", "evidence_type", "EvidenceType"),
+        ("DiscoveredEvidenceResponse", "evidence_type", "EvidenceType"),
+        ("LeagueResponse", "status", "LeagueStatus"),
     ];
 
     /// P-112: a DTO field typed `String` in front of an enum that already derives

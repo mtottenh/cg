@@ -83,6 +83,26 @@ impl SeasonStatus {
     pub const fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::Cancelled)
     }
+
+    /// The statuses this one may legally transition to.
+    ///
+    /// THE season lifecycle chain, in one place (P-199/P-207): the status
+    /// endpoint and the generic season PATCH both enforce it via
+    /// `ensure_status_transition_allowed`, and `LeagueSeasonResponse` ships
+    /// it so the edit modal offers exactly these — the client holds no copy
+    /// of the rule (mirrors `TournamentMatchStatus::allowed_transitions`).
+    /// `Cancelled` is reachable from any non-terminal status; `Active` may
+    /// complete directly, skipping playoffs.
+    #[must_use]
+    pub fn allowed_transitions(&self) -> Vec<Self> {
+        match self {
+            Self::Draft => vec![Self::Registration, Self::Cancelled],
+            Self::Registration => vec![Self::Active, Self::Cancelled],
+            Self::Active => vec![Self::Playoffs, Self::Completed, Self::Cancelled],
+            Self::Playoffs => vec![Self::Completed, Self::Cancelled],
+            Self::Completed | Self::Cancelled => vec![],
+        }
+    }
 }
 
 /// Roster lock status for a season.
@@ -551,5 +571,42 @@ mod tests {
         assert!(LeagueTeamInvitationStatus::Pending.is_actionable());
         assert!(!LeagueTeamInvitationStatus::Accepted.is_actionable());
         assert!(!LeagueTeamInvitationStatus::Expired.is_actionable());
+    }
+
+    /// P-199/P-207: the season lifecycle chain, pinned both ways — the legal
+    /// hops exist and the jumps the PATCH bypass used to allow do not.
+    #[test]
+    fn test_season_status_allowed_transitions() {
+        use SeasonStatus as S;
+
+        assert_eq!(
+            S::Draft.allowed_transitions(),
+            vec![S::Registration, S::Cancelled]
+        );
+        assert_eq!(
+            S::Registration.allowed_transitions(),
+            vec![S::Active, S::Cancelled]
+        );
+        assert_eq!(
+            S::Active.allowed_transitions(),
+            vec![S::Playoffs, S::Completed, S::Cancelled]
+        );
+        assert_eq!(
+            S::Playoffs.allowed_transitions(),
+            vec![S::Completed, S::Cancelled]
+        );
+
+        // Terminal statuses go nowhere — not even to Cancelled.
+        assert!(S::Completed.allowed_transitions().is_empty());
+        assert!(S::Cancelled.allowed_transitions().is_empty());
+
+        // The jumps that shipped through the pre-P-199 PATCH stay illegal.
+        assert!(!S::Draft.allowed_transitions().contains(&S::Active));
+        assert!(!S::Draft.allowed_transitions().contains(&S::Completed));
+        assert!(
+            !S::Registration
+                .allowed_transitions()
+                .contains(&S::Completed)
+        );
     }
 }

@@ -56,6 +56,11 @@ pub struct LeagueSeasonResponse {
     // and clients get a union rather than `string` (P-31). Wire-compatible —
     // asserted by `wire_compat_tests` in portal-core.
     pub status: SeasonStatus,
+    /// The statuses this season may legally move to next (P-207). The edit
+    /// modal derives its Status options from this, so the client holds no
+    /// copy of the lifecycle chain and cannot offer a move the PATCH will
+    /// refuse (P-199 enforces the same list server-side).
+    pub allowed_status_transitions: Vec<SeasonStatus>,
 
     // Metadata
     pub created_by: String,
@@ -80,6 +85,7 @@ impl From<LeagueSeason> for LeagueSeasonResponse {
             max_substitutes: season.max_substitutes,
             max_teams: season.max_teams,
             roster_lock_status: season.roster_lock_status,
+            allowed_status_transitions: season.status.allowed_transitions(),
             status: season.status,
             created_by: season.created_by.to_string(),
             created_at: season.created_at,

@@ -274,30 +274,21 @@ where
         Ok(())
     }
 
-    /// The season status transition chain, in one place.
+    /// Refuse a season status transition the chain forbids.
     ///
     /// Both writers consult this — the dedicated transition endpoint
     /// (`update_status`) and the generic season PATCH (`update_season`).
     /// P-199: the PATCH used to write `status` as a plain field with no
     /// validation, so it bypassed the chain the other endpoint enforced —
     /// two mechanisms disagreeing about the same rule, the P-15/P-168
-    /// shape one more time.
+    /// shape one more time. The chain itself lives on
+    /// [`SeasonStatus::allowed_transitions`] (P-207), which the season DTO
+    /// also ships so the edit modal offers exactly the legal moves.
     fn ensure_status_transition_allowed(
         from: SeasonStatus,
         to: SeasonStatus,
     ) -> Result<(), DomainError> {
-        let valid = match (&from, &to) {
-            (SeasonStatus::Draft, SeasonStatus::Registration) => true,
-            (SeasonStatus::Registration, SeasonStatus::Active) => true,
-            (SeasonStatus::Active, SeasonStatus::Playoffs) => true,
-            (SeasonStatus::Playoffs, SeasonStatus::Completed) => true,
-            // Direct completion without playoffs
-            (SeasonStatus::Active, SeasonStatus::Completed) => true,
-            (_, SeasonStatus::Cancelled) => !from.is_terminal(),
-            _ => false,
-        };
-
-        if valid {
+        if from.allowed_transitions().contains(&to) {
             Ok(())
         } else {
             Err(DomainError::InvalidState(format!(

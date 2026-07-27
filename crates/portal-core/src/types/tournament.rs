@@ -471,7 +471,14 @@ impl TournamentMatchStatus {
     /// Cancellation is only possible before the match becomes active.
     #[must_use]
     pub const fn can_cancel(&self) -> bool {
-        matches!(self, Self::Pending | Self::Ready | Self::Scheduled)
+        // CheckingIn/PickBan included since the PUG review: cancelling a
+        // lobby mid-check-in or mid-veto must be able to terminalize its
+        // match (a container match wedged in pick_ban is what let the
+        // timeout enforcement act on dead sessions — review M2/M3).
+        matches!(
+            self,
+            Self::Pending | Self::Ready | Self::Scheduled | Self::CheckingIn | Self::PickBan
+        )
     }
 
     /// Check if the match is in a disputeable state.
@@ -500,9 +507,14 @@ impl TournamentMatchStatus {
                 Self::Cancelled,
             ],
             // CheckingIn: pre-match check-in phase
-            Self::CheckingIn => vec![Self::PickBan, Self::InProgress, Self::Forfeit],
+            Self::CheckingIn => vec![
+                Self::PickBan,
+                Self::InProgress,
+                Self::Forfeit,
+                Self::Cancelled,
+            ],
             // PickBan: map veto in progress
-            Self::PickBan => vec![Self::InProgress, Self::Forfeit],
+            Self::PickBan => vec![Self::InProgress, Self::Forfeit, Self::Cancelled],
             // InProgress: match being played
             Self::InProgress => vec![Self::AwaitingResult, Self::Forfeit],
             // AwaitingResult: waiting for result submission

@@ -12,7 +12,10 @@
 //! (different services for different operations) rather than by module
 //! boundary, so everything registration-shaped lives together here.
 
-use super::{check_eligibility_for_players, check_eligibility_for_team, get_request_id, require_registration_actor};
+use super::{
+    check_eligibility_for_players, check_eligibility_for_team, get_request_id,
+    require_registration_actor,
+};
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{
     CreateTournamentInvitationRequest, DisqualifyRequest, RegisterPlayerRequest,

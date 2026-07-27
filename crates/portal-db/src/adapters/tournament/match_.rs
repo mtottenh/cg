@@ -1159,6 +1159,9 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
                 FROM tournament_matches m
                 JOIN tournaments t ON t.id = m.tournament_id
                 WHERE t.game_id = $1
+                  -- PUG demos are linked directly by the MatchZy upload path;
+                  -- containers here only burned candidate slots (review m9)
+                  AND t.kind = 'standard'
                   AND m.participant1_registration_id IS NOT NULL
                   AND m.participant2_registration_id IS NOT NULL
                   AND (

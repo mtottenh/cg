@@ -20,6 +20,7 @@ pub mod jwt;
 pub mod refresh_token;
 pub mod repositories;
 pub mod services;
+pub mod util;
 
 // Re-export commonly used types
 pub use auth::{hash_password, verify_dummy_for_timing, verify_password};

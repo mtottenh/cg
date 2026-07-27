@@ -138,7 +138,14 @@ async fn handle_socket(socket: WebSocket, raw_pug_id: String, state: AppState) {
             incoming = receiver.next() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
-                        if text.contains("\"ping\"") {
+                        #[derive(serde::Deserialize)]
+                        struct ClientFrame {
+                            #[serde(rename = "type")]
+                            kind: String,
+                        }
+                        let is_ping = serde_json::from_str::<ClientFrame>(&text)
+                            .is_ok_and(|f| f.kind == "ping");
+                        if is_ping {
                             let pong = serde_json::json!({ "type": "pong" });
                             if sender.send(Message::Text(pong.to_string().into())).await.is_err() {
                                 break;

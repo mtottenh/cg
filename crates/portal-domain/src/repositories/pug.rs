@@ -17,6 +17,9 @@ use crate::entities::pug::{
 pub struct CreatePug {
     pub game_id: GameId,
     pub created_by_user_id: UserId,
+    /// Creator's player row — seated on team 1 as captain atomically with
+    /// the lobby insert (review m8: was four separate writes).
+    pub creator_player_id: PlayerId,
     pub join_code: String,
     pub match_format: MatchFormat,
     pub map_selection_mode: PugMapSelectionMode,
@@ -85,13 +88,15 @@ pub trait PugRepository: Send + Sync {
     /// Rotate the join code.
     async fn set_join_code(&self, id: PugId, join_code: &str) -> Result<(), DomainError>;
 
-    /// Record materialization: container tournament + match, status -> map_selection.
+    /// Attach the materialized container tournament + match. The pug must
+    /// already hold the `map_selection` lock-CAS (review M3) and have no
+    /// match; returns whether this call won that write.
     async fn set_materialized(
         &self,
         id: PugId,
         tournament_id: TournamentId,
         match_id: TournamentMatchId,
-    ) -> Result<(), DomainError>;
+    ) -> Result<bool, DomainError>;
 
     /// Denormalize the series result and mark completed.
     async fn set_result(
@@ -117,9 +122,22 @@ pub trait PugRepository: Send + Sync {
         limit: i64,
     ) -> Result<Vec<Pug>, DomainError>;
 
+    /// Non-terminal pugs whose match already reached a terminal status —
+    /// forfeits, manual result confirmation, admin overrides and reconciler
+    /// failures never pass through the series_end webhook, so the sweeper
+    /// reconciles them (review M5).
+    async fn list_desynced_with_match(&self, limit: i64) -> Result<Vec<Pug>, DomainError>;
+
     // -- players ------------------------------------------------------------
 
-    async fn add_player(&self, pug_id: PugId, player_id: PlayerId) -> Result<(), DomainError>;
+    /// Add a player if the lobby has room (capacity enforced in SQL —
+    /// review m5). Returns false when full; existing members return true.
+    async fn add_player(
+        &self,
+        pug_id: PugId,
+        player_id: PlayerId,
+        max_players: i64,
+    ) -> Result<bool, DomainError>;
 
     async fn remove_player(&self, pug_id: PugId, player_id: PlayerId) -> Result<(), DomainError>;
 
@@ -128,15 +146,26 @@ pub trait PugRepository: Send + Sync {
     async fn is_participant(&self, pug_id: PugId, player_id: PlayerId)
     -> Result<bool, DomainError>;
 
+    /// Of `pug_ids`, the ones this player participates in (one query — used
+    /// by the public lists so `my_role` is accurate there too, review m7).
+    async fn filter_participating(
+        &self,
+        player_id: PlayerId,
+        pug_ids: &[PugId],
+    ) -> Result<Vec<PugId>, DomainError>;
+
     async fn count_players(&self, pug_id: PugId) -> Result<i64, DomainError>;
 
-    /// Assign a player to team 1, 2 or the bench (None).
+    /// Assign a player to team 1, 2 or the bench (None). Team capacity is
+    /// enforced in the same statement (review m5); returns false when the
+    /// target team is full.
     async fn set_player_team(
         &self,
         pug_id: PugId,
         player_id: PlayerId,
         team: Option<i16>,
-    ) -> Result<(), DomainError>;
+        team_capacity: i64,
+    ) -> Result<bool, DomainError>;
 
     async fn set_player_captain(
         &self,

@@ -179,6 +179,9 @@ pub struct PugDetailResponse {
     /// The viewer's registration in the materialized match (drives the veto
     /// lobby UI), when they are on a team.
     pub my_registration_id: Option<String>,
+    /// Captains draft: which team picks next (gathering only; the backend
+    /// enforces the same rule on POST /draft).
+    pub picking_team: Option<i16>,
 }
 
 /// Unauthenticated share-link preview.
@@ -397,6 +400,11 @@ async fn build_detail(
         Vec::new()
     };
     let my_reg = my_registration_id(state, pug, &players, viewer.map(|v| v.player_id)).await;
+    let picking_team = pug
+        .status
+        .is_open()
+        .then(|| portal_domain::services::PugService::picking_team(&players, pug.team_size))
+        .flatten();
 
     Ok(PugDetailResponse {
         pug: pug_response(pug, viewer, is_participant),
@@ -404,6 +412,7 @@ async fn build_detail(
         wheel_entries: entries.iter().map(entry_response).collect(),
         spins: spins.iter().map(spin_response).collect(),
         my_registration_id: my_reg,
+        picking_team,
     })
 }
 
@@ -581,10 +590,7 @@ pub async fn open_pugs(
         .list_open_listed(game_id, 50)
         .await
         .map_err(ApiError::from)?;
-    let items = pugs
-        .iter()
-        .map(|p| pug_response(p, auth.0.as_ref(), false))
-        .collect();
+    let items = respond_with_membership(&state, &pugs, auth.0.as_ref()).await?;
     Ok(Json(DataResponse::new(items, &request_id)))
 }
 
@@ -609,11 +615,32 @@ pub async fn recent_pugs(
         .list_recent_completed(50)
         .await
         .map_err(ApiError::from)?;
-    let items = pugs
-        .iter()
-        .map(|p| pug_response(p, auth.0.as_ref(), false))
-        .collect();
+    let items = respond_with_membership(&state, &pugs, auth.0.as_ref()).await?;
     Ok(Json(DataResponse::new(items, &request_id)))
+}
+
+/// Map pugs to responses with an accurate `my_role` for the viewer — one
+/// membership query for the whole list (review m7).
+async fn respond_with_membership(
+    state: &AppState,
+    pugs: &[Pug],
+    viewer: Option<&AuthenticatedUser>,
+) -> ApiResult<Vec<PugResponse>> {
+    let participating: std::collections::HashSet<_> = match viewer {
+        Some(v) => state
+            .pug_service
+            .repo()
+            .filter_participating(v.player_id, &pugs.iter().map(|p| p.id).collect::<Vec<_>>())
+            .await
+            .map_err(ApiError::from)?
+            .into_iter()
+            .collect(),
+        None => std::collections::HashSet::new(),
+    };
+    Ok(pugs
+        .iter()
+        .map(|p| pug_response(p, viewer, participating.contains(&p.id)))
+        .collect())
 }
 
 // =============================================================================
@@ -1063,7 +1090,7 @@ pub async fn spin_wheel(
         SpinResponse {
             game_number: outcome.game_number,
             segments,
-            winner_map_id: outcome.draw.winner_map_id,
+            winner_map_id: outcome.result.action.map_id.clone(),
             spin_seed: outcome.draw.spin_seed,
             duration_ms: crate::pug_flow::WHEEL_SPIN_DURATION_MS,
             is_complete: outcome.result.veto_complete,
@@ -1162,13 +1189,24 @@ pub async fn rematch_pug(
         .map_err(ApiError::from)?;
 
     // Same roster, same teams, same captains; anyone can leave.
+    let max_players = i64::from(new_pug.team_size) * 2 + portal_domain::services::pug::BENCH_SLOTS;
+    let team_capacity = i64::from(new_pug.team_size);
     for p in players.iter().filter(|p| p.player_id != auth.player_id) {
         let repo = state.pug_service.repo();
-        if let Err(e) = repo.add_player(new_pug.id, p.player_id).await {
-            tracing::warn!(error = %e, "rematch: failed to re-add player");
-            continue;
+        match repo.add_player(new_pug.id, p.player_id, max_players).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!("rematch: lobby full, skipping player");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "rematch: failed to re-add player");
+                continue;
+            }
         }
-        let _ = repo.set_player_team(new_pug.id, p.player_id, p.team).await;
+        let _ = repo
+            .set_player_team(new_pug.id, p.player_id, p.team, team_capacity)
+            .await;
         if p.is_captain {
             let _ = repo.set_player_captain(new_pug.id, p.player_id, true).await;
         }
@@ -1178,7 +1216,7 @@ pub async fn rematch_pug(
         let _ = state
             .pug_service
             .repo()
-            .set_player_team(new_pug.id, auth.player_id, me.team)
+            .set_player_team(new_pug.id, auth.player_id, me.team, team_capacity)
             .await;
     }
 

@@ -45,16 +45,14 @@ pub(crate) fn resolve_veto_format(
         }
     }
 
-    // Fall back to built-in formats
-    match format_id {
-        "bo1_veto" | "bo1_standard" => Ok(VetoFormatConfig::bo1()),
-        "bo3_veto" | "bo3_standard" => Ok(VetoFormatConfig::bo3()),
-        "bo5_veto" | "bo5_standard" => Ok(VetoFormatConfig::bo5()),
-        "bo7_veto" | "bo7_standard" => Ok(VetoFormatConfig::bo7()),
-        _ => Err(ApiError::bad_request(format!(
-            "Unknown veto format: {format_id}. Valid formats: bo1_standard, bo3_standard, bo5_standard, bo7_standard"
-        ))),
-    }
+    // Fall back to the single built-in table (review m1: this used to be a
+    // second hand-maintained copy that had already drifted from the veto
+    // service's — one knew bo7, the other the wheel formats).
+    VetoFormatConfig::builtin(format_id).ok_or_else(|| {
+        ApiError::bad_request(format!(
+            "Unknown veto format: {format_id}. Valid formats: bo1/3/5/7_standard, wheel_bo1/3/5"
+        ))
+    })
 }
 
 /// The built-in veto sequence matching a match's best-of.

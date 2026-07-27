@@ -53,6 +53,10 @@ pub struct GameServerSettings {
     /// Override for MatchZy `players_per_team` (PUG custom team sizes).
     /// None → the game config's `team_size_default`.
     pub players_per_team: Option<i64>,
+    /// Override for MatchZy `min_players_to_ready` — force-locked
+    /// short-handed PUGs set it to the smaller roster so warmup can
+    /// actually complete (review M6). None → `players_per_team`.
+    pub min_players_to_ready: Option<i64>,
     /// `settings.game_server.substitution_policy` — `"admin_approval"`
     /// routes requests through admin review; anything else applies rostered
     /// subs immediately (§6.8 default `roster_free`).
@@ -100,6 +104,9 @@ impl GameServerSettings {
                 .and_then(serde_json::Value::as_i64),
             players_per_team: gs
                 .get("players_per_team")
+                .and_then(serde_json::Value::as_i64),
+            min_players_to_ready: gs
+                .get("min_players_to_ready")
                 .and_then(serde_json::Value::as_i64),
             substitution_policy: gs
                 .get("substitution_policy")
@@ -589,9 +596,13 @@ pub async fn build_config(
         team1,
         team2,
         players_per_team,
-        // Full team must ready; short-handed subs lower it in-server via
-        // css_readyrequired (§6.8).
-        min_players_to_ready: players_per_team,
+        // Full team must ready by default; short-handed PUG locks override
+        // this to the smaller roster (review M6) and tournament subs lower
+        // it in-server via css_readyrequired (§6.8).
+        min_players_to_ready: settings
+            .min_players_to_ready
+            .and_then(|n| u32::try_from(n).ok())
+            .map_or(players_per_team, |n| n.clamp(1, players_per_team)),
         hostname: settings
             .hostname
             .unwrap_or_else(|| "Portal | {TEAM1} vs {TEAM2}".to_string()),
@@ -1674,6 +1685,19 @@ async fn effective_player_ids(
             state
                 .league_team_member_repo
                 .list_members_with_players(team_season_id)
+                .await?
+                .into_iter()
+                .map(|m| m.player_id),
+        );
+    } else if let Some(adhoc_uuid) = reg.adhoc_team_id {
+        // Ad-hoc rosters (PUG containers): the members ARE the lineup.
+        // Review C1: without this arm every PUG produced an empty roster
+        // and died in config validation before reaching a server.
+        use portal_domain::repositories::pug::AdhocTeamRepository as _;
+        players.extend(
+            state
+                .adhoc_team_repo
+                .list_members(portal_core::AdhocTeamId::from_uuid(adhoc_uuid))
                 .await?
                 .into_iter()
                 .map(|m| m.player_id),

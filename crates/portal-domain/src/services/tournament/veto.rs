@@ -416,11 +416,16 @@ where
     /// records it as an auto action (`wheel_spin`), advancing the session
     /// exactly like any other veto action. Turn checks don't apply: `random`
     /// actions belong to team 0.
+    /// `expected_action_number` binds the spin to the slot the caller
+    /// observed: a racing or double-clicked spin arrives with a stale
+    /// number and is refused instead of silently consuming the NEXT map
+    /// slot (review M4).
     #[instrument(skip(self))]
     pub async fn perform_wheel_action(
         &self,
         session_id: VetoSessionId,
         map_id: &str,
+        expected_action_number: u32,
     ) -> Result<VetoActionResult, DomainError> {
         let session = self.get_session(session_id).await?;
 
@@ -429,6 +434,12 @@ where
                 "Cannot spin the wheel in {} status",
                 session.status
             )));
+        }
+
+        if session.current_action_number != expected_action_number {
+            return Err(DomainError::Conflict(
+                "The wheel was already spun for this map".to_string(),
+            ));
         }
 
         if !session.is_map_available(map_id) {
@@ -460,6 +471,32 @@ where
             Some("wheel_spin"),
         )
         .await
+    }
+
+    /// Cancel the session attached to a match (the match died). Idempotent:
+    /// missing or already-terminal sessions are left untouched. Review M2:
+    /// nothing ever cancelled veto sessions, so the timeout enforcement
+    /// random-picked its way through sessions of cancelled matches.
+    #[instrument(skip(self))]
+    pub async fn cancel_session_for_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<VetoSession>, DomainError> {
+        let Some(session) = self.session_repo.find_by_match(match_id).await? else {
+            return Ok(None);
+        };
+        if matches!(
+            session.status,
+            VetoStatus::Completed | VetoStatus::Cancelled
+        ) {
+            return Ok(Some(session));
+        }
+        let session = self
+            .session_repo
+            .update_status(session.id, VetoStatus::Cancelled)
+            .await?;
+        info!(match_id = %match_id, session_id = %session.id, "veto session cancelled");
+        Ok(Some(session))
     }
 
     /// Process a timeout for the current action.
@@ -677,18 +714,10 @@ where
             return Ok(fmt);
         }
 
-        // Fall back to built-in formats
-        match format_id {
-            "bo1_veto" | "bo1_standard" => Ok(VetoFormat::bo1()),
-            "bo3_veto" | "bo3_standard" => Ok(VetoFormat::bo3()),
-            "bo5_veto" | "bo5_standard" => Ok(VetoFormat::bo5()),
-            "wheel_bo1" => Ok(VetoFormat::wheel_bo1()),
-            "wheel_bo3" => Ok(VetoFormat::wheel_bo3()),
-            "wheel_bo5" => Ok(VetoFormat::wheel_bo5()),
-            _ => Err(DomainError::InvalidMatchResult(format!(
-                "Unknown veto format: {format_id}"
-            ))),
-        }
+        // Fall back to the single built-in table (review m1).
+        VetoFormat::builtin(format_id).ok_or_else(|| {
+            DomainError::InvalidMatchResult(format!("Unknown veto format: {format_id}"))
+        })
     }
 
     async fn record_action_internal(
@@ -740,10 +769,14 @@ where
         {
             // Use injected side provider for game-agnostic random side,
             // falling back to coin-flip between "ct" and "t".
+            // The provider contract wants a game id; the session doesn't
+            // know one, and the plugin adapter resolves game-agnostically —
+            // pass an explicit empty hint instead of smuggling a format id
+            // through the parameter (review nit).
             let side = self
                 .side_provider
                 .as_ref()
-                .and_then(|sp| sp.random_side(&session.veto_format_id))
+                .and_then(|sp| sp.random_side(""))
                 .unwrap_or_else(|| {
                     if rand::rng().random_bool(0.5) {
                         "ct".to_string()

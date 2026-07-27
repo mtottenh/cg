@@ -894,6 +894,30 @@ async fn process_veto_timeout(
     use crate::dto::responses::veto::{VetoActionResponse, VetoSessionResponse};
     use crate::websocket::messages::{LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast};
 
+    // A timed-out session whose match is already dead must be cancelled,
+    // not auto-acted (review M2): nothing else cancels veto sessions, so
+    // without this guard the pass would random-pick through the session of
+    // a cancelled match and even fire server assignment at the end.
+    match state
+        .tournament_match_repo
+        .find_by_id(session.match_id)
+        .await
+    {
+        Ok(Some(match_)) if match_.status.is_terminal() => {
+            if let Err(e) = state
+                .veto_service
+                .cancel_session_for_match(session.match_id)
+                .await
+            {
+                tracing::warn!(session_id = %session.id, error = %e,
+                    "failed to cancel veto session of terminal match");
+            }
+            return;
+        }
+        Ok(Some(_)) => {}
+        Ok(None) | Err(_) => return,
+    }
+
     let result = match state.veto_service.process_timeout(session.id).await {
         Ok(r) => r,
         Err(e) => {

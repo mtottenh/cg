@@ -29,7 +29,9 @@ impl From<PugRow> for Pug {
             game_id: GameId::from(row.game_id),
             created_by_user_id: UserId::from(row.created_by_user_id),
             join_code: row.join_code,
-            status: row.status.parse().unwrap_or_default(),
+            // An unparseable status must fail terminal, never reopen the
+            // lobby as gathering (review m8).
+            status: row.status.parse().unwrap_or(PugStatus::Expired),
             match_format: row.match_format.parse().unwrap_or_default(),
             map_selection_mode: row.map_selection_mode.parse().unwrap_or_default(),
             side_selection_mode: row.side_selection_mode.parse().unwrap_or_default(),
@@ -117,7 +119,10 @@ impl From<AdhocTeamMemberRow> for AdhocTeamMember {
 /// SELECT list for `pug_players` joined with `players` display info.
 const PUG_PLAYER_SELECT: &str = r"
     SELECT pp.pug_id, pp.player_id, p.user_id, p.display_name, p.avatar_url,
-           (p.steam_id IS NOT NULL OR p.steam_id_64 IS NOT NULL) AS has_steam_id,
+           -- Must match roster_for's rule exactly (steam_id parses as a
+           -- SteamID64): lock preflight may not pass players that config
+           -- generation will reject (review C1 follow-up).
+           COALESCE(p.steam_id ~ '^[0-9]+$', FALSE) AS has_steam_id,
            pp.team, pp.is_captain, pp.joined_at
       FROM pug_players pp
       JOIN players p ON p.id = pp.player_id
@@ -143,6 +148,11 @@ impl PgPugRepository {
 #[async_trait]
 impl PugRepository for PgPugRepository {
     async fn create(&self, cmd: CreatePug) -> Result<Pug, DomainError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
         let row = sqlx::query_as::<_, PugRow>(
             r"
             INSERT INTO pugs (
@@ -165,9 +175,24 @@ impl PugRepository for PgPugRepository {
         .bind(&cmd.map_pool)
         .bind(cmd.listed)
         .bind(cmd.expires_at)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
+        // Creator is seated on team 1 as captain atomically (review m8).
+        sqlx::query(
+            r"
+            INSERT INTO pug_players (pug_id, player_id, team, is_captain)
+            VALUES ($1, $2, 1, TRUE)
+            ",
+        )
+        .bind(row.id)
+        .bind(cmd.creator_player_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
         Ok(row.into())
     }
 
@@ -316,12 +341,14 @@ impl PugRepository for PgPugRepository {
         id: PugId,
         tournament_id: TournamentId,
         match_id: TournamentMatchId,
-    ) -> Result<(), DomainError> {
-        sqlx::query(
+    ) -> Result<bool, DomainError> {
+        // The lock CAS (gathering -> map_selection) already happened; this
+        // only attaches ids, and only for the CAS winner (review M3).
+        let result = sqlx::query(
             r"
             UPDATE pugs
-               SET tournament_id = $2, match_id = $3, status = 'map_selection'
-             WHERE id = $1 AND status = 'gathering'
+               SET tournament_id = $2, match_id = $3
+             WHERE id = $1 AND status = 'map_selection' AND match_id IS NULL
             ",
         )
         .bind(id.as_uuid())
@@ -330,7 +357,7 @@ impl PugRepository for PgPugRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     async fn set_result(
@@ -345,7 +372,9 @@ impl PugRepository for PgPugRepository {
             UPDATE pugs
                SET winner_team = $2, team1_score = $3, team2_score = $4,
                    completed_at = NOW(), status = 'completed'
-             WHERE id = $1
+             -- a late series_end must not resurrect a cancelled/expired pug
+             -- (review m4)
+             WHERE id = $1 AND status NOT IN ('cancelled', 'expired')
             ",
         )
         .bind(id.as_uuid())
@@ -401,36 +430,74 @@ impl PugRepository for PgPugRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    async fn list_desynced_with_match(&self, limit: i64) -> Result<Vec<Pug>, DomainError> {
+        let rows = sqlx::query_as::<_, PugRow>(
+            r"
+            SELECT pg.* FROM pugs pg
+              JOIN tournament_matches tm ON tm.id = pg.match_id
+             WHERE pg.status IN ('map_selection', 'awaiting_server', 'live')
+               AND tm.status IN ('completed', 'cancelled', 'forfeit')
+             ORDER BY pg.updated_at
+             LIMIT $1
+            ",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     // -- players --------------------------------------------------------------
 
-    async fn add_player(&self, pug_id: PugId, player_id: PlayerId) -> Result<(), DomainError> {
-        sqlx::query(
+    async fn add_player(
+        &self,
+        pug_id: PugId,
+        player_id: PlayerId,
+        max_players: i64,
+    ) -> Result<bool, DomainError> {
+        // Capacity check and insert in one statement so racing joins cannot
+        // overfill the lobby (review m5). Existing members count as success.
+        let result = sqlx::query(
             r"
             INSERT INTO pug_players (pug_id, player_id)
-            VALUES ($1, $2)
+            SELECT $1, $2
+             WHERE (SELECT COUNT(*) FROM pug_players WHERE pug_id = $1) < $3
             ON CONFLICT (pug_id, player_id) DO NOTHING
             ",
         )
         .bind(pug_id.as_uuid())
         .bind(player_id.as_uuid())
+        .bind(max_players)
         .execute(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
-        Ok(())
+        if result.rows_affected() > 0 {
+            return Ok(true);
+        }
+        self.is_participant(pug_id, player_id).await
     }
 
     async fn remove_player(&self, pug_id: PugId, player_id: PlayerId) -> Result<(), DomainError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
         sqlx::query("DELETE FROM pug_players WHERE pug_id = $1 AND player_id = $2")
             .bind(pug_id.as_uuid())
             .bind(player_id.as_uuid())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?;
-        // Their nomination goes with them.
+        // Their nomination goes with them (same transaction — review m8).
         sqlx::query("DELETE FROM pug_wheel_entries WHERE pug_id = $1 AND player_id = $2")
             .bind(pug_id.as_uuid())
             .bind(player_id.as_uuid())
-            .execute(&self.pool)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        tx.commit()
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?;
         Ok(())
@@ -462,6 +529,26 @@ impl PugRepository for PgPugRepository {
         Ok(exists)
     }
 
+    async fn filter_participating(
+        &self,
+        player_id: PlayerId,
+        pug_ids: &[PugId],
+    ) -> Result<Vec<PugId>, DomainError> {
+        let ids: Vec<uuid::Uuid> = pug_ids.iter().map(portal_core::PugId::as_uuid).collect();
+        let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
+            r"
+            SELECT pug_id FROM pug_players
+             WHERE player_id = $1 AND pug_id = ANY($2)
+            ",
+        )
+        .bind(player_id.as_uuid())
+        .bind(&ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        Ok(rows.into_iter().map(|(id,)| PugId::from_uuid(id)).collect())
+    }
+
     async fn count_players(&self, pug_id: PugId) -> Result<i64, DomainError> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pug_players WHERE pug_id = $1")
             .bind(pug_id.as_uuid())
@@ -476,15 +563,28 @@ impl PugRepository for PgPugRepository {
         pug_id: PugId,
         player_id: PlayerId,
         team: Option<i16>,
-    ) -> Result<(), DomainError> {
-        sqlx::query("UPDATE pug_players SET team = $3 WHERE pug_id = $1 AND player_id = $2")
-            .bind(pug_id.as_uuid())
-            .bind(player_id.as_uuid())
-            .bind(team)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
-        Ok(())
+        team_capacity: i64,
+    ) -> Result<bool, DomainError> {
+        // Capacity check inside the statement so racing moves cannot
+        // overfill a team (review m5). Bench moves always succeed.
+        let result = sqlx::query(
+            r"
+            UPDATE pug_players
+               SET team = $3
+             WHERE pug_id = $1 AND player_id = $2
+               AND ($3::smallint IS NULL
+                    OR (SELECT COUNT(*) FROM pug_players
+                         WHERE pug_id = $1 AND team = $3 AND player_id <> $2) < $4)
+            ",
+        )
+        .bind(pug_id.as_uuid())
+        .bind(player_id.as_uuid())
+        .bind(team)
+        .bind(team_capacity)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn set_player_captain(
@@ -624,12 +724,12 @@ impl PugRepository for PgPugRepository {
             r"
             SELECT COUNT(*)::bigint,
                    COUNT(*) FILTER (WHERE pp.team = pg.winner_team)::bigint,
-                   COUNT(*) FILTER (
-                       WHERE pp.team IS NOT NULL AND pp.team <> pg.winner_team
-                   )::bigint
+                   COUNT(*) FILTER (WHERE pp.team <> pg.winner_team)::bigint
               FROM pugs pg
               JOIN pug_players pp ON pp.pug_id = pg.id
              WHERE pp.player_id = $1
+               -- bench sitters did not play (review m3)
+               AND pp.team IS NOT NULL
                AND pg.status = 'completed'
                AND pg.winner_team IS NOT NULL
             ",

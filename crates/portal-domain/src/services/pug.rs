@@ -139,6 +139,7 @@ impl PugService {
             .create(CreatePug {
                 game_id,
                 created_by_user_id: creator_user,
+                creator_player_id: creator_player,
                 join_code: generate_join_code(),
                 match_format,
                 map_selection_mode,
@@ -149,14 +150,6 @@ impl PugService {
                 listed,
                 expires_at: Utc::now() + Duration::hours(GATHERING_TTL_HOURS),
             })
-            .await?;
-
-        self.pug_repo.add_player(pug.id, creator_player).await?;
-        self.pug_repo
-            .set_player_team(pug.id, creator_player, Some(1))
-            .await?;
-        self.pug_repo
-            .set_player_captain(pug.id, creator_player, true)
             .await?;
 
         info!(pug_id = %pug.id, "PUG lobby created");
@@ -204,7 +197,15 @@ impl PugService {
         {
             return Ok(());
         }
-        if provided_code.is_some_and(|c| constant_time_eq(c, &pug.join_code)) {
+        // Plain equality on purpose: the code is an invite (49 bits of
+        // entropy behind a rate limit), not a bearer secret, and the DB
+        // lookup in join_by_code compares it non-constant-time anyway — a
+        // hand-rolled constant-time compare here was theater (review nit).
+        // Plain equality on purpose: the code is an invite (49 bits of
+        // entropy behind a rate limit), not a bearer secret, and the DB
+        // lookup in join_by_code compares it non-constant-time anyway — a
+        // hand-rolled constant-time compare here was theater (review nit).
+        if provided_code == Some(pug.join_code.as_str()) {
             return Ok(());
         }
         if pug.listed || pug.status.is_terminal() {
@@ -234,12 +235,14 @@ impl PugService {
             ));
         }
 
-        let count = self.pug_repo.count_players(pug.id).await?;
-        if count >= i64::from(pug.team_size) * 2 + BENCH_SLOTS {
+        let max_players = i64::from(pug.team_size) * 2 + BENCH_SLOTS;
+        if !self
+            .pug_repo
+            .add_player(pug.id, player, max_players)
+            .await?
+        {
             return Err(DomainError::Conflict("This PUG lobby is full".to_string()));
         }
-
-        self.pug_repo.add_player(pug.id, player).await?;
         info!(pug_id = %pug.id, %player, "Player joined PUG");
         Ok(pug)
     }
@@ -316,21 +319,23 @@ impl PugService {
             if !(t == 1 || t == 2) {
                 return Err(DomainError::InvalidState("Team must be 1 or 2".to_string()));
             }
-            let players = self.pug_repo.list_players(pug_id).await?;
-            if !players.iter().any(|p| p.player_id == target) {
+            if !self.pug_repo.is_participant(pug_id, target).await? {
                 return Err(DomainError::NotAuthorized(
                     "Player is not in this lobby".to_string(),
                 ));
             }
-            let on_team = players
-                .iter()
-                .filter(|p| p.team == Some(t) && p.player_id != target)
-                .count();
-            if on_team >= usize::try_from(pug.team_size).unwrap_or(usize::MAX) {
-                return Err(DomainError::Conflict(format!("Team {t} is full")));
-            }
         }
-        self.pug_repo.set_player_team(pug_id, target, team).await
+        // Capacity is enforced inside the UPDATE (review m5).
+        let moved = self
+            .pug_repo
+            .set_player_team(pug_id, target, team, i64::from(pug.team_size))
+            .await?;
+        if !moved {
+            return Err(DomainError::Conflict(
+                "That team is full (or the player left)".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Toggle captain status (creator only).
@@ -430,18 +435,8 @@ impl PugService {
             ));
         }
 
-        let count = |team: i16| players.iter().filter(|p| p.team == Some(team)).count();
-        let (team1, team2) = (count(1), count(2));
-        let team_size = usize::try_from(pug.team_size).unwrap_or(usize::MAX);
-        if team1 >= team_size && team2 >= team_size {
+        let Some(picking) = Self::picking_team(&players, pug.team_size) else {
             return Err(DomainError::Conflict("Both teams are full".to_string()));
-        }
-        let picking: i16 = if team1 > team2 && team2 < team_size {
-            2
-        } else if team1 <= team2 && team1 < team_size {
-            1
-        } else {
-            2
         };
 
         let is_picking_captain = players
@@ -453,9 +448,15 @@ impl PugService {
             )));
         }
 
-        self.pug_repo
-            .set_player_team(pug_id, target, Some(picking))
+        let moved = self
+            .pug_repo
+            .set_player_team(pug_id, target, Some(picking), i64::from(pug.team_size))
             .await?;
+        if !moved {
+            return Err(DomainError::Conflict(format!(
+                "Team {picking} filled up before the pick landed"
+            )));
+        }
         Ok(picking)
     }
 
@@ -480,6 +481,27 @@ impl PugService {
         let code = generate_join_code();
         self.pug_repo.set_join_code(pug_id, &code).await?;
         Ok(code)
+    }
+
+    /// Whose pick it is in a captains draft: the team with fewer players
+    /// (tie: team 1); None when both teams are full. THE single definition —
+    /// the detail endpoint exposes it so the frontend renders exactly the
+    /// rule the backend enforces (review nit: the rule was duplicated).
+    #[must_use]
+    pub fn picking_team(players: &[PugPlayer], team_size: i32) -> Option<i16> {
+        let cap = usize::try_from(team_size).unwrap_or(usize::MAX);
+        let count = |team: i16| players.iter().filter(|p| p.team == Some(team)).count();
+        let (team1, team2) = (count(1), count(2));
+        if team1 >= cap && team2 >= cap {
+            return None;
+        }
+        if team1 > team2 && team2 < cap {
+            Some(2)
+        } else if team1 <= team2 && team1 < cap {
+            Some(1)
+        } else {
+            Some(2)
+        }
     }
 
     // =========================================================================
@@ -590,6 +612,11 @@ impl PugService {
     ///
     /// `force` lets the creator start short-handed / uneven (PUG reality);
     /// without it both teams must be exactly `team_size`.
+    ///
+    /// `frozen`: the caller already won the lock CAS (status is
+    /// `map_selection`, no match attached) and is re-snapshotting the roster
+    /// after the freeze, so joins/leaves can no longer race the read
+    /// (review M3/m5).
     #[instrument(skip(self))]
     pub async fn prepare_lock(
         &self,
@@ -597,11 +624,18 @@ impl PugService {
         actor_user: UserId,
         actor_player: PlayerId,
         force: bool,
+        frozen: bool,
     ) -> Result<LockPlan, DomainError> {
         let pug = self.get(pug_id).await?;
 
-        if !pug.is_open() {
-            return Err(DomainError::InvalidState(
+        if frozen {
+            if pug.status != portal_core::types::PugStatus::MapSelection || pug.is_materialized() {
+                return Err(DomainError::Conflict(
+                    "This PUG is already locked".to_string(),
+                ));
+            }
+        } else if !pug.is_open() {
+            return Err(DomainError::Conflict(
                 "This PUG is already locked".to_string(),
             ));
         }
@@ -701,24 +735,7 @@ impl PugService {
 /// Generate a 10-character join code from an unambiguous alphabet (~49 bits).
 #[must_use]
 pub fn generate_join_code() -> String {
-    let mut rng = rand::rng();
-    (0..CODE_LENGTH)
-        .map(|_| {
-            let idx = rng.random_range(0..CODE_ALPHABET.len());
-            CODE_ALPHABET[idx] as char
-        })
-        .collect()
-}
-
-/// Constant-time string comparison for the join code.
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.bytes()
-        .zip(b.bytes())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
+    crate::util::random_code(CODE_ALPHABET, CODE_LENGTH)
 }
 
 #[cfg(test)]
@@ -802,12 +819,5 @@ mod tests {
             mirage_wins > 120,
             "9x-weighted map won only {mirage_wins}/200 draws"
         );
-    }
-
-    #[test]
-    fn test_constant_time_eq() {
-        assert!(constant_time_eq("ABC123", "ABC123"));
-        assert!(!constant_time_eq("ABC123", "ABC124"));
-        assert!(!constant_time_eq("ABC123", "ABC12"));
     }
 }

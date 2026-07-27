@@ -319,6 +319,24 @@ impl VetoFormatConfig {
         Self::wheel(5)
     }
 
+    /// THE built-in format table — the single fallback both the veto
+    /// service and the HTTP handler consult (review m1: they used to carry
+    /// two hand-maintained tables that had already drifted — one knew bo7,
+    /// the other knew the wheel formats).
+    #[must_use]
+    pub fn builtin(format_id: &str) -> Option<Self> {
+        match format_id {
+            "bo1_veto" | "bo1_standard" => Some(Self::bo1()),
+            "bo3_veto" | "bo3_standard" => Some(Self::bo3()),
+            "bo5_veto" | "bo5_standard" => Some(Self::bo5()),
+            "bo7_veto" | "bo7_standard" => Some(Self::bo7()),
+            "wheel_bo1" => Some(Self::wheel_bo1()),
+            "wheel_bo3" => Some(Self::wheel_bo3()),
+            "wheel_bo5" => Some(Self::wheel_bo5()),
+            _ => None,
+        }
+    }
+
     /// Whether this format contains any team-performed actions.
     /// Formats with none (e.g. wheel formats) skip the coin-flip stage.
     #[must_use]

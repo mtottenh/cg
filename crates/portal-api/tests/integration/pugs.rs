@@ -25,10 +25,13 @@ async fn pug_user(app: &TestApp, name: &str, steam_suffix: u32) -> PugUser {
         .build_persisted(app.pool())
         .await;
     // Lock requires every rostered player to have a linked Steam account.
+    // Production stores the SteamID64 string in players.steam_id (the config
+    // builder parses it as u64) — mirror that shape here.
+    let steam64 = 76_561_197_960_265_728_i64 + i64::from(steam_suffix);
     sqlx::query("UPDATE players SET steam_id = $2, steam_id_64 = $3 WHERE id = $1")
         .bind(user.id)
-        .bind(format!("STEAM_1:0:{steam_suffix}"))
-        .bind(76_561_197_960_265_728_i64 + i64::from(steam_suffix))
+        .bind(steam64.to_string())
+        .bind(steam64)
         .execute(app.pool())
         .await
         .expect("set steam id");
@@ -736,4 +739,185 @@ async fn test_pug_ws_doorbell_on_join_and_rejects_outsiders() {
     assert_eq!(ding["reason"], "player_joined");
     let ding = next_json(&mut watcher_ws).await;
     assert_eq!(ding["type"], "pug_changed");
+}
+
+// ============================================================================
+// SERVER CONFIG (review C1 regression)
+// ============================================================================
+
+/// The MatchZy config must build from ad-hoc rosters. Review C1: the roster
+/// resolver had no adhoc arm, so every PUG produced an empty roster, config
+/// generation failed, and no PUG could ever reach a server.
+#[tokio::test]
+async fn test_pug_server_config_builds_from_adhoc_roster() {
+    use portal_api::state::AppState;
+    use portal_core::types::ReservationStatus;
+    use portal_domain::repositories::ServerReservationRepository as _;
+
+    let app = TestApp::new().await;
+    let game_id = get_cs2_game_id(app.pool()).await;
+
+    let ana = pug_user(&app, "pug_cfg_ana", 9901).await;
+    let ben = pug_user(&app, "pug_cfg_ben", 9902).await;
+
+    let detail = create_pug(
+        &app,
+        &ana,
+        json!({
+            "game_id": game_id.to_string(),
+            "match_format": "bo1",
+            "map_selection_mode": "wheel",
+            "team_size": 1
+        }),
+    )
+    .await;
+    let id = pug_id(&detail);
+    let code = join_code(&detail);
+
+    app.post_json_with_token(
+        &format!("/v1/pugs/code/{code}/join"),
+        &json!({}),
+        &ben.token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    app.put_json_with_token(
+        &format!("/v1/pugs/{id}/team"),
+        &json!({"team": 2}),
+        &ben.token,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+
+    let locked = app
+        .post_json_with_token(&format!("/v1/pugs/{id}/lock"), &json!({}), &ana.token)
+        .await;
+    locked.assert_status(StatusCode::OK);
+    let locked = locked.json::<Value>()["data"].clone();
+    let match_id = locked["pug"]["match_id"].as_str().unwrap().to_string();
+
+    // One spin completes the bo1 wheel.
+    app.post_json_with_token(&format!("/v1/pugs/{id}/spin"), &json!({}), &ana.token)
+        .await
+        .assert_status(StatusCode::OK);
+
+    // Drive assignment directly (the drain task isn't running in tests).
+    // No server is registered, so the reservation must QUEUE — reaching
+    // `pending` proves config generation succeeded; the C1 bug failed the
+    // reservation before queuing with "team has no players with Steam IDs".
+    let state = AppState::new(app.pool().clone(), "test-jwt-secret").await;
+    let reservation = portal_api::game_server_flow::request_assignment(
+        &state,
+        match_id.parse::<portal_core::TournamentMatchId>().unwrap(),
+    )
+    .await
+    .expect("pug server assignment must build a config and queue");
+    assert_eq!(reservation.status, ReservationStatus::Pending);
+
+    // request_assignment persists the config AFTER creating the reservation
+    // struct it returns — read the stored row for the config assertion.
+    let stored = state
+        .server_reservation_repo
+        .find_by_id(reservation.id)
+        .await
+        .unwrap()
+        .expect("reservation row");
+    let config = stored.match_config.expect("config persisted");
+    let team1_players = config["team1"]["players"].as_object().unwrap();
+    let team2_players = config["team2"]["players"].as_object().unwrap();
+    assert_eq!(
+        team1_players.len(),
+        1,
+        "ad-hoc roster must reach the config"
+    );
+    assert_eq!(team2_players.len(), 1);
+    assert_eq!(config["num_maps"], 1);
+    assert_eq!(config["players_per_team"], 1);
+}
+
+// ============================================================================
+// LOCK RACE + CANCEL LIFECYCLE (review M2/M3 regressions)
+// ============================================================================
+
+#[tokio::test]
+async fn test_pug_double_lock_conflicts_and_cancel_kills_session() {
+    let app = TestApp::new().await;
+    let game_id = get_cs2_game_id(app.pool()).await;
+
+    let ivy = pug_user(&app, "pug_lock_ivy", 10001).await;
+    let jay = pug_user(&app, "pug_lock_jay", 10002).await;
+
+    let detail = create_pug(
+        &app,
+        &ivy,
+        json!({
+            "game_id": game_id.to_string(),
+            "match_format": "bo1",
+            "map_selection_mode": "veto",
+            "team_size": 1
+        }),
+    )
+    .await;
+    let id = pug_id(&detail);
+    let code = join_code(&detail);
+    app.post_json_with_token(
+        &format!("/v1/pugs/code/{code}/join"),
+        &json!({}),
+        &jay.token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    app.put_json_with_token(
+        &format!("/v1/pugs/{id}/team"),
+        &json!({"team": 2}),
+        &jay.token,
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+
+    app.post_json_with_token(&format!("/v1/pugs/{id}/lock"), &json!({}), &ivy.token)
+        .await
+        .assert_status(StatusCode::OK);
+
+    // A second lock must conflict, not silently materialize a twin
+    // tournament graph (review M3).
+    let relock = app
+        .post_json_with_token(&format!("/v1/pugs/{id}/lock"), &json!({}), &ivy.token)
+        .await;
+    relock.assert_status(StatusCode::CONFLICT);
+
+    let detail = app
+        .get_with_token(&format!("/v1/pugs/{id}"), &ivy.token)
+        .await
+        .json::<Value>();
+    let match_id = detail["data"]["pug"]["match_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Cancelling mid-veto must kill BOTH the session (so the timeout
+    // enforcement can never auto-act on it — review M2) and the match
+    // (PickBan -> Cancelled is now a legal transition).
+    app.post_json_with_token(&format!("/v1/pugs/{id}/cancel"), &json!({}), &ivy.token)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    let veto = app
+        .get(&format!("/v1/matches/{match_id}/veto"))
+        .await
+        .json::<Value>();
+    assert_eq!(veto["data"]["session"]["status"], "cancelled");
+
+    let (match_status,): (String,) =
+        sqlx::query_as("SELECT status FROM tournament_matches WHERE id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(match_status, "cancelled");
+
+    // And spins/actions on the dead lobby are refused.
+    app.post_json_with_token(&format!("/v1/pugs/{id}/spin"), &json!({}), &ivy.token)
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
 }

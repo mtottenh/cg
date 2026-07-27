@@ -127,15 +127,6 @@ pub(super) async fn require_registration_actor(
     Ok(())
 }
 
-/// Check eligibility restrictions for a set of player IDs against a tournament.
-///
-/// Delegates to the `EligibilityService` which fetches each player's game
-/// profile and rating stats for the tournament's game, then runs the checker.
-///
-/// `pub(super)` because it's called by the team-register and
-/// player-register handlers in `registration.rs` and nowhere else —
-/// keeping it out of the public surface avoids leaking an internal
-/// enforcement path.
 /// Resolve the restrictions that actually bind a tournament: its own,
 /// composed strictest-wins with its league's entry requirements when it
 /// belongs to a league. A league tournament may tighten league rules but
@@ -170,12 +161,15 @@ fn eligibility_error(
             }
         })
         .collect();
-    ApiError::bad_request(format!(
-        "Eligibility check failed: {}",
-        messages.join("; ")
-    ))
+    ApiError::bad_request(format!("Eligibility check failed: {}", messages.join("; ")))
 }
 
+/// Check per-player eligibility for a set of player IDs against a
+/// tournament's effective restrictions.
+///
+/// `pub(super)` because it's called by the register handlers in
+/// `registration.rs` and nowhere else — keeping it out of the public
+/// surface avoids leaking an internal enforcement path.
 pub(super) async fn check_eligibility_for_players(
     state: &TournamentState,
     tournament: &portal_domain::entities::Tournament,

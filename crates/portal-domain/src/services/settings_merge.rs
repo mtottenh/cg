@@ -40,8 +40,12 @@ mod tests {
 
     #[test]
     fn merge_preserves_foreign_keys() {
-        let stored = json!({"side_selection_mode": "knife", "eligibility": {"min_rating_per_player": 1000}});
-        let merged = shallow_merge(&stored, json!({"eligibility": {"min_rating_per_player": 2000}}));
+        let stored =
+            json!({"side_selection_mode": "knife", "eligibility": {"min_rating_per_player": 1000}});
+        let merged = shallow_merge(
+            &stored,
+            json!({"eligibility": {"min_rating_per_player": 2000}}),
+        );
         assert_eq!(
             merged,
             json!({"side_selection_mode": "knife", "eligibility": {"min_rating_per_player": 2000}})
@@ -63,6 +67,9 @@ mod tests {
 
     #[test]
     fn non_object_stored_is_replaced() {
-        assert_eq!(shallow_merge(&json!(null), json!({"a": 1})), json!({"a": 1}));
+        assert_eq!(
+            shallow_merge(&json!(null), json!({"a": 1})),
+            json!({"a": 1})
+        );
     }
 }

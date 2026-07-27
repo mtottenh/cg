@@ -44,6 +44,7 @@ pub use dispute::{
     RaiseDisputeRequest, ResolveAdjustedRequest, ResolveDoubleDqRequest, ResolveOverturnRequest,
     ResolveRematchRequest, ResolveUpholdRequest,
 };
+pub use eligibility::EligibilityRestrictionsInput;
 pub use evidence::{
     AddLinkEvidenceRequest, DiscoverEvidenceQuery, GetDemoStatsQuery, InitiateUploadRequest,
     LinkDemoRequest, LinkDiscoveredEvidenceRequest, ListEvidenceQuery, ValidateDemoRequest,
@@ -85,15 +86,14 @@ pub use tournament::{
     AdminScheduleRequest, AutoSeedRequest, CancelScheduleProposalRequest, CheckInRequest,
     CounterProposeRequest, CreateTournamentInvitationRequest, CreateTournamentRequest,
     CreateTournamentStageRequest, DeclareLineupRequest, DisputeMatchRequest, DisqualifyRequest,
-    ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest,
-    MatchCheckInRequest, ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest,
-    RejectRegistrationRequest, RejectScheduleProposalRequest, ResolveDisputeRequest,
-    SeedAssignment, SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
+    ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest, MatchCheckInRequest,
+    ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
+    RejectScheduleProposalRequest, ResolveDisputeRequest, SeedAssignment,
+    SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
     UpdateTournamentStageRequest, WithdrawRequest,
 };
 pub use veto::{
     CreateVetoSessionRequest, GetVetoStateQuery, PerformVetoActionRequest, RecordCoinFlipRequest,
     SelectSideRequest, StartVetoSessionRequest,
 };
-pub use eligibility::EligibilityRestrictionsInput;
 pub use veto_delegate::CreateVetoDelegateRequest;

@@ -6,6 +6,8 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 use validator::Validate;
 
+use super::eligibility::{EligibilityRestrictionsInput, merge_eligibility_into_settings};
+
 /// Request to create a new league.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct CreateLeagueRequest {
@@ -34,10 +36,16 @@ pub struct CreateLeagueRequest {
     #[serde(default = "default_access_type")]
     pub access_type: String,
 
-    /// Optional league settings (entry requirements, etc.).
-    /// Entry requirements go under the `"eligibility"` key.
+    /// Optional league settings (free-form JSON for non-eligibility keys).
     #[serde(default)]
     pub settings: Option<serde_json::Value>,
+
+    /// Entry requirements, typed and validated. Folded into
+    /// `settings.eligibility` — the same shape and vocabulary tournaments
+    /// use.
+    #[validate(nested)]
+    #[serde(default)]
+    pub eligibility_restrictions: Option<EligibilityRestrictionsInput>,
 }
 
 fn default_access_type() -> String {
@@ -93,7 +101,7 @@ impl TryFrom<CreateLeagueRequest> for CreateLeagueCommand {
             description: req.description,
             logo_url: req.logo_url,
             access_type,
-            settings: req.settings,
+            settings: merge_eligibility_into_settings(req.settings, req.eligibility_restrictions),
         })
     }
 }
@@ -128,6 +136,11 @@ pub struct UpdateLeagueRequest {
     /// Updated settings.
     #[serde(default)]
     pub settings: Option<serde_json::Value>,
+
+    /// Updated entry requirements (folded into `settings.eligibility`).
+    #[validate(nested)]
+    #[serde(default)]
+    pub eligibility_restrictions: Option<EligibilityRestrictionsInput>,
 }
 
 impl TryFrom<UpdateLeagueRequest> for UpdateLeagueCommand {
@@ -149,7 +162,7 @@ impl TryFrom<UpdateLeagueRequest> for UpdateLeagueCommand {
             logo_url: req.logo_url,
             access_type,
             status: None,
-            settings: req.settings,
+            settings: merge_eligibility_into_settings(req.settings, req.eligibility_restrictions),
         })
     }
 }

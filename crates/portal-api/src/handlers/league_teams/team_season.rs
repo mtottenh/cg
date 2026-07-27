@@ -136,6 +136,10 @@ pub async fn add_team_member(
     .await?;
 
     let cmd = req.into_command(team_season_id)?;
+
+    // League entry requirements: the joining player + the team-total cap.
+    super::check_roster_addition(&state, team_season_id, cmd.player_id).await?;
+
     let member = state
         .league_team_service
         .add_member_authorized(

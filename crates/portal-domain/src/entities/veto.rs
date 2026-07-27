@@ -263,6 +263,12 @@ impl VetoAction {
         matches!(self.action_type, VetoActionType::Decider)
     }
 
+    /// Check if this is a wheel (weighted random) selection.
+    #[must_use]
+    pub const fn is_random(&self) -> bool {
+        matches!(self.action_type, VetoActionType::Random)
+    }
+
     /// Check if side selection is pending for this action.
     #[must_use]
     pub const fn needs_side_selection(&self) -> bool {

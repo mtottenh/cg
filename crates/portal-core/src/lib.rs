@@ -17,19 +17,21 @@ pub mod validation;
 // Re-export commonly used types at crate root
 pub use errors::{DomainError, FieldError, ValidationError};
 pub use ids::{
-    ApiKeyId, AvailabilityExceptionId, AvailabilityWindowId, AwardId, AwardResultId,
+    AdhocTeamId, ApiKeyId, AvailabilityExceptionId, AvailabilityWindowId, AwardId, AwardResultId,
     AwardTemplateId, BanId, DemoId, DemoMatchLinkId, DemoPlayerId, DiscoveredMatchId, DisputeId,
     DisputeMessageId, EvidenceId, ForfeitRecordId, GameId, GameSlug, LeagueId, LeagueInvitationId,
     LeagueMemberId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LeagueTeamMemberId,
     LeagueTeamSeasonId, LobbyId, MatchId, MatchLineupId, MatchLineupPlayerId, MatchStatusLogId,
     PlayerGameProfileId, PlayerId, PlayerMatchHistoryId, PlayerMmStatsId, PlayerRatingHistoryId,
-    ProgressionLogId, ResultClaimId, ResultReviewId, SagaId, ScheduleProposalId, SteamTrackingId,
-    SuggestedTimeId, TournamentBracketId, TournamentId, TournamentInvitationId,
-    TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId, TournamentRegistrationId,
-    TournamentStageId, UserId, VetoActionId, VetoDelegateId, VetoLobbyMessageId, VetoSessionId,
+    ProgressionLogId, PugId, PugWheelSpinId, ResultClaimId, ResultReviewId, SagaId,
+    ScheduleProposalId, SteamTrackingId, SuggestedTimeId, TournamentBracketId, TournamentId,
+    TournamentInvitationId, TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId,
+    TournamentRegistrationId, TournamentStageId, UserId, VetoActionId, VetoDelegateId,
+    VetoLobbyMessageId, VetoSessionId,
 };
 pub use types::{
     DemoCategory, DemoLinkType, DemoStatus, EvidenceStorage, EvidenceType, MatchFormat,
-    ParseScopeTypeError, PermissionScope, ScopeType, SideSelectionMode, VetoActionType,
-    VetoFormatActionConfig, VetoFormatConfig,
+    MatchFormatPlan, ParseScopeTypeError, PermissionScope, PugMapSelectionMode, PugStatus,
+    ScopeType, SideSelectionMode, TournamentKind, VetoActionType, VetoFormatActionConfig,
+    VetoFormatConfig,
 };

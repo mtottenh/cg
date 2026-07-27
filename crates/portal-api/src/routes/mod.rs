@@ -12,6 +12,7 @@ pub mod league_teams;
 pub mod leagues;
 pub mod matches;
 pub mod players;
+pub mod pugs;
 pub mod tournaments;
 pub mod users;
 pub mod veto_delegates;
@@ -58,6 +59,7 @@ pub fn api_routes() -> Router<AppState> {
             availability::player_public_availability_routes(),
         )
         // Tournament routes
+        .nest("/pugs", pugs::routes())
         .nest("/tournaments", tournaments::routes())
         // Match routes (veto, results)
         .nest("/matches", matches::routes())

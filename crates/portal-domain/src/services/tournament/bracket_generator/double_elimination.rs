@@ -4,7 +4,7 @@ use super::single_elimination::{generate_seeding_order, next_power_of_two};
 use super::{BracketGenerator, ByeInfo, GeneratedBracket, InitialAssignment};
 use crate::entities::tournament::SeededParticipant;
 use crate::repositories::tournament::CreateTournamentMatch;
-use portal_core::types::{MatchFormat, MatchParticipantSource};
+use portal_core::types::{MatchFormatPlan, MatchParticipantSource};
 use portal_core::{DomainError, TournamentBracketId, TournamentId, TournamentStageId};
 
 /// Generated double elimination bracket structure.
@@ -47,6 +47,10 @@ impl BracketGenerator {
     /// - Winners bracket: standard single-elimination; losers drop to losers bracket.
     /// - Losers bracket: second-chance bracket; losers are eliminated.
     /// - Grand final: single match between WB champion and LB champion.
+    ///
+    /// The stage's "final" is the grand final, so `format_plan`'s final/grand
+    /// final overrides apply only there; winners and losers rounds use the
+    /// per-round overrides (both brackets count rounds from 1).
     #[allow(clippy::too_many_arguments)]
     pub fn double_elimination(
         tournament_id: TournamentId,
@@ -55,7 +59,7 @@ impl BracketGenerator {
         lb_bracket_id: TournamentBracketId,
         gf_bracket_id: TournamentBracketId,
         participants: Vec<SeededParticipant>,
-        match_format: MatchFormat,
+        format_plan: &MatchFormatPlan,
     ) -> Result<GeneratedDoubleElimination, DomainError> {
         let participant_count = participants.len();
 
@@ -77,6 +81,9 @@ impl BracketGenerator {
 
         for round in 1..=wb_rounds {
             let matches_in_round = bracket_size / (1 << round);
+            // total_rounds 0: the WB final feeds the grand final, it is not
+            // the stage final, so the final override must not apply here.
+            let match_format = format_plan.format_for(round, 0);
 
             for match_idx in 0..matches_in_round {
                 let bracket_position = format!("WR{round}M{}", match_idx + 1);
@@ -120,7 +127,7 @@ impl BracketGenerator {
                     participant1_source,
                     participant2_source,
                     match_format,
-                    maps_required: match_format.wins_required(),
+                    maps_required: match_format.game_count(),
                     winner_progresses_to: None,
                     loser_progresses_to: None,
                 });
@@ -186,6 +193,7 @@ impl BracketGenerator {
 
         for lb_round in 1..=lb_rounds {
             let matches_in_round = Self::lb_matches_in_round(lb_round, wb_rounds);
+            let match_format = format_plan.format_for(lb_round, 0);
 
             for match_idx in 0..matches_in_round {
                 let bracket_position = format!("LR{lb_round}M{}", match_idx + 1);
@@ -211,7 +219,7 @@ impl BracketGenerator {
                     participant1_source,
                     participant2_source,
                     match_format,
-                    maps_required: match_format.wins_required(),
+                    maps_required: match_format.game_count(),
                     winner_progresses_to: None,
                     loser_progresses_to: None,
                 });
@@ -258,6 +266,7 @@ impl BracketGenerator {
         // =====================================================================
         // GRAND FINAL
         // =====================================================================
+        let gf_format = format_plan.grand_final();
         let gf_match = CreateTournamentMatch {
             bracket_id: gf_bracket_id,
             stage_id,
@@ -275,8 +284,8 @@ impl BracketGenerator {
             participant2_seed: None,
             participant1_source: Some(MatchParticipantSource::WinnerOf(format!("WR{wb_rounds}M1"))),
             participant2_source: Some(MatchParticipantSource::WinnerOf(format!("LR{lb_rounds}M1"))),
-            match_format,
-            maps_required: match_format.wins_required(),
+            match_format: gf_format,
+            maps_required: gf_format.game_count(),
             winner_progresses_to: None,
             loser_progresses_to: None,
         };
@@ -413,6 +422,7 @@ impl BracketGenerator {
 mod tests {
     use super::*;
     use crate::services::tournament::bracket_generator::tests::create_test_participants;
+    use portal_core::types::MatchFormat;
     use portal_core::{TournamentBracketId, TournamentId, TournamentStageId};
 
     fn create_de_result(count: usize) -> GeneratedDoubleElimination {
@@ -424,9 +434,42 @@ mod tests {
             TournamentBracketId::new(),
             TournamentBracketId::new(),
             participants,
-            MatchFormat::Bo3,
+            &MatchFormatPlan::uniform(MatchFormat::Bo3),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn test_double_elimination_grand_final_override() {
+        // "All playoffs bo1, grand final bo5" — the WB/LB finals feed the
+        // grand final and must stay bo1; only GFM1 gets the override.
+        let plan = MatchFormatPlan {
+            default: MatchFormat::Bo1,
+            grand_final_format: Some(MatchFormat::Bo5),
+            ..MatchFormatPlan::default()
+        };
+        let result = BracketGenerator::double_elimination(
+            TournamentId::new(),
+            TournamentStageId::new(),
+            TournamentBracketId::new(),
+            TournamentBracketId::new(),
+            TournamentBracketId::new(),
+            create_test_participants(8),
+            &plan,
+        )
+        .unwrap();
+
+        for m in result
+            .winners_bracket
+            .matches
+            .iter()
+            .chain(result.losers_bracket.matches.iter())
+        {
+            assert_eq!(m.match_format, MatchFormat::Bo1, "{}", m.bracket_position);
+        }
+        let gf = &result.grand_final.matches[0];
+        assert_eq!(gf.match_format, MatchFormat::Bo5);
+        assert_eq!(gf.maps_required, 5);
     }
 
     #[test]
@@ -621,7 +664,7 @@ mod tests {
             TournamentBracketId::new(),
             TournamentBracketId::new(),
             participants,
-            MatchFormat::Bo1,
+            &MatchFormatPlan::uniform(MatchFormat::Bo1),
         );
         assert!(matches!(result, Err(DomainError::InsufficientParticipants)));
     }

@@ -32,9 +32,9 @@ pub mod repositories;
 pub mod transaction;
 
 pub use adapters::{
-    MatchCompletionTxInput, MatchCompletionTxOutput, PgAgentCertRepository, PgApiKeyRepository,
-    PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgAwardRepository,
-    PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
+    MatchCompletionTxInput, MatchCompletionTxOutput, PgAdhocTeamRepository, PgAgentCertRepository,
+    PgApiKeyRepository, PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository,
+    PgAwardRepository, PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
     PgDemoPlayerStatsRepository, PgDemoRepository, PgDiscoveredMatchRepository,
     PgDisputeMessageRepository, PgDisputeRepository, PgEntityChangeRepository,
     PgEvidenceRepository, PgForfeitRecordRepository, PgGameServerRepository,
@@ -44,7 +44,7 @@ pub use adapters::{
     PgLeagueTeamSeasonRepository, PgMatchLineupRepository, PgMatchStatusLogRepository,
     PgMatchSubstitutionRepository, PgPermissionRepository, PgPlayerGameProfileRepository,
     PgPlayerMatchHistoryRepository, PgPlayerMmStatsRepository, PgPlayerRatingHistoryRepository,
-    PgPlayerRepository, PgProgressionLogRepository, PgRefreshTokenRepository,
+    PgPlayerRepository, PgProgressionLogRepository, PgPugRepository, PgRefreshTokenRepository,
     PgResultClaimRepository, PgResultReviewRepository, PgSagaExecutionRepository,
     PgScheduleProposalRepository, PgServerBookingRepository, PgServerEventRepository,
     PgServerReservationRepository, PgSteamTrackingRepository, PgSuggestedTimeRepository,

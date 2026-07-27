@@ -11,6 +11,8 @@ use portal_core::{
 use portal_domain::entities::tournament::{
     CreateTournamentCommand, CreateTournamentStageCommand, UpdateTournamentCommand,
 };
+
+use super::eligibility::{EligibilityRestrictionsInput, merge_eligibility_into_settings};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
@@ -173,64 +175,9 @@ pub struct CreateTournamentRequest {
     ///
     /// Controls which players/teams are allowed to register based on
     /// their in-game rating, peak rating, rank tier, etc.
+    #[validate(nested)]
     #[serde(default)]
     pub eligibility_restrictions: Option<EligibilityRestrictionsInput>,
-}
-
-/// Typed input for eligibility restrictions.
-///
-/// All fields are optional — only specified fields are enforced.
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-pub struct EligibilityRestrictionsInput {
-    /// Max current rating for any individual player.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_rating_per_player: Option<i32>,
-
-    /// Min current rating for any individual player.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_rating_per_player: Option<i32>,
-
-    /// Max peak (all-time high) rating for any player (anti-smurf).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_peak_rating_per_player: Option<i32>,
-
-    /// Max average rating for any player (computed from history).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_avg_rating_per_player: Option<i32>,
-
-    /// Max sum of all team members' current ratings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_team_total_rating: Option<i32>,
-
-    /// Max average of team members' current ratings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_team_average_rating: Option<i32>,
-
-    /// Only allow players in certain rank tiers (e.g., `["silver", "gold"]`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_rank_tiers: Vec<String>,
-
-    /// Min matches played to be eligible.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_matches_played: Option<i32>,
-}
-
-/// Merge an optional typed eligibility input into the settings JSON.
-fn merge_eligibility_into_settings(
-    settings: Option<serde_json::Value>,
-    eligibility: Option<EligibilityRestrictionsInput>,
-) -> Option<serde_json::Value> {
-    let Some(eligibility) = eligibility else {
-        return settings;
-    };
-
-    let eligibility_json = serde_json::to_value(eligibility).unwrap_or_default();
-
-    let mut settings = settings.unwrap_or_else(|| serde_json::json!({}));
-    if let Some(obj) = settings.as_object_mut() {
-        obj.insert("eligibility".to_string(), eligibility_json);
-    }
-    Some(settings)
 }
 
 fn default_registration_type() -> String {
@@ -507,6 +454,14 @@ pub struct CreateTournamentStageRequest {
     #[serde(default)]
     pub match_format: Option<String>,
 
+    /// Map veto format override for this stage (game veto format id).
+    #[serde(default)]
+    pub map_veto_format: Option<String>,
+
+    /// Advancement rule: `top_n`, `top_n_per_group`, `manual`. Defaults to `top_n`.
+    #[serde(default)]
+    pub advancement_rule: Option<String>,
+
     /// Stage start time.
     #[serde(default)]
     pub starts_at: Option<DateTime<Utc>>,
@@ -514,6 +469,28 @@ pub struct CreateTournamentStageRequest {
     /// Stage end time.
     #[serde(default)]
     pub ends_at: Option<DateTime<Utc>>,
+}
+
+fn parse_match_format(
+    value: Option<String>,
+) -> Result<Option<MatchFormat>, crate::error::ApiError> {
+    value
+        .map(|f| {
+            f.parse::<MatchFormat>()
+                .map_err(|_| crate::error::ApiError::bad_request("Invalid match format"))
+        })
+        .transpose()
+}
+
+fn parse_advancement_rule(
+    value: Option<String>,
+) -> Result<Option<portal_core::types::AdvancementRule>, crate::error::ApiError> {
+    value
+        .map(|r| {
+            r.parse::<portal_core::types::AdvancementRule>()
+                .map_err(|_| crate::error::ApiError::bad_request("Invalid advancement rule"))
+        })
+        .transpose()
 }
 
 impl CreateTournamentStageRequest {
@@ -527,13 +504,9 @@ impl CreateTournamentStageRequest {
             .parse()
             .map_err(|_| crate::error::ApiError::bad_request("Invalid stage format"))?;
 
-        let match_format = self
-            .match_format
-            .map(|f| {
-                f.parse::<MatchFormat>()
-                    .map_err(|_| crate::error::ApiError::bad_request("Invalid match format"))
-            })
-            .transpose()?;
+        let match_format = parse_match_format(self.match_format)?;
+        let advancement_rule = parse_advancement_rule(self.advancement_rule)?
+            .unwrap_or(portal_core::types::AdvancementRule::TopN);
 
         Ok(CreateTournamentStageCommand {
             tournament_id,
@@ -542,12 +515,76 @@ impl CreateTournamentStageRequest {
             format,
             format_settings: self.format_settings,
             advancement_count: self.advancement_count,
-            advancement_rule: portal_core::types::AdvancementRule::TopN,
+            advancement_rule,
             match_format,
-            map_veto_format: None,
+            map_veto_format: self.map_veto_format,
             starts_at: self.starts_at,
             ends_at: self.ends_at,
         })
+    }
+}
+
+/// Request to update a tournament stage. All fields optional; absent fields
+/// keep their current value.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct UpdateTournamentStageRequest {
+    /// Stage name.
+    #[validate(length(min = 2, max = 100))]
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// Format-specific settings (e.g. per-round match format overrides:
+    /// `round_formats`, `final_format`, `grand_final_format`). Replaces the
+    /// stored settings object wholesale when present.
+    #[serde(default)]
+    pub format_settings: Option<serde_json::Value>,
+
+    /// Number of participants who advance.
+    #[validate(range(min = 1, max = 256))]
+    #[serde(default)]
+    pub advancement_count: Option<i32>,
+
+    /// Advancement rule: `top_n`, `top_n_per_group`, `manual`.
+    #[serde(default)]
+    pub advancement_rule: Option<String>,
+
+    /// Match format override for this stage.
+    #[serde(default)]
+    pub match_format: Option<String>,
+
+    /// Map veto format override for this stage.
+    #[serde(default)]
+    pub map_veto_format: Option<String>,
+
+    /// Stage start time.
+    #[serde(default)]
+    pub starts_at: Option<DateTime<Utc>>,
+
+    /// Stage end time.
+    #[serde(default)]
+    pub ends_at: Option<DateTime<Utc>>,
+}
+
+impl UpdateTournamentStageRequest {
+    /// Convert to the repository update struct.
+    pub fn into_update(
+        self,
+    ) -> Result<
+        portal_domain::repositories::tournament::UpdateTournamentStage,
+        crate::error::ApiError,
+    > {
+        Ok(
+            portal_domain::repositories::tournament::UpdateTournamentStage {
+                name: self.name,
+                format_settings: self.format_settings,
+                advancement_count: self.advancement_count,
+                advancement_rule: parse_advancement_rule(self.advancement_rule)?,
+                match_format: parse_match_format(self.match_format)?,
+                map_veto_format: self.map_veto_format,
+                starts_at: self.starts_at,
+                ends_at: self.ends_at,
+            },
+        )
     }
 }
 

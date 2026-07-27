@@ -27,9 +27,9 @@ use portal_domain::repositories::{
 /// Explicit column list: `ip_address` must go through `host()` to come back
 /// as text, so `SELECT *` is not usable on this table.
 const SERVER_COLS: &str = "id, name, game_id, host(ip_address) AS ip_address, port, gotv_port, \
-     region, enabled, status, current_match_id, agent_cert_serial, agent_cert_expires_at, \
-     agent_version, last_heartbeat_at, last_gamestate, enrollment_token_hash, \
-     enrollment_token_expires_at, created_at, updated_at";
+     region, enabled, allow_pugs, status, current_match_id, agent_cert_serial, \
+     agent_cert_expires_at, agent_version, last_heartbeat_at, last_gamestate, \
+     enrollment_token_hash, enrollment_token_expires_at, created_at, updated_at";
 
 // =============================================================================
 // Type Conversions
@@ -52,6 +52,7 @@ impl From<GameServerRow> for GameServer {
             gotv_port: row.gotv_port.and_then(|p| u16::try_from(p).ok()),
             region: row.region,
             enabled: row.enabled,
+            allow_pugs: row.allow_pugs,
             status: row.status.parse().unwrap_or_default(),
             current_match_id: row.current_match_id.map(TournamentMatchId::from),
             agent_cert_serial: row.agent_cert_serial,
@@ -178,6 +179,7 @@ impl GameServerRepository for PgGameServerRepository {
                 gotv_port = CASE WHEN $5 THEN $6 ELSE gotv_port END, \
                 region = COALESCE($7, region), \
                 enabled = COALESCE($8, enabled), \
+                allow_pugs = COALESCE($9, allow_pugs), \
                 updated_at = NOW() \
              WHERE id = $1 \
              RETURNING {SERVER_COLS}"
@@ -191,6 +193,7 @@ impl GameServerRepository for PgGameServerRepository {
             .bind(update.gotv_port.flatten().map(i32::from))
             .bind(update.region)
             .bind(update.enabled)
+            .bind(update.allow_pugs)
             .fetch_optional(&self.pool)
             .await
             .map_err(internal)?;
@@ -544,6 +547,7 @@ impl From<ServerReservationRow> for ServerReservation {
             match_id: TournamentMatchId::from(row.match_id),
             matchzy_id: row.matchzy_id,
             status: row.status.parse().unwrap_or_default(),
+            kind: row.reservation_kind.parse().unwrap_or_default(),
             connect_password: row.connect_password,
             gotv_password: row.gotv_password,
             config_token_hash: row.config_token_hash,
@@ -602,13 +606,14 @@ impl ServerReservationRepository for PgServerReservationRepository {
     ) -> Result<ServerReservation, DomainError> {
         let row = sqlx::query_as::<_, ServerReservationRow>(
             "INSERT INTO server_reservations \
-                (id, match_id, connect_password, gotv_password, \
+                (id, match_id, reservation_kind, connect_password, gotv_password, \
                  config_token_hash, event_token_hash, config_token_expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
              RETURNING *",
         )
         .bind(create.id.as_uuid())
         .bind(create.match_id.as_uuid())
+        .bind(create.kind.to_string())
         .bind(&create.connect_password)
         .bind(&create.gotv_password)
         .bind(&create.config_token_hash)
@@ -635,6 +640,7 @@ impl ServerReservationRepository for PgServerReservationRepository {
         heartbeat_cutoff: DateTime<Utc>,
         now: DateTime<Utc>,
         scheduled_at: Option<DateTime<Utc>>,
+        for_pug: bool,
     ) -> Result<Option<(ServerReservation, GameServer)>, DomainError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
 
@@ -646,6 +652,7 @@ impl ServerReservationRepository for PgServerReservationRepository {
                AND ($2::text IS NULL OR gs.region = $2) \
                AND gs.last_heartbeat_at > $3 \
                AND gs.last_gamestate = 'none' \
+               AND (NOT $7 OR gs.allow_pugs) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM server_bookings b \
                    WHERE b.server_id = gs.id \
@@ -670,6 +677,7 @@ impl ServerReservationRepository for PgServerReservationRepository {
             .bind(now)
             .bind(tournament_id.as_uuid())
             .bind(scheduled_at)
+            .bind(for_pug)
             .fetch_optional(&mut *tx)
             .await
             .map_err(internal)?;
@@ -982,7 +990,8 @@ impl ServerReservationRepository for PgServerReservationRepository {
     async fn list_pending(&self, limit: i64) -> Result<Vec<ServerReservation>, DomainError> {
         let rows = sqlx::query_as::<_, ServerReservationRow>(
             "SELECT * FROM server_reservations WHERE status = 'pending' \
-             ORDER BY created_at ASC LIMIT $1",
+             ORDER BY CASE reservation_kind WHEN 'match' THEN 0 ELSE 1 END, \
+                      created_at ASC LIMIT $1",
         )
         .bind(limit)
         .fetch_all(&self.pool)

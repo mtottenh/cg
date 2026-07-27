@@ -71,6 +71,7 @@ async fn seed_allocated_reservation(
         .create_pending(CreateServerReservation {
             id: ServerReservationId::new(),
             match_id,
+            kind: portal_core::types::ReservationKind::Match,
             connect_password: "pw12345678".into(),
             gotv_password: Some("gotv123456".into()),
             config_token_hash: hash_token("cgm_test_config_token"),
@@ -89,6 +90,7 @@ async fn seed_allocated_reservation(
             Utc::now() - Duration::seconds(90),
             Utc::now(),
             None,
+            false,
         )
         .await
         .unwrap()
@@ -140,6 +142,7 @@ async fn test_allocation_predicate_and_exclusivity() {
         .create_pending(CreateServerReservation {
             id: ServerReservationId::new(),
             match_id: match_id.parse().unwrap(),
+            kind: portal_core::types::ReservationKind::Match,
             connect_password: "pw".into(),
             gotv_password: None,
             config_token_hash: hash_token("a"),
@@ -158,6 +161,7 @@ async fn test_allocation_predicate_and_exclusivity() {
             Utc::now() - Duration::seconds(90),
             Utc::now(),
             None,
+            false,
         )
         .await
         .unwrap();
@@ -175,6 +179,7 @@ async fn test_allocation_predicate_and_exclusivity() {
             Utc::now() - Duration::seconds(90),
             Utc::now(),
             None,
+            false,
         )
         .await
         .unwrap()
@@ -189,6 +194,7 @@ async fn test_allocation_predicate_and_exclusivity() {
         .create_pending(CreateServerReservation {
             id: ServerReservationId::new(),
             match_id: match2_id.parse().unwrap(),
+            kind: portal_core::types::ReservationKind::Match,
             connect_password: "pw".into(),
             gotv_password: None,
             config_token_hash: hash_token("c"),
@@ -207,6 +213,7 @@ async fn test_allocation_predicate_and_exclusivity() {
             Utc::now() - Duration::seconds(90),
             Utc::now(),
             None,
+            false,
         )
         .await
         .unwrap();
@@ -243,6 +250,7 @@ async fn test_hard_hold_booking_blocks_allocation() {
         .create_pending(CreateServerReservation {
             id: ServerReservationId::new(),
             match_id: match_id.parse().unwrap(),
+            kind: portal_core::types::ReservationKind::Match,
             connect_password: "pw".into(),
             gotv_password: None,
             config_token_hash: hash_token("e"),
@@ -261,6 +269,7 @@ async fn test_hard_hold_booking_blocks_allocation() {
             Utc::now() - Duration::seconds(90),
             Utc::now(),
             None,
+            false,
         )
         .await
         .unwrap();

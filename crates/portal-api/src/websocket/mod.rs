@@ -15,6 +15,7 @@ pub mod connection;
 pub mod lobby;
 pub mod lobby_manager;
 pub mod messages;
+pub mod pug_lobby;
 pub mod timeout_task;
 
 pub use connection::{ConnectionRole, VetoConnection};

@@ -19,13 +19,13 @@ use std::sync::Arc;
 use tracing::{debug, instrument};
 
 use portal_core::{
-    DomainError, LeagueTeamSeasonId, PlayerId, TournamentId, TournamentRegistrationId, UserId,
-    VetoDelegateId,
+    AdhocTeamId, DomainError, LeagueTeamSeasonId, PlayerId, TournamentId, TournamentRegistrationId,
+    UserId, VetoDelegateId,
 };
 
 use crate::entities::veto_delegate::{DelegatedByRole, VetoDelegate};
 use crate::repositories::{
-    CreateVetoDelegate, LeagueTeamMemberRepository, LeagueTeamRepository,
+    AdhocTeamRepository, CreateVetoDelegate, LeagueTeamMemberRepository, LeagueTeamRepository,
     LeagueTeamSeasonRepository, PermissionRepository, TournamentRegistrationRepository,
     VetoDelegateRepository,
 };
@@ -69,6 +69,10 @@ where
     team_repo: Arc<LTR>,
     member_repo: Arc<LTMR>,
     permission_repo: Arc<PR>,
+    /// Resolves membership of ad-hoc teams (PUG containers). Optional so
+    /// existing construction sites keep working; without it, ad-hoc
+    /// registrations authorize admins only.
+    adhoc_repo: Option<Arc<dyn AdhocTeamRepository>>,
 }
 
 impl<VDR, TRR, LTSR, LTR, LTMR, PR> VetoAuthorizationService<VDR, TRR, LTSR, LTR, LTMR, PR>
@@ -96,7 +100,16 @@ where
             team_repo,
             member_repo,
             permission_repo,
+            adhoc_repo: None,
         }
+    }
+
+    /// Attach an ad-hoc team repository so ad-hoc registrations (PUGs)
+    /// authorize their team members.
+    #[must_use]
+    pub fn with_adhoc_repo(mut self, adhoc_repo: Arc<dyn AdhocTeamRepository>) -> Self {
+        self.adhoc_repo = Some(adhoc_repo);
+        self
     }
 
     /// Check if a user can perform veto actions for a registration.
@@ -136,6 +149,31 @@ where
             .find_by_id(registration_id)
             .await?
             .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
+
+        // Ad-hoc registrations (PUG containers): any member of the ad-hoc
+        // team speaks for it. Captains map to the Captain role; spin/lock
+        // privileges are enforced at the PUG layer, veto turns accept any
+        // member.
+        if let Some(adhoc_uuid) = registration.adhoc_team_id {
+            let adhoc_team_id = AdhocTeamId::from_uuid(adhoc_uuid);
+            if self.is_tournament_admin(user_id).await? {
+                debug!("User authorized as tournament admin (ad-hoc registration)");
+                return Ok(VetoAuthorizationRole::TournamentAdmin);
+            }
+            if let Some(adhoc_repo) = &self.adhoc_repo
+                && adhoc_repo.is_member(adhoc_team_id, player_id).await?
+            {
+                if adhoc_repo.is_captain(adhoc_team_id, player_id).await? {
+                    debug!("User authorized as ad-hoc team captain");
+                    return Ok(VetoAuthorizationRole::Captain);
+                }
+                debug!("User authorized as ad-hoc team member");
+                return Ok(VetoAuthorizationRole::Player);
+            }
+            return Err(DomainError::NotAuthorized(
+                "Only members of the ad-hoc team can act for this registration".to_string(),
+            ));
+        }
 
         // Individual registrations have no team_season: the registered
         // player acts for themself (admins can always act). Previously this
@@ -407,6 +445,7 @@ where
             team_repo: Arc::clone(&self.team_repo),
             member_repo: Arc::clone(&self.member_repo),
             permission_repo: Arc::clone(&self.permission_repo),
+            adhoc_repo: self.adhoc_repo.clone(),
         }
     }
 }

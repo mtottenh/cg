@@ -42,6 +42,10 @@ pub fn routes() -> Router<AppState> {
             get(player_game_profiles::get_player_mm_stats),
         )
         .route(
+            "/{player_id}/pug-stats",
+            get(crate::handlers::pugs::player_pug_stats),
+        )
+        .route(
             "/{player_id}/games/{game_id}/match-history",
             get(player_game_profiles::get_player_match_history),
         )

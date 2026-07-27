@@ -73,6 +73,7 @@ async fn setup_tournament_with_match(
             format: TournamentFormat::SingleElimination,
             format_settings: serde_json::json!({}),
             participant_type: TournamentParticipantType::Individual,
+            kind: portal_core::types::TournamentKind::Standard,
             team_size: None,
             min_participants: 2,
             max_participants: 8,

@@ -50,8 +50,7 @@ use crate::error::ApiError;
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
 use crate::state::TournamentState;
 use axum::http::HeaderMap;
-use portal_core::types::MatchFormat;
-use portal_core::{PlayerId, ScopeType, TournamentRegistrationId, VetoFormatConfig};
+use portal_core::{PlayerId, ScopeType, TournamentRegistrationId};
 
 /// Extract the request id from incoming headers, falling back to
 /// `"unknown"` if absent or not ASCII.
@@ -128,30 +127,45 @@ pub(super) async fn require_registration_actor(
     Ok(())
 }
 
-/// Check eligibility restrictions for a set of player IDs against a tournament.
-///
-/// Delegates to the `EligibilityService` which fetches each player's game
-/// profile and rating stats for the tournament's game, then runs the checker.
-///
-/// `pub(super)` because it's called by the team-register and
-/// player-register handlers in `registration.rs` and nowhere else —
-/// keeping it out of the public surface avoids leaking an internal
-/// enforcement path.
-pub(super) async fn check_eligibility_for_players(
+/// Resolve the restrictions that actually bind a tournament: its own,
+/// composed strictest-wins with its league's entry requirements when it
+/// belongs to a league. A league tournament may tighten league rules but
+/// never loosen them — previously a league's rating floor simply did not
+/// apply to its tournaments at all.
+pub(super) async fn effective_restrictions(
     state: &TournamentState,
     tournament: &portal_domain::entities::Tournament,
-    player_ids: &[PlayerId],
-) -> Result<(), ApiError> {
-    let restrictions = tournament.eligibility_restrictions();
-    let violations = state
-        .eligibility_service
-        .check_players(&restrictions, tournament.game_id, player_ids)
-        .await?;
+) -> Result<portal_domain::entities::eligibility::EligibilityRestrictions, ApiError> {
+    let own = tournament.eligibility_restrictions();
+    let Some(league_id) = tournament.league_id else {
+        return Ok(own);
+    };
+    let league = state.league_service.get_league(league_id).await?;
+    let league_restrictions =
+        portal_domain::entities::eligibility::EligibilityRestrictions::from_settings(
+            &league.settings,
+        );
+    let composed = own.intersect(&league_restrictions);
 
-    if violations.is_empty() {
-        return Ok(());
+    // Two individually-valid rule sets can compose into a contradiction that
+    // rejects everyone. It fails closed, which is the safe direction, but the
+    // per-registration message would never reveal that the configuration
+    // itself is impossible — so say so where an operator will see it.
+    if let Some(reason) = composed.unsatisfiable_reason() {
+        tracing::warn!(
+            tournament_id = %tournament.id,
+            league_id = %league_id,
+            reason = %reason,
+            "tournament and league entry requirements compose to an unsatisfiable rule set — no entrant can register"
+        );
     }
 
+    Ok(composed)
+}
+
+fn eligibility_error(
+    violations: &[portal_domain::entities::eligibility::EligibilityViolation],
+) -> ApiError {
     let messages: Vec<String> = violations
         .iter()
         .map(|v| {
@@ -162,10 +176,52 @@ pub(super) async fn check_eligibility_for_players(
             }
         })
         .collect();
-    Err(ApiError::bad_request(format!(
-        "Eligibility check failed: {}",
-        messages.join("; ")
-    )))
+    ApiError::bad_request(format!("Eligibility check failed: {}", messages.join("; ")))
+}
+
+/// Check per-player eligibility for a set of player IDs against a
+/// tournament's effective restrictions.
+///
+/// `pub(super)` because it's called by the register handlers in
+/// `registration.rs` and nowhere else — keeping it out of the public
+/// surface avoids leaking an internal enforcement path.
+pub(super) async fn check_eligibility_for_players(
+    state: &TournamentState,
+    tournament: &portal_domain::entities::Tournament,
+    player_ids: &[PlayerId],
+) -> Result<(), ApiError> {
+    let restrictions = effective_restrictions(state, tournament).await?;
+    let violations = state
+        .eligibility_service
+        .check_players(&restrictions, tournament.game_id, player_ids)
+        .await?;
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(eligibility_error(&violations))
+    }
+}
+
+/// Check a registering team's full roster: per-player restrictions on every
+/// member plus the team-aggregate rating bounds (min and max, total and
+/// average).
+pub(super) async fn check_eligibility_for_team(
+    state: &TournamentState,
+    tournament: &portal_domain::entities::Tournament,
+    player_ids: &[PlayerId],
+) -> Result<(), ApiError> {
+    let restrictions = effective_restrictions(state, tournament).await?;
+    let violations = state
+        .eligibility_service
+        .check_team(&restrictions, tournament.game_id, player_ids)
+        .await?;
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(eligibility_error(&violations))
+    }
 }
 
 /// Auto-create and start a veto session when a match transitions to PickBan.
@@ -185,18 +241,26 @@ pub(super) async fn auto_create_veto_session(
 ) -> Result<(), ApiError> {
     use portal_domain::repositories::tournament::TournamentMapPoolRepository;
 
-    // Derive veto format from match format
-    let veto_format = match match_.match_format {
-        MatchFormat::Bo1 => VetoFormatConfig::bo1(),
-        MatchFormat::Bo3 => VetoFormatConfig::bo3(),
-        MatchFormat::Bo5 | MatchFormat::Bo7 => VetoFormatConfig::bo5(),
-    };
-
-    // Resolve map pool and side selection mode
     let tournament = state
         .tournament_service
         .get_tournament(match_.tournament_id)
         .await?;
+
+    // Veto format: stage override → tournament default → derived from the
+    // match's own best-of. Standard boN ids re-key to the match format so a
+    // mixed-format bracket vetos each match at its own series length.
+    let stage_veto_override = state
+        .tournament_service
+        .get_stage(match_.stage_id)
+        .await?
+        .and_then(|s| s.map_veto_format);
+    let veto_format = crate::handlers::veto::resolve_match_veto_format(
+        stage_veto_override.as_deref(),
+        tournament.default_map_veto_format.as_deref(),
+        match_.match_format,
+        &state.plugin_manager,
+    )?
+    .unwrap_or_else(|| crate::handlers::veto::builtin_veto_for(match_.match_format));
 
     let map_pool = if let Ok(Some(pool)) = state
         .tournament_map_pool_repo

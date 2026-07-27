@@ -50,6 +50,10 @@ pub fn routes() -> Router<AppState> {
         // Tournament stages
         .route("/{tournament_id}/stages", post(tournaments::create_stage))
         .route("/{tournament_id}/stages", get(tournaments::get_stages))
+        .route(
+            "/{tournament_id}/stages/{stage_id}",
+            patch(tournaments::update_stage),
+        )
         // Tournament invitations (invite-only registration, P-27)
         .route(
             "/{tournament_id}/invitations",

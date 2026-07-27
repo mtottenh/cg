@@ -744,6 +744,42 @@ impl GamePlugin for Cs2Plugin {
                 ],
                 description: "Ban-Ban-Pick-Pick-Pick-Pick-Decider".to_string(),
             },
+            // Bo7 veto format (all seven maps in play; picks decide order)
+            MapPickBanFormat {
+                id: "bo7_veto".to_string(),
+                display_name: "Best of 7 Veto".to_string(),
+                sequence: vec![
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 1,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 2,
+                        action: VetoActionType::Pick,
+                    },
+                    MapVetoAction {
+                        team: 0,
+                        action: VetoActionType::Decider,
+                    },
+                ],
+                description: "Pick-Pick-Pick-Pick-Pick-Pick-Decider".to_string(),
+            },
         ]
     }
 
@@ -752,7 +788,12 @@ impl GamePlugin for Cs2Plugin {
     }
 
     fn supported_match_formats(&self) -> Vec<MatchFormat> {
-        vec![MatchFormat::Bo1, MatchFormat::Bo3, MatchFormat::Bo5]
+        vec![
+            MatchFormat::Bo1,
+            MatchFormat::Bo3,
+            MatchFormat::Bo5,
+            MatchFormat::Bo7,
+        ]
     }
 }
 
@@ -766,6 +807,7 @@ impl TournamentPlugin for Cs2Plugin {
             VetoFormatConfig::bo1(),
             VetoFormatConfig::bo3(),
             VetoFormatConfig::bo5(),
+            VetoFormatConfig::bo7(),
         ]
     }
 
@@ -774,7 +816,7 @@ impl TournamentPlugin for Cs2Plugin {
             MatchFormat::Bo1 => Some("bo1_standard".to_string()),
             MatchFormat::Bo3 => Some("bo3_standard".to_string()),
             MatchFormat::Bo5 => Some("bo5_standard".to_string()),
-            MatchFormat::Bo7 => None, // CS2 doesn't typically do Bo7
+            MatchFormat::Bo7 => Some("bo7_standard".to_string()),
         }
     }
 

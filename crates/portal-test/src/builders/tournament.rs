@@ -337,6 +337,7 @@ impl TournamentBuilder {
             format: self.format,
             format_settings: self.format_settings,
             participant_type: self.participant_type,
+            kind: "standard".to_string(),
             team_size: self.team_size,
             min_participants: self.min_participants,
             max_participants: self.max_participants,

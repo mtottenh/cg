@@ -37,15 +37,58 @@ where
         }
     }
 
-    /// Check a set of players against eligibility restrictions for a specific game.
+    /// Fetch profile + rating stats for each player.
+    async fn fetch_player_data(
+        &self,
+        game_id: GameId,
+        player_ids: &[PlayerId],
+    ) -> Result<
+        Vec<(
+            PlayerId,
+            Option<crate::entities::PlayerGameProfile>,
+            Option<crate::repositories::player_rating_history::RatingStats>,
+        )>,
+        DomainError,
+    > {
+        let mut player_data = Vec::with_capacity(player_ids.len());
+        for &pid in player_ids {
+            let profile = self.profile_service.get_profile(pid, game_id).await?;
+            let stats = self.rating_repo.get_rating_stats(pid, game_id).await?;
+            player_data.push((pid, profile, stats));
+        }
+        Ok(player_data)
+    }
+
+    /// Check individual players against the per-player restrictions.
     ///
-    /// Fetches each player's game profile and rating stats, then runs the
-    /// standard eligibility check. Returns an empty vec if all players pass.
+    /// Team-aggregate bounds are NOT evaluated here — use [`Self::check_team`]
+    /// when the ids form a roster. A single joining player must never be
+    /// measured against a team cap.
     ///
     /// The `game_id` parameter ensures we fetch profiles for the correct game —
-    /// a player's CS2 rating is irrelevant when checking eligibility for an AoE4 league.
+    /// a player's CS2 rating is irrelevant when checking eligibility for an AoE2 league.
     #[instrument(skip(self, restrictions))]
     pub async fn check_players(
+        &self,
+        restrictions: &EligibilityRestrictions,
+        game_id: GameId,
+        player_ids: &[PlayerId],
+    ) -> Result<Vec<EligibilityViolation>, DomainError> {
+        if !restrictions.has_player_restrictions() {
+            return Ok(vec![]);
+        }
+
+        let player_data = self.fetch_player_data(game_id, player_ids).await?;
+        Ok(super::eligibility::check_player_eligibility(
+            restrictions,
+            &player_data,
+        ))
+    }
+
+    /// Check a team roster: per-player restrictions on every member plus the
+    /// team-aggregate rating bounds over the whole set.
+    #[instrument(skip(self, restrictions))]
+    pub async fn check_team(
         &self,
         restrictions: &EligibilityRestrictions,
         game_id: GameId,
@@ -55,14 +98,8 @@ where
             return Ok(vec![]);
         }
 
-        let mut player_data = Vec::with_capacity(player_ids.len());
-        for &pid in player_ids {
-            let profile = self.profile_service.get_profile(pid, game_id).await?;
-            let stats = self.rating_repo.get_rating_stats(pid, game_id).await?;
-            player_data.push((pid, profile, stats));
-        }
-
-        Ok(super::eligibility::check_eligibility(
+        let player_data = self.fetch_player_data(game_id, player_ids).await?;
+        Ok(super::eligibility::check_team_eligibility(
             restrictions,
             &player_data,
         ))
@@ -82,5 +119,17 @@ where
     ) -> Result<Vec<EligibilityViolation>, DomainError> {
         let restrictions = EligibilityRestrictions::from_settings(settings);
         self.check_players(&restrictions, game_id, player_ids).await
+    }
+
+    /// Check a roster against restrictions parsed from a settings JSONB value.
+    #[instrument(skip(self, settings))]
+    pub async fn check_team_from_settings(
+        &self,
+        settings: &serde_json::Value,
+        game_id: GameId,
+        player_ids: &[PlayerId],
+    ) -> Result<Vec<EligibilityViolation>, DomainError> {
+        let restrictions = EligibilityRestrictions::from_settings(settings);
+        self.check_team(&restrictions, game_id, player_ids).await
     }
 }

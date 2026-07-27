@@ -57,6 +57,7 @@ impl From<TournamentRow> for Tournament {
             format: row.format.parse().unwrap_or_default(),
             format_settings: row.format_settings,
             participant_type: row.participant_type.parse().unwrap_or_default(),
+            kind: row.kind.parse().unwrap_or_default(),
             team_size: row.team_size,
             min_participants: row.min_participants,
             max_participants: row.max_participants,

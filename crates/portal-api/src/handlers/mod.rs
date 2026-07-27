@@ -17,6 +17,8 @@ pub mod leagues;
 pub mod player_game_profiles;
 pub mod players;
 pub mod progression;
+pub mod pug_ws;
+pub mod pugs;
 pub mod result_reviews;
 pub mod results;
 pub mod roles;

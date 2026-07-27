@@ -24,6 +24,7 @@ pub mod player_game_profile;
 pub mod player_match_history;
 pub mod player_mm_stats;
 pub mod player_rating_history;
+pub mod pug;
 pub mod refresh_token;
 pub mod result_review;
 pub mod schedule_proposal;
@@ -85,6 +86,7 @@ pub use player_mm_stats::{AccumulateMatchStats, PlayerMmStatsRepository};
 pub use player_rating_history::{
     CreatePlayerRatingHistory, PlayerRatingHistoryRepository, RatingStats,
 };
+pub use pug::{AdhocTeamRepository, CreatePug, CreateWheelSpin, PugRepository};
 pub use refresh_token::RefreshTokenRepository;
 pub use result_review::{CreateResultReview, ResultReviewRepository};
 pub use schedule_proposal::ScheduleProposalRepository;

@@ -60,10 +60,7 @@ pub fn derive_map_sides(
 #[must_use]
 pub fn generate_connect_password() -> String {
     const CHARSET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
-    let mut rng = rand::rng();
-    (0..10)
-        .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
-        .collect()
+    crate::util::random_code(CHARSET, 10)
 }
 
 /// Generate a bearer token for the config/event endpoints (`cgm_` prefix,

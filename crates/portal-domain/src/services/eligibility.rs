@@ -9,7 +9,12 @@ use portal_core::PlayerId;
 const DEFAULT_RATING: i32 = 1500;
 const DEFAULT_PEAK: i32 = 1500;
 
-/// Check a set of players against eligibility restrictions.
+/// Check individual players against the per-player restrictions only.
+///
+/// Team-aggregate bounds are deliberately NOT evaluated here: they only make
+/// sense against a real roster. Running them on a lone joining player (as the
+/// league-join path once did) silently reinterprets a team cap as a
+/// per-player cap.
 ///
 /// Each player is represented by their ID, optional game profile, and optional
 /// rating stats (from history). Players without a profile are treated as having
@@ -17,17 +22,16 @@ const DEFAULT_PEAK: i32 = 1500;
 ///
 /// Returns an empty list if all players pass. Otherwise returns one violation
 /// per failed check.
-pub fn check_eligibility(
+pub fn check_player_eligibility(
     restrictions: &EligibilityRestrictions,
     player_data: &[(PlayerId, Option<PlayerGameProfile>, Option<RatingStats>)],
 ) -> Vec<EligibilityViolation> {
-    if !restrictions.has_restrictions() {
+    if !restrictions.has_player_restrictions() {
         return vec![];
     }
 
     let mut violations = Vec::new();
 
-    // Per-player checks
     for (player_id, profile, stats) in player_data {
         let rating = profile.as_ref().map_or(DEFAULT_RATING, |p| p.rating);
         let peak_rating = profile.as_ref().map_or(DEFAULT_PEAK, |p| p.peak_rating);
@@ -108,41 +112,296 @@ pub fn check_eligibility(
         }
     }
 
-    // Team-aggregate checks
-    if restrictions.max_team_total_rating.is_some()
-        || restrictions.max_team_average_rating.is_some()
+    violations
+}
+
+/// Check a team roster: every per-player restriction plus the team-aggregate
+/// bounds (total and average rating, min and max sides).
+///
+/// The aggregate is computed over exactly the players passed in — callers
+/// decide whether that's a seasonal roster or a match lineup.
+pub fn check_team_eligibility(
+    restrictions: &EligibilityRestrictions,
+    player_data: &[(PlayerId, Option<PlayerGameProfile>, Option<RatingStats>)],
+) -> Vec<EligibilityViolation> {
+    let mut violations = check_player_eligibility(restrictions, player_data);
+
+    if !restrictions.has_team_restrictions() || player_data.is_empty() {
+        return violations;
+    }
+
+    let team_violation = |restriction: &str, message: String| EligibilityViolation {
+        player_id: PlayerId::from_uuid(uuid::Uuid::nil()),
+        restriction: restriction.to_string(),
+        message,
+    };
+
+    let total_rating: i32 = player_data
+        .iter()
+        .map(|(_, p, _)| p.as_ref().map_or(DEFAULT_RATING, |p| p.rating))
+        .sum();
+    let count = player_data.len() as i32;
+    // Reported average only. The comparisons below multiply out instead of
+    // dividing: integer division truncates, so a true average of 1000.5
+    // against a 1000 cap would read as exactly 1000 and slip through.
+    let avg = total_rating / count;
+    let total = i64::from(total_rating);
+    let count64 = i64::from(count);
+
+    if let Some(max_total) = restrictions.max_team_total_rating
+        && total_rating > max_total
     {
-        let total_rating: i32 = player_data
-            .iter()
-            .map(|(_, p, _)| p.as_ref().map_or(DEFAULT_RATING, |p| p.rating))
-            .sum();
-        let count = player_data.len() as i32;
+        violations.push(team_violation(
+            "max_team_total_rating",
+            format!("Team total rating ({total_rating}) exceeds maximum allowed ({max_total})"),
+        ));
+    }
 
-        if let Some(max_total) = restrictions.max_team_total_rating
-            && total_rating > max_total
-        {
-            violations.push(EligibilityViolation {
-                player_id: PlayerId::from_uuid(uuid::Uuid::nil()),
-                restriction: "max_team_total_rating".to_string(),
-                message: format!(
-                    "Team total rating ({total_rating}) exceeds maximum allowed ({max_total})"
-                ),
-            });
-        }
+    if let Some(min_total) = restrictions.min_team_total_rating
+        && total_rating < min_total
+    {
+        violations.push(team_violation(
+            "min_team_total_rating",
+            format!("Team total rating ({total_rating}) is below minimum required ({min_total})"),
+        ));
+    }
 
-        if let Some(max_avg) = restrictions.max_team_average_rating {
-            let avg = if count > 0 { total_rating / count } else { 0 };
-            if avg > max_avg {
-                violations.push(EligibilityViolation {
-                    player_id: PlayerId::from_uuid(uuid::Uuid::nil()),
-                    restriction: "max_team_average_rating".to_string(),
-                    message: format!(
-                        "Team average rating ({avg}) exceeds maximum allowed ({max_avg})"
-                    ),
-                });
-            }
-        }
+    if let Some(max_avg) = restrictions.max_team_average_rating
+        && total > i64::from(max_avg) * count64
+    {
+        violations.push(team_violation(
+            "max_team_average_rating",
+            format!("Team average rating ({avg}) exceeds maximum allowed ({max_avg})"),
+        ));
+    }
+
+    if let Some(min_avg) = restrictions.min_team_average_rating
+        && total < i64::from(min_avg) * count64
+    {
+        violations.push(team_violation(
+            "min_team_average_rating",
+            format!("Team average rating ({avg}) is below minimum required ({min_avg})"),
+        ));
     }
 
     violations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn player(rating: i32) -> (PlayerId, Option<PlayerGameProfile>, Option<RatingStats>) {
+        let now = chrono::Utc::now();
+        let profile = PlayerGameProfile {
+            id: portal_core::PlayerGameProfileId::new(),
+            player_id: PlayerId::new(),
+            game_id: portal_core::GameId::new(),
+            rating,
+            rating_deviation: 350,
+            volatility: 0.06,
+            peak_rating: rating,
+            peak_rating_at: None,
+            rank_tier: None,
+            rank_division: None,
+            rank_points: None,
+            matches_played: 100,
+            wins: 0,
+            losses: 0,
+            draws: 0,
+            win_streak: 0,
+            best_win_streak: 0,
+            total_playtime_minutes: 0,
+            game_specific_stats: serde_json::json!({}),
+            first_match_at: None,
+            last_match_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        (profile.player_id, Some(profile), None)
+    }
+
+    fn team_restrictions() -> EligibilityRestrictions {
+        EligibilityRestrictions {
+            max_team_average_rating: Some(2000),
+            min_team_average_rating: Some(1000),
+            max_team_total_rating: Some(10000),
+            min_team_total_rating: Some(5000),
+            ..EligibilityRestrictions::default()
+        }
+    }
+
+    #[test]
+    fn player_check_never_evaluates_team_bounds() {
+        // The league-join hazard: one joining player, team caps configured.
+        // Their personal rating (1500) is far below min_team_total (5000) —
+        // a naive aggregate over the singleton would reject them.
+        let violations = check_player_eligibility(&team_restrictions(), &[player(1500)]);
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn team_check_enforces_min_and_max_aggregates() {
+        let r = team_restrictions();
+
+        // 5 × 1500: total 7500, avg 1500 — inside every bound.
+        let ok: Vec<_> = (0..5).map(|_| player(1500)).collect();
+        assert!(check_team_eligibility(&r, &ok).is_empty());
+
+        // 5 × 800: total 4000 < 5000 and avg 800 < 1000.
+        let weak: Vec<_> = (0..5).map(|_| player(800)).collect();
+        let violations = check_team_eligibility(&r, &weak);
+        let keys: Vec<_> = violations.iter().map(|v| v.restriction.as_str()).collect();
+        assert!(keys.contains(&"min_team_total_rating"), "{keys:?}");
+        assert!(keys.contains(&"min_team_average_rating"), "{keys:?}");
+
+        // 5 × 2500: total 12500 > 10000 and avg 2500 > 2000.
+        let strong: Vec<_> = (0..5).map(|_| player(2500)).collect();
+        let violations = check_team_eligibility(&r, &strong);
+        let keys: Vec<_> = violations.iter().map(|v| v.restriction.as_str()).collect();
+        assert!(keys.contains(&"max_team_total_rating"), "{keys:?}");
+        assert!(keys.contains(&"max_team_average_rating"), "{keys:?}");
+    }
+
+    #[test]
+    fn team_check_includes_per_player_rules() {
+        let r = EligibilityRestrictions {
+            min_rating_per_player: Some(1200),
+            ..EligibilityRestrictions::default()
+        };
+        let roster = vec![player(1500), player(900)];
+        let violations = check_team_eligibility(&r, &roster);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].restriction, "min_rating_per_player");
+    }
+
+    #[test]
+    fn team_total_cap_only_for_roster_building() {
+        let r = team_restrictions().team_total_cap_only();
+        // A two-player roster being assembled: floors and the average cap
+        // must not fire (later additions can still satisfy them)...
+        let building = vec![player(1500), player(1500)];
+        assert!(check_team_eligibility(&r, &building).is_empty());
+        // ...and a high-rated pair whose average busts the cap is fine too —
+        // low-rated additions can still pull the average down.
+        let top_heavy = vec![player(4000), player(4000)];
+        assert!(check_team_eligibility(&r, &top_heavy).is_empty());
+        // But the total cap is monotone: once over, no addition repairs it.
+        let over_total = vec![player(4000), player(4000), player(4000)];
+        let keys: Vec<_> = check_team_eligibility(&r, &over_total)
+            .iter()
+            .map(|v| v.restriction.clone())
+            .collect();
+        assert_eq!(keys, vec!["max_team_total_rating".to_string()]);
+    }
+
+    #[test]
+    fn intersect_keeps_stricter_bounds() {
+        let league = EligibilityRestrictions {
+            min_rating_per_player: Some(12000),
+            max_team_average_rating: Some(20000),
+            allowed_rank_tiers: vec!["gold".into(), "silver".into()],
+            ..EligibilityRestrictions::default()
+        };
+        let tournament = EligibilityRestrictions {
+            min_rating_per_player: Some(10000),
+            max_rating_per_player: Some(18000),
+            max_team_average_rating: Some(16000),
+            allowed_rank_tiers: vec!["silver".into(), "bronze".into()],
+            ..EligibilityRestrictions::default()
+        };
+        let combined = league.intersect(&tournament);
+        // The tournament may not loosen the league's floor.
+        assert_eq!(combined.min_rating_per_player, Some(12000));
+        assert_eq!(combined.max_rating_per_player, Some(18000));
+        assert_eq!(combined.max_team_average_rating, Some(16000));
+        assert_eq!(combined.allowed_rank_tiers, vec!["silver".to_string()]);
+    }
+
+    #[test]
+    fn max_team_average_is_not_defeated_by_truncation() {
+        // Two players summing to 2001: the true average is 1000.5, which
+        // exceeds a 1000 cap. Integer division reports 1000 and would let it
+        // pass, so the comparison must multiply out instead.
+        let r = EligibilityRestrictions {
+            max_team_average_rating: Some(1000),
+            ..EligibilityRestrictions::default()
+        };
+        let roster = vec![player(1000), player(1001)];
+        let keys: Vec<_> = check_team_eligibility(&r, &roster)
+            .iter()
+            .map(|v| v.restriction.clone())
+            .collect();
+        assert_eq!(keys, vec!["max_team_average_rating".to_string()]);
+
+        // Exactly at the cap still passes.
+        let exact = vec![player(1000), player(1000)];
+        assert!(check_team_eligibility(&r, &exact).is_empty());
+    }
+
+    #[test]
+    fn without_team_minimums_keeps_caps_for_lineup_audits() {
+        // A 7-player roster cleared a 10500 floor at registration; five of
+        // them play. The floor must not fire against the played lineup...
+        let r = EligibilityRestrictions {
+            min_team_total_rating: Some(10500),
+            max_team_total_rating: Some(20000),
+            ..EligibilityRestrictions::default()
+        }
+        .without_team_minimums();
+        let lineup: Vec<_> = (0..5).map(|_| player(1500)).collect();
+        assert!(check_team_eligibility(&r, &lineup).is_empty());
+
+        // ...but a lineup over the cap is over it however few played.
+        let stacked: Vec<_> = (0..5).map(|_| player(4200)).collect();
+        let keys: Vec<_> = check_team_eligibility(&r, &stacked)
+            .iter()
+            .map(|v| v.restriction.clone())
+            .collect();
+        assert_eq!(keys, vec!["max_team_total_rating".to_string()]);
+    }
+
+    #[test]
+    fn unsatisfiable_composition_is_reported() {
+        // Each side is valid alone; composed they admit nobody.
+        let league = EligibilityRestrictions {
+            max_team_total_rating: Some(9000),
+            ..EligibilityRestrictions::default()
+        };
+        let tournament = EligibilityRestrictions {
+            min_team_total_rating: Some(10000),
+            ..EligibilityRestrictions::default()
+        };
+        assert!(league.unsatisfiable_reason().is_none());
+        assert!(tournament.unsatisfiable_reason().is_none());
+        let reason = league.intersect(&tournament).unsatisfiable_reason();
+        assert!(reason.is_some(), "composition should be flagged");
+        assert!(reason.unwrap().contains("team total rating"));
+    }
+
+    #[test]
+    fn intersect_disjoint_tiers_excludes_everyone_not_no_one() {
+        // League allows only gold, tournament only bronze: nobody can satisfy
+        // both. An empty intersection means "unrestricted" to the evaluator,
+        // so the composition must NOT collapse to an empty list.
+        let league = EligibilityRestrictions {
+            allowed_rank_tiers: vec!["gold".into()],
+            ..EligibilityRestrictions::default()
+        };
+        let tournament = EligibilityRestrictions {
+            allowed_rank_tiers: vec!["bronze".into()],
+            ..EligibilityRestrictions::default()
+        };
+        let combined = league.intersect(&tournament);
+        assert!(!combined.allowed_rank_tiers.is_empty());
+
+        // A gold player passes each side alone but must fail the composition.
+        let mut gold = player(1500);
+        if let Some(p) = gold.1.as_mut() {
+            p.rank_tier = Some("gold".to_string());
+        }
+        let violations = check_player_eligibility(&combined, &[gold]);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].restriction, "allowed_rank_tiers");
+    }
 }

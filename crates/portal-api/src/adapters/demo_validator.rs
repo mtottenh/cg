@@ -265,10 +265,19 @@ impl LineupEnforcer {
             });
         }
 
-        // Elo / eligibility caps (§5a) on who actually played.
+        // Elo / eligibility caps (§5a) on who actually played. Team CAPS
+        // apply to the lineup — a lineup over a maximum is over it however
+        // few played — but team MINIMUMS do not: this is a subset of the
+        // roster (starters, no bench), so a roster that legitimately cleared
+        // a floor at registration would be flagged for fielding five of its
+        // seven players. Minimums bind at the commitment points instead
+        // (registration), per EligibilityRestrictions::without_team_minimums.
+        let restrictions =
+            portal_domain::entities::eligibility::EligibilityRestrictions::from_settings(settings)
+                .without_team_minimums();
         let elo_violations = self
             .eligibility_service
-            .check_players_from_settings(settings, game_id, &player_ids)
+            .check_team(&restrictions, game_id, &player_ids)
             .await?;
         for v in elo_violations {
             out.push(UnrecognizedPlayer {

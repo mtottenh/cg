@@ -31,9 +31,8 @@
 //! wraps it in the interval/shutdown loop pattern shared with the veto
 //! timeout task.
 
-use crate::handlers::veto::{resolve_side_selection_mode, resolve_veto_format};
-use crate::state::{AppState, VetoState};
-use axum::extract::FromRef;
+use crate::handlers::veto::{resolve_match_veto_format, resolve_side_selection_mode};
+use crate::state::AppState;
 use chrono::{Duration as ChronoDuration, Utc};
 use portal_core::DomainError;
 use portal_core::types::TournamentMatchStatus;
@@ -117,6 +116,8 @@ pub struct LifecyclePassSummary {
     pub veto_sessions_created: u32,
     /// Matches forfeited (single no-show).
     pub no_shows_forfeited: u32,
+    /// Veto turns auto-acted after their deadline passed.
+    pub veto_timeouts_processed: u32,
     /// Matches double-forfeited (nobody showed).
     pub double_forfeits: u32,
     /// Partially-opened check-in windows repaired (`checking_in` with a
@@ -286,6 +287,31 @@ pub async fn run_lifecycle_pass(
     summary.errors += reservation_summary.errors;
 
     // ------------------------------------------------------------------
+    // 7b: veto turn timeouts — auto-act for absent players. Warnings have
+    //     always broadcast; this finally wires the enforcement so a
+    //     stalled veto (PUGs especially: strangers, no captains to chase)
+    //     advances with a random pick/ban instead of wedging forever.
+    // ------------------------------------------------------------------
+    match state.veto_service.find_timed_out_sessions().await {
+        Ok(sessions) => {
+            for session in sessions {
+                process_veto_timeout(state, &session, &mut summary).await;
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: timed-out veto scan failed");
+            summary.errors += 1;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 7c: PUG sweeper — expire stale gathering lobbies, cancel
+    //     materialized pugs that never went live (also releases their
+    //     server reservations).
+    // ------------------------------------------------------------------
+    crate::pug_flow::sweep_pugs(state).await;
+
+    // ------------------------------------------------------------------
     // 8: game servers with stale agent heartbeats → offline (§6.7)
     // ------------------------------------------------------------------
     match state.game_server_registry.sweep_stale(now).await {
@@ -398,8 +424,12 @@ async fn repair_check_in_deadline(
 }
 
 /// Create + start + coin-flip a veto session for the match if (a) the
-/// tournament configures a default map-veto format and (b) no session exists
-/// yet. Returns whether a session was created.
+/// tournament (or the match's stage) configures a map-veto format and (b) no
+/// session exists yet. Returns whether a session was created.
+///
+/// The configured id gates creation, but standard `boN` ids are re-keyed to
+/// the *match's* best-of — with per-round formats a tournament-wide bo1
+/// default must not run a bo1 veto on the bo3 final.
 async fn ensure_veto_session(
     state: &AppState,
     match_: &TournamentMatch,
@@ -409,9 +439,6 @@ async fn ensure_veto_session(
         .get_tournament(match_.tournament_id)
         .await?;
 
-    let Some(format_id) = tournament.default_map_veto_format.as_deref() else {
-        return Ok(false);
-    };
     let (Some(p1), Some(p2)) = (
         match_.participant1_registration_id,
         match_.participant2_registration_id,
@@ -419,10 +446,21 @@ async fn ensure_veto_session(
         return Ok(false);
     };
 
-    let veto_state = VetoState::from_ref(state);
-    let format = resolve_veto_format(format_id, &veto_state).map_err(|e| {
-        DomainError::Internal(format!("unresolvable veto format {format_id}: {e:?}"))
-    })?;
+    let stage_veto_override = state
+        .tournament_service
+        .get_stage(match_.stage_id)
+        .await?
+        .and_then(|s| s.map_veto_format);
+    let Some(format) = resolve_match_veto_format(
+        stage_veto_override.as_deref(),
+        tournament.default_map_veto_format.as_deref(),
+        match_.match_format,
+        &state.plugin_manager,
+    )
+    .map_err(|e| DomainError::Internal(format!("unresolvable veto format: {e:?}")))?
+    else {
+        return Ok(false);
+    };
 
     // Map pool: tournament/stage-effective pool, else the game default.
     let map_pool = if let Ok(Some(pool)) = state
@@ -841,4 +879,72 @@ pub fn spawn_lifecycle_task(state: AppState, shutdown: Arc<Notify>) -> JoinHandl
             }
         }
     })
+}
+
+/// Auto-act a timed-out veto turn and broadcast the result, mirroring the
+/// REST action handler's completion behavior (WS frames + server
+/// assignment trigger).
+async fn process_veto_timeout(
+    state: &AppState,
+    session: &portal_domain::entities::VetoSession,
+    summary: &mut LifecyclePassSummary,
+) {
+    use crate::dto::responses::veto::{VetoActionResponse, VetoSessionResponse};
+    use crate::websocket::messages::{LobbyBroadcast, VetoActionBroadcast, VetoCompleteBroadcast};
+
+    // A timed-out session whose match is already dead must be cancelled,
+    // not auto-acted (review M2): nothing else cancels veto sessions, so
+    // without this guard the pass would random-pick through the session of
+    // a cancelled match and even fire server assignment at the end.
+    match state
+        .tournament_match_repo
+        .find_by_id(session.match_id)
+        .await
+    {
+        Ok(Some(match_)) if match_.status.is_terminal() => {
+            if let Err(e) = state
+                .veto_service
+                .cancel_session_for_match(session.match_id)
+                .await
+            {
+                tracing::warn!(session_id = %session.id, error = %e,
+                    "failed to cancel veto session of terminal match");
+            }
+            return;
+        }
+        Ok(Some(_)) => {}
+        Ok(None) | Err(_) => return,
+    }
+
+    let result = match state.veto_service.process_timeout(session.id).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Raced a player action / already advanced: not an error.
+            tracing::debug!(session_id = %session.id, error = %e, "veto timeout skipped");
+            return;
+        }
+    };
+    tracing::info!(session_id = %session.id, match_id = %session.match_id,
+        map = %result.action.map_id, "veto turn timed out; auto-action performed");
+    summary.veto_timeouts_processed += 1;
+
+    if let Some(lobby) = state.veto_lobby_manager.get_lobby(&session.match_id) {
+        if result.veto_complete {
+            lobby.broadcast(LobbyBroadcast::VetoComplete(VetoCompleteBroadcast {
+                session: VetoSessionResponse::from(result.session.clone()),
+                selected_maps: result.session.selected_maps.clone(),
+            }));
+        } else {
+            lobby.broadcast(LobbyBroadcast::VetoActionPerformed(Box::new(
+                VetoActionBroadcast {
+                    session: VetoSessionResponse::from(result.session.clone()),
+                    action: VetoActionResponse::from(result.action.clone()),
+                    is_complete: false,
+                },
+            )));
+        }
+    }
+    if result.veto_complete {
+        let _ = state.server_assignment_tx.send(session.match_id);
+    }
 }

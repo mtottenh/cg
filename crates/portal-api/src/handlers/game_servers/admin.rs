@@ -66,9 +66,15 @@ pub struct UpdateGameServerRequest {
     pub region: Option<String>,
     /// Admin kill-switch; a disabled server is never allocated.
     pub enabled: Option<bool>,
+    /// Whether PUG reservations may take this server.
+    pub allow_pugs: Option<bool>,
 }
 
 /// A registered game server.
+// Four bools mirror four independent server facts (enabled, allow_pugs,
+// agent_connected, enrollment_open); packing them into an enum would invent
+// states the DB doesn't have.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GameServerResponse {
     pub id: String,
@@ -79,6 +85,8 @@ pub struct GameServerResponse {
     pub gotv_port: Option<u16>,
     pub region: String,
     pub enabled: bool,
+    /// Whether PUG reservations may take this server.
+    pub allow_pugs: bool,
     pub status: GameServerStatus,
     pub current_match_id: Option<String>,
     /// Whether the agent's WebSocket is connected right now.
@@ -105,6 +113,7 @@ impl GameServerResponse {
             gotv_port: s.gotv_port,
             region: s.region.clone(),
             enabled: s.enabled,
+            allow_pugs: s.allow_pugs,
             status: s.status,
             current_match_id: s.current_match_id.map(|id| id.to_string()),
             agent_connected,
@@ -340,6 +349,7 @@ pub async fn update_game_server(
         .update(
             id,
             UpdateGameServer {
+                allow_pugs: body.allow_pugs,
                 name: body.name,
                 ip_address,
                 port: body.port,

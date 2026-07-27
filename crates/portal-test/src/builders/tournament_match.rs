@@ -63,7 +63,7 @@ impl TournamentMatchBuilder {
             participant1_source: None,
             participant2_source: None,
             match_format: MatchFormat::Bo3,
-            maps_required: 2,
+            maps_required: 3,
             winner_progresses_to: None,
             loser_progresses_to: None,
         }
@@ -213,7 +213,7 @@ impl TournamentMatchBuilder {
     #[must_use]
     pub fn bo3(mut self) -> Self {
         self.match_format = MatchFormat::Bo3;
-        self.maps_required = 2;
+        self.maps_required = 3;
         self
     }
 
@@ -221,11 +221,11 @@ impl TournamentMatchBuilder {
     #[must_use]
     pub fn bo5(mut self) -> Self {
         self.match_format = MatchFormat::Bo5;
-        self.maps_required = 3;
+        self.maps_required = 5;
         self
     }
 
-    /// Set the number of maps required to win.
+    /// Set the number of maps in the series (game count, not wins).
     #[must_use]
     pub const fn maps_required(mut self, maps: i32) -> Self {
         self.maps_required = maps;

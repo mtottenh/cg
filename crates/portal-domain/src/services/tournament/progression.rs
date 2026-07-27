@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use portal_core::types::{
-    BracketType, MatchFormat, MatchParticipantSource, StageFormat, StageStatus,
+    BracketType, MatchFormat, MatchFormatPlan, MatchParticipantSource, StageFormat, StageStatus,
     TournamentMatchStatus,
 };
 use portal_core::{
@@ -597,8 +597,17 @@ where
             ));
         }
 
-        // Determine match format from stage or tournament default
-        let match_format = next_stage.match_format.unwrap_or(MatchFormat::Bo3);
+        // Build the playoff stage's format plan. Every stage-creation path
+        // persists a concrete match_format (the groups flow resolves the
+        // per-phase override against the tournament default at start time),
+        // so the Bo3 fallback only covers hand-created stages that never set
+        // one. Final/grand-final overrides ride in the stage's
+        // format_settings.
+        let format_plan = MatchFormatPlan::from_settings(
+            next_stage.match_format.unwrap_or(MatchFormat::Bo3),
+            Some(&next_stage.format_settings),
+        )
+        .map_err(|e| DomainError::InvalidState(format!("invalid stage format settings: {e}")))?;
 
         // Generate playoff brackets based on stage format
         match next_stage.format {
@@ -607,7 +616,7 @@ where
                     tournament_id,
                     next_stage.id,
                     playoff_participants,
-                    match_format,
+                    &format_plan,
                 )
                 .await?;
             }
@@ -616,7 +625,7 @@ where
                     tournament_id,
                     next_stage.id,
                     playoff_participants,
-                    match_format,
+                    &format_plan,
                 )
                 .await?;
             }
@@ -663,7 +672,7 @@ where
         tournament_id: TournamentId,
         stage_id: TournamentStageId,
         participants: Vec<SeededParticipant>,
-        match_format: MatchFormat,
+        format_plan: &MatchFormatPlan,
     ) -> Result<(), DomainError> {
         let bracket = self
             .bracket_repo
@@ -682,7 +691,7 @@ where
             stage_id,
             bracket.id,
             participants,
-            match_format,
+            format_plan,
         )?;
 
         self.bracket_repo
@@ -728,7 +737,7 @@ where
         tournament_id: TournamentId,
         stage_id: TournamentStageId,
         participants: Vec<SeededParticipant>,
-        match_format: MatchFormat,
+        format_plan: &MatchFormatPlan,
     ) -> Result<(), DomainError> {
         let wb = self
             .bracket_repo
@@ -773,7 +782,7 @@ where
             lb.id,
             gf.id,
             participants,
-            match_format,
+            format_plan,
         )?;
 
         // Update bracket round counts

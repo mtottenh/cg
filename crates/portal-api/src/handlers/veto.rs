@@ -17,7 +17,7 @@ use crate::websocket::{
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use portal_core::{TournamentMatchId, TournamentRegistrationId, VetoFormatConfig};
+use portal_core::{MatchFormat, TournamentMatchId, TournamentRegistrationId, VetoFormatConfig};
 use portal_domain::repositories::TournamentMatchRepository;
 
 /// Extract request ID from headers.
@@ -34,10 +34,10 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 /// to the built-in standard formats.
 pub(crate) fn resolve_veto_format(
     format_id: &str,
-    state: &VetoState,
+    plugin_manager: &portal_plugins::PluginManager,
 ) -> ApiResult<VetoFormatConfig> {
     // Try plugin-provided formats
-    for plugin in state.plugin_manager.list_plugins() {
+    for plugin in plugin_manager.list_plugins() {
         if let Some(tp) = plugin.as_tournament_plugin()
             && let Some(f) = tp.veto_formats().into_iter().find(|f| f.id == format_id)
         {
@@ -45,14 +45,60 @@ pub(crate) fn resolve_veto_format(
         }
     }
 
-    // Fall back to built-in formats
-    match format_id {
-        "bo1_veto" | "bo1_standard" => Ok(VetoFormatConfig::bo1()),
-        "bo3_veto" | "bo3_standard" => Ok(VetoFormatConfig::bo3()),
-        "bo5_veto" | "bo5_standard" => Ok(VetoFormatConfig::bo5()),
-        _ => Err(ApiError::bad_request(format!(
-            "Unknown veto format: {format_id}. Valid formats: bo1_standard, bo3_standard, bo5_standard"
-        ))),
+    // Fall back to the single built-in table (review m1: this used to be a
+    // second hand-maintained copy that had already drifted from the veto
+    // service's — one knew bo7, the other the wheel formats).
+    VetoFormatConfig::builtin(format_id).ok_or_else(|| {
+        ApiError::bad_request(format!(
+            "Unknown veto format: {format_id}. Valid formats: bo1/3/5/7_standard, wheel_bo1/3/5"
+        ))
+    })
+}
+
+/// The built-in veto sequence matching a match's best-of.
+pub(crate) fn builtin_veto_for(match_format: MatchFormat) -> VetoFormatConfig {
+    match match_format {
+        MatchFormat::Bo1 => VetoFormatConfig::bo1(),
+        MatchFormat::Bo3 => VetoFormatConfig::bo3(),
+        MatchFormat::Bo5 => VetoFormatConfig::bo5(),
+        MatchFormat::Bo7 => VetoFormatConfig::bo7(),
+    }
+}
+
+/// Whether a veto format id names one of the standard boN families.
+fn is_standard_bo_family(id: &str) -> bool {
+    matches!(
+        id,
+        "bo1_veto"
+            | "bo1_standard"
+            | "bo3_veto"
+            | "bo3_standard"
+            | "bo5_veto"
+            | "bo5_standard"
+            | "bo7_veto"
+            | "bo7_standard"
+    )
+}
+
+/// Resolve the veto format for a specific tournament match.
+///
+/// `stage_override` (the stage's `map_veto_format`) outranks the tournament's
+/// `default_map_veto_format`. Standard `boN_*` ids are treated as a *family*
+/// and re-keyed to the match's own best-of — with mixed per-round formats, a
+/// tournament-wide bo1 default must not run a bo1 veto on the bo3 final.
+/// Custom/plugin format ids are used verbatim. Returns `Ok(None)` when
+/// nothing is configured, so callers that only auto-create sessions for
+/// veto-configured tournaments can keep that gate.
+pub(crate) fn resolve_match_veto_format(
+    stage_override: Option<&str>,
+    tournament_default: Option<&str>,
+    match_format: MatchFormat,
+    plugin_manager: &portal_plugins::PluginManager,
+) -> ApiResult<Option<VetoFormatConfig>> {
+    match stage_override.or(tournament_default) {
+        None => Ok(None),
+        Some(id) if is_standard_bo_family(id) => Ok(Some(builtin_veto_for(match_format))),
+        Some(id) => resolve_veto_format(id, plugin_manager).map(Some),
     }
 }
 
@@ -91,7 +137,7 @@ pub async fn create_veto_session(
     // Verify user is a match participant (via veto authorization) or tournament admin
     let match_ = require_veto_participant_or_admin(&state, &perm_checker, &auth, match_id).await?;
 
-    let veto_format = resolve_veto_format(&req.veto_format_id, &state)?;
+    let veto_format = resolve_veto_format(&req.veto_format_id, &state.plugin_manager)?;
 
     // Resolve side selection mode: request → tournament settings → plugin default
     let side_selection_mode = if let Some(ref mode_str) = req.side_selection_mode {

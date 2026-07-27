@@ -78,7 +78,42 @@ impl FromStr for GameServerStatus {
     }
 }
 
-/// Lifecycle of a match's server reservation.
+/// What kind of consumer holds a server reservation (§6.7's anticipated
+/// `reservation_kind` extension).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ReservationKind {
+    /// Tournament match — allocates ahead of queued PUGs.
+    #[default]
+    Match,
+    /// Pick-up game — only servers with `allow_pugs`.
+    Pug,
+}
+
+impl std::fmt::Display for ReservationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Match => write!(f, "match"),
+            Self::Pug => write!(f, "pug"),
+        }
+    }
+}
+
+impl std::str::FromStr for ReservationKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "match" => Ok(Self::Match),
+            "pug" => Ok(Self::Pug),
+            _ => Err(format!("invalid reservation kind: {s}")),
+        }
+    }
+}
+
+/// Lifecycle status of a server reservation.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
 )]

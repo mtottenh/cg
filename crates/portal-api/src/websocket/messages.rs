@@ -132,6 +132,21 @@ pub enum ServerMessage {
         /// Final session state.
         session: VetoSessionResponse,
     },
+    /// A PUG wheel spin: every client renders the identical animation from
+    /// this payload, then the standard `veto_action_performed` /
+    /// `veto_complete` frames carry the authoritative state.
+    WheelSpin {
+        /// Which game of the series this spin selected (1-based).
+        game_number: i32,
+        /// Wheel segments in stable order: map, weight, nominator names.
+        segments: serde_json::Value,
+        /// The map the server drew.
+        winner_map_id: String,
+        /// Seed driving the deterministic client animation.
+        spin_seed: i64,
+        /// Suggested animation duration.
+        duration_ms: u32,
+    },
     /// Server assignment status change (MatchZy integration).
     ServerAssignmentUpdate {
         /// Reservation status.
@@ -316,6 +331,23 @@ pub enum LobbyBroadcast {
     LiveScoreUpdate(LiveScoreBroadcast),
     /// A substitution was applied — clients refetch lineups (§6.8).
     LineupUpdate,
+    /// A PUG wheel spin (deterministic animation payload).
+    WheelSpin(WheelSpinBroadcast),
+}
+
+/// Payload for a PUG wheel spin broadcast.
+#[derive(Debug, Clone, Serialize)]
+pub struct WheelSpinBroadcast {
+    /// Which game of the series this spin selected (1-based).
+    pub game_number: i32,
+    /// Wheel segments in stable order (JSON array of {map_id, weight, nominated_by}).
+    pub segments: serde_json::Value,
+    /// The winning map.
+    pub winner_map_id: String,
+    /// Seed for the deterministic client animation.
+    pub spin_seed: i64,
+    /// Suggested animation duration in milliseconds.
+    pub duration_ms: u32,
 }
 
 /// Connect details for a ready/live server (participant-facing).

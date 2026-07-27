@@ -14,6 +14,7 @@ use axum::http::{HeaderMap, StatusCode};
 use portal_core::ids::TournamentMatchId;
 use portal_core::permissions;
 use portal_core::types::ReservationStatus;
+use portal_domain::repositories::pug::AdhocTeamRepository as _;
 use portal_domain::repositories::{
     LeagueTeamMemberRepository, ServerEventRepository, ServerReservationRepository,
     TournamentMatchRepository,
@@ -97,6 +98,19 @@ pub(super) async fn is_participant(
             continue;
         };
         if reg.player_id == Some(user.player_id) {
+            return Ok(true);
+        }
+        // Ad-hoc rosters (PUG containers)
+        if let Some(adhoc_uuid) = reg.adhoc_team_id
+            && state
+                .adhoc_team_repo
+                .is_member(
+                    portal_core::AdhocTeamId::from_uuid(adhoc_uuid),
+                    user.player_id,
+                )
+                .await
+                .unwrap_or(false)
+        {
             return Ok(true);
         }
         if let Some(team_season_id) = reg.team_season_id

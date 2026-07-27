@@ -887,6 +887,13 @@ fn filter_broadcast_for_connection(
             })
         }
         LobbyBroadcast::LineupUpdate => Some(ServerMessage::LineupUpdate),
+        LobbyBroadcast::WheelSpin(spin) => Some(ServerMessage::WheelSpin {
+            game_number: spin.game_number,
+            segments: spin.segments.clone(),
+            winner_map_id: spin.winner_map_id.clone(),
+            spin_seed: spin.spin_seed,
+            duration_ms: spin.duration_ms,
+        }),
         LobbyBroadcast::LiveScoreUpdate(score) => Some(ServerMessage::LiveScoreUpdate {
             map_number: score.map_number,
             team1_score: score.team1_score,

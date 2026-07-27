@@ -139,9 +139,15 @@ pub struct EligibilityRestrictionsResponse {
     /// Max sum of all team members' current ratings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_team_total_rating: Option<i32>,
+    /// Min sum of all team members' current ratings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_team_total_rating: Option<i32>,
     /// Max average of team members' current ratings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_team_average_rating: Option<i32>,
+    /// Min average of team members' current ratings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_team_average_rating: Option<i32>,
     /// Only allow players in certain rank tiers.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allowed_rank_tiers: Vec<String>,
@@ -150,25 +156,33 @@ pub struct EligibilityRestrictionsResponse {
     pub min_matches_played: Option<i32>,
 }
 
+impl From<portal_domain::entities::eligibility::EligibilityRestrictions>
+    for EligibilityRestrictionsResponse
+{
+    fn from(r: portal_domain::entities::eligibility::EligibilityRestrictions) -> Self {
+        Self {
+            max_rating_per_player: r.max_rating_per_player,
+            min_rating_per_player: r.min_rating_per_player,
+            max_peak_rating_per_player: r.max_peak_rating_per_player,
+            max_avg_rating_per_player: r.max_avg_rating_per_player,
+            max_team_total_rating: r.max_team_total_rating,
+            min_team_total_rating: r.min_team_total_rating,
+            max_team_average_rating: r.max_team_average_rating,
+            min_team_average_rating: r.min_team_average_rating,
+            allowed_rank_tiers: r.allowed_rank_tiers,
+            min_matches_played: r.min_matches_played,
+        }
+    }
+}
+
 impl From<Tournament> for TournamentResponse {
     fn from(t: Tournament) -> Self {
         let is_registration_open = t.is_registration_open();
         let is_check_in_open = t.is_check_in_open();
         let restrictions = t.eligibility_restrictions();
-        let eligibility_restrictions = if restrictions.has_restrictions() {
-            Some(EligibilityRestrictionsResponse {
-                max_rating_per_player: restrictions.max_rating_per_player,
-                min_rating_per_player: restrictions.min_rating_per_player,
-                max_peak_rating_per_player: restrictions.max_peak_rating_per_player,
-                max_avg_rating_per_player: restrictions.max_avg_rating_per_player,
-                max_team_total_rating: restrictions.max_team_total_rating,
-                max_team_average_rating: restrictions.max_team_average_rating,
-                allowed_rank_tiers: restrictions.allowed_rank_tiers,
-                min_matches_played: restrictions.min_matches_played,
-            })
-        } else {
-            None
-        };
+        let eligibility_restrictions = restrictions
+            .has_restrictions()
+            .then(|| EligibilityRestrictionsResponse::from(restrictions));
 
         Self {
             id: t.id.to_string(),

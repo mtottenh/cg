@@ -41,6 +41,8 @@ where
     /// is LOGGED with the acting admin and their reason. Without it the change
     /// went straight to the repo and left no `match_status_log` row at all.
     match_transitioner: Option<Arc<dyn crate::services::tournament::MatchStatusTransitioner>>,
+    /// Ad-hoc team membership (PUG containers); optional, see `with_adhoc_repo`.
+    adhoc_repo: Option<Arc<dyn crate::repositories::pug::AdhocTeamRepository>>,
 }
 
 impl<SPR, TMR, TRR, LTMR> SchedulingService<SPR, TMR, TRR, LTMR>
@@ -63,8 +65,20 @@ where
             registration_repo,
             member_repo,
             match_transitioner: None,
+            adhoc_repo: None,
             proposal_ttl: Duration::hours(DEFAULT_PROPOSAL_TTL_HOURS),
         }
+    }
+
+    /// Attach the ad-hoc team repository so ad-hoc registrations (PUGs)
+    /// authorize their team members.
+    #[must_use]
+    pub fn with_adhoc_repo(
+        mut self,
+        adhoc_repo: Arc<dyn crate::repositories::pug::AdhocTeamRepository>,
+    ) -> Self {
+        self.adhoc_repo = Some(adhoc_repo);
+        self
     }
 
     /// Create a new scheduling service with custom proposal TTL.
@@ -527,6 +541,7 @@ where
         find_actor_registration(
             self.registration_repo.as_ref(),
             self.member_repo.as_ref(),
+            self.adhoc_repo.as_deref(),
             tournament_match,
             actor,
         )

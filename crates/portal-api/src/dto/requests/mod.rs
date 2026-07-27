@@ -6,6 +6,7 @@ pub mod award;
 pub mod ban;
 pub mod demo;
 pub mod dispute;
+pub mod eligibility;
 pub mod evidence;
 pub mod forfeit;
 pub mod game;
@@ -43,6 +44,7 @@ pub use dispute::{
     RaiseDisputeRequest, ResolveAdjustedRequest, ResolveDoubleDqRequest, ResolveOverturnRequest,
     ResolveRematchRequest, ResolveUpholdRequest,
 };
+pub use eligibility::EligibilityRestrictionsInput;
 pub use evidence::{
     AddLinkEvidenceRequest, DiscoverEvidenceQuery, GetDemoStatsQuery, InitiateUploadRequest,
     LinkDemoRequest, LinkDiscoveredEvidenceRequest, ListEvidenceQuery, ValidateDemoRequest,
@@ -84,11 +86,11 @@ pub use tournament::{
     AdminScheduleRequest, AutoSeedRequest, CancelScheduleProposalRequest, CheckInRequest,
     CounterProposeRequest, CreateTournamentInvitationRequest, CreateTournamentRequest,
     CreateTournamentStageRequest, DeclareLineupRequest, DisputeMatchRequest, DisqualifyRequest,
-    EligibilityRestrictionsInput, ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest,
-    MatchCheckInRequest, ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest,
-    RejectRegistrationRequest, RejectScheduleProposalRequest, ResolveDisputeRequest,
-    SeedAssignment, SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
-    WithdrawRequest,
+    ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest, MatchCheckInRequest,
+    ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
+    RejectScheduleProposalRequest, ResolveDisputeRequest, SeedAssignment,
+    SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
+    UpdateTournamentStageRequest, WithdrawRequest,
 };
 pub use veto::{
     CreateVetoSessionRequest, GetVetoStateQuery, PerformVetoActionRequest, RecordCoinFlipRequest,

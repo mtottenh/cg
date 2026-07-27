@@ -50,6 +50,13 @@ pub struct GameServerSettings {
     /// Minutes a `ready` server may wait with nobody going live before
     /// admins are flagged (§6.6; default 20).
     pub no_show_minutes: Option<i64>,
+    /// Override for MatchZy `players_per_team` (PUG custom team sizes).
+    /// None → the game config's `team_size_default`.
+    pub players_per_team: Option<i64>,
+    /// Override for MatchZy `min_players_to_ready` — force-locked
+    /// short-handed PUGs set it to the smaller roster so warmup can
+    /// actually complete (review M6). None → `players_per_team`.
+    pub min_players_to_ready: Option<i64>,
     /// `settings.game_server.substitution_policy` — `"admin_approval"`
     /// routes requests through admin review; anything else applies rostered
     /// subs immediately (§6.8 default `roster_free`).
@@ -95,6 +102,12 @@ impl GameServerSettings {
             no_show_minutes: gs
                 .get("no_show_minutes")
                 .and_then(serde_json::Value::as_i64),
+            players_per_team: gs
+                .get("players_per_team")
+                .and_then(serde_json::Value::as_i64),
+            min_players_to_ready: gs
+                .get("min_players_to_ready")
+                .and_then(serde_json::Value::as_i64),
             substitution_policy: gs
                 .get("substitution_policy")
                 .and_then(|p| p.as_str())
@@ -109,6 +122,7 @@ impl GameServerSettings {
 /// tournament has opted in. Errors are logged, never propagated — veto
 /// completion must not fail because server setup hit a snag.
 pub async fn on_veto_completed(state: &AppState, match_id: TournamentMatchId) {
+    crate::pug_flow::on_veto_completed(state, match_id).await;
     let result = async {
         let match_ = get_match(state, match_id).await?;
         let tournament = state
@@ -187,11 +201,23 @@ pub async fn request_assignment(
     }
 
     let event_token = generate_reservation_token();
+    // PUG container matches produce pug-kind reservations: they queue behind
+    // tournament matches and only take servers with allow_pugs.
+    let tournament = state
+        .tournament_service
+        .get_tournament(match_.tournament_id)
+        .await?;
+    let reservation_kind = if tournament.kind == portal_core::types::TournamentKind::Pug {
+        portal_core::types::ReservationKind::Pug
+    } else {
+        portal_core::types::ReservationKind::Match
+    };
     let reservation = state
         .server_reservation_repo
         .create_pending(CreateServerReservation {
             id: ServerReservationId::new(),
             match_id,
+            kind: reservation_kind,
             connect_password: generate_connect_password(),
             gotv_password: Some(generate_connect_password()),
             // Placeholder; a fresh config token is minted per load attempt.
@@ -254,6 +280,7 @@ pub async fn try_allocate_and_load(
             heartbeat_cutoff,
             Utc::now(),
             match_.scheduled_at,
+            reservation.kind == portal_core::types::ReservationKind::Pug,
         )
         .await?;
 
@@ -516,9 +543,15 @@ pub async fn build_config(
         .await
         .ok()
         .flatten();
-    let players_per_team = game_row
-        .as_ref()
-        .and_then(|game| u32::try_from(game.team_size_default).ok())
+    let players_per_team = settings
+        .players_per_team
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| (1..=16).contains(n))
+        .or_else(|| {
+            game_row
+                .as_ref()
+                .and_then(|game| u32::try_from(game.team_size_default).ok())
+        })
         .unwrap_or(5);
 
     // Resolve portal map ids to MatchZy tokens through the game's map
@@ -563,9 +596,13 @@ pub async fn build_config(
         team1,
         team2,
         players_per_team,
-        // Full team must ready; short-handed subs lower it in-server via
-        // css_readyrequired (§6.8).
-        min_players_to_ready: players_per_team,
+        // Full team must ready by default; short-handed PUG locks override
+        // this to the smaller roster (review M6) and tournament subs lower
+        // it in-server via css_readyrequired (§6.8).
+        min_players_to_ready: settings
+            .min_players_to_ready
+            .and_then(|n| u32::try_from(n).ok())
+            .map_or(players_per_team, |n| n.clamp(1, players_per_team)),
         hostname: settings
             .hostname
             .unwrap_or_else(|| "Portal | {TEAM1} vs {TEAM2}".to_string()),
@@ -682,7 +719,7 @@ async fn ensure_match_games(
             a.map_id == *map
                 && matches!(
                     a.action_type,
-                    VetoActionType::Pick | VetoActionType::Decider
+                    VetoActionType::Pick | VetoActionType::Decider | VetoActionType::Random
                 )
         });
         if let Some(action) = pick_action {
@@ -843,6 +880,7 @@ async fn process_event(
             {
                 let _ = state.tournament_match_game_repo.start(game.id).await;
             }
+            crate::pug_flow::on_match_live(state, reservation.match_id).await;
             broadcast_reservation_by_id(state, reservation.id).await;
         }
         "round_end" => {
@@ -1018,6 +1056,7 @@ async fn apply_series_end(
         .server_reservation_repo
         .release(reservation.id, ReservationStatus::Completed, None)
         .await?;
+    crate::pug_flow::on_series_end(state, reservation.match_id, s1, s2).await;
     broadcast_assignment(state, reservation.match_id, "completed", None, None);
     Ok(())
 }
@@ -1646,6 +1685,19 @@ async fn effective_player_ids(
             state
                 .league_team_member_repo
                 .list_members_with_players(team_season_id)
+                .await?
+                .into_iter()
+                .map(|m| m.player_id),
+        );
+    } else if let Some(adhoc_uuid) = reg.adhoc_team_id {
+        // Ad-hoc rosters (PUG containers): the members ARE the lineup.
+        // Review C1: without this arm every PUG produced an empty roster
+        // and died in config validation before reaching a server.
+        use portal_domain::repositories::pug::AdhocTeamRepository as _;
+        players.extend(
+            state
+                .adhoc_team_repo
+                .list_members(portal_core::AdhocTeamId::from_uuid(adhoc_uuid))
                 .await?
                 .into_iter()
                 .map(|m| m.player_id),

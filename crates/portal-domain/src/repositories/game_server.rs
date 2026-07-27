@@ -37,6 +37,7 @@ pub struct UpdateGameServer {
     pub gotv_port: Option<Option<u16>>,
     pub region: Option<String>,
     pub enabled: Option<bool>,
+    pub allow_pugs: Option<bool>,
 }
 
 /// Heartbeat-derived column updates applied atomically.
@@ -187,6 +188,7 @@ pub trait ServerBookingRepository: Send + Sync + 'static {
 pub struct CreateServerReservation {
     pub id: ServerReservationId,
     pub match_id: TournamentMatchId,
+    pub kind: portal_core::types::ReservationKind,
     pub connect_password: String,
     pub gotv_password: Option<String>,
     pub config_token_hash: String,
@@ -221,6 +223,7 @@ pub trait ServerReservationRepository: Send + Sync + 'static {
         heartbeat_cutoff: DateTime<Utc>,
         now: DateTime<Utc>,
         scheduled_at: Option<DateTime<Utc>>,
+        for_pug: bool,
     ) -> Result<Option<(ServerReservation, GameServer)>, DomainError>;
 
     /// Terminalize a reservation and free its server in one transaction:

@@ -136,6 +136,47 @@ impl TournamentParticipantType {
 }
 
 // ============================================================================
+// Tournament Kind
+// ============================================================================
+
+/// What a tournament row represents.
+///
+/// `Pug` rows are hidden single-match containers created when a PUG lobby
+/// locks in; public tournament listings filter them out.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TournamentKind {
+    /// A real, user-visible tournament.
+    #[default]
+    Standard,
+    /// Hidden container for a pick-up game (see `pugs` table).
+    Pug,
+}
+
+impl fmt::Display for TournamentKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Standard => write!(f, "standard"),
+            Self::Pug => write!(f, "pug"),
+        }
+    }
+}
+
+impl FromStr for TournamentKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "standard" => Ok(Self::Standard),
+            "pug" => Ok(Self::Pug),
+            _ => Err(format!("invalid tournament kind: {s}")),
+        }
+    }
+}
+
+// ============================================================================
 // Registration Type
 // ============================================================================
 
@@ -430,7 +471,14 @@ impl TournamentMatchStatus {
     /// Cancellation is only possible before the match becomes active.
     #[must_use]
     pub const fn can_cancel(&self) -> bool {
-        matches!(self, Self::Pending | Self::Ready | Self::Scheduled)
+        // CheckingIn/PickBan included since the PUG review: cancelling a
+        // lobby mid-check-in or mid-veto must be able to terminalize its
+        // match (a container match wedged in pick_ban is what let the
+        // timeout enforcement act on dead sessions — review M2/M3).
+        matches!(
+            self,
+            Self::Pending | Self::Ready | Self::Scheduled | Self::CheckingIn | Self::PickBan
+        )
     }
 
     /// Check if the match is in a disputeable state.
@@ -459,9 +507,14 @@ impl TournamentMatchStatus {
                 Self::Cancelled,
             ],
             // CheckingIn: pre-match check-in phase
-            Self::CheckingIn => vec![Self::PickBan, Self::InProgress, Self::Forfeit],
+            Self::CheckingIn => vec![
+                Self::PickBan,
+                Self::InProgress,
+                Self::Forfeit,
+                Self::Cancelled,
+            ],
             // PickBan: map veto in progress
-            Self::PickBan => vec![Self::InProgress, Self::Forfeit],
+            Self::PickBan => vec![Self::InProgress, Self::Forfeit, Self::Cancelled],
             // InProgress: match being played
             Self::InProgress => vec![Self::AwaitingResult, Self::Forfeit],
             // AwaitingResult: waiting for result submission
@@ -932,6 +985,145 @@ impl MatchFormat {
 }
 
 // ============================================================================
+// Match Format Plan
+// ============================================================================
+
+/// Per-round match-format plan, resolved once per stage before bracket
+/// generation.
+///
+/// `default` comes from the stage override (or the tournament default); the
+/// stage's `format_settings` JSONB may refine it per round:
+///
+/// ```json
+/// {
+///   "round_formats": { "1": "bo1", "2": "bo1" },
+///   "final_format": "bo3",
+///   "grand_final_format": "bo5"
+/// }
+/// ```
+///
+/// Round numbers are 1-based within each bracket (winners and losers brackets
+/// both count from 1). Precedence, most specific first: `grand_final_format`
+/// (double-elim grand final only) → `final_format` (last round of a bracket)
+/// → `round_formats[round]` → `default`. `final_format` outranks
+/// `round_formats` so a blanket per-round list can't silently defeat an
+/// explicit "the final is different" override.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MatchFormatPlan {
+    /// Format used when no override matches.
+    pub default: MatchFormat,
+    /// Per-round overrides, keyed by 1-based round number.
+    pub round_formats: std::collections::BTreeMap<i32, MatchFormat>,
+    /// Override for the last round of a bracket.
+    pub final_format: Option<MatchFormat>,
+    /// Override for the grand final of a double-elimination stage.
+    pub grand_final_format: Option<MatchFormat>,
+}
+
+impl MatchFormatPlan {
+    /// A plan with no per-round overrides — every match gets `default`.
+    #[must_use]
+    pub fn uniform(default: MatchFormat) -> Self {
+        Self {
+            default,
+            ..Self::default()
+        }
+    }
+
+    /// Whether this plan carries any per-round overrides.
+    #[must_use]
+    pub fn is_uniform(&self) -> bool {
+        self.round_formats.is_empty()
+            && self.final_format.is_none()
+            && self.grand_final_format.is_none()
+    }
+
+    /// Format for a match in `round` of a bracket with `total_rounds` rounds.
+    ///
+    /// Pass `total_rounds <= 0` when the bracket's last round should not be
+    /// treated as a final (e.g. the losers bracket of a double-elim stage,
+    /// whose "final" merely feeds the grand final).
+    #[must_use]
+    pub fn format_for(&self, round: i32, total_rounds: i32) -> MatchFormat {
+        if total_rounds > 0
+            && round == total_rounds
+            && let Some(f) = self.final_format
+        {
+            return f;
+        }
+        self.round_formats
+            .get(&round)
+            .copied()
+            .unwrap_or(self.default)
+    }
+
+    /// Format for the grand final of a double-elimination stage.
+    #[must_use]
+    pub fn grand_final(&self) -> MatchFormat {
+        self.grand_final_format
+            .or(self.final_format)
+            .unwrap_or(self.default)
+    }
+
+    /// Build a plan from a stage's `format_settings` JSONB.
+    ///
+    /// Recognises `round_formats` (object of 1-based round number → format),
+    /// `final_format`, and `grand_final_format`; any other keys are ignored
+    /// (the same column also carries e.g. groups configuration). Returns an
+    /// error naming the offending key when a recognised key holds an invalid
+    /// round number or match format, so callers can surface it as a
+    /// validation failure instead of silently mis-formatting a bracket.
+    pub fn from_settings(
+        default: MatchFormat,
+        settings: Option<&serde_json::Value>,
+    ) -> Result<Self, String> {
+        let mut plan = Self::uniform(default);
+        let Some(obj) = settings.and_then(|v| v.as_object()) else {
+            return Ok(plan);
+        };
+
+        if let Some(rounds) = obj.get("round_formats") {
+            let rounds = rounds
+                .as_object()
+                .ok_or_else(|| "round_formats must be an object".to_string())?;
+            for (key, value) in rounds {
+                let round: i32 = key
+                    .parse()
+                    .map_err(|_| format!("round_formats key is not a round number: {key}"))?;
+                if round < 1 {
+                    return Err(format!("round_formats round must be >= 1, got {round}"));
+                }
+                let format = value
+                    .as_str()
+                    .ok_or_else(|| format!("round_formats[{key}] must be a string"))?
+                    .parse::<MatchFormat>()
+                    .map_err(|e| format!("round_formats[{key}]: {e}"))?;
+                plan.round_formats.insert(round, format);
+            }
+        }
+
+        for (key, slot) in [
+            ("final_format", &mut plan.final_format),
+            ("grand_final_format", &mut plan.grand_final_format),
+        ] {
+            if let Some(value) = obj.get(key) {
+                if value.is_null() {
+                    continue;
+                }
+                let format = value
+                    .as_str()
+                    .ok_or_else(|| format!("{key} must be a string"))?
+                    .parse::<MatchFormat>()
+                    .map_err(|e| format!("{key}: {e}"))?;
+                *slot = Some(format);
+            }
+        }
+
+        Ok(plan)
+    }
+}
+
+// ============================================================================
 // Seeding Algorithm
 // ============================================================================
 
@@ -1212,5 +1404,75 @@ mod tests {
         assert!(TournamentRegistrationStatus::CheckedIn.can_compete());
         assert!(TournamentRegistrationStatus::Active.can_compete());
         assert!(TournamentRegistrationStatus::Eliminated.is_terminal());
+    }
+
+    #[test]
+    fn test_format_plan_uniform() {
+        let plan = MatchFormatPlan::uniform(MatchFormat::Bo1);
+        assert!(plan.is_uniform());
+        assert_eq!(plan.format_for(1, 4), MatchFormat::Bo1);
+        assert_eq!(plan.format_for(4, 4), MatchFormat::Bo1);
+        assert_eq!(plan.grand_final(), MatchFormat::Bo1);
+    }
+
+    #[test]
+    fn test_format_plan_final_override() {
+        // "All rounds bo1, final bo3."
+        let plan = MatchFormatPlan::from_settings(
+            MatchFormat::Bo1,
+            Some(&serde_json::json!({ "final_format": "bo3" })),
+        )
+        .unwrap();
+        assert_eq!(plan.format_for(1, 3), MatchFormat::Bo1);
+        assert_eq!(plan.format_for(2, 3), MatchFormat::Bo1);
+        assert_eq!(plan.format_for(3, 3), MatchFormat::Bo3);
+        // Grand final falls back to the final override when unset.
+        assert_eq!(plan.grand_final(), MatchFormat::Bo3);
+        // A losers bracket passes total_rounds <= 0: its last round is not
+        // the stage final and must not pick up the final override.
+        assert_eq!(plan.format_for(3, 0), MatchFormat::Bo1);
+    }
+
+    #[test]
+    fn test_format_plan_precedence() {
+        let plan = MatchFormatPlan::from_settings(
+            MatchFormat::Bo3,
+            Some(&serde_json::json!({
+                "round_formats": { "1": "bo1", "3": "bo1" },
+                "final_format": "bo5",
+                "grand_final_format": "bo7"
+            })),
+        )
+        .unwrap();
+        assert_eq!(plan.format_for(1, 3), MatchFormat::Bo1);
+        assert_eq!(plan.format_for(2, 3), MatchFormat::Bo3);
+        // final_format outranks a conflicting round_formats entry.
+        assert_eq!(plan.format_for(3, 3), MatchFormat::Bo5);
+        assert_eq!(plan.grand_final(), MatchFormat::Bo7);
+    }
+
+    #[test]
+    fn test_format_plan_ignores_foreign_keys_and_rejects_bad_values() {
+        // Groups configuration shares the same JSONB column — foreign keys
+        // must pass through untouched.
+        let plan = MatchFormatPlan::from_settings(
+            MatchFormat::Bo1,
+            Some(&serde_json::json!({ "group_count": 4, "advance_per_group": 2 })),
+        )
+        .unwrap();
+        assert!(plan.is_uniform());
+
+        for bad in [
+            serde_json::json!({ "final_format": "bo2" }),
+            serde_json::json!({ "final_format": 3 }),
+            serde_json::json!({ "round_formats": { "zero": "bo1" } }),
+            serde_json::json!({ "round_formats": { "0": "bo1" } }),
+            serde_json::json!({ "round_formats": ["bo1"] }),
+        ] {
+            assert!(
+                MatchFormatPlan::from_settings(MatchFormat::Bo1, Some(&bad)).is_err(),
+                "expected error for {bad}"
+            );
+        }
     }
 }

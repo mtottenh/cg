@@ -312,4 +312,30 @@ mod tests {
         assert_eq!(combined.max_team_average_rating, Some(16000));
         assert_eq!(combined.allowed_rank_tiers, vec!["silver".to_string()]);
     }
+
+    #[test]
+    fn intersect_disjoint_tiers_excludes_everyone_not_no_one() {
+        // League allows only gold, tournament only bronze: nobody can satisfy
+        // both. An empty intersection means "unrestricted" to the evaluator,
+        // so the composition must NOT collapse to an empty list.
+        let league = EligibilityRestrictions {
+            allowed_rank_tiers: vec!["gold".into()],
+            ..EligibilityRestrictions::default()
+        };
+        let tournament = EligibilityRestrictions {
+            allowed_rank_tiers: vec!["bronze".into()],
+            ..EligibilityRestrictions::default()
+        };
+        let combined = league.intersect(&tournament);
+        assert!(!combined.allowed_rank_tiers.is_empty());
+
+        // A gold player passes each side alone but must fail the composition.
+        let mut gold = player(1500);
+        if let Some(p) = gold.1.as_mut() {
+            p.rank_tier = Some("gold".to_string());
+        }
+        let violations = check_player_eligibility(&combined, &[gold]);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].restriction, "allowed_rank_tiers");
+    }
 }

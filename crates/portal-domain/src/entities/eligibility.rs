@@ -133,12 +133,25 @@ impl EligibilityRestrictions {
         ) {
             (true, _) => other.allowed_rank_tiers.clone(),
             (_, true) => self.allowed_rank_tiers.clone(),
-            (false, false) => self
-                .allowed_rank_tiers
-                .iter()
-                .filter(|t| other.allowed_rank_tiers.contains(t))
-                .cloned()
-                .collect(),
+            (false, false) => {
+                let common: Vec<String> = self
+                    .allowed_rank_tiers
+                    .iter()
+                    .filter(|t| other.allowed_rank_tiers.contains(t))
+                    .cloned()
+                    .collect();
+                if common.is_empty() {
+                    // Disjoint restrictions: an empty list means UNRESTRICTED
+                    // to the evaluator, which would compose two conflicting
+                    // tier rules into no rule at all — the opposite of
+                    // strictest-wins. A sentinel no real tier id can match
+                    // keeps the correct outcome (nobody qualifies) and reads
+                    // as an explanation in the violation message.
+                    vec!["(no tier satisfies both restrictions)".to_string()]
+                } else {
+                    common
+                }
+            }
         };
 
         Self {

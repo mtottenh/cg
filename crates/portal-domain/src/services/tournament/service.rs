@@ -497,6 +497,18 @@ where
         self.stage_repo.list_by_tournament(tournament_id).await
     }
 
+    /// Get a single stage by id.
+    ///
+    /// Point lookup for the per-match paths (veto bootstrap), which only need
+    /// the match's own stage — listing every stage of the tournament once per
+    /// match turns a bracket round's worth of check-ins into an N+1.
+    pub async fn get_stage(
+        &self,
+        stage_id: portal_core::TournamentStageId,
+    ) -> Result<Option<TournamentStage>, DomainError> {
+        self.stage_repo.find_by_id(stage_id).await
+    }
+
     /// Register a team for a tournament.
     pub async fn register_team(
         &self,

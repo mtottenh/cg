@@ -145,7 +145,22 @@ pub(super) async fn effective_restrictions(
         portal_domain::entities::eligibility::EligibilityRestrictions::from_settings(
             &league.settings,
         );
-    Ok(own.intersect(&league_restrictions))
+    let composed = own.intersect(&league_restrictions);
+
+    // Two individually-valid rule sets can compose into a contradiction that
+    // rejects everyone. It fails closed, which is the safe direction, but the
+    // per-registration message would never reveal that the configuration
+    // itself is impossible — so say so where an operator will see it.
+    if let Some(reason) = composed.unsatisfiable_reason() {
+        tracing::warn!(
+            tournament_id = %tournament.id,
+            league_id = %league_id,
+            reason = %reason,
+            "tournament and league entry requirements compose to an unsatisfiable rule set — no entrant can register"
+        );
+    }
+
+    Ok(composed)
 }
 
 fn eligibility_error(
@@ -236,10 +251,8 @@ pub(super) async fn auto_create_veto_session(
     // mixed-format bracket vetos each match at its own series length.
     let stage_veto_override = state
         .tournament_service
-        .get_stages(match_.tournament_id)
+        .get_stage(match_.stage_id)
         .await?
-        .into_iter()
-        .find(|s| s.id == match_.stage_id)
         .and_then(|s| s.map_veto_format);
     let veto_format = crate::handlers::veto::resolve_match_veto_format(
         stage_veto_override.as_deref(),

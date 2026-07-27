@@ -916,7 +916,7 @@ async fn seed_tournament_2_registrations_and_matches(
             $1, $2, $3, $4,
             2, 3, 'R2M1',
             '{"WinnerOf": "R1M1"}'::jsonb, '{"WinnerOf": "R1M2"}'::jsonb,
-            'bo3', 2,
+            'bo3', 3,
             'pending'
           )
           ON CONFLICT DO NOTHING"#,
@@ -950,7 +950,7 @@ async fn seed_tournament_2_registrations_and_matches(
             'Team Alpha', 1,
             'Team Delta', 4,
             '{"Seed": 1}'::jsonb, '{"Seed": 4}'::jsonb,
-            'bo3', 2,
+            'bo3', 3,
             TRUE, TRUE,
             NOW(), NOW(),
             $7,
@@ -1007,7 +1007,7 @@ async fn seed_tournament_2_registrations_and_matches(
             'Team Bravo', 2,
             'Team Charlie', 3,
             '{"Seed": 2}'::jsonb, '{"Seed": 3}'::jsonb,
-            'bo3', 2,
+            'bo3', 3,
             TRUE, TRUE,
             $7,
             'ready'

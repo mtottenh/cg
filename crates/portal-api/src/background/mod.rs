@@ -448,10 +448,8 @@ async fn ensure_veto_session(
 
     let stage_veto_override = state
         .tournament_service
-        .get_stages(match_.tournament_id)
+        .get_stage(match_.stage_id)
         .await?
-        .into_iter()
-        .find(|s| s.id == match_.stage_id)
         .and_then(|s| s.map_veto_format);
     let Some(format) = resolve_match_veto_format(
         stage_veto_override.as_deref(),

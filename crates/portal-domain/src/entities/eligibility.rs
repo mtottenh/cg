@@ -84,6 +84,58 @@ impl EligibilityRestrictions {
             .unwrap_or_default()
     }
 
+    /// Why this rule set can never be satisfied, if it can't.
+    ///
+    /// Each side is validated min<=max on write, but composing two
+    /// individually-valid sets can still produce a contradiction: a league
+    /// capping team total at 9000 and a tournament requiring 10000 compose
+    /// to min>max, which rejects every entrant with a per-registration
+    /// message that never says the rules themselves are impossible.
+    #[must_use]
+    pub fn unsatisfiable_reason(&self) -> Option<String> {
+        [
+            (
+                self.min_rating_per_player,
+                self.max_rating_per_player,
+                "player rating",
+            ),
+            (
+                self.min_team_total_rating,
+                self.max_team_total_rating,
+                "team total rating",
+            ),
+            (
+                self.min_team_average_rating,
+                self.max_team_average_rating,
+                "team average rating",
+            ),
+        ]
+        .into_iter()
+        .find_map(|(min, max, label)| match (min, max) {
+            (Some(min), Some(max)) if min > max => {
+                Some(format!("{label} minimum ({min}) exceeds maximum ({max})"))
+            }
+            _ => None,
+        })
+    }
+
+    /// A copy without the minimum-side team bounds.
+    ///
+    /// For checks against a *subset* of a roster — most importantly the
+    /// post-match audit of who actually played. A seven-player roster that
+    /// legitimately cleared a team-total floor at registration fields five
+    /// starters, whose sub-total is naturally lower; applying the floor to
+    /// that lineup flags a fully compliant match. Caps still apply: a lineup
+    /// over a maximum is over it however few played.
+    #[must_use]
+    pub fn without_team_minimums(&self) -> Self {
+        Self {
+            min_team_total_rating: None,
+            min_team_average_rating: None,
+            ..self.clone()
+        }
+    }
+
     /// Only the team-total rating cap, for enforcement during roster
     /// assembly.
     ///

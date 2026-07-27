@@ -141,7 +141,12 @@ pub fn check_team_eligibility(
         .map(|(_, p, _)| p.as_ref().map_or(DEFAULT_RATING, |p| p.rating))
         .sum();
     let count = player_data.len() as i32;
+    // Reported average only. The comparisons below multiply out instead of
+    // dividing: integer division truncates, so a true average of 1000.5
+    // against a 1000 cap would read as exactly 1000 and slip through.
     let avg = total_rating / count;
+    let total = i64::from(total_rating);
+    let count64 = i64::from(count);
 
     if let Some(max_total) = restrictions.max_team_total_rating
         && total_rating > max_total
@@ -162,7 +167,7 @@ pub fn check_team_eligibility(
     }
 
     if let Some(max_avg) = restrictions.max_team_average_rating
-        && avg > max_avg
+        && total > i64::from(max_avg) * count64
     {
         violations.push(team_violation(
             "max_team_average_rating",
@@ -171,7 +176,7 @@ pub fn check_team_eligibility(
     }
 
     if let Some(min_avg) = restrictions.min_team_average_rating
-        && avg < min_avg
+        && total < i64::from(min_avg) * count64
     {
         violations.push(team_violation(
             "min_team_average_rating",
@@ -311,6 +316,67 @@ mod tests {
         assert_eq!(combined.max_rating_per_player, Some(18000));
         assert_eq!(combined.max_team_average_rating, Some(16000));
         assert_eq!(combined.allowed_rank_tiers, vec!["silver".to_string()]);
+    }
+
+    #[test]
+    fn max_team_average_is_not_defeated_by_truncation() {
+        // Two players summing to 2001: the true average is 1000.5, which
+        // exceeds a 1000 cap. Integer division reports 1000 and would let it
+        // pass, so the comparison must multiply out instead.
+        let r = EligibilityRestrictions {
+            max_team_average_rating: Some(1000),
+            ..EligibilityRestrictions::default()
+        };
+        let roster = vec![player(1000), player(1001)];
+        let keys: Vec<_> = check_team_eligibility(&r, &roster)
+            .iter()
+            .map(|v| v.restriction.clone())
+            .collect();
+        assert_eq!(keys, vec!["max_team_average_rating".to_string()]);
+
+        // Exactly at the cap still passes.
+        let exact = vec![player(1000), player(1000)];
+        assert!(check_team_eligibility(&r, &exact).is_empty());
+    }
+
+    #[test]
+    fn without_team_minimums_keeps_caps_for_lineup_audits() {
+        // A 7-player roster cleared a 10500 floor at registration; five of
+        // them play. The floor must not fire against the played lineup...
+        let r = EligibilityRestrictions {
+            min_team_total_rating: Some(10500),
+            max_team_total_rating: Some(20000),
+            ..EligibilityRestrictions::default()
+        }
+        .without_team_minimums();
+        let lineup: Vec<_> = (0..5).map(|_| player(1500)).collect();
+        assert!(check_team_eligibility(&r, &lineup).is_empty());
+
+        // ...but a lineup over the cap is over it however few played.
+        let stacked: Vec<_> = (0..5).map(|_| player(4200)).collect();
+        let keys: Vec<_> = check_team_eligibility(&r, &stacked)
+            .iter()
+            .map(|v| v.restriction.clone())
+            .collect();
+        assert_eq!(keys, vec!["max_team_total_rating".to_string()]);
+    }
+
+    #[test]
+    fn unsatisfiable_composition_is_reported() {
+        // Each side is valid alone; composed they admit nobody.
+        let league = EligibilityRestrictions {
+            max_team_total_rating: Some(9000),
+            ..EligibilityRestrictions::default()
+        };
+        let tournament = EligibilityRestrictions {
+            min_team_total_rating: Some(10000),
+            ..EligibilityRestrictions::default()
+        };
+        assert!(league.unsatisfiable_reason().is_none());
+        assert!(tournament.unsatisfiable_reason().is_none());
+        let reason = league.intersect(&tournament).unsatisfiable_reason();
+        assert!(reason.is_some(), "composition should be flagged");
+        assert!(reason.unwrap().contains("team total rating"));
     }
 
     #[test]

@@ -20,9 +20,9 @@ use crate::steam_openid::{
     OPENID_IDENTIFIER_SELECT, OPENID_NS, STEAM_OPENID_ENDPOINT, parse_steam_id_from_claimed_id,
 };
 use axum::extract::{Query, State};
-use axum_extra::extract::CookieJar;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use axum_extra::extract::CookieJar;
 use chrono::{Duration, Utc};
 use portal_db::NewUserRole;
 use portal_domain::repositories::refresh_token::RefreshTokenRepository;

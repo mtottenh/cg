@@ -42,8 +42,8 @@ use crate::dto::responses::demo::{
     DemoStatusCountsResponse, DemoValidationResultResponse, ProcessUnlinkedDemosResponse,
 };
 use crate::dto::responses::pipeline::{
-    DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, PipelineOverviewResponse,
-    TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
+    DemoExtractionQueueResponse, DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse,
+    PipelineOverviewResponse, TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
 };
 use crate::dto::responses::{
     AccessUrlResponse, AdvancementResponse, AvailabilityOverrideResponse,
@@ -437,6 +437,7 @@ use utoipa_swagger_ui::SwaggerUi;
         // equivalents of the X-API-Key /v1/internal reads.
         demos::get_pipeline_overview,
         demos::list_pipeline_tracking,
+        demos::resume_pipeline_tracking,
         demos::list_pipeline_discovered_matches,
         // Result reviews
         result_reviews::get_result_review,
@@ -807,6 +808,7 @@ use utoipa_swagger_ui::SwaggerUi;
             TrackingHealthSummaryResponse,
             TrackingHealthEntryResponse,
             DiscoveredMatchQueueResponse,
+            DemoExtractionQueueResponse,
             DiscoveredMatchAdminResponse,
             // Game servers
             crate::handlers::game_servers::admin::CreateGameServerRequest,

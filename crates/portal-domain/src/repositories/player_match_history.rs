@@ -66,6 +66,22 @@ pub trait PlayerMatchHistoryRepository: Send + Sync + 'static {
         stats: &AccumulateMatchStats,
     ) -> Result<bool, DomainError>;
 
+    /// Fill in the map name for every row of an already-recorded match.
+    ///
+    /// Match stats are written when GC enrichment completes, but the demo —
+    /// which is often the only place the map name appears — resolves later and
+    /// may take several retries to arrive. Rather than hold the whole match's
+    /// stats hostage to a demo that might never be published, the stats land
+    /// with whatever GC gave (frequently an empty string) and the demo stage
+    /// backfills this one field when it succeeds.
+    ///
+    /// Returns the number of rows updated. Ignores an empty `map`.
+    async fn backfill_map(
+        &self,
+        discovered_match_id: DiscoveredMatchId,
+        map: &str,
+    ) -> Result<u64, DomainError>;
+
     async fn list_by_player_and_game(
         &self,
         player_id: PlayerId,

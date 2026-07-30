@@ -144,6 +144,17 @@ pub struct PipelineQuery {
     pub limit: Option<i64>,
 }
 
+/// Query parameters for resuming a paused tracking entry.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+pub struct ResumeTrackingQuery {
+    /// Also clear the stored share-code cursor.
+    ///
+    /// Required for a `cursor_invalid` pause: the cursor is the thing Steam is
+    /// rejecting, so resuming while keeping it just reproduces the same 412.
+    #[serde(default)]
+    pub reset_cursor: bool,
+}
+
 /// Query parameters for getting demos linked to a match.
 #[derive(Debug, Clone, Deserialize, IntoParams, ToSchema)]
 pub struct GetDemosForMatchQuery {

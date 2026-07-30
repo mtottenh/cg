@@ -17,6 +17,9 @@ pub struct SteamTrackingRow {
     pub poll_errors: i32,
     pub last_poll_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    pub next_poll_at: DateTime<Utc>,
+    pub poll_state: String,
+    pub paused_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

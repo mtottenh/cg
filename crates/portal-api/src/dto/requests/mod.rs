@@ -36,8 +36,9 @@ pub use demo::{
     AssociateDemoRequest, BatchCatalogDemoEntry, BatchCatalogDemosRequest, CatalogDemoRequest,
     CategorizeDemoRequest, DemoPlayerInputDto, DemoStatusCountsQuery, GetDemosForMatchQuery,
     LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest, PendingDemosQuery,
-    PipelineQuery, ProcessUnlinkedDemosQuery, SetDemoNotesRequest, SetDemoVisibilityRequest,
-    SubmitDemoStatsRequest, UnlinkDemoFromMatchRequest, UpdateAutoLinkSettingRequest,
+    PipelineQuery, ProcessUnlinkedDemosQuery, ResumeTrackingQuery, SetDemoNotesRequest,
+    SetDemoVisibilityRequest, SubmitDemoStatsRequest, UnlinkDemoFromMatchRequest,
+    UpdateAutoLinkSettingRequest,
 };
 pub use dispute::{
     AddDisputeMessageRequest, AdminDisputeMessageRequest, AssignDisputeRequest, ListDisputesQuery,

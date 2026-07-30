@@ -166,6 +166,12 @@ pub fn routes() -> Router<AppState> {
         // routes stay service-only and are never exposed to the browser.
         .route("/pipeline/overview", get(demos::get_pipeline_overview))
         .route("/pipeline/tracking", get(demos::list_pipeline_tracking))
+        // The one write on this surface: bringing a paused or backed-off
+        // tracking entry back into the poller's work list.
+        .route(
+            "/pipeline/tracking/{id}/resume",
+            post(demos::resume_pipeline_tracking),
+        )
         .route(
             "/pipeline/discovered-matches",
             get(demos::list_pipeline_discovered_matches),

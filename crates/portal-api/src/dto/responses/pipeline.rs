@@ -41,6 +41,18 @@ pub struct TrackingHealthSummaryResponse {
     pub stale: i64,
     /// Hours of silence after which an entry counts as stale.
     pub stale_after_hours: i64,
+    /// Active entries the poller has stopped working pending a person.
+    ///
+    /// Counted apart from `with_errors` because the required response
+    /// differs: an entry that is backing off recovers on its own, whereas
+    /// these stay stopped until someone acts. This is the number that used to
+    /// be invisible — parked entries looked identical to healthy ones except
+    /// for a counter nothing explained.
+    pub paused: i64,
+    /// Of `paused`, those needing the player to supply a new auth code.
+    pub paused_auth_expired: i64,
+    /// Of `paused`, those needing the share-code cursor reset.
+    pub paused_cursor_invalid: i64,
     /// Most recent poll across all entries in scope (ISO 8601).
     pub last_poll_at: Option<String>,
 }
@@ -56,6 +68,9 @@ impl TrackingHealthSummaryResponse {
             never_polled: summary.never_polled,
             stale: summary.stale,
             stale_after_hours,
+            paused: summary.paused,
+            paused_auth_expired: summary.paused_auth_expired,
+            paused_cursor_invalid: summary.paused_cursor_invalid,
             last_poll_at: summary.last_poll_at.map(|t| t.to_rfc3339()),
         }
     }
@@ -76,6 +91,17 @@ pub struct TrackingHealthEntryResponse {
     pub poll_errors: i32,
     pub last_poll_at: Option<String>,
     pub last_error: Option<String>,
+    /// `ok` · `backoff` · `auth_expired` · `cursor_invalid`.
+    pub poll_state: String,
+    /// True for the two paused states — the poller has stopped working this
+    /// entry and will not resume without a person.
+    pub is_paused: bool,
+    /// What a person has to do, when `is_paused`. Null otherwise.
+    pub required_action: Option<String>,
+    /// When the poller will next try this entry (ISO 8601). Meaningless while
+    /// paused, since nothing is scheduled.
+    pub next_poll_at: String,
+    pub paused_at: Option<String>,
     /// Whether a share-code cursor has been recorded yet.
     pub has_share_code: bool,
     pub created_at: String,
@@ -96,6 +122,21 @@ impl From<TrackingHealthEntry> for TrackingHealthEntryResponse {
             poll_errors: entry.poll_errors,
             last_poll_at: entry.last_poll_at.map(|t| t.to_rfc3339()),
             last_error: entry.last_error,
+            is_paused: matches!(entry.poll_state.as_str(), "auth_expired" | "cursor_invalid"),
+            required_action: match entry.poll_state.as_str() {
+                "auth_expired" => {
+                    Some("The player must supply a new CS2 match-sharing auth code.".to_string())
+                }
+                "cursor_invalid" => Some(
+                    "Steam rejected the stored share-code cursor. Resume with \
+                     reset_cursor=true, then have the player supply a recent share code."
+                        .to_string(),
+                ),
+                _ => None,
+            },
+            poll_state: entry.poll_state,
+            next_poll_at: entry.next_poll_at.to_rfc3339(),
+            paused_at: entry.paused_at.map(|t| t.to_rfc3339()),
             has_share_code: entry.has_share_code,
             created_at: entry.created_at.to_rfc3339(),
         }
@@ -115,6 +156,29 @@ pub struct DiscoveredMatchQueueResponse {
     pub failed: i64,
     /// Failed with the retry budget spent — the enricher will not retry these.
     pub retry_exhausted: i64,
+}
+
+/// Depth of the demo-extraction stage, by `demo_status`.
+///
+/// Enrichment succeeding does not mean the match is complete: the demo carries
+/// the rank updates and usually the map name, and it is fetched separately with
+/// its own retry budget. A healthy `enriched` count next to a growing `pending`
+/// here localises the stall to the Valve CDN rather than the GC.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DemoExtractionQueueResponse {
+    /// Awaiting a first or subsequent attempt.
+    pub pending: i64,
+    /// Parsed, rank updates extracted.
+    pub succeeded: i64,
+    /// Parsed cleanly with no rank updates — casual and deathmatch demos are
+    /// legitimately empty. A success, not a failure.
+    pub empty: i64,
+    /// Never published, or past Valve's retention window. Terminal.
+    pub unavailable: i64,
+    /// Downloaded but could not be decompressed or parsed. Terminal.
+    pub failed: i64,
+    /// GC returned no demo URL; there was never anything to fetch.
+    pub not_applicable: i64,
 }
 
 /// One discovered match, as the operator needs to see it.
@@ -165,6 +229,9 @@ pub struct PipelineOverviewResponse {
     pub tracking: TrackingHealthSummaryResponse,
     /// Stage 2 — the discovered-match queue (poller → enricher).
     pub discovered_matches: DiscoveredMatchQueueResponse,
+    /// Stage 2b — demo fetch + rank extraction, retried independently of the
+    /// GC call that produced the URL.
+    pub demo_extraction: DemoExtractionQueueResponse,
     /// Stage 3 — the demo catalog (scanner → stats service).
     pub demos: DemoStatusCountsResponse,
     /// Whether the demo→match auto-linker is enabled. The backfill refuses to

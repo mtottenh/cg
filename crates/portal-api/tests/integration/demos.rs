@@ -1741,13 +1741,16 @@ async fn test_pipeline_overview_reports_every_stage() {
     )
     .await;
     seed_discovered_match(&app, broken_tracking, "CSGO-pipe-ok", "enriched", None, 0).await;
+    // Retry-exhausted means retry_count has reached max_retries, which now
+    // defaults to 6 attempts spread over roughly an hour of backoff rather than
+    // 3 fired off inside 90 seconds.
     seed_discovered_match(
         &app,
         broken_tracking,
         "CSGO-pipe-dead",
         "failed",
-        Some("GC timeout after 3 attempts"),
-        3,
+        Some("GC timeout after 6 attempts"),
+        6,
     )
     .await;
 

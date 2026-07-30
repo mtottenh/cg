@@ -41,6 +41,17 @@ pub fn routes() -> Router<AppState> {
             "/discovered-matches/{id}/failed",
             post(internal::mark_failed),
         )
+        // Demo extraction — a retried stage in its own right, not a side
+        // effect of enrichment. Leasing mutates (it banks an attempt against
+        // the row before any work starts), hence POST rather than GET.
+        .route(
+            "/discovered-matches/demo-jobs",
+            post(internal::lease_demo_jobs),
+        )
+        .route(
+            "/discovered-matches/{id}/demo-result",
+            post(internal::submit_demo_result),
+        )
         // Demos (scanner)
         .route("/demos/batch", post(internal::internal_batch_catalog_demos))
         .route("/demos/pending", get(internal::internal_get_pending_demos))

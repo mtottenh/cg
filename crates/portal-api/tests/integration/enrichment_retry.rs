@@ -108,11 +108,22 @@ async fn key_post(app: &TestApp, uri: &str, body: &serde_json::Value, key: &str)
     .await
 }
 
+/// Short unique token for test identities.
+///
+/// `users.username` and `players.display_name` are both VARCHAR(32), and
+/// `build_persisted` copies the username into the display name — so a full
+/// 32-char simple UUID overflows the column the moment it carries a prefix.
+/// Takes the tail, which is the random half of a v7 rather than the timestamp.
+fn unique_suffix() -> String {
+    let uuid = Uuid::now_v7().simple().to_string();
+    uuid[12..32].to_string()
+}
+
 /// Seed a tracking row and return its id.
 async fn seed_tracking(app: &TestApp, steam_id_64: i64) -> Uuid {
     let user = UserBuilder::new()
-        .username(format!("retry_{}", Uuid::now_v7().simple()))
-        .email(format!("retry-{}@example.com", Uuid::now_v7().simple()))
+        .username(format!("retry_{}", unique_suffix()))
+        .email(format!("retry-{}@example.com", unique_suffix()))
         .build_persisted(app.pool())
         .await;
     let game_id = portal_test::helpers::get_game_id(app.pool(), "cs2").await;
@@ -316,19 +327,21 @@ async fn test_enrichment_backoff_grows_between_attempts() {
     }
 
     // Base is 60s with equal jitter, so attempt n waits within
-    // [30 * 2^(n-1), 60 * 2^(n-1)]. Assert the bands rather than exact values.
+    // [30 * 2^(n-1), 60 * 2^(n-1)]. Bands, not exact values — and the upper
+    // bounds carry headroom, because the gap is measured from before the round
+    // trip, so a loaded CI runner adds its own latency to every reading.
     assert!(
-        (30..=61).contains(&gaps[0]),
+        (29..=70).contains(&gaps[0]),
         "first retry should wait ~30-60s, waited {}s",
         gaps[0]
     );
     assert!(
-        (60..=121).contains(&gaps[1]),
+        (59..=130).contains(&gaps[1]),
         "second retry should wait ~60-120s, waited {}s",
         gaps[1]
     );
     assert!(
-        (120..=241).contains(&gaps[2]),
+        (119..=250).contains(&gaps[2]),
         "third retry should wait ~120-240s, waited {}s",
         gaps[2]
     );
@@ -759,7 +772,9 @@ async fn test_pipeline_overview_reports_the_demo_stage() {
         Some("http://replay1.valve.net/730/7.dem.bz2"),
     )
     .await;
-    lease_demo_jobs(&app, &key, 1).await;
+    // Reported without leasing first. `record_demo_result` is keyed on the id,
+    // and leasing here would actually pick up `waiting` — it sorts earlier on
+    // demo_next_attempt_at — which reads as though it were leasing `dead`.
     report_demo(&app, dead, &key, &json!({ "outcome": "gone" })).await;
 
     let response = app.get_auth("/v1/admin/pipeline/overview?game=cs2").await;

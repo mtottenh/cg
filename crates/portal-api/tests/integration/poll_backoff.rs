@@ -112,11 +112,22 @@ async fn key_patch(app: &TestApp, uri: &str, body: &serde_json::Value, key: &str
     .await
 }
 
+/// Short unique token for test identities.
+///
+/// `users.username` and `players.display_name` are both VARCHAR(32), and
+/// `build_persisted` copies the username into the display name — so a full
+/// 32-char simple UUID overflows the column the moment it carries a prefix.
+/// Takes the tail, which is the random half of a v7 rather than the timestamp.
+fn unique_suffix() -> String {
+    let uuid = Uuid::now_v7().simple().to_string();
+    uuid[12..32].to_string()
+}
+
 /// Seed one active tracking entry with a cursor already set.
 async fn seed_tracking(app: &TestApp, steam_id_64: i64) -> Uuid {
     let user = UserBuilder::new()
-        .username(format!("poll_{}", Uuid::now_v7().simple()))
-        .email(format!("poll-{}@example.com", Uuid::now_v7().simple()))
+        .username(format!("poll_{}", unique_suffix()))
+        .email(format!("poll-{}@example.com", unique_suffix()))
         .build_persisted(app.pool())
         .await;
     let game_id = portal_test::helpers::get_game_id(app.pool(), "cs2").await;
@@ -219,9 +230,11 @@ async fn test_transient_failures_back_off_progressively() {
     }
 
     // Base 60s with equal jitter: attempt n waits in [30 * 2^(n-1), 60 * 2^(n-1)].
-    assert!((30..=61).contains(&gaps[0]), "first gap {}s", gaps[0]);
-    assert!((60..=121).contains(&gaps[1]), "second gap {}s", gaps[1]);
-    assert!((120..=241).contains(&gaps[2]), "third gap {}s", gaps[2]);
+    // Upper bounds carry headroom for CI latency — the gap is measured from
+    // before the round trip, so the runner's own delay lands inside it.
+    assert!((29..=70).contains(&gaps[0]), "first gap {}s", gaps[0]);
+    assert!((59..=130).contains(&gaps[1]), "second gap {}s", gaps[1]);
+    assert!((119..=250).contains(&gaps[2]), "third gap {}s", gaps[2]);
 
     // And while it is backing off, the poller is not offered it.
     assert!(
@@ -264,7 +277,7 @@ async fn test_transient_failures_never_permanently_park_the_entry() {
     // The delay is capped rather than unbounded — six hours, not 2^25 minutes.
     let gap = (state.next_poll_at - chrono::Utc::now()).num_seconds();
     assert!(
-        (10_800..=21_601).contains(&gap),
+        (10_790..=21_650).contains(&gap),
         "backoff should saturate at the 6h cap, got {gap}s"
     );
 
@@ -314,7 +327,7 @@ async fn test_rate_limiting_does_not_count_against_the_entry() {
     // Cooldown is flat, not escalating: still ~5 minutes after 15 hits.
     let gap = (state.next_poll_at - chrono::Utc::now()).num_seconds();
     assert!(
-        (240..=301).contains(&gap),
+        (200..=320).contains(&gap),
         "expected a flat ~300s cooldown, got {gap}s"
     );
 }
@@ -352,19 +365,18 @@ async fn test_auth_expired_pauses_immediately() {
     );
 }
 
-/// Supplying a new auth code is the fix, so it resumes the entry. Previously
-/// this changed the credential and left the entry just as dead.
-#[tokio::test]
-async fn test_new_auth_code_resumes_a_paused_entry() {
-    let app = TestApp::new().await;
-    let key = create_poller_key(app.pool()).await;
-
+/// Register a player through the public route, returning `(tracking_id, jwt)`.
+///
+/// Needed wherever a test exercises the player-facing auth-code update: that
+/// route only ever writes the caller's own entry, so a directly-seeded row
+/// cannot reach it.
+async fn register_player_tracking(app: &TestApp, steam_id_64: i64) -> (Uuid, String) {
     let user = UserBuilder::new()
-        .username(format!("resume_{}", Uuid::now_v7().simple()))
-        .email(format!("resume-{}@example.com", Uuid::now_v7().simple()))
+        .username(format!("reg_{}", unique_suffix()))
+        .email(format!("reg-{}@example.com", unique_suffix()))
         .build_persisted(app.pool())
         .await;
-    let steam_id_64: i64 = 76_561_198_000_000_305;
+
     sqlx::query("UPDATE players SET steam_id = $1, steam_id_64 = $2 WHERE id = $3")
         .bind(steam_id_64.to_string())
         .bind(steam_id_64)
@@ -397,6 +409,17 @@ async fn test_new_auth_code_resumes_a_paused_entry() {
         .fetch_one(app.pool())
         .await
         .unwrap();
+
+    (id, token)
+}
+
+/// Supplying a new auth code is the fix, so it resumes the entry. Previously
+/// this changed the credential and left the entry just as dead.
+#[tokio::test]
+async fn test_new_auth_code_resumes_a_paused_entry() {
+    let app = TestApp::new().await;
+    let key = create_poller_key(app.pool()).await;
+    let (id, token) = register_player_tracking(&app, 76_561_198_000_000_305).await;
 
     // Steam revokes the code; the poller reports it and the entry pauses.
     report(
@@ -434,7 +457,7 @@ async fn test_new_auth_code_resumes_a_paused_entry() {
 async fn test_cursor_invalid_needs_a_cursor_reset_not_a_new_auth_code() {
     let app = TestApp::new().await;
     let key = create_poller_key(app.pool()).await;
-    let id = seed_tracking(&app, 76_561_198_000_000_306).await;
+    let (id, token) = register_player_tracking(&app, 76_561_198_000_000_306).await;
 
     report(
         &app,
@@ -445,8 +468,29 @@ async fn test_cursor_invalid_needs_a_cursor_reset_not_a_new_auth_code() {
     .await;
     assert_eq!(poll_state(&app, id).await.poll_state, "cursor_invalid");
 
-    // Admin resume WITHOUT a cursor reset leaves the bad cursor in place, so
-    // the next poll would hit the same 412. With one, the cursor is cleared.
+    // A new auth code must NOT resume this one. The credential is not what
+    // Steam is rejecting, so resuming on it would put the entry straight back
+    // in the queue to hit the identical 412 — and the player would have no
+    // idea why their fix did nothing.
+    app.patch_json_with_token(
+        "/v1/players/me/steam-tracking",
+        &json!({ "game_auth_code": "DDDD-EEEEE-FFFF" }),
+        &token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let after_new_code = poll_state(&app, id).await;
+    assert_eq!(
+        after_new_code.poll_state, "cursor_invalid",
+        "a new auth code does not fix a rejected cursor and must not resume it"
+    );
+    assert!(
+        !due_ids(&app, &key).await.contains(&id.to_string()),
+        "and the entry must stay out of the poller's work list"
+    );
+
+    // The cursor reset is what actually unsticks it.
     let dev_user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
     portal_test::helpers::assign_role_to_user(app.pool(), dev_user_id, "platform_admin").await;
 

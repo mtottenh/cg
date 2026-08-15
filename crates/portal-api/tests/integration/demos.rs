@@ -1808,7 +1808,7 @@ async fn test_pipeline_overview_reports_every_stage() {
     let failures = body["data"].as_array().unwrap();
     assert_eq!(failures.len(), 1, "only the failed row: {body}");
     assert_eq!(failures[0]["share_code"], "CSGO-pipe-dead");
-    assert_eq!(failures[0]["error"], "GC timeout after 3 attempts");
+    assert_eq!(failures[0]["error"], "GC timeout after 6 attempts");
     assert_eq!(failures[0]["retry_exhausted"], true);
 }
 

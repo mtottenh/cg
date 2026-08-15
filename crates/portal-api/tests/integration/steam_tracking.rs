@@ -558,6 +558,9 @@ async fn test_update_poll_result_with_error() {
     )
     .await;
 
+    // Legacy shape: `error` with no `outcome`. A poller that has not been
+    // upgraded still works, and the bare error is inferred as transient — the
+    // conservative reading, since it keeps retrying.
     let response = api_key_patch_json(
         &app,
         &format!("/v1/internal/steam-tracking/{tracking_id}/poll-result"),
@@ -566,6 +569,22 @@ async fn test_update_poll_result_with_error() {
     )
     .await;
     response.assert_status(StatusCode::NO_CONTENT);
+
+    let (poll_errors, poll_state, next_poll_at): (i32, String, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as(
+            "SELECT poll_errors, poll_state::TEXT, next_poll_at FROM steam_tracking WHERE id = $1",
+        )
+        .bind(tracking_id.parse::<Uuid>().unwrap())
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+
+    assert_eq!(poll_errors, 1);
+    assert_eq!(poll_state, "backoff");
+    assert!(
+        next_poll_at > chrono::Utc::now(),
+        "a failure must schedule the retry ahead of now, got {next_poll_at}"
+    );
 }
 
 // =============================================================================
@@ -1019,7 +1038,10 @@ async fn test_mark_match_failed() {
     .await;
     failed_response.assert_status(StatusCode::OK);
 
-    // Failed match with retry_count < max_retries should reappear in pending
+    // A failure schedules the next attempt into the future, so the match must
+    // NOT come straight back. This is the whole point: re-offering it on the
+    // next 30s cycle is how a 90-second outage used to spend a 3-attempt budget
+    // and write the match off permanently.
     let pending = api_key_get(
         &app,
         "/v1/internal/discovered-matches/pending?game=cs2&limit=10",
@@ -1028,15 +1050,47 @@ async fn test_mark_match_failed() {
     .await;
     let pending_matches: Vec<serde_json::Value> = pending.json();
     assert!(
-        pending_matches
+        !pending_matches
             .iter()
             .any(|m| m["id"].as_str().unwrap() == match_id),
-        "Failed match should reappear in pending list (retry_count < max_retries)"
+        "A just-failed match must be held back by its backoff, not re-offered immediately: \
+         {pending_matches:?}"
     );
+
+    // The attempt was counted, and the schedule is genuinely in the future.
+    let (retry_count, next_attempt_at): (i32, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as("SELECT retry_count, next_attempt_at FROM discovered_matches WHERE id = $1")
+            .bind(match_id.parse::<uuid::Uuid>().unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(retry_count, 1);
+    assert!(
+        next_attempt_at > chrono::Utc::now(),
+        "backoff must schedule the retry ahead of now, got {next_attempt_at}"
+    );
+
+    // Once the backoff elapses the match is offered again — the budget is
+    // delayed, not forfeited.
+    sqlx::query(
+        "UPDATE discovered_matches SET next_attempt_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+    )
+    .bind(match_id.parse::<uuid::Uuid>().unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    let pending = api_key_get(
+        &app,
+        "/v1/internal/discovered-matches/pending?game=cs2&limit=10",
+        &key,
+    )
+    .await;
+    let pending_matches: Vec<serde_json::Value> = pending.json();
     let failed_match = pending_matches
         .iter()
         .find(|m| m["id"].as_str().unwrap() == match_id)
-        .unwrap();
+        .expect("match should be pending again once its backoff has elapsed");
     assert_eq!(failed_match["retry_count"], 1);
 }
 
@@ -1205,7 +1259,32 @@ async fn test_full_poller_to_enricher_flow() {
     .await
     .assert_status(StatusCode::OK);
 
-    // 8. Verify: only the failed match (with retry available) is in pending now
+    // 8. Verify: nothing is due right now. The enriched match is done, and the
+    // failed one is serving its backoff rather than being re-offered on the
+    // very next cycle.
+    let final_pending = api_key_get(
+        &app,
+        "/v1/internal/discovered-matches/pending?game=cs2&limit=10",
+        &enricher_key,
+    )
+    .await;
+    let final_pending_list: Vec<serde_json::Value> = final_pending.json();
+    assert!(
+        final_pending_list.is_empty(),
+        "the failed match is backing off and the enriched one is done: {final_pending_list:?}"
+    );
+
+    // 9. After the backoff elapses the failed match — and only it — is offered
+    // again, with its attempt recorded.
+    sqlx::query(
+        "UPDATE discovered_matches SET next_attempt_at = NOW() - INTERVAL '1 second' \
+         WHERE id = $1",
+    )
+    .bind(second_match_id.parse::<uuid::Uuid>().unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+
     let final_pending = api_key_get(
         &app,
         "/v1/internal/discovered-matches/pending?game=cs2&limit=10",

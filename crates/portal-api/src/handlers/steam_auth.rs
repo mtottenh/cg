@@ -22,6 +22,7 @@ use crate::steam_openid::{
 use axum::extract::{Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use axum_extra::extract::CookieJar;
 use chrono::{Duration, Utc};
 use portal_db::NewUserRole;
 use portal_domain::repositories::refresh_token::RefreshTokenRepository;
@@ -99,6 +100,7 @@ pub async fn steam_login(State(state): State<AuthState>) -> ApiResult<Response> 
 #[allow(clippy::implicit_hasher)]
 pub async fn steam_callback(
     State(state): State<AuthState>,
+    jar: CookieJar,
     Query(params): Query<HashMap<String, String>>,
 ) -> ApiResult<Response> {
     let mode = params.get("openid.mode").map(String::as_str);
@@ -204,6 +206,18 @@ pub async fn steam_callback(
         .create(user.id.as_uuid(), &refresh_hash, refresh_expires)
         .await?;
 
+    // Set the SAME httpOnly refresh cookie the password login issues.
+    //
+    // Without it the Steam flow left the refresh token in the SPA's memory
+    // only, so any reload or new tab lost the session and bounced the user
+    // to sign-in — and since sign-in is Steam-only, no real user ever had
+    // the cookie. `initialize()` on the client already expects the cookie
+    // to carry a session across reloads; this is the half that was missing.
+    let jar = jar.add(crate::handlers::auth::refresh_token_cookie(
+        &raw_refresh,
+        state.token_config.refresh_token_expiry_minutes,
+    ));
+
     // Tokens travel in the fragment (never the query string) so they
     // don't land in server or proxy logs. Both are URL-safe (base64url
     // JWT, hex refresh token).
@@ -211,5 +225,5 @@ pub async fn steam_callback(
         "{}/auth/steam/complete#access_token={access_token}&refresh_token={raw_refresh}",
         state.steam_auth_config.frontend_url
     );
-    found(&redirect)
+    Ok((jar, found(&redirect)?).into_response())
 }

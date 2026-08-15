@@ -42,7 +42,7 @@ const REFRESH_TOKEN_COOKIE: &str = "refresh_token";
 /// `SameSite=Lax` + `HttpOnly` so scripts can never read it. The refresh
 /// token is (for now) still returned in the response body as well, for
 /// clients that have not migrated to the cookie flow.
-fn refresh_token_cookie(raw_refresh: &str, expiry_minutes: i64) -> Cookie<'static> {
+pub(crate) fn refresh_token_cookie(raw_refresh: &str, expiry_minutes: i64) -> Cookie<'static> {
     let mut cookie = Cookie::new(REFRESH_TOKEN_COOKIE, raw_refresh.to_owned());
     cookie.set_http_only(true);
     cookie.set_same_site(SameSite::Lax);

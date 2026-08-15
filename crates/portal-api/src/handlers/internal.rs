@@ -28,7 +28,9 @@ use chrono::DateTime;
 use portal_core::permissions::service;
 use portal_core::{DemoId, GameId, SteamTrackingId};
 use portal_domain::entities::demo::{DemoPlayerStats, ParsedDemoMetadata};
-use portal_domain::entities::steam_tracking::UpdatePollResultCommand;
+use portal_domain::entities::steam_tracking::{PollOutcome, UpdatePollResultCommand};
+use portal_domain::repositories::PlayerMatchHistoryRepository;
+use portal_domain::repositories::discovered_match::DemoOutcome;
 use portal_domain::services::DemoPlayerInput;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -43,6 +45,15 @@ use validator::Validate;
 pub struct ActiveTrackingQuery {
     /// Game slug (e.g. "cs2").
     pub game: String,
+    /// Cap on entries returned per cycle. Steam allows ~1 request/second and
+    /// the poller's cycle has a deadline, so handing it more work than it can
+    /// get through just means the tail never gets polled.
+    #[serde(default = "default_tracking_limit")]
+    pub limit: i64,
+}
+
+const fn default_tracking_limit() -> i64 {
+    200
 }
 
 /// Steam tracking entry exposed to bots.
@@ -56,7 +67,17 @@ pub struct InternalSteamTrackingEntry {
     pub poll_errors: i32,
 }
 
-/// Get all active tracking entries for a game.
+/// Get the tracking entries that are due for a poll.
+///
+/// Despite the route name this is a WORK LIST, not a listing: it returns only
+/// entries that are active, not paused, and past their `next_poll_at`. All
+/// three conditions live here rather than in the bot.
+///
+/// The poller used to fetch every active entry and drop any with
+/// `poll_errors >= 10` itself. That put the retry policy in the one component
+/// that could not durably record it, and left the portal unable to explain why
+/// an entry had gone quiet — the count was visible, but nothing said whether it
+/// meant "retrying shortly", "backing off for hours" or "abandoned forever".
 pub async fn get_active_tracking(
     State(state): State<InternalState>,
     service: AuthenticatedService,
@@ -75,7 +96,7 @@ pub async fn get_active_tracking(
 
     let entries = state
         .steam_tracking_service
-        .get_active_for_game(game_id)
+        .get_due_for_poll(game_id, query.limit.clamp(1, 500))
         .await
         .map_err(ApiError::from)?;
 
@@ -98,7 +119,19 @@ pub async fn get_active_tracking(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdatePollResultRequest {
     /// The newest share code discovered (if any).
+    ///
+    /// Independent of `outcome`: a walk that discovered codes and then failed
+    /// should still bank them, otherwise a player whose walk reliably breaks
+    /// partway never makes forward progress.
     pub last_known_code: Option<String>,
+    /// How the poll ended: `ok` · `transient` · `rate-limited` ·
+    /// `auth-expired` · `cursor-invalid`.
+    ///
+    /// Optional for compatibility with an older poller that only sent
+    /// `error`. Absent, it is inferred — which is strictly worse, because the
+    /// inference cannot tell a revoked token from a network blip and so
+    /// treats both as retryable.
+    pub outcome: Option<String>,
     /// Error message if the poll failed.
     pub error: Option<String>,
 }
@@ -112,12 +145,21 @@ pub async fn update_poll_result(
 ) -> ApiResult<StatusCode> {
     service.require_permission(service::STEAM_TRACKING_WRITE)?;
 
+    let outcome = match req.outcome.as_deref() {
+        Some(raw) => PollOutcome::parse(raw)
+            .ok_or_else(|| ApiError::bad_request(format!("Unknown poll outcome: {raw}")))?,
+        // Legacy shape: presence of `error` was the entire signal.
+        None if req.error.is_some() => PollOutcome::Transient,
+        None => PollOutcome::Ok,
+    };
+
     state
         .steam_tracking_service
         .update_poll_result(
             tracking_id,
             UpdatePollResultCommand {
                 last_known_code: req.last_known_code,
+                outcome,
                 error: req.error,
             },
         )
@@ -783,6 +825,189 @@ pub async fn mark_failed(
     state
         .discovered_match_service
         .mark_failed(match_id, &req.error)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(StatusCode::OK)
+}
+
+// =============================================================================
+// Demo extraction stage (internal) — for cs2-enricher
+// =============================================================================
+//
+// Fetching and parsing the match demo is a SEPARATE retried stage from GC
+// enrichment, with its own budget, its own backoff and its own terminal states.
+//
+// It used to be a best-effort side effect of enrichment: the enricher
+// downloaded the demo inline and, on any failure, submitted the match as
+// enriched with no ratings and no map name. Because Valve does not publish a
+// demo the instant a match ends, the single most likely failure — "not there
+// yet" — silently and permanently discarded that match's rank data.
+//
+// Splitting the stages also keeps a slow CDN away from the rate-limited GC
+// path: a demo that takes twenty minutes to appear no longer holds up, or gets
+// charged against, the GC call that already succeeded.
+
+/// Query params for leasing demo-extraction jobs.
+#[derive(Debug, Deserialize)]
+pub struct DemoJobsQuery {
+    pub game: String,
+    #[serde(default = "default_demo_job_limit")]
+    pub limit: i64,
+}
+
+const fn default_demo_job_limit() -> i64 {
+    3
+}
+
+/// One leased demo-extraction job.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DemoJobResponse {
+    pub id: String,
+    pub share_code: String,
+    pub match_id: i64,
+    pub demo_url: String,
+    /// Attempts made INCLUDING this one — the lease already banked it.
+    pub attempt: i32,
+    pub max_attempts: i32,
+}
+
+/// Lease a batch of demo-extraction jobs.
+///
+/// `POST`, not `GET`: this mutates. The lease increments each row's attempt
+/// counter and pushes its next-eligible time out, in the same statement that
+/// selects it. That ordering is deliberate — the attempt is recorded in the
+/// database *before* the worker does any work, so a worker that dies mid-parse
+/// has still spent an attempt and a restart cannot hand a poison demo a fresh
+/// budget.
+pub async fn lease_demo_jobs(
+    State(state): State<InternalState>,
+    service: AuthenticatedService,
+    Query(query): Query<DemoJobsQuery>,
+) -> ApiResult<Json<Vec<DemoJobResponse>>> {
+    service.require_permission(service::DISCOVERED_MATCHES_WRITE)?;
+
+    let game = state
+        .game_repo
+        .find_by_slug(&query.game)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .ok_or_else(|| ApiError::not_found(format!("Game not found: {}", query.game)))?;
+
+    let jobs = state
+        .discovered_match_service
+        .lease_demo_jobs(GameId::from(game.id), query.limit.clamp(1, 50))
+        .await
+        .map_err(ApiError::from)?;
+
+    let response: Vec<DemoJobResponse> = jobs
+        .into_iter()
+        .filter_map(|m| {
+            m.demo_url.map(|demo_url| DemoJobResponse {
+                id: m.id.to_string(),
+                share_code: m.share_code,
+                match_id: m.match_id,
+                demo_url,
+                attempt: m.demo_retry_count,
+                max_attempts: m.demo_max_retries,
+            })
+        })
+        .collect();
+
+    Ok(Json(response))
+}
+
+/// Request body for reporting how a demo attempt ended.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DemoResultRequest {
+    /// One of `succeeded`, `empty`, `unavailable`, `failed`, `gone`.
+    pub outcome: String,
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Rank updates scraped from the demo. Only meaningful on `succeeded`.
+    #[serde(default)]
+    pub player_ratings: Option<Vec<DemoPlayerRating>>,
+    /// Map name from the demo header — GC frequently omits it.
+    #[serde(default)]
+    pub map_name: Option<String>,
+}
+
+/// Report the outcome of a demo-extraction attempt.
+pub async fn submit_demo_result(
+    State(state): State<InternalState>,
+    service: AuthenticatedService,
+    Path(id): Path<String>,
+    Json(req): Json<DemoResultRequest>,
+) -> ApiResult<StatusCode> {
+    service.require_permission(service::DISCOVERED_MATCHES_WRITE)?;
+
+    let match_id: portal_core::DiscoveredMatchId = id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID"))?;
+
+    let outcome = DemoOutcome::parse(&req.outcome)
+        .ok_or_else(|| ApiError::bad_request(format!("Unknown demo outcome: {}", req.outcome)))?;
+
+    // Effects before the marker, same discipline as `submit_enriched`: a
+    // terminal success is a promise that the ratings and map name landed. If
+    // applying them fails we report a RETRYABLE failure instead, so the job
+    // comes back rather than being recorded as done with nothing to show.
+    //
+    // `Empty` is included: a casual demo carries no rank updates but its header
+    // still names the map, and that is often the only place the map appears.
+    if matches!(outcome, DemoOutcome::Succeeded | DemoOutcome::Empty) {
+        let discovered = state
+            .discovered_match_service
+            .get(match_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        let effect_error: Option<String> = async {
+            if let Some(ratings) = req.player_ratings.as_ref() {
+                process_demo_ratings(&state, &discovered, ratings)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            if let Some(map) = req.map_name.as_deref().filter(|m| !m.is_empty()) {
+                // Stats were written at enrichment time with whatever map GC
+                // supplied (often nothing). This is the demo filling that gap.
+                let updated = state
+                    .match_history_repo
+                    .backfill_map(match_id, map)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if updated > 0 {
+                    tracing::info!(
+                        match_id = %match_id,
+                        map,
+                        rows = updated,
+                        "Backfilled map name from demo"
+                    );
+                }
+            }
+            Ok::<(), String>(())
+        }
+        .await
+        .err();
+
+        if let Some(error) = effect_error {
+            tracing::warn!(
+                match_id = %match_id,
+                error = %error,
+                "Demo parsed but its effects failed to apply; scheduling a retry"
+            );
+            state
+                .discovered_match_service
+                .record_demo_result(match_id, DemoOutcome::Failed, Some(&error))
+                .await
+                .map_err(ApiError::from)?;
+            return Ok(StatusCode::OK);
+        }
+    }
+
+    state
+        .discovered_match_service
+        .record_demo_result(match_id, outcome, req.error.as_deref())
         .await
         .map_err(ApiError::from)?;
 

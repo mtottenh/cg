@@ -3,13 +3,37 @@
 use crate::entities::steam_tracking::{
     CreateSteamTrackingCommand, SteamTracking, UpdatePollResultCommand,
 };
+use crate::repositories::discovered_match::BackoffPolicy;
 use crate::repositories::steam_tracking::{
     CreateSteamTracking, SteamTrackingRepository, TrackingHealthEntry, TrackingHealthSummary,
 };
 use crate::repositories::user::PlayerRepository;
 use portal_core::{DomainError, GameId, PlayerId, SteamTrackingId};
 use std::sync::Arc;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
+
+/// Backoff for transient poll failures: 1m, 2m, 4m … capped at 6 hours.
+///
+/// Deliberately has NO attempt ceiling to go with it. A tracking entry is a
+/// standing subscription, not a unit of work: one request every six hours
+/// costs nothing, so permanently abandoning an entry — which is what
+/// `poll_errors >= 10` did — is strictly worse than checking on it
+/// occasionally forever. Nothing is lost by polling less often either, since
+/// the poller walks forward from a stored cursor and catches up.
+///
+/// Retrying only stops for failures that provably cannot succeed, and those
+/// pause on the first occurrence rather than the tenth.
+pub const POLL_BACKOFF: BackoffPolicy = BackoffPolicy {
+    base_secs: 60.0,
+    cap_secs: 21_600.0,
+};
+
+/// Flat cooldown after Steam returns 429.
+///
+/// Flat, not exponential: rate limiting reflects our own aggregate request
+/// volume rather than anything about the entry that happened to hit it, so
+/// escalating per entry would punish tokens at random for a global condition.
+pub const RATE_LIMIT_COOLDOWN_SECS: i64 = 300;
 
 /// Service for steam tracking business logic.
 pub struct SteamTrackingService<STR, PR>
@@ -147,6 +171,16 @@ where
         self.tracking_repo.find_active_by_game(game_id).await
     }
 
+    /// The poller's work list: active, unpaused, and due (internal/bot use).
+    #[instrument(skip(self))]
+    pub async fn get_due_for_poll(
+        &self,
+        game_id: GameId,
+        limit: i64,
+    ) -> Result<Vec<SteamTracking>, DomainError> {
+        self.tracking_repo.find_due_for_poll(game_id, limit).await
+    }
+
     /// Update a tracking entry's poll result (internal/bot use).
     #[instrument(skip(self))]
     pub async fn update_poll_result(
@@ -154,7 +188,51 @@ where
         id: SteamTrackingId,
         cmd: UpdatePollResultCommand,
     ) -> Result<SteamTracking, DomainError> {
-        self.tracking_repo.update_poll_result(id, cmd).await
+        let outcome = cmd.outcome;
+        let result = self
+            .tracking_repo
+            .update_poll_result(id, cmd, POLL_BACKOFF, RATE_LIMIT_COOLDOWN_SECS)
+            .await?;
+
+        if outcome.is_paused() {
+            // Loud, and only once: the state change is what is newsworthy, and
+            // a paused entry is not polled again so this cannot spam.
+            warn!(
+                tracking_id = %id,
+                steam_id = result.steam_id_64,
+                poll_state = %result.poll_state,
+                error = result.last_error.as_deref().unwrap_or(""),
+                "Tracking entry paused — needs a person: {}",
+                match result.poll_state.as_str() {
+                    "auth_expired" => "the player must supply a new match-sharing auth code",
+                    "cursor_invalid" =>
+                        "the share-code cursor is rejected; resume with a cursor reset",
+                    _ => "unknown",
+                }
+            );
+        }
+
+        Ok(result)
+    }
+
+    /// Clear a pause or backoff and poll the entry again immediately.
+    ///
+    /// `reset_cursor` drops `last_known_code`, which is the point for a
+    /// `cursor_invalid` pause — resuming while keeping the cursor Steam is
+    /// rejecting just reproduces the same 412.
+    #[instrument(skip(self))]
+    pub async fn resume(
+        &self,
+        id: SteamTrackingId,
+        reset_cursor: bool,
+    ) -> Result<SteamTracking, DomainError> {
+        let result = self.tracking_repo.resume(id, reset_cursor).await?;
+        info!(
+            tracking_id = %id,
+            reset_cursor,
+            "Tracking entry resumed"
+        );
+        Ok(result)
     }
 
     /// Tracking-token health for the admin pipeline view (P-73), worst first.

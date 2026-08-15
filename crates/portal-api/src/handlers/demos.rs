@@ -4,15 +4,17 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AssociateDemoRequest, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
     DemoStatusCountsQuery, GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery,
-    MarkDemoFailedRequest, PipelineQuery, ProcessUnlinkedDemosQuery, SetDemoNotesRequest,
-    SetDemoVisibilityRequest, SubmitDemoStatsRequest, UpdateAutoLinkSettingRequest,
+    MarkDemoFailedRequest, PipelineQuery, ProcessUnlinkedDemosQuery, ResumeTrackingQuery,
+    SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
+    UpdateAutoLinkSettingRequest,
 };
 use crate::dto::responses::{
     AutoLinkSettingResponse, BatchCatalogErrorResponse, BatchCatalogResultResponse,
-    DemoDownloadResponse, DemoListResponse, DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse,
-    DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse, DiscoveredMatchAdminResponse,
-    DiscoveredMatchQueueResponse, PipelineOverviewResponse, ProcessUnlinkedDemosResponse,
-    TRACKING_STALE_AFTER_HOURS, TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
+    DemoDownloadResponse, DemoExtractionQueueResponse, DemoListResponse, DemoMatchLinkResponse,
+    DemoMatchLinkWithDemoResponse, DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse,
+    DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, PipelineOverviewResponse,
+    ProcessUnlinkedDemosResponse, TRACKING_STALE_AFTER_HOURS, TrackingHealthEntryResponse,
+    TrackingHealthSummaryResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
@@ -1445,6 +1447,10 @@ pub async fn get_pipeline_overview(
         .discovered_match_service
         .count_retry_exhausted(game_id)
         .await?;
+    let demo_stage = state
+        .discovered_match_service
+        .count_by_demo_status(game_id)
+        .await?;
 
     // P-144: these used to be global — the count query carried no game filter —
     // while everything beside them on this response (tracking health, the
@@ -1469,6 +1475,14 @@ pub async fn get_pipeline_overview(
             enriched: queue_count(&queue, "enriched"),
             failed: queue_count(&queue, "failed"),
             retry_exhausted,
+        },
+        demo_extraction: DemoExtractionQueueResponse {
+            pending: queue_count(&demo_stage, "pending"),
+            succeeded: queue_count(&demo_stage, "succeeded"),
+            empty: queue_count(&demo_stage, "empty"),
+            unavailable: queue_count(&demo_stage, "unavailable"),
+            failed: queue_count(&demo_stage, "failed"),
+            not_applicable: queue_count(&demo_stage, "not_applicable"),
         },
         demos: DemoStatusCountsResponse {
             pending: demo_counts
@@ -1541,6 +1555,71 @@ pub async fn list_pipeline_tracking(
         .collect();
 
     Ok(Json(DataResponse::new(responses, request_id)))
+}
+
+/// Resume a paused or backing-off tracking entry (admin).
+///
+/// The operator escape hatch. Until this existed, an entry parked by the old
+/// `poll_errors >= 10` cliff could only be recovered with a hand-written
+/// UPDATE against production, because nothing in the system could bring the
+/// counter back down.
+///
+/// Pass `reset_cursor=true` for a `cursor_invalid` pause: Steam is rejecting
+/// the stored share code, so resuming without dropping it just reproduces the
+/// same 412 on the next poll. The player then re-supplies a recent share code
+/// to restart the walk.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/pipeline/tracking/{id}/resume",
+    params(
+        ("id" = String, Path, description = "Steam tracking entry ID"),
+        ("reset_cursor" = Option<bool>, Query, description = "Also clear the stored share-code cursor"),
+    ),
+    responses(
+        (status = 200, description = "Entry resumed", body = DataResponse<TrackingHealthEntryResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Tracking entry not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn resume_pipeline_tracking(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<ResumeTrackingQuery>,
+) -> ApiResult<Json<DataResponse<TrackingHealthEntryResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    // A mutation, so the real manage permission — not the read-only
+    // pipeline-view override.
+    require_demos_manage(&state, &auth).await?;
+
+    let tracking_id: portal_core::SteamTrackingId = id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid tracking ID"))?;
+
+    let resumed = state
+        .steam_tracking_service
+        .resume(tracking_id, query.reset_cursor)
+        .await?;
+
+    // Re-read through the health projection so the response matches what the
+    // list endpoint shows, rather than being a second, subtly different shape.
+    let entry = state
+        .steam_tracking_service
+        .list_health(Some(resumed.game_id), 500)
+        .await?
+        .into_iter()
+        .find(|e| e.id == tracking_id)
+        .ok_or_else(|| ApiError::not_found("Tracking entry not found"))?;
+
+    Ok(Json(DataResponse::new(
+        TrackingHealthEntryResponse::from(entry),
+        request_id,
+    )))
 }
 
 /// The discovered-match queue, newest first (admin).

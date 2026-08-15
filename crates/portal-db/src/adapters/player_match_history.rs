@@ -238,6 +238,32 @@ impl PlayerMatchHistoryRepository for PgPlayerMatchHistoryRepository {
         Ok(true)
     }
 
+    async fn backfill_map(
+        &self,
+        discovered_match_id: DiscoveredMatchId,
+        map: &str,
+    ) -> Result<u64, DomainError> {
+        if map.is_empty() {
+            return Ok(0);
+        }
+
+        let result = sqlx::query(
+            r"
+            UPDATE player_match_history
+            SET map = $2
+            WHERE discovered_match_id = $1
+              AND map IS DISTINCT FROM $2
+            ",
+        )
+        .bind(discovered_match_id.as_uuid())
+        .bind(map)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn list_by_player_and_game(
         &self,
         player_id: PlayerId,

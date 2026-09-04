@@ -378,7 +378,7 @@ async fn test_archived_season_is_hidden_unless_asked_for() {
     );
 
     let body: serde_json::Value = app
-        .get(&format!(
+        .get_auth(&format!(
             "/v1/league-seasons?league_id={league_id}&include_archived=true"
         ))
         .await
@@ -451,8 +451,13 @@ async fn test_archived_team_leaves_the_season_roster_listing_and_comes_back() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let created: serde_json::Value = response.json();
-    let team_id = created["data"]["id"].as_str().unwrap().to_string();
-    let status_before = created["data"]["status"].as_str().unwrap().to_string();
+    // Creating a team also registers it for the season, so the response is
+    // {team, team_season} rather than the team alone.
+    let team_id = created["data"]["team"]["id"].as_str().unwrap().to_string();
+    let status_before = created["data"]["team"]["status"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     assert!(roster_has(&app, &season_id, &team_id).await);
 
@@ -561,7 +566,7 @@ async fn test_moving_a_team_carries_its_roster_into_the_target_season() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let created: serde_json::Value = response.json();
-    let team_id = created["data"]["id"].as_str().unwrap().to_string();
+    let team_id = created["data"]["team"]["id"].as_str().unwrap().to_string();
 
     let response = app
         .post_json(
@@ -614,7 +619,7 @@ async fn test_moving_a_team_that_has_played_is_refused() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let created: serde_json::Value = response.json();
-    let team_id = created["data"]["id"].as_str().unwrap().to_string();
+    let team_id = created["data"]["team"]["id"].as_str().unwrap().to_string();
 
     sqlx::query("UPDATE league_team_seasons SET matches_played = 3 WHERE team_id = $1::uuid")
         .bind(&team_id)
@@ -657,7 +662,7 @@ async fn test_moving_a_team_into_a_mismatched_season_is_refused() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let created: serde_json::Value = response.json();
-    let team_id = created["data"]["id"].as_str().unwrap().to_string();
+    let team_id = created["data"]["team"]["id"].as_str().unwrap().to_string();
 
     // Target league says one thing, target season belongs to another.
     app.post_json(
@@ -797,7 +802,7 @@ async fn test_moves_require_platform_admin() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let created: serde_json::Value = response.json();
-    let team_id = created["data"]["id"].as_str().unwrap().to_string();
+    let team_id = created["data"]["team"]["id"].as_str().unwrap().to_string();
 
     let outsider = UserBuilder::new()
         .username("moveoutsider")

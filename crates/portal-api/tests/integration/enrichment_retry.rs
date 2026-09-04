@@ -791,6 +791,17 @@ async fn test_pipeline_overview_reports_the_demo_stage() {
 // Operator recovery — requeue
 // =============================================================================
 
+/// Grant the dev user `admin.demos.manage`.
+///
+/// The pipeline handlers check the permission through `permission_service`
+/// rather than the `PermissionChecker` extractor, so the dev-token bypass does
+/// not apply to them — the role has to be real. Same helper shape as
+/// `demos.rs::make_dev_user_admin`.
+async fn make_dev_user_admin(app: &TestApp) {
+    let dev_user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    portal_test::helpers::assign_role_to_user(app.pool(), dev_user_id, "platform_admin").await;
+}
+
 /// The repair path for budgets that were spent on something other than the
 /// match.
 ///
@@ -801,7 +812,9 @@ async fn test_pipeline_overview_reports_the_demo_stage() {
 /// worker was fixed.
 #[tokio::test]
 async fn test_requeue_returns_exhausted_matches_to_the_queue() {
+    // Requeue is gated on admin.demos.manage; grant it before acting.
     let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
     let key = create_enricher_key(app.pool()).await;
     let tracking = seed_tracking(&app, 76_561_198_000_000_301).await;
     let id = seed_match(&app, tracking, &format!("CSGO-requeue-{}", unique_suffix())).await;
@@ -847,7 +860,9 @@ async fn test_requeue_returns_exhausted_matches_to_the_queue() {
 /// repeated failure.
 #[tokio::test]
 async fn test_requeue_leaves_matches_that_still_have_budget_alone() {
+    // Requeue is gated on admin.demos.manage; grant it before acting.
     let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
     let key = create_enricher_key(app.pool()).await;
     let tracking = seed_tracking(&app, 76_561_198_000_000_302).await;
     let id = seed_match(
@@ -879,7 +894,9 @@ async fn test_requeue_leaves_matches_that_still_have_budget_alone() {
 /// The single-row control the failure list offers per match.
 #[tokio::test]
 async fn test_requeue_one_clears_the_error_and_restores_the_budget() {
+    // Requeue is gated on admin.demos.manage; grant it before acting.
     let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
     let key = create_enricher_key(app.pool()).await;
     let tracking = seed_tracking(&app, 76_561_198_000_000_303).await;
     let id = seed_match(

@@ -43,11 +43,15 @@ async fn dispute_with_context(
         return DisputeResponse::from(dispute);
     };
     if !tournaments.contains_key(&match_.tournament_id)
-        && let Ok(t) = state.tournament_service.get_tournament(match_.tournament_id).await
+        && let Ok(t) = state
+            .tournament_service
+            .get_tournament(match_.tournament_id)
+            .await
     {
         tournaments.insert(match_.tournament_id, t);
     }
-    DisputeResponse::from(dispute).with_match_context(&match_, tournaments.get(&match_.tournament_id))
+    DisputeResponse::from(dispute)
+        .with_match_context(&match_, tournaments.get(&match_.tournament_id))
 }
 
 /// Extract request ID from headers.

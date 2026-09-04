@@ -439,12 +439,13 @@ where
 
         // This line is shown to both captains on the match timeline: name
         // the team, not its registration id.
-        let forfeiter = if match_.participant1_registration_id == Some(forfeiting_registration_id) {
-            match_.participant1_name.clone()
-        } else {
-            match_.participant2_name.clone()
-        }
-        .unwrap_or_else(|| format!("registration {forfeiting_registration_id}"));
+        let forfeiter =
+            if match_.participant1_registration_id == Some(forfeiting_registration_id) {
+                match_.participant1_name.clone()
+            } else {
+                match_.participant2_name.clone()
+            }
+            .unwrap_or_else(|| format!("registration {forfeiting_registration_id}"));
 
         self.log_transition(
             match_id,

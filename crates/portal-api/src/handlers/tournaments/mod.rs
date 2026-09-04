@@ -248,7 +248,10 @@ pub(super) async fn auto_create_veto_session(
     // (an admin, the veto fixture) still gets its say.
     if let Ok(existing) = state.veto_service.get_session_state(match_.id).await {
         if existing.session.status.can_start() {
-            state.veto_service.start_session(existing.session.id).await?;
+            state
+                .veto_service
+                .start_session(existing.session.id)
+                .await?;
             tracing::info!(
                 match_id = %match_.id,
                 session_id = %existing.session.id,

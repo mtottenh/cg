@@ -419,17 +419,32 @@ mod completion_tests {
 
     #[test]
     fn standard_formats_complete_only_after_their_last_action() {
-        for format in [VetoFormatConfig::bo1(), VetoFormatConfig::bo3(), VetoFormatConfig::bo5()] {
+        for format in [
+            VetoFormatConfig::bo1(),
+            VetoFormatConfig::bo3(),
+            VetoFormatConfig::bo5(),
+        ] {
             let n = format.action_count();
             assert!(
-                matches!(format.get_action(n - 1).map(|a| a.action_type), Some(VetoActionType::Decider)),
+                matches!(
+                    format.get_action(n - 1).map(|a| a.action_type),
+                    Some(VetoActionType::Decider)
+                ),
                 "{} should end in a decider",
                 format.id
             );
             // After action n-1 the next action is n (the decider): not complete.
-            assert!(!format.is_complete_at(n), "{}: decider must still run", format.id);
+            assert!(
+                !format.is_complete_at(n),
+                "{}: decider must still run",
+                format.id
+            );
             // After the decider the next action would be n+1: complete.
-            assert!(format.is_complete_at(n + 1), "{}: complete after decider", format.id);
+            assert!(
+                format.is_complete_at(n + 1),
+                "{}: complete after decider",
+                format.id
+            );
         }
     }
 }

@@ -174,7 +174,10 @@ where
         // hook starts a pre-created session when both sides check in, and a
         // caller that then starts it deliberately (the veto fixture, an
         // admin) must not be refused for arriving second.
-        if matches!(session.status, VetoStatus::CoinFlip | VetoStatus::InProgress) {
+        if matches!(
+            session.status,
+            VetoStatus::CoinFlip | VetoStatus::InProgress
+        ) {
             info!(session_id = %session_id, status = %session.status, "Veto session already started");
             return Ok(session);
         }

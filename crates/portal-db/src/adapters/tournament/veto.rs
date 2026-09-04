@@ -231,7 +231,9 @@ impl VetoSessionRepository for PgVetoSessionRepository {
         .bind(status.to_string())
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(format!("Failed to list veto sessions by status: {e}")))?;
+        .map_err(|e| {
+            DomainError::Internal(format!("Failed to list veto sessions by status: {e}"))
+        })?;
 
         rows.into_iter().map(session_row_to_domain).collect()
     }

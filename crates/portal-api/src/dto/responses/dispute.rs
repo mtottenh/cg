@@ -138,6 +138,23 @@ impl From<Dispute> for DisputeResponse {
     }
 }
 
+/// The name of whichever side of `match_` holds registration `reg`, if either.
+fn participant_name(
+    match_: &portal_domain::entities::tournament::TournamentMatch,
+    reg: &str,
+) -> Option<String> {
+    let is = |id: Option<portal_core::TournamentRegistrationId>| {
+        id.is_some_and(|r| r.to_string() == reg)
+    };
+    if is(match_.participant1_registration_id) {
+        match_.participant1_name.clone()
+    } else if is(match_.participant2_registration_id) {
+        match_.participant2_name.clone()
+    } else {
+        None
+    }
+}
+
 impl DisputeResponse {
     /// Attach the match context: tournament, both teams, who raised the
     /// dispute and who the disputed claim named as winner.
@@ -147,25 +164,13 @@ impl DisputeResponse {
         match_: &portal_domain::entities::tournament::TournamentMatch,
         tournament: Option<&portal_domain::entities::Tournament>,
     ) -> Self {
-        let name_of = |reg: &str| -> Option<String> {
-            let is = |id: Option<portal_core::TournamentRegistrationId>| {
-                id.is_some_and(|r| r.to_string() == reg)
-            };
-            if is(match_.participant1_registration_id) {
-                match_.participant1_name.clone()
-            } else if is(match_.participant2_registration_id) {
-                match_.participant2_name.clone()
-            } else {
-                None
-            }
-        };
-        self.disputed_by_name = name_of(&self.disputed_by_registration_id);
+        self.disputed_by_name = participant_name(match_, &self.disputed_by_registration_id);
         self.original_winner_name = self
             .original_winner_registration_id
             .as_deref()
-            .and_then(|r| name_of(r));
-        self.participant1_name = match_.participant1_name.clone();
-        self.participant2_name = match_.participant2_name.clone();
+            .and_then(|reg| participant_name(match_, reg));
+        self.participant1_name.clone_from(&match_.participant1_name);
+        self.participant2_name.clone_from(&match_.participant2_name);
         self.tournament_id = Some(match_.tournament_id.to_string());
         self.tournament_slug = tournament.map(|t| t.slug.clone());
         self.tournament_name = tournament.map(|t| t.name.clone());

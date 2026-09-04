@@ -180,6 +180,15 @@ pub fn routes() -> Router<AppState> {
             "/pipeline/discovered-matches",
             get(demos::list_pipeline_discovered_matches),
         )
+        // Recovery for matches a worker bug wrote off — see the handler.
+        .route(
+            "/pipeline/discovered-matches/requeue",
+            post(demos::requeue_pipeline_discovered_matches),
+        )
+        .route(
+            "/pipeline/discovered-matches/{id}/requeue",
+            post(demos::requeue_pipeline_discovered_match),
+        )
         // Result review admin routes
         .route("/result-reviews", get(result_reviews::list_pending_reviews))
         .route(

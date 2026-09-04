@@ -21,8 +21,8 @@ use crate::dto::requests::{
     ProposeScheduleRequest, RaiseDisputeRequest, RankTierInput, ReapplyProgressionRequest,
     RecordCoinFlipRequest, RefreshTokenRequest, RegisterPlayerRequest, RegisterRequest,
     RegisterTeamForSeasonRequest, RegisterTeamRequest, RejectRegistrationRequest,
-    RejectScheduleProposalRequest, ResolveAdjustedRequest, ResolveDoubleDqRequest,
-    ResolveOverturnRequest, ResolveRematchRequest, ResolveUpholdRequest,
+    RejectScheduleProposalRequest, RequeueDiscoveredMatchesRequest, ResolveAdjustedRequest,
+    ResolveDoubleDqRequest, ResolveOverturnRequest, ResolveRematchRequest, ResolveUpholdRequest,
     RespondToInvitationRequest, RevokeRoleRequest, SeedAssignment, SelectSideRequest,
     SetDemoNotesRequest, SetDemoVisibilityRequest, SetMapPoolRequest, SetRankTiersRequest,
     SetTournamentMapPoolRequest, SocialLinksRequest, SubmitDemoStatsRequest,
@@ -43,7 +43,8 @@ use crate::dto::responses::demo::{
 };
 use crate::dto::responses::pipeline::{
     DemoExtractionQueueResponse, DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse,
-    PipelineOverviewResponse, TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
+    PipelineOverviewResponse, RequeueDiscoveredMatchesResponse, TrackingHealthEntryResponse,
+    TrackingHealthSummaryResponse,
 };
 use crate::dto::responses::{
     AccessUrlResponse, AdvancementResponse, AvailabilityOverrideResponse,
@@ -440,6 +441,8 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::list_pipeline_tracking,
         demos::resume_pipeline_tracking,
         demos::list_pipeline_discovered_matches,
+        demos::requeue_pipeline_discovered_matches,
+        demos::requeue_pipeline_discovered_match,
         // Result reviews
         result_reviews::get_result_review,
         result_reviews::acknowledge_result_review,
@@ -811,6 +814,8 @@ use utoipa_swagger_ui::SwaggerUi;
             DiscoveredMatchQueueResponse,
             DemoExtractionQueueResponse,
             DiscoveredMatchAdminResponse,
+            RequeueDiscoveredMatchesRequest,
+            RequeueDiscoveredMatchesResponse,
             // Game servers
             crate::handlers::game_servers::admin::CreateGameServerRequest,
             crate::handlers::game_servers::admin::UpdateGameServerRequest,

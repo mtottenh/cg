@@ -181,6 +181,13 @@ pub struct DemoExtractionQueueResponse {
     pub not_applicable: i64,
 }
 
+/// Result of a bulk enrichment requeue.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RequeueDiscoveredMatchesResponse {
+    /// How many rows were returned to the enrichment queue.
+    pub requeued: u64,
+}
+
 /// One discovered match, as the operator needs to see it.
 ///
 /// `gc_data` and the raw `demo_url` are omitted: they are large, and the

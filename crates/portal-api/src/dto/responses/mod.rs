@@ -77,8 +77,8 @@ pub use league_team::{
 pub use lineup::{MatchLineupPlayerResponse, MatchLineupResponse};
 pub use pipeline::{
     DemoExtractionQueueResponse, DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse,
-    PipelineOverviewResponse, TRACKING_STALE_AFTER_HOURS, TrackingHealthEntryResponse,
-    TrackingHealthSummaryResponse,
+    PipelineOverviewResponse, RequeueDiscoveredMatchesResponse, TRACKING_STALE_AFTER_HOURS,
+    TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
 };
 pub use player::{PlayerResponse, PlayerSearchResponse, SocialLinksResponse};
 pub use player_game_profile::{

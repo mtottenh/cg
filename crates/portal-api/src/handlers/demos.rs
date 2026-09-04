@@ -4,17 +4,17 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AssociateDemoRequest, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
     DemoStatusCountsQuery, GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery,
-    MarkDemoFailedRequest, PipelineQuery, ProcessUnlinkedDemosQuery, ResumeTrackingQuery,
-    SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
-    UpdateAutoLinkSettingRequest,
+    MarkDemoFailedRequest, PipelineQuery, ProcessUnlinkedDemosQuery,
+    RequeueDiscoveredMatchesRequest, ResumeTrackingQuery, SetDemoNotesRequest,
+    SetDemoVisibilityRequest, SubmitDemoStatsRequest, UpdateAutoLinkSettingRequest,
 };
 use crate::dto::responses::{
     AutoLinkSettingResponse, BatchCatalogErrorResponse, BatchCatalogResultResponse,
     DemoDownloadResponse, DemoExtractionQueueResponse, DemoListResponse, DemoMatchLinkResponse,
     DemoMatchLinkWithDemoResponse, DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse,
     DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, PipelineOverviewResponse,
-    ProcessUnlinkedDemosResponse, TRACKING_STALE_AFTER_HOURS, TrackingHealthEntryResponse,
-    TrackingHealthSummaryResponse,
+    ProcessUnlinkedDemosResponse, RequeueDiscoveredMatchesResponse, TRACKING_STALE_AFTER_HOURS,
+    TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
@@ -24,8 +24,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::DateTime;
 use portal_core::{
-    DemoCategory, DemoId, DemoLinkType, DemoStatus, EvidenceId, GameId, LeagueId, ScopeType,
-    TournamentId, TournamentMatchId,
+    DemoCategory, DemoId, DemoLinkType, DemoStatus, DiscoveredMatchId, EvidenceId, GameId,
+    LeagueId, ScopeType, TournamentId, TournamentMatchId,
 };
 use portal_domain::entities::demo::{Demo, DemoFilter, DemoPlayerStats, ParsedDemoMetadata};
 use portal_domain::services::DemoPlayerInput;
@@ -1681,6 +1681,90 @@ pub async fn list_pipeline_discovered_matches(
         .collect();
 
     Ok(Json(DataResponse::new(responses, request_id)))
+}
+
+/// Return failed discovered matches to the enrichment queue (admin).
+///
+/// The repair for a worker that spent retry budgets on something that was
+/// never the match's fault — a dead Steam websocket reported as a per-match
+/// GC failure, which filled this queue with matches recorded as having failed
+/// enrichment when nothing had ever been asked of Valve. A match whose budget
+/// is spent is excluded from the enricher's queue by design, so without this
+/// the only way back is SQL against production.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/pipeline/discovered-matches/requeue",
+    request_body = RequeueDiscoveredMatchesRequest,
+    responses(
+        (status = 200, description = "Matches requeued", body = DataResponse<RequeueDiscoveredMatchesResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Game not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn requeue_pipeline_discovered_matches(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Json(req): Json<RequeueDiscoveredMatchesRequest>,
+) -> ApiResult<Json<DataResponse<RequeueDiscoveredMatchesResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    require_demos_manage(&state, &auth).await?;
+
+    let game_id = resolve_pipeline_game(&state, req.game.as_deref())
+        .await?
+        .map(|(id, _)| id);
+
+    let requeued = state
+        .discovered_match_service
+        .requeue_failed(game_id, req.only_exhausted)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        RequeueDiscoveredMatchesResponse { requeued },
+        request_id,
+    )))
+}
+
+/// Return one discovered match to the enrichment queue (admin).
+#[utoipa::path(
+    post,
+    path = "/v1/admin/pipeline/discovered-matches/{id}/requeue",
+    params(
+        ("id" = String, Path, description = "Discovered match ID"),
+    ),
+    responses(
+        (status = 200, description = "Match requeued", body = DataResponse<DiscoveredMatchAdminResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Discovered match not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn requeue_pipeline_discovered_match(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<DataResponse<DiscoveredMatchAdminResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    require_demos_manage(&state, &auth).await?;
+
+    let match_id: DiscoveredMatchId = id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid discovered match ID"))?;
+
+    let requeued = state.discovered_match_service.requeue_one(match_id).await?;
+
+    Ok(Json(DataResponse::new(
+        DiscoveredMatchAdminResponse::from(requeued),
+        request_id,
+    )))
 }
 
 // =============================================================================

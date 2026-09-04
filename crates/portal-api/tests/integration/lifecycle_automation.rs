@@ -28,6 +28,7 @@ fn test_config() -> LifecycleConfig {
         evidence_sweep_every: 20,
         saga_stuck_after: chrono::Duration::minutes(10),
         batch_limit: 100,
+        veto_coin_flip_grace: chrono::Duration::seconds(15),
     }
 }
 
@@ -185,14 +186,13 @@ async fn test_pass_auto_creates_veto_session_when_tournament_configures_format()
     assert_eq!(summary.errors, 0, "pass should not error: {summary:?}");
     assert_eq!(summary.veto_sessions_created, 1);
 
-    // Session exists, is past coin flip (in progress), and the match is
-    // veto-gated.
+    // Session exists but is NOT started: the veto waits for both sides, so
+    // no 30-second turn clock runs while the match is still checking in.
+    let session_status = |body: &serde_json::Value| body["data"]["session"]["status"].clone();
     let response = app.get_auth(&format!("/v1/matches/{match_id}/veto")).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
-    let session = &body["data"]["session"];
-    assert_eq!(session["status"], "in_progress");
-    assert!(session["first_action_registration_id"].is_string());
+    assert_eq!(session_status(&body), "pending");
 
     let response = app
         .get(&format!(
@@ -203,10 +203,52 @@ async fn test_pass_auto_creates_veto_session_when_tournament_configures_format()
     assert_eq!(body["data"]["veto_required"], true);
     assert_eq!(body["data"]["status"], "checking_in");
 
-    // Second pass: no duplicate session, no errors.
+    // Second pass: no duplicate session, nothing started, no timeouts.
     let summary2 = run_lifecycle_pass(&state, &test_config(), false).await;
     assert_eq!(summary2.errors, 0);
     assert_eq!(summary2.veto_sessions_created, 0);
+    assert_eq!(summary2.veto_sessions_started, 0);
+    assert_eq!(summary2.veto_timeouts_processed, 0);
+    let body: serde_json::Value = app
+        .get_auth(&format!("/v1/matches/{match_id}/veto"))
+        .await
+        .json();
+    assert_eq!(session_status(&body), "pending");
+
+    // The match reaches pick/ban (an admin override here; both-checked-in
+    // takes the same hook): the pre-created session is started.
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
+        &json!({
+            "to_status": "pick_ban",
+            "override_reason": "lifecycle test: both sides are present"
+        }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let body: serde_json::Value = app
+        .get_auth(&format!("/v1/matches/{match_id}/veto"))
+        .await
+        .json();
+    assert_eq!(session_status(&body), "coin_flip");
+
+    // Nobody flips within the grace: the next pass does, and the veto is live.
+    sqlx::query(
+        "UPDATE veto_sessions SET started_at = NOW() - INTERVAL '1 minute' WHERE match_id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    let summary3 = run_lifecycle_pass(&state, &test_config(), false).await;
+    assert_eq!(summary3.errors, 0, "pass should not error: {summary3:?}");
+    assert_eq!(summary3.veto_coin_flips_auto, 1);
+    let body: serde_json::Value = app
+        .get_auth(&format!("/v1/matches/{match_id}/veto"))
+        .await
+        .json();
+    assert_eq!(session_status(&body), "in_progress");
+    assert!(body["data"]["session"]["first_action_registration_id"].is_string());
 }
 
 #[tokio::test]

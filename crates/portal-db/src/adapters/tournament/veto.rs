@@ -224,6 +224,18 @@ impl VetoSessionRepository for PgVetoSessionRepository {
         rows.into_iter().map(session_row_to_domain).collect()
     }
 
+    async fn find_by_status(&self, status: VetoStatus) -> Result<Vec<VetoSession>, DomainError> {
+        let rows = sqlx::query_as::<_, VetoSessionRow>(
+            r"SELECT * FROM veto_sessions WHERE status = $1 ORDER BY created_at ASC",
+        )
+        .bind(status.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to list veto sessions by status: {e}")))?;
+
+        rows.into_iter().map(session_row_to_domain).collect()
+    }
+
     async fn delete(&self, id: VetoSessionId) -> Result<(), DomainError> {
         sqlx::query(r"DELETE FROM veto_sessions WHERE id = $1")
             .bind(id.as_uuid())

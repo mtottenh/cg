@@ -168,6 +168,7 @@ async fn run_one_lifecycle_pass(app: &TestApp) -> portal_api::background::Lifecy
         evidence_sweep_every: 20,
         saga_stuck_after: chrono::Duration::minutes(10),
         batch_limit: 100,
+        veto_coin_flip_grace: chrono::Duration::seconds(15),
     };
     run_lifecycle_pass(&state, &cfg, false).await
 }

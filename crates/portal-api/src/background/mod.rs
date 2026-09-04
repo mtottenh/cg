@@ -75,6 +75,11 @@ pub struct LifecycleConfig {
     pub saga_stuck_after: ChronoDuration,
     /// Max rows pulled per query per tick — backpressure bound.
     pub batch_limit: i64,
+    /// How long a started veto may sit in `coin_flip` before the pass flips
+    /// it. Nothing in the product flips a coin by itself once both sides
+    /// have checked in; the grace only leaves room for a deliberate flip
+    /// (an admin, the e2e fixture) to land first.
+    pub veto_coin_flip_grace: ChronoDuration,
 }
 
 impl LifecycleConfig {
@@ -94,6 +99,9 @@ impl LifecycleConfig {
             ),
             check_in_grace: ChronoDuration::minutes(
                 i64::try_from(env_u64("PORTAL_CHECKIN_GRACE_MINUTES", 10)).unwrap_or(10),
+            ),
+            veto_coin_flip_grace: ChronoDuration::seconds(
+                i64::try_from(env_u64("PORTAL_VETO_COIN_FLIP_GRACE_SECS", 15)).unwrap_or(15),
             ),
             evidence_stale_max_age: ChronoDuration::hours(
                 i64::try_from(env_u64("PORTAL_EVIDENCE_STALE_HOURS", 24)).unwrap_or(24),
@@ -118,6 +126,11 @@ pub struct LifecyclePassSummary {
     pub no_shows_forfeited: u32,
     /// Veto turns auto-acted after their deadline passed.
     pub veto_timeouts_processed: u32,
+    /// Pre-created veto sessions started because their match reached pick/ban
+    /// without the check-in hook starting them (admin override, hook failure).
+    pub veto_sessions_started: u32,
+    /// Coin flips performed by the pass after the grace elapsed unflipped.
+    pub veto_coin_flips_auto: u32,
     /// Matches double-forfeited (nobody showed).
     pub double_forfeits: u32,
     /// Partially-opened check-in windows repaired (`checking_in` with a
@@ -305,6 +318,11 @@ pub async fn run_lifecycle_pass(
     }
 
     // ------------------------------------------------------------------
+    // 7b': veto sessions stalled on a step nobody will take (see fn doc)
+    // ------------------------------------------------------------------
+    advance_stalled_veto_sessions(state, cfg, now, &mut summary).await;
+
+    // ------------------------------------------------------------------
     // 7c: PUG sweeper — expire stale gathering lobbies, cancel
     //     materialized pugs that never went live (also releases their
     //     server reservations).
@@ -423,9 +441,16 @@ async fn repair_check_in_deadline(
     }
 }
 
-/// Create + start + coin-flip a veto session for the match if (a) the
-/// tournament (or the match's stage) configures a map-veto format and (b) no
-/// session exists yet. Returns whether a session was created.
+/// Pre-create a veto session for the match if (a) the tournament (or the
+/// match's stage) configures a map-veto format and (b) no session exists yet.
+/// Returns whether a session was created.
+///
+/// Create only. The session used to be started and coin-flipped here too,
+/// which put a 30-second turn clock on a veto fifteen minutes before kick-off
+/// while neither captain had checked in; the timeout pass then banned for
+/// both of them. Starting is the pick/ban transition's job
+/// (`handlers::tournaments::auto_create_veto_session`, once both sides are
+/// in) with `advance_stalled_veto_sessions` below as the fallback.
 ///
 /// The configured id gates creation, but standard `boN` ids are re-keyed to
 /// the *match's* best-of — with per-round formats a tournament-wide bo1
@@ -439,12 +464,11 @@ async fn ensure_veto_session(
         .get_tournament(match_.tournament_id)
         .await?;
 
-    let (Some(p1), Some(p2)) = (
-        match_.participant1_registration_id,
-        match_.participant2_registration_id,
-    ) else {
+    if match_.participant1_registration_id.is_none()
+        || match_.participant2_registration_id.is_none()
+    {
         return Ok(false);
-    };
+    }
 
     let stage_veto_override = state
         .tournament_service
@@ -500,18 +524,112 @@ async fn ensure_veto_session(
         Err(e) => return Err(e),
     };
 
-    state.veto_service.start_session(session.id).await?;
-
-    // Automated coin flip: fair 50/50, winner picks first (the standard
-    // convention the WS auto-flip also uses).
-    let winner = if rand::rng().random_bool(0.5) { p1 } else { p2 };
-    state
-        .veto_service
-        .record_coin_flip(session.id, winner, true)
-        .await?;
-
-    info!(match_id = %match_.id, session_id = %session.id, "lifecycle: veto session auto-created");
+    info!(match_id = %match_.id, session_id = %session.id,
+        "lifecycle: veto session pre-created; starts when both sides check in");
     Ok(true)
+}
+
+/// Veto sessions waiting on a step nobody will take.
+///
+/// * A `pending` session whose match is already in `pick_ban` — the admin
+///   override path, or the check-in hook failed — is started.
+/// * A `coin_flip` session untouched for longer than the grace is flipped:
+///   fair 50/50, winner picks first. Nothing else flips a coin once both
+///   captains are in.
+async fn advance_stalled_veto_sessions(
+    state: &AppState,
+    cfg: &LifecycleConfig,
+    now: chrono::DateTime<Utc>,
+    summary: &mut LifecyclePassSummary,
+) {
+    use portal_domain::entities::veto::VetoStatus;
+
+    match state
+        .veto_service
+        .find_sessions_by_status(VetoStatus::Pending)
+        .await
+    {
+        Ok(pending) => {
+            for session in pending {
+                let Ok(Some(match_)) = state
+                    .tournament_match_repo
+                    .find_by_id(session.match_id)
+                    .await
+                else {
+                    continue;
+                };
+                if match_.status != TournamentMatchStatus::PickBan {
+                    continue;
+                }
+                match state.veto_service.start_session(session.id).await {
+                    Ok(_) => {
+                        summary.veto_sessions_started += 1;
+                        info!(match_id = %match_.id, session_id = %session.id,
+                            "lifecycle: started veto session of a match already in pick_ban");
+                    }
+                    Err(e) => {
+                        error!(session_id = %session.id, error = %e, "lifecycle: veto start failed");
+                        summary.errors += 1;
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: pending veto scan failed");
+            summary.errors += 1;
+        }
+    }
+
+    match state
+        .veto_service
+        .find_sessions_by_status(VetoStatus::CoinFlip)
+        .await
+    {
+        Ok(flipping) => {
+            for session in flipping {
+                let started = session.started_at.unwrap_or(session.updated_at);
+                if now - started < cfg.veto_coin_flip_grace {
+                    continue;
+                }
+                let Ok(Some(match_)) = state
+                    .tournament_match_repo
+                    .find_by_id(session.match_id)
+                    .await
+                else {
+                    continue;
+                };
+                if match_.status.is_terminal() {
+                    continue;
+                }
+                let (Some(p1), Some(p2)) = (
+                    match_.participant1_registration_id,
+                    match_.participant2_registration_id,
+                ) else {
+                    continue;
+                };
+                let winner = if rand::rng().random_bool(0.5) { p1 } else { p2 };
+                match state
+                    .veto_service
+                    .record_coin_flip(session.id, winner, true)
+                    .await
+                {
+                    Ok(_) => {
+                        summary.veto_coin_flips_auto += 1;
+                        info!(match_id = %match_.id, session_id = %session.id,
+                            "lifecycle: coin flipped after grace; veto in progress");
+                    }
+                    Err(e) => {
+                        error!(session_id = %session.id, error = %e, "lifecycle: auto coin flip failed");
+                        summary.errors += 1;
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: coin-flip veto scan failed");
+            summary.errors += 1;
+        }
+    }
 }
 
 /// Auto-confirm every pending result claim whose `auto_confirm_at`
@@ -901,6 +1019,9 @@ async fn process_veto_timeout(
         .find_by_id(session.match_id)
         .await
     {
+        // A match still in its check-in window has no live veto: the session
+        // is pre-created but must not be timed out before both sides are in.
+        Ok(Some(match_)) if match_.status == TournamentMatchStatus::CheckingIn => return,
         Ok(Some(match_)) if match_.status.is_terminal() => {
             if let Err(e) = state
                 .veto_service

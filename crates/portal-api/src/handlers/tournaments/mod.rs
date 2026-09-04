@@ -241,6 +241,23 @@ pub(super) async fn auto_create_veto_session(
 ) -> Result<(), ApiError> {
     use portal_domain::repositories::tournament::TournamentMapPoolRepository;
 
+    // The lifecycle pass pre-creates the session when it opens the check-in
+    // window (so the match page can show the pool) and leaves it pending
+    // until both sides are here. Start it now — idempotently — and leave the
+    // coin flip to the lifecycle grace, so a caller that flips deliberately
+    // (an admin, the veto fixture) still gets its say.
+    if let Ok(existing) = state.veto_service.get_session_state(match_.id).await {
+        if existing.session.status.can_start() {
+            state.veto_service.start_session(existing.session.id).await?;
+            tracing::info!(
+                match_id = %match_.id,
+                session_id = %existing.session.id,
+                "Started pre-created veto session on pick_ban transition"
+            );
+        }
+        return Ok(());
+    }
+
     let tournament = state
         .tournament_service
         .get_tournament(match_.tournament_id)

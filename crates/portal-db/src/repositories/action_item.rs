@@ -77,7 +77,7 @@ impl ActionItemRepository {
                     ON tm.participant1_registration_id = mr.reg_id
                     OR tm.participant2_registration_id = mr.reg_id
                 JOIN tournaments t ON tm.tournament_id = t.id
-                WHERE tm.status IN ('ready', 'scheduled', 'checking_in', 'in_progress', 'awaiting_result')
+                WHERE tm.status IN ('ready', 'scheduled', 'checking_in', 'pick_ban', 'in_progress', 'awaiting_result')
             )
             -- 1. Propose schedule (match ready, self-scheduled, no pending proposal from user)
             SELECT
@@ -136,6 +136,27 @@ impl ActionItemRepository {
                 OR
                 (mm.participant2_registration_id = mm.my_registration_id AND mm.participant2_checked_in_at IS NOT NULL)
               )
+
+            UNION ALL
+
+            -- 2b. Veto turn: the map pick/ban is on this captain, with the turn
+            --     clock as the deadline. The one step with a 30-second deadline
+            --     used to be the one step with no action item at all.
+            SELECT
+                'veto_turn'::text,
+                mm.id,
+                mm.tournament_id,
+                mm.tournament_slug,
+                mm.tournament_name,
+                COALESCE(mm.participant1_name, 'TBD') || ' vs ' || COALESCE(mm.participant2_name, 'TBD'),
+                vs.action_deadline,
+                COALESCE(vs.started_at, vs.updated_at)
+            FROM my_matches mm
+            JOIN veto_sessions vs
+                ON vs.match_id = mm.id
+                AND vs.status = 'in_progress'
+                AND vs.current_team_turn = mm.my_registration_id
+            WHERE mm.status = 'pick_ban'
 
             UNION ALL
 

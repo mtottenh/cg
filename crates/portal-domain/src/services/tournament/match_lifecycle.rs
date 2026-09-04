@@ -437,14 +437,21 @@ where
             .forfeit(match_id, winner_id, loser_id)
             .await?;
 
+        // This line is shown to both captains on the match timeline: name
+        // the team, not its registration id.
+        let forfeiter = if match_.participant1_registration_id == Some(forfeiting_registration_id) {
+            match_.participant1_name.clone()
+        } else {
+            match_.participant2_name.clone()
+        }
+        .unwrap_or_else(|| format!("registration {forfeiting_registration_id}"));
+
         self.log_transition(
             match_id,
             match_.status,
             TournamentMatchStatus::Forfeit,
             &TransitionTrigger::User(forfeited_by),
-            Some(format!(
-                "Forfeited by registration {forfeiting_registration_id}"
-            )),
+            Some(format!("Forfeited by {forfeiter}")),
         )
         .await?;
 

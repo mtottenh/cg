@@ -27,6 +27,25 @@ pub struct DisputeResponse {
     pub disputed_by_registration_id: String,
     /// User ID of who raised the dispute.
     pub disputed_by_user_id: String,
+    /// Match context — the names an organiser recognises. The dispute row
+    /// carries ids only, and the admin queue read as a table of UUIDs.
+    /// Absent when the match could not be loaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tournament_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tournament_slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tournament_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant1_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant2_name: Option<String>,
+    /// Team that raised the dispute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disputed_by_name: Option<String>,
+    /// Team the disputed claim named as winner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_winner_name: Option<String>,
 
     /// Reason for the dispute.
     // P-112: was `String` via `Display`, in front of an enum that already
@@ -88,6 +107,13 @@ impl From<Dispute> for DisputeResponse {
             result_claim_id: d.result_claim_id.map(|id| id.to_string()),
             disputed_by_registration_id: d.disputed_by_registration_id.to_string(),
             disputed_by_user_id: d.disputed_by_user_id.to_string(),
+            tournament_id: None,
+            tournament_slug: None,
+            tournament_name: None,
+            participant1_name: None,
+            participant2_name: None,
+            disputed_by_name: None,
+            original_winner_name: None,
             reason: d.reason,
             description: d.description,
             evidence_ids: d
@@ -109,6 +135,41 @@ impl From<Dispute> for DisputeResponse {
             created_at: d.created_at,
             updated_at: d.updated_at,
         }
+    }
+}
+
+impl DisputeResponse {
+    /// Attach the match context: tournament, both teams, who raised the
+    /// dispute and who the disputed claim named as winner.
+    #[must_use]
+    pub fn with_match_context(
+        mut self,
+        match_: &portal_domain::entities::tournament::TournamentMatch,
+        tournament: Option<&portal_domain::entities::Tournament>,
+    ) -> Self {
+        let name_of = |reg: &str| -> Option<String> {
+            let is = |id: Option<portal_core::TournamentRegistrationId>| {
+                id.is_some_and(|r| r.to_string() == reg)
+            };
+            if is(match_.participant1_registration_id) {
+                match_.participant1_name.clone()
+            } else if is(match_.participant2_registration_id) {
+                match_.participant2_name.clone()
+            } else {
+                None
+            }
+        };
+        self.disputed_by_name = name_of(&self.disputed_by_registration_id);
+        self.original_winner_name = self
+            .original_winner_registration_id
+            .as_deref()
+            .and_then(|r| name_of(r));
+        self.participant1_name = match_.participant1_name.clone();
+        self.participant2_name = match_.participant2_name.clone();
+        self.tournament_id = Some(match_.tournament_id.to_string());
+        self.tournament_slug = tournament.map(|t| t.slug.clone());
+        self.tournament_name = tournament.map(|t| t.name.clone());
+        self
     }
 }
 

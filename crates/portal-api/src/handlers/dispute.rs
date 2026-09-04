@@ -25,6 +25,31 @@ use portal_domain::entities::dispute::{
 use portal_domain::repositories::tournament::TournamentMatchRepository;
 use portal_domain::services::tournament::RegistrationActor;
 
+/// A dispute with the names an organiser recognises attached. Tournament
+/// lookups are cached across a page of results.
+async fn dispute_with_context(
+    state: &DisputeState,
+    dispute: Dispute,
+    tournaments: &mut std::collections::HashMap<
+        portal_core::TournamentId,
+        portal_domain::entities::Tournament,
+    >,
+) -> DisputeResponse {
+    let Ok(Some(match_)) = state
+        .tournament_match_repo
+        .find_by_id(dispute.match_id)
+        .await
+    else {
+        return DisputeResponse::from(dispute);
+    };
+    if !tournaments.contains_key(&match_.tournament_id)
+        && let Ok(t) = state.tournament_service.get_tournament(match_.tournament_id).await
+    {
+        tournaments.insert(match_.tournament_id, t);
+    }
+    DisputeResponse::from(dispute).with_match_context(&match_, tournaments.get(&match_.tournament_id))
+}
+
 /// Extract request ID from headers.
 fn get_request_id(headers: &HeaderMap) -> &str {
     headers
@@ -139,7 +164,7 @@ pub async fn raise_dispute(
     Ok((
         StatusCode::CREATED,
         Json(DataResponse::new(
-            DisputeResponse::from(dispute),
+            dispute_with_context(&state, dispute, &mut std::collections::HashMap::new()).await,
             request_id,
         )),
     ))
@@ -181,7 +206,7 @@ pub async fn get_match_dispute(
         .ok_or_else(|| ApiError::not_found("No active dispute found for this match"))?;
 
     Ok(Json(DataResponse::new(
-        DisputeResponse::from(dispute),
+        dispute_with_context(&state, dispute, &mut std::collections::HashMap::new()).await,
         request_id,
     )))
 }
@@ -431,8 +456,13 @@ pub async fn admin_list_disputes(
         )
         .await?;
 
+    let mut tournaments = std::collections::HashMap::new();
+    let mut items = Vec::with_capacity(disputes.len());
+    for dispute in disputes {
+        items.push(dispute_with_context(&state, dispute, &mut tournaments).await);
+    }
     let response = DisputeListResponse {
-        disputes: disputes.into_iter().map(Into::into).collect(),
+        disputes: items,
         total: total as u64,
         page: query.page,
         page_size: query.page_size,
@@ -545,7 +575,7 @@ pub async fn admin_assign_dispute(
         .await?;
 
     Ok(Json(DataResponse::new(
-        DisputeResponse::from(dispute),
+        dispute_with_context(&state, dispute, &mut std::collections::HashMap::new()).await,
         request_id,
     )))
 }

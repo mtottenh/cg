@@ -353,7 +353,7 @@ where
             .ok_or_else(|| DomainError::InvalidState("Action index out of bounds".to_string()))?;
 
         // Record the action
-        let mut result = self
+        let result = self
             .record_action_internal(
                 &session,
                 &format,
@@ -366,7 +366,21 @@ where
             )
             .await?;
 
-        // Auto-chain decider actions (team 0 = automatic, last remaining map)
+        self.chain_deciders(session_id, &format, result).await
+    }
+
+    /// Auto-chain decider actions (team 0 = automatic, last remaining map).
+    ///
+    /// Shared by the player action path and the timeout path: when the sixth
+    /// action of a Bo3 is a timeout auto-ban, the decider still has to land
+    /// in the same pass, otherwise the session sits on a team-0 action that
+    /// no player can perform.
+    async fn chain_deciders(
+        &self,
+        session_id: VetoSessionId,
+        format: &VetoFormatConfig,
+        mut result: VetoActionResult,
+    ) -> Result<VetoActionResult, DomainError> {
         while !result.veto_complete {
             if let Some(next_type) = result.next_action_type {
                 if !matches!(next_type, VetoActionType::Decider) {
@@ -394,7 +408,7 @@ where
             result = self
                 .record_action_internal(
                     &updated_session,
-                    &format,
+                    format,
                     next_format_action,
                     &decider_map,
                     None,
@@ -548,7 +562,7 @@ where
             "Timeout auto-action performed"
         );
 
-        Ok(result)
+        self.chain_deciders(session_id, &format, result).await
     }
 
     /// Select a side for a picked map (e.g., CT vs T for CS2).

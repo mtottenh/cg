@@ -812,6 +812,13 @@ pub struct ListTournamentsQuery {
     /// Search by name.
     #[serde(default)]
     pub search: Option<String>,
+
+    /// Include archived tournaments (and tournaments in archived leagues).
+    ///
+    /// Permission-gated: archiving exists to hide something from players, so
+    /// asking for the hidden rows requires `admin.tournaments.manage_any`.
+    #[serde(default)]
+    pub include_archived: bool,
 }
 
 // =============================================================================

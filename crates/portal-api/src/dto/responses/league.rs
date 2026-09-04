@@ -25,6 +25,11 @@ pub struct LeagueResponse {
     // clients get a union, not `string` (P-112/P-178). Wire-compatible: serde
     // snake_case matches the old `as_str()` strings.
     pub status: LeagueStatus,
+    /// When the league was archived, or absent while it is live. Archived
+    /// leagues are hidden from player-facing listings, along with their
+    /// seasons, teams and tournaments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
     /// League configuration including entry requirements.
     /// Entry requirements are stored under the `"eligibility"` key.
     pub settings: serde_json::Value,
@@ -52,6 +57,7 @@ impl From<League> for LeagueResponse {
             logo_url: league.logo_url,
             access_type: league.access_type.as_str().to_string(),
             status: league.status,
+            archived_at: league.archived_at,
             settings: league.settings,
             eligibility_restrictions,
             created_by: league.created_by.to_string(),

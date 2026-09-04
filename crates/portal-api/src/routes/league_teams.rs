@@ -19,6 +19,9 @@ pub fn season_routes() -> Router<AppState> {
         .route("/", get(league_teams::list_seasons))
         .route("/{season_id}", get(league_teams::get_season))
         .route("/{season_id}", patch(league_teams::update_season))
+        // Archive/restore: hide a season from players without deleting it.
+        .route("/{season_id}/archive", post(league_teams::archive_season))
+        .route("/{season_id}/restore", post(league_teams::restore_season))
         // Teams in a season (list team seasons, create new team)
         .route(
             "/{season_id}/teams",
@@ -64,6 +67,10 @@ pub fn team_routes() -> Router<AppState> {
         .route("/{team_id}", get(league_teams::get_team))
         .route("/{team_id}", patch(league_teams::update_team))
         .route("/{team_id}", delete(league_teams::disband_team))
+        // Archive/restore. Distinct from disband: archiving hides the team,
+        // disbanding is the team's own status.
+        .route("/{team_id}/archive", post(league_teams::archive_team))
+        .route("/{team_id}/restore", post(league_teams::restore_team))
         .route(
             "/{team_id}/transfer-ownership",
             post(league_teams::transfer_ownership),

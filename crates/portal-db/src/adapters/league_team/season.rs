@@ -164,15 +164,21 @@ impl LeagueSeasonRepository for PgLeagueSeasonRepository {
         Ok(LeagueSeason::from(row))
     }
 
-    async fn list_by_league(&self, league_id: LeagueId) -> Result<Vec<LeagueSeason>, DomainError> {
+    async fn list_by_league(
+        &self,
+        league_id: LeagueId,
+        include_archived: bool,
+    ) -> Result<Vec<LeagueSeason>, DomainError> {
         let rows = sqlx::query_as::<_, LeagueSeasonRow>(
             r"
             SELECT * FROM league_seasons
             WHERE league_id = $1
+              AND ($2::bool IS TRUE OR archived_at IS NULL)
             ORDER BY created_at DESC
             ",
         )
         .bind(league_id.as_uuid())
+        .bind(include_archived)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
@@ -188,6 +194,7 @@ impl LeagueSeasonRepository for PgLeagueSeasonRepository {
             r"
             SELECT * FROM league_seasons
             WHERE league_id = $1 AND status IN ('draft', 'registration', 'active', 'playoffs')
+              AND archived_at IS NULL
             ORDER BY created_at DESC
             ",
         )
@@ -291,6 +298,31 @@ impl LeagueSeasonRepository for PgLeagueSeasonRepository {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(LeagueSeason::from(row))
+    }
+
+    async fn set_archived(
+        &self,
+        id: LeagueSeasonId,
+        archived_by: Option<UserId>,
+    ) -> Result<LeagueSeason, DomainError> {
+        let row = sqlx::query_as::<_, LeagueSeasonRow>(
+            r"
+            UPDATE league_seasons
+            SET archived_at = CASE WHEN $2::uuid IS NULL THEN NULL ELSE NOW() END,
+                archived_by = $2::uuid,
+                updated_at  = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(archived_by.map(|u| u.as_uuid()))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or(DomainError::LeagueSeasonNotFound(id))?;
 
         Ok(LeagueSeason::from(row))
     }

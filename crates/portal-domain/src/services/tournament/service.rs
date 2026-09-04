@@ -370,6 +370,26 @@ where
             .await
     }
 
+    /// Archive a tournament: it stops appearing in player-facing listings.
+    ///
+    /// Orthogonal to status — a completed tournament that is put away is
+    /// still completed when it comes back — and distinct from cancelling,
+    /// which is a statement about the competition itself.
+    pub async fn archive_tournament(
+        &self,
+        id: TournamentId,
+        archived_by: UserId,
+    ) -> Result<Tournament, DomainError> {
+        self.tournament_repo
+            .set_archived(id, Some(archived_by))
+            .await
+    }
+
+    /// Restore an archived tournament.
+    pub async fn restore_tournament(&self, id: TournamentId) -> Result<Tournament, DomainError> {
+        self.tournament_repo.set_archived(id, None).await
+    }
+
     /// Complete a tournament.
     pub async fn complete_tournament(&self, id: TournamentId) -> Result<Tournament, DomainError> {
         let tournament = self.get_tournament(id).await?;

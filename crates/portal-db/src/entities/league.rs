@@ -23,6 +23,10 @@ pub struct LeagueRow {
     pub access_type: String, // open, invite_only, application
     pub status: String,      // active, archived, suspended
 
+    // Archival (orthogonal to status — see migration 0096)
+    pub archived_at: Option<DateTime<Utc>>,
+    pub archived_by: Option<Uuid>,
+
     // Format and team settings
     pub format_type: String, // team, individual
     pub default_team_size_min: Option<i32>,

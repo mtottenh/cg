@@ -2,6 +2,7 @@
 
 mod common;
 
+mod archiving;
 mod auth;
 mod awards;
 mod bans;

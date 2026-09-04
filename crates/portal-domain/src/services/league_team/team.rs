@@ -6,8 +6,8 @@ use crate::entities::league_team::{
 };
 use crate::repositories::EntityChangeRepository;
 use crate::repositories::league_team::{
-    AddLeagueTeamMember, CreateLeagueTeam, LeagueSeasonRepository, LeagueTeamMemberRepository,
-    LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueTeam,
+    AddLeagueTeamMember, CreateLeagueTeam, LeagueSeasonRepository, LeagueTeamListFilter,
+    LeagueTeamMemberRepository, LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueTeam,
 };
 use crate::services::league_team::roster_lock::{
     AuditedOverride, RosterChange, RosterLockOverride, enforce_roster_lock,
@@ -15,7 +15,7 @@ use crate::services::league_team::roster_lock::{
 };
 use portal_core::types::{LeagueTeamRole, LeagueTeamSeasonStatus, LeagueTeamStatus};
 use portal_core::{
-    DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamSeasonId, PlayerId,
+    DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamSeasonId, PlayerId, UserId,
 };
 use std::sync::Arc;
 use tracing::{info, instrument};
@@ -416,14 +416,40 @@ where
     pub async fn list_teams(
         &self,
         league_id: LeagueId,
-        status_filter: Option<LeagueTeamStatus>,
-        search: Option<String>,
+        filter: LeagueTeamListFilter,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<LeagueTeam>, i64), DomainError> {
         self.team_repo
-            .list_by_league(league_id, status_filter, search, limit, offset)
+            .list_by_league(league_id, filter, limit, offset)
             .await
+    }
+
+    /// Archive a team: it stops appearing in player-facing listings.
+    ///
+    /// Distinct from disbanding, which is the team's own status saying it is
+    /// over. Archiving is an operator putting it away, and restoring undoes
+    /// exactly that — a disbanded team comes back disbanded.
+    #[instrument(skip(self))]
+    pub async fn archive_team(
+        &self,
+        team_id: LeagueTeamId,
+        archived_by: UserId,
+    ) -> Result<LeagueTeam, DomainError> {
+        let team = self
+            .team_repo
+            .set_archived(team_id, Some(archived_by))
+            .await?;
+        info!(team_id = %team_id, %archived_by, "League team archived");
+        Ok(team)
+    }
+
+    /// Restore an archived team.
+    #[instrument(skip(self))]
+    pub async fn restore_team(&self, team_id: LeagueTeamId) -> Result<LeagueTeam, DomainError> {
+        let team = self.team_repo.set_archived(team_id, None).await?;
+        info!(team_id = %team_id, "League team restored");
+        Ok(team)
     }
 
     /// List team season registrations for a season.
@@ -446,11 +472,12 @@ where
     pub async fn list_team_summaries(
         &self,
         season_id: LeagueSeasonId,
+        include_archived: bool,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<LeagueTeamSummary>, i64), DomainError> {
         self.team_season_repo
-            .list_summaries(season_id, limit, offset)
+            .list_summaries(season_id, include_archived, limit, offset)
             .await
     }
 

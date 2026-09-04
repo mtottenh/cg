@@ -11,7 +11,9 @@ use crate::dto::responses::{
     LeagueTeamWithSeasonResponse,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
+use crate::extractors::{
+    AuthenticatedUser, OptionalAuthenticatedUser, PermissionChecker, ValidatedJson,
+};
 use crate::state::LeagueTeamState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -41,6 +43,13 @@ pub struct ListTeamSeasonsParams {
     /// Items per page.
     #[serde(default = "default_per_page")]
     pub per_page: i64,
+    /// Include archived teams.
+    ///
+    /// Permission-gated: archiving exists to hide something from players, so
+    /// asking for the hidden rows requires `league.settings.manage` on the
+    /// league that owns the season (which platform admins hold everywhere).
+    #[serde(default)]
+    pub include_archived: bool,
 }
 
 /// Create a new league team and register for a season.
@@ -186,11 +195,28 @@ pub async fn get_team(
 )]
 pub async fn list_teams_in_season(
     State(state): State<LeagueTeamState>,
+    auth: OptionalAuthenticatedUser,
+    perm: PermissionChecker,
     headers: HeaderMap,
     Path(season_id): Path<LeagueSeasonId>,
     Query(params): Query<ListTeamSeasonsParams>,
 ) -> ApiResult<Json<PaginatedResponse<LeagueTeamSummaryResponse>>> {
     let request_id = get_request_id(&headers);
+
+    if params.include_archived {
+        let Some(user) = auth.0.as_ref() else {
+            return Err(ApiError::forbidden(
+                "Missing required permission: league.settings.manage",
+            ));
+        };
+        let season = state.league_season_service.get_season(season_id).await?;
+        perm.require_league_permission(
+            user,
+            season.league_id.as_uuid(),
+            permissions::league::SETTINGS_MANAGE,
+        )
+        .await?;
+    }
 
     let per_page = params.per_page.clamp(1, 100) as u32;
     let page = params.page.max(1) as u32;
@@ -198,7 +224,12 @@ pub async fn list_teams_in_season(
 
     let (summaries, total) = state
         .league_team_service
-        .list_team_summaries(season_id, i64::from(per_page), offset)
+        .list_team_summaries(
+            season_id,
+            params.include_archived,
+            i64::from(per_page),
+            offset,
+        )
         .await?;
 
     let pagination_params = PaginationParams { page, per_page };
@@ -283,6 +314,79 @@ pub async fn disband_team(
     state.league_team_service.disband_team(team_id).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Archive a team.
+///
+/// It stops appearing in player-facing listings. Distinct from disbanding,
+/// which is the team's own status saying it is over: a disbanded team that is
+/// archived and later restored comes back disbanded.
+#[utoipa::path(
+    post,
+    path = "/v1/league-teams/{team_id}/archive",
+    params(("team_id" = String, Path, description = "Team ID")),
+    responses(
+        (status = 200, description = "Team archived", body = DataResponse<LeagueTeamResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
+        (status = 404, description = "Team not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "league-teams"
+)]
+pub async fn archive_team(
+    State(state): State<LeagueTeamState>,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
+    headers: HeaderMap,
+    Path(team_id): Path<LeagueTeamId>,
+) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    require_team_settings_manage(&perm, &auth, team_id).await?;
+
+    let team = state
+        .league_team_service
+        .archive_team(team_id, auth.user_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        LeagueTeamResponse::from(team),
+        request_id,
+    )))
+}
+
+/// Restore an archived team.
+#[utoipa::path(
+    post,
+    path = "/v1/league-teams/{team_id}/restore",
+    params(("team_id" = String, Path, description = "Team ID")),
+    responses(
+        (status = 200, description = "Team restored", body = DataResponse<LeagueTeamResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
+        (status = 404, description = "Team not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "league-teams"
+)]
+pub async fn restore_team(
+    State(state): State<LeagueTeamState>,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
+    headers: HeaderMap,
+    Path(team_id): Path<LeagueTeamId>,
+) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    require_team_settings_manage(&perm, &auth, team_id).await?;
+
+    let team = state.league_team_service.restore_team(team_id).await?;
+
+    Ok(Json(DataResponse::new(
+        LeagueTeamResponse::from(team),
+        request_id,
+    )))
 }
 
 /// Require that the caller holds `team.settings.manage` for `team_id`.

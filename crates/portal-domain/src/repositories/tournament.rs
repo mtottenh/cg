@@ -131,6 +131,17 @@ pub trait TournamentRepository: Send + Sync {
 
     /// Delete a tournament (only if draft status).
     async fn delete(&self, id: TournamentId) -> Result<(), DomainError>;
+
+    /// Archive or restore a tournament.
+    ///
+    /// `Some(user)` archives it as of now; `None` restores it. The
+    /// tournament's own status is left alone either way — a completed
+    /// tournament that is put away is still completed when it comes back.
+    async fn set_archived(
+        &self,
+        id: TournamentId,
+        archived_by: Option<UserId>,
+    ) -> Result<Tournament, DomainError>;
 }
 
 /// Data for creating a tournament.
@@ -194,6 +205,9 @@ pub struct UpdateTournament {
 /// Filters for listing tournaments.
 #[derive(Debug, Clone, Default)]
 pub struct TournamentFilters {
+    /// Include archived tournaments, and tournaments whose league is
+    /// archived. Defaults to false: the player-facing answer.
+    pub include_archived: bool,
     pub game_id: Option<GameId>,
     pub league_id: Option<LeagueId>,
     pub season_id: Option<LeagueSeasonId>,

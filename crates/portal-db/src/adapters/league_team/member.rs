@@ -341,7 +341,19 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
         player_id: PlayerId,
     ) -> Result<Vec<PlayerLeagueTeamMembership>, DomainError> {
         let rows = sqlx::query_as::<_, PlayerLeagueTeamMembershipRow>(
-            "SELECT * FROM v_player_league_teams WHERE player_id = $1 ORDER BY joined_at DESC",
+            // The joins are only the archive rule: a player's own team list
+            // must not show a team, or a whole league, that has been put
+            // away. Neither archiving wrote to the membership, so both are
+            // undone exactly by restoring.
+            r"
+            SELECT v.* FROM v_player_league_teams v
+            JOIN league_teams t ON t.id = v.team_id
+            JOIN leagues l ON l.id = v.league_id
+            WHERE v.player_id = $1
+              AND t.archived_at IS NULL
+              AND l.archived_at IS NULL
+            ORDER BY v.joined_at DESC
+            ",
         )
         .bind(player_id.as_uuid())
         .fetch_all(&self.pool)
@@ -360,7 +372,15 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
         season_id: LeagueSeasonId,
     ) -> Result<Vec<PlayerLeagueTeamMembership>, DomainError> {
         let rows = sqlx::query_as::<_, PlayerLeagueTeamMembershipRow>(
-            "SELECT * FROM v_player_league_teams WHERE player_id = $1 AND season_id = $2 ORDER BY joined_at DESC",
+            r"
+            SELECT v.* FROM v_player_league_teams v
+            JOIN league_teams t ON t.id = v.team_id
+            JOIN leagues l ON l.id = v.league_id
+            WHERE v.player_id = $1 AND v.season_id = $2
+              AND t.archived_at IS NULL
+              AND l.archived_at IS NULL
+            ORDER BY v.joined_at DESC
+            ",
         )
         .bind(player_id.as_uuid())
         .bind(season_id.as_uuid())

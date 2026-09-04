@@ -5,7 +5,9 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::{CreateLeagueSeasonRequest, UpdateLeagueSeasonRequest};
 use crate::dto::responses::LeagueSeasonResponse;
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
+use crate::extractors::{
+    AuthenticatedUser, OptionalAuthenticatedUser, PermissionChecker, ValidatedJson,
+};
 use crate::state::LeagueTeamState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -17,6 +19,13 @@ use portal_core::{LeagueId, LeagueSeasonId, permissions};
 pub struct ListSeasonsParams {
     /// League ID to list seasons for.
     pub league_id: String,
+    /// Include archived seasons.
+    ///
+    /// Permission-gated: archiving exists to hide something from players, so
+    /// asking for the hidden rows requires `league.seasons.manage` on the
+    /// league (which platform admins hold everywhere).
+    #[serde(default)]
+    pub include_archived: bool,
 }
 
 /// Create a new league season.
@@ -109,11 +118,14 @@ pub async fn get_season(
     responses(
         (status = 200, description = "Seasons list", body = DataResponse<Vec<LeagueSeasonResponse>>),
         (status = 400, description = "Invalid league ID", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
     ),
     tag = "league-seasons"
 )]
 pub async fn list_seasons(
     State(state): State<LeagueTeamState>,
+    auth: OptionalAuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Query(params): Query<ListSeasonsParams>,
 ) -> ApiResult<Json<DataResponse<Vec<LeagueSeasonResponse>>>> {
@@ -124,7 +136,25 @@ pub async fn list_seasons(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid league ID format"))?;
 
-    let seasons = state.league_season_service.list_seasons(league_id).await?;
+    if params.include_archived {
+        let Some(user) = auth.0.as_ref() else {
+            return Err(ApiError::forbidden(
+                "Missing required permission: league.seasons.manage",
+            ));
+        };
+        perm_checker
+            .require_league_permission(
+                user,
+                league_id.as_uuid(),
+                permissions::league::SEASONS_MANAGE,
+            )
+            .await?;
+    }
+
+    let seasons = state
+        .league_season_service
+        .list_seasons(league_id, params.include_archived)
+        .await?;
 
     Ok(Json(DataResponse::new(
         seasons
@@ -183,6 +213,95 @@ pub async fn update_season(
 
     Ok(Json(DataResponse::new(
         LeagueSeasonResponse::from(updated),
+        request_id,
+    )))
+}
+
+/// Archive a season.
+///
+/// It stops appearing in player-facing listings; nothing is deleted and its
+/// own status is untouched, so restoring is exact.
+#[utoipa::path(
+    post,
+    path = "/v1/league-seasons/{season_id}/archive",
+    params(("season_id" = String, Path, description = "Season ID")),
+    responses(
+        (status = 200, description = "Season archived", body = DataResponse<LeagueSeasonResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
+        (status = 404, description = "Season not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "league-seasons"
+)]
+pub async fn archive_season(
+    State(state): State<LeagueTeamState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(season_id): Path<LeagueSeasonId>,
+) -> ApiResult<Json<DataResponse<LeagueSeasonResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let existing = state.league_season_service.get_season(season_id).await?;
+    perm_checker
+        .require_league_permission(
+            &auth,
+            existing.league_id.as_uuid(),
+            permissions::league::SEASONS_MANAGE,
+        )
+        .await?;
+
+    let season = state
+        .league_season_service
+        .archive_season(season_id, auth.user_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        LeagueSeasonResponse::from(season),
+        request_id,
+    )))
+}
+
+/// Restore an archived season.
+#[utoipa::path(
+    post,
+    path = "/v1/league-seasons/{season_id}/restore",
+    params(("season_id" = String, Path, description = "Season ID")),
+    responses(
+        (status = 200, description = "Season restored", body = DataResponse<LeagueSeasonResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
+        (status = 404, description = "Season not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "league-seasons"
+)]
+pub async fn restore_season(
+    State(state): State<LeagueTeamState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(season_id): Path<LeagueSeasonId>,
+) -> ApiResult<Json<DataResponse<LeagueSeasonResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let existing = state.league_season_service.get_season(season_id).await?;
+    perm_checker
+        .require_league_permission(
+            &auth,
+            existing.league_id.as_uuid(),
+            permissions::league::SEASONS_MANAGE,
+        )
+        .await?;
+
+    let season = state
+        .league_season_service
+        .restore_season(season_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        LeagueSeasonResponse::from(season),
         request_id,
     )))
 }

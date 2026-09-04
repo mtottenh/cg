@@ -23,6 +23,14 @@ pub struct League {
     pub access_type: LeagueAccessType,
     /// Current status of the league.
     pub status: LeagueStatus,
+    /// When the league was archived, or `None` while it is live.
+    ///
+    /// Archiving is orthogonal to `status`: it decides whether players can
+    /// see the league at all, and restoring is `None` again with the status
+    /// it had left untouched.
+    pub archived_at: Option<DateTime<Utc>>,
+    /// Who archived it.
+    pub archived_by: Option<UserId>,
     /// Current active season for this league.
     pub current_season_id: Option<LeagueSeasonId>,
     /// League-specific settings as JSON.

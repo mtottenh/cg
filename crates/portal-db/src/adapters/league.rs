@@ -14,7 +14,7 @@ use portal_domain::entities::league::{
 };
 use portal_domain::repositories::league::{
     AddLeagueMember, CreateLeague, CreateLeagueInvitation, LeagueInvitationRepository,
-    LeagueMemberRepository, LeagueRepository, UpdateLeague,
+    LeagueListFilter, LeagueMemberRepository, LeagueRepository, UpdateLeague,
 };
 
 // =============================================================================
@@ -33,6 +33,8 @@ impl From<LeagueRow> for League {
             access_type: LeagueAccessType::from_str(&row.access_type)
                 .unwrap_or(LeagueAccessType::Open),
             status: LeagueStatus::from_str(&row.status).unwrap_or(LeagueStatus::Active),
+            archived_at: row.archived_at,
+            archived_by: row.archived_by.map(UserId::from),
             current_season_id: row.current_season_id.map(portal_core::LeagueSeasonId::from),
             settings: row.settings,
             created_by: UserId::from(row.created_by),
@@ -247,41 +249,6 @@ impl LeagueRepository for PgLeagueRepository {
         Ok(League::from(league))
     }
 
-    async fn list_by_game(
-        &self,
-        game_id: &GameId,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<League>, DomainError> {
-        let leagues = sqlx::query_as::<_, LeagueRow>(
-            r"
-            SELECT * FROM leagues
-            WHERE game_id = $1 AND status = 'active'
-            ORDER BY name
-            LIMIT $2 OFFSET $3
-            ",
-        )
-        .bind(game_id.as_uuid())
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
-
-        Ok(leagues.into_iter().map(League::from).collect())
-    }
-
-    async fn count_by_game(&self, game_id: &GameId) -> Result<i64, DomainError> {
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM leagues WHERE game_id = $1 AND status = 'active'")
-                .bind(game_id.as_uuid())
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?;
-
-        Ok(count.0)
-    }
-
     async fn slug_exists(&self, slug: &str) -> Result<bool, DomainError> {
         let exists: (bool,) =
             sqlx::query_as("SELECT EXISTS(SELECT 1 FROM leagues WHERE slug = $1)")
@@ -297,29 +264,30 @@ impl LeagueRepository for PgLeagueRepository {
         &self,
         query: &str,
         game_id: Option<GameId>,
-        status: Option<LeagueStatus>,
+        filter: LeagueListFilter,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<League>, DomainError> {
         let pattern = format!("%{}%", query.to_lowercase());
 
         // One statement with nullable filters rather than a branch per
-        // combination: the status filter is the caller's to choose (admin
-        // listings pass None), and the old per-branch SQL is how it came to
-        // be hard-coded to 'active' in the first place.
+        // combination: the visibility rules are the caller's to choose, and
+        // the old per-branch SQL is how they came to be hard-coded here.
         let leagues = sqlx::query_as::<_, LeagueRow>(
             r"
             SELECT * FROM leagues
             WHERE LOWER(name) LIKE $1
               AND ($2::uuid IS NULL OR game_id = $2::uuid)
               AND ($3::text IS NULL OR status = $3::text)
+              AND ($4::bool IS TRUE OR archived_at IS NULL)
             ORDER BY name
-            LIMIT $4 OFFSET $5
+            LIMIT $5 OFFSET $6
             ",
         )
         .bind(&pattern)
         .bind(game_id.map(|g| g.as_uuid()))
-        .bind(status.map(|s| s.as_str()))
+        .bind(filter.status.map(|s| s.as_str()))
+        .bind(filter.include_archived)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -333,7 +301,7 @@ impl LeagueRepository for PgLeagueRepository {
         &self,
         query: &str,
         game_id: Option<GameId>,
-        status: Option<LeagueStatus>,
+        filter: LeagueListFilter,
     ) -> Result<i64, DomainError> {
         let pattern = format!("%{}%", query.to_lowercase());
 
@@ -343,16 +311,43 @@ impl LeagueRepository for PgLeagueRepository {
             WHERE LOWER(name) LIKE $1
               AND ($2::uuid IS NULL OR game_id = $2::uuid)
               AND ($3::text IS NULL OR status = $3::text)
+              AND ($4::bool IS TRUE OR archived_at IS NULL)
             ",
         )
         .bind(&pattern)
         .bind(game_id.map(|g| g.as_uuid()))
-        .bind(status.map(|s| s.as_str()))
+        .bind(filter.status.map(|s| s.as_str()))
+        .bind(filter.include_archived)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(count.0)
+    }
+
+    async fn set_archived(
+        &self,
+        id: LeagueId,
+        archived_by: Option<UserId>,
+    ) -> Result<League, DomainError> {
+        let league = sqlx::query_as::<_, LeagueRow>(
+            r"
+            UPDATE leagues
+            SET archived_at = CASE WHEN $2::uuid IS NULL THEN NULL ELSE NOW() END,
+                archived_by = $2::uuid,
+                updated_at  = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(archived_by.map(|u| u.as_uuid()))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or(DomainError::LeagueNotFound(id))?;
+
+        Ok(League::from(league))
     }
 }
 

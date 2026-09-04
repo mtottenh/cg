@@ -17,6 +17,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{GameId, LeagueId, ScopeType, UserId, permissions};
 use portal_domain::entities::league::{LeagueMembershipType, LeagueStatus};
+use portal_domain::repositories::league::LeagueListFilter;
 
 /// Check league entry requirements using the eligibility service.
 ///
@@ -85,6 +86,10 @@ pub struct AdminListLeaguesParams {
     /// Omit for every status — which is the point of this endpoint.
     #[serde(default)]
     pub status: Option<String>,
+    /// Include archived leagues. Defaults to true: an operator listing that
+    /// hid archived leagues would hide the ones needing restoration.
+    #[serde(default = "default_true")]
+    pub include_archived: bool,
     /// Page number (1-based).
     #[serde(default = "default_page")]
     pub page: i64,
@@ -99,6 +104,10 @@ const fn default_page() -> i64 {
 
 const fn default_per_page() -> i64 {
     20
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// Create a new league.
@@ -244,14 +253,14 @@ pub async fn list_leagues(
         })
         .transpose()?;
 
-    // Public listing: active leagues only. Archived and suspended ones are
+    // Public listing: active, unarchived leagues only. Everything else is
     // reachable through the admin listing below.
     let (leagues, total) = state
         .league_service
         .search_leagues(
             params.search.as_deref().unwrap_or(""),
             game_id,
-            Some(LeagueStatus::Active),
+            LeagueListFilter::public(),
             limit,
             offset,
         )
@@ -327,7 +336,10 @@ pub async fn admin_list_leagues(
         .search_leagues(
             params.search.as_deref().unwrap_or(""),
             game_id,
-            status,
+            LeagueListFilter {
+                status,
+                include_archived: params.include_archived,
+            },
             limit,
             offset,
         )
@@ -387,6 +399,95 @@ pub async fn update_league(
         .league_service
         .update_league_authorized(league_id, cmd)
         .await?;
+
+    Ok(Json(DataResponse::new(
+        LeagueResponse::from(league),
+        request_id,
+    )))
+}
+
+/// Archive a league.
+///
+/// It disappears from every player-facing listing, and so do its seasons,
+/// teams and tournaments — none of which are written to, so restoring the
+/// league restores exactly what archiving it hid. The league's own status is
+/// untouched, and nothing is deleted.
+#[utoipa::path(
+    post,
+    path = "/v1/leagues/{league_id}/archive",
+    params(("league_id" = String, Path, description = "League ID")),
+    responses(
+        (status = 200, description = "League archived", body = DataResponse<LeagueResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
+        (status = 404, description = "League not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "leagues"
+)]
+pub async fn archive_league(
+    State(state): State<LeaguesState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(league_id): Path<LeagueId>,
+) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::SETTINGS_MANAGE,
+        )
+        .await?;
+
+    let league = state
+        .league_service
+        .archive_league(league_id, auth.user_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        LeagueResponse::from(league),
+        request_id,
+    )))
+}
+
+/// Restore an archived league.
+///
+/// A season, team or tournament that was archived in its own right stays
+/// archived — this undoes exactly the archiving of the league.
+#[utoipa::path(
+    post,
+    path = "/v1/leagues/{league_id}/restore",
+    params(("league_id" = String, Path, description = "League ID")),
+    responses(
+        (status = 200, description = "League restored", body = DataResponse<LeagueResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
+        (status = 404, description = "League not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "leagues"
+)]
+pub async fn restore_league(
+    State(state): State<LeaguesState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(league_id): Path<LeagueId>,
+) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::SETTINGS_MANAGE,
+        )
+        .await?;
+
+    let league = state.league_service.restore_league(league_id).await?;
 
     Ok(Json(DataResponse::new(
         LeagueResponse::from(league),

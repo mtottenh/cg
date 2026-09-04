@@ -72,6 +72,10 @@ pub struct TournamentRow {
     // Status
     pub status: String,
 
+    // Archival (orthogonal to status — see migration 0096)
+    pub archived_at: Option<DateTime<Utc>>,
+    pub archived_by: Option<Uuid>,
+
     // Ownership
     pub created_by: Uuid,
     pub organization_id: Option<Uuid>,

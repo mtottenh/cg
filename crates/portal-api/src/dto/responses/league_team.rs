@@ -56,6 +56,11 @@ pub struct LeagueSeasonResponse {
     // and clients get a union rather than `string` (P-31). Wire-compatible —
     // asserted by `wire_compat_tests` in portal-core.
     pub status: SeasonStatus,
+    /// When this was archived, or absent while it is live. Archived rows are
+    /// hidden from player-facing listings; nothing is deleted and the status
+    /// above is untouched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
     /// The statuses this season may legally move to next (P-207). The edit
     /// modal derives its Status options from this, so the client holds no
     /// copy of the lifecycle chain and cannot offer a move the PATCH will
@@ -87,6 +92,7 @@ impl From<LeagueSeason> for LeagueSeasonResponse {
             roster_lock_status: season.roster_lock_status,
             allowed_status_transitions: season.status.allowed_transitions(),
             status: season.status,
+            archived_at: season.archived_at,
             created_by: season.created_by.to_string(),
             created_at: season.created_at,
             updated_at: season.updated_at,
@@ -129,6 +135,12 @@ pub struct LeagueTeamResponse {
     // asserted by `wire_compat_tests` in portal-core.
     pub status: LeagueTeamStatus,
 
+    /// When this was archived, or absent while it is live. Archived rows are
+    /// hidden from player-facing listings; nothing is deleted and the status
+    /// above is untouched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
+
     // Timestamps
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -150,6 +162,7 @@ impl From<LeagueTeam> for LeagueTeamResponse {
             secondary_color: team.secondary_color,
             owner_player_id: team.owner_player_id.to_string(),
             status: team.status,
+            archived_at: team.archived_at,
             created_at: team.created_at,
             updated_at: team.updated_at,
             disbanded_at: team.disbanded_at,
@@ -262,6 +275,9 @@ pub struct LeagueTeamSummaryResponse {
     // and clients get a union rather than `string` (P-31). Wire-compatible —
     // asserted by `wire_compat_tests` in portal-core.
     pub team_status: LeagueTeamStatus,
+    /// When the team was archived, or absent while it is live.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_status: Option<String>,
     pub owner_player_id: String,
@@ -290,6 +306,7 @@ impl From<LeagueTeamSummary> for LeagueTeamSummaryResponse {
             team_tag: summary.team_tag,
             team_logo_url: summary.team_logo_url,
             team_status: summary.team_status,
+            archived_at: summary.archived_at,
             season_status: summary.season_status.map(|s| s.to_string()),
             owner_player_id: summary.owner_player_id.to_string(),
             active_member_count: summary.active_member_count,

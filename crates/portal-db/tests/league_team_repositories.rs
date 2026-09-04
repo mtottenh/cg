@@ -22,9 +22,9 @@ use portal_db::adapters::{
 use portal_domain::repositories::league_team::{
     AddLeagueTeamMember, CreateLeagueSeason, CreateLeagueTeam, CreateLeagueTeamInvitation,
     CreateLeagueTeamSeason, LeagueSeasonParticipantRepository, LeagueSeasonRepository,
-    LeagueTeamInvitationRepository, LeagueTeamMemberRepository, LeagueTeamRepository,
-    LeagueTeamSeasonRepository, RegisterLeagueSeasonParticipant, UpdateLeagueSeason,
-    UpdateLeagueTeam,
+    LeagueTeamInvitationRepository, LeagueTeamListFilter, LeagueTeamMemberRepository,
+    LeagueTeamRepository, LeagueTeamSeasonRepository, RegisterLeagueSeasonParticipant,
+    UpdateLeagueSeason, UpdateLeagueTeam,
 };
 use portal_test::database::TestDb;
 use portal_test::prelude::*;
@@ -337,7 +337,7 @@ mod league_season_repository {
             repo.create(cmd).await.unwrap();
         }
 
-        let seasons = repo.list_by_league(league_id).await.unwrap();
+        let seasons = repo.list_by_league(league_id, true).await.unwrap();
         assert_eq!(seasons.len(), 3); // 1 auto-created + 2 manual
     }
 
@@ -699,7 +699,7 @@ mod league_team_repository {
         }
 
         let (teams, count) = repo
-            .list_by_league(league_id, None, None, 10, 0)
+            .list_by_league(league_id, LeagueTeamListFilter::default(), 10, 0)
             .await
             .unwrap();
         assert_eq!(teams.len(), 5);
@@ -729,14 +729,14 @@ mod league_team_repository {
         }
 
         let (teams, count) = repo
-            .list_by_league(league_id, None, None, 3, 0)
+            .list_by_league(league_id, LeagueTeamListFilter::default(), 3, 0)
             .await
             .unwrap();
         assert_eq!(teams.len(), 3);
         assert_eq!(count, 10);
 
         let (teams, _) = repo
-            .list_by_league(league_id, None, None, 3, 3)
+            .list_by_league(league_id, LeagueTeamListFilter::default(), 3, 3)
             .await
             .unwrap();
         assert_eq!(teams.len(), 3);
@@ -785,13 +785,29 @@ mod league_team_repository {
             .unwrap();
 
         let (active_teams, _) = repo
-            .list_by_league(league_id, Some(LeagueTeamStatus::Active), None, 10, 0)
+            .list_by_league(
+                league_id,
+                LeagueTeamListFilter {
+                    status: Some(LeagueTeamStatus::Active),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(active_teams.len(), 3);
 
         let (disbanded_teams, _) = repo
-            .list_by_league(league_id, Some(LeagueTeamStatus::Disbanded), None, 10, 0)
+            .list_by_league(
+                league_id,
+                LeagueTeamListFilter {
+                    status: Some(LeagueTeamStatus::Disbanded),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(disbanded_teams.len(), 1);

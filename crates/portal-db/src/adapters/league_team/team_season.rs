@@ -296,25 +296,35 @@ impl LeagueTeamSeasonRepository for PgLeagueTeamSeasonRepository {
     async fn list_summaries(
         &self,
         season_id: LeagueSeasonId,
+        include_archived: bool,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<LeagueTeamSummary>, i64), DomainError> {
-        let rows = sqlx::query_as::<_, LeagueTeamSummaryRow>(
-            "SELECT * FROM v_league_team_summary WHERE season_id = $1 ORDER BY team_name ASC LIMIT $2 OFFSET $3",
-        )
+        // The join carries the archive rule the view predates.
+        const FROM: &str = r"
+            FROM v_league_team_summary v
+            JOIN league_teams t ON t.id = v.team_id
+            WHERE v.season_id = $1
+              AND ($2::bool IS TRUE OR t.archived_at IS NULL)
+        ";
+
+        let rows = sqlx::query_as::<_, LeagueTeamSummaryRow>(&format!(
+            "SELECT v.*, t.archived_at {FROM} ORDER BY v.team_name ASC LIMIT $3 OFFSET $4"
+        ))
         .bind(season_id.as_uuid())
+        .bind(include_archived)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM v_league_team_summary WHERE season_id = $1")
-                .bind(season_id.as_uuid())
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) {FROM}"))
+            .bind(season_id.as_uuid())
+            .bind(include_archived)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok((
             rows.into_iter().map(LeagueTeamSummary::from).collect(),

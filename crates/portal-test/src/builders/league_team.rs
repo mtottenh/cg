@@ -160,6 +160,8 @@ impl LeagueTeamBuilder {
         });
 
         LeagueTeamRow {
+            archived_at: None,
+            archived_by: None,
             id: self.id.unwrap_or_else(Uuid::now_v7),
             league_id,
             name: name.clone(),

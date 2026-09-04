@@ -204,6 +204,8 @@ impl LeagueBuilder {
             logo_url: self.logo_url,
             access_type: self.access_type,
             status: self.status,
+            archived_at: None,
+            archived_by: None,
             format_type: self.format_type,
             default_team_size_min: self.default_team_size_min,
             default_team_size_max: self.default_team_size_max,

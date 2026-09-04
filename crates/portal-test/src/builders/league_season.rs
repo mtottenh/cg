@@ -240,6 +240,8 @@ impl LeagueSeasonBuilder {
         let slug = self.slug.unwrap_or_else(|| slug::slugify(&name));
 
         LeagueSeasonRow {
+            archived_at: None,
+            archived_by: None,
             id: self.id.unwrap_or_else(Uuid::now_v7),
             league_id,
             name,

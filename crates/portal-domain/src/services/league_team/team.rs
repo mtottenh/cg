@@ -157,7 +157,7 @@ where
             .ok_or(DomainError::LeagueSeasonNotFound(cmd.season_id))?;
 
         if !season.can_register_team() {
-            return Err(DomainError::RegistrationClosed);
+            return Err(DomainError::LeagueSeasonNotOpen);
         }
 
         // P-147: `create_team_with_season_and_captain` below seats a captain on
@@ -290,7 +290,7 @@ where
 
         // Verify season accepts registrations
         if !season.can_register_team() {
-            return Err(DomainError::RegistrationClosed);
+            return Err(DomainError::LeagueSeasonNotOpen);
         }
 
         // §9.3: a returning owner may have left the league since last season.

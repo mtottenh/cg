@@ -98,7 +98,7 @@ async fn test_register_season_closed() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        DomainError::RegistrationClosed
+        DomainError::LeagueSeasonNotOpen
     ));
 }
 

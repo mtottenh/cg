@@ -193,7 +193,7 @@ async fn test_create_team_season_not_in_registration() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        DomainError::RegistrationClosed
+        DomainError::LeagueSeasonNotOpen
     ));
 }
 

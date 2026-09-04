@@ -132,6 +132,19 @@ pub trait TournamentRepository: Send + Sync {
     /// Delete a tournament (only if draft status).
     async fn delete(&self, id: TournamentId) -> Result<(), DomainError>;
 
+    /// Move a tournament to another league and/or season.
+    ///
+    /// `None` for either detaches it (a standalone tournament). Implementations
+    /// write only these two columns; everything else about the tournament is
+    /// left alone, and MUST refuse a season that does not belong to the
+    /// league it is being filed under.
+    async fn set_league_and_season(
+        &self,
+        id: TournamentId,
+        league_id: Option<LeagueId>,
+        season_id: Option<LeagueSeasonId>,
+    ) -> Result<Tournament, DomainError>;
+
     /// Archive or restore a tournament.
     ///
     /// `Some(user)` archives it as of now; `None` restores it. The

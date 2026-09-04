@@ -245,6 +245,26 @@ pub trait LeagueTeamRepository: Send + Sync {
         archived_by: Option<UserId>,
     ) -> Result<LeagueTeam, DomainError>;
 
+    /// Move a team into another league, landing it in `target_season`.
+    ///
+    /// A team's identity is league-scoped but its *participation* is
+    /// season-scoped, and its roster hangs off the season registration — so a
+    /// move is not one column. In one transaction: the team's league changes,
+    /// it is registered for the target season, its most recent active roster
+    /// is carried across, and the registrations for the old league's seasons
+    /// (which belong to a league the team is no longer in) are dropped.
+    ///
+    /// Implementations MUST refuse a move that would lose or corrupt history
+    /// — a team with matches played or tournament registrations — rather than
+    /// silently orphaning it. See `LeagueTeamService::move_team_to_league`
+    /// for the checks.
+    async fn move_to_league(
+        &self,
+        id: LeagueTeamId,
+        target_league_id: LeagueId,
+        target_season_id: LeagueSeasonId,
+    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError>;
+
     /// List all teams owned by a player in a league.
     async fn list_by_owner(
         &self,

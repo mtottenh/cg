@@ -3,8 +3,8 @@
 use super::{default_page, default_per_page, get_request_id};
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{
-    CreateLeagueTeamRequest, RegisterTeamForSeasonRequest, TransferOwnershipRequest,
-    UpdateLeagueTeamRequest,
+    CreateLeagueTeamRequest, MoveTeamRequest, RegisterTeamForSeasonRequest,
+    TransferOwnershipRequest, UpdateLeagueTeamRequest,
 };
 use crate::dto::responses::{
     LeagueTeamResponse, LeagueTeamSeasonResponse, LeagueTeamSummaryResponse,
@@ -382,6 +382,57 @@ pub async fn restore_team(
     require_team_settings_manage(&perm, &auth, team_id).await?;
 
     let team = state.league_team_service.restore_team(team_id).await?;
+
+    Ok(Json(DataResponse::new(
+        LeagueTeamResponse::from(team),
+        request_id,
+    )))
+}
+
+/// Move a team into another league.
+///
+/// The repair for a team filed under the wrong league. A platform-level
+/// action (`admin.teams.manage_any`): it takes a team out of one league's
+/// competition and puts it into another's, which is not a decision either
+/// league's own admins can make alone.
+///
+/// Narrow by design — see `LeagueTeamService::move_team_to_league` for what
+/// it refuses and why.
+#[utoipa::path(
+    post,
+    path = "/v1/league-teams/{team_id}/move",
+    params(("team_id" = String, Path, description = "Team ID")),
+    request_body = MoveTeamRequest,
+    responses(
+        (status = 200, description = "Team moved", body = DataResponse<LeagueTeamResponse>),
+        (status = 400, description = "Invalid target, or the team cannot be moved", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
+        (status = 404, description = "Team or season not found", body = ApiError),
+        (status = 409, description = "Name or tag already taken in the target league", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "league-teams"
+)]
+pub async fn move_team(
+    State(state): State<LeagueTeamState>,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
+    headers: HeaderMap,
+    Path(team_id): Path<LeagueTeamId>,
+    ValidatedJson(req): ValidatedJson<MoveTeamRequest>,
+) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    perm.require_permission(&auth, permissions::admin::TEAMS_MANAGE_ANY)
+        .await?;
+
+    let (league_id, season_id) = req.parse_target()?;
+
+    let (team, _team_season) = state
+        .league_team_service
+        .move_team_to_league(team_id, league_id, season_id)
+        .await?;
 
     Ok(Json(DataResponse::new(
         LeagueTeamResponse::from(team),

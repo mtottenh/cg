@@ -6,7 +6,7 @@ use chrono::Utc;
 use crate::DbPool;
 use crate::entities::tournament::TournamentRow;
 use portal_core::types::TournamentStatus;
-use portal_core::{DomainError, GameId, LeagueId, TournamentId, UserId};
+use portal_core::{DomainError, GameId, LeagueId, LeagueSeasonId, TournamentId, UserId};
 use portal_domain::entities::tournament::Tournament;
 use portal_domain::repositories::tournament::{
     CreateTournament, TournamentFilters, TournamentRepository, UpdateTournament,
@@ -530,6 +530,54 @@ impl TournamentRepository for PgTournamentRepository {
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
+    }
+
+    async fn set_league_and_season(
+        &self,
+        id: TournamentId,
+        league_id: Option<LeagueId>,
+        season_id: Option<LeagueSeasonId>,
+    ) -> Result<Tournament, DomainError> {
+        // The season must belong to the league it is being filed under.
+        // Checked here rather than in the service because the service holds
+        // no season repository, and because a check further away could be
+        // raced by the season itself moving.
+        if let (Some(league), Some(season)) = (league_id, season_id) {
+            let (belongs,): (bool,) = sqlx::query_as(
+                "SELECT EXISTS(SELECT 1 FROM league_seasons WHERE id = $1 AND league_id = $2)",
+            )
+            .bind(season.as_uuid())
+            .bind(league.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+            if !belongs {
+                return Err(DomainError::InvalidState(
+                    "target season belongs to a different league".to_string(),
+                ));
+            }
+        }
+
+        // Written as plain assignment, not COALESCE: NULL here means
+        // "standalone tournament", which is a destination like any other.
+        let row = sqlx::query_as::<_, TournamentRow>(
+            r"
+            UPDATE tournaments
+            SET league_id = $2, season_id = $3, updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(league_id.map(|l| l.as_uuid()))
+        .bind(season_id.map(|s| s.as_uuid()))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or(DomainError::TournamentNotFound(id))?;
+
+        Ok(Tournament::from(row))
     }
 
     async fn set_archived(

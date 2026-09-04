@@ -825,6 +825,18 @@ pub struct ListTournamentsQuery {
 // MATCH LIFECYCLE REQUESTS
 // =============================================================================
 
+/// Request to move a tournament to another league and/or season.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct MoveTournamentRequest {
+    /// Target league, or `null` to detach the tournament from any league.
+    #[serde(default)]
+    pub league_id: Option<String>,
+    /// Target season within that league, or `null` for none. A season
+    /// without a league is refused.
+    #[serde(default)]
+    pub season_id: Option<String>,
+}
+
 /// Request to check in for a match.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct MatchCheckInRequest {

@@ -894,6 +894,100 @@ where
         Ok(())
     }
 
+    /// Move a team into another league.
+    ///
+    /// The repair for a team filed under the wrong league. It is deliberately
+    /// narrow: a team's history is season-scoped, and the seasons belong to
+    /// the league being left, so a team that has *played* cannot be moved
+    /// without either dragging another league's seasons along or silently
+    /// dropping results. Both are worse than refusing.
+    ///
+    /// Refused when:
+    /// - the target season does not belong to the target league (the move
+    ///   would register the team outside the league it just joined),
+    /// - the team has played matches or holds tournament registrations,
+    /// - the name or tag is already taken in the target league,
+    /// - a roster member is already on another team in the target season
+    ///   (the one-primary-team-per-season rule).
+    #[instrument(skip(self))]
+    pub async fn move_team_to_league(
+        &self,
+        team_id: LeagueTeamId,
+        target_league_id: LeagueId,
+        target_season_id: LeagueSeasonId,
+    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError> {
+        let team = self.get_team(team_id).await?;
+
+        if team.league_id == target_league_id {
+            return Err(DomainError::InvalidState(
+                "team is already in that league".to_string(),
+            ));
+        }
+
+        let season = self
+            .season_repo
+            .find_by_id(target_season_id)
+            .await?
+            .ok_or(DomainError::LeagueSeasonNotFound(target_season_id))?;
+        if season.league_id != target_league_id {
+            return Err(DomainError::InvalidState(
+                "target season belongs to a different league".to_string(),
+            ));
+        }
+
+        // History check. `matches_played` is the season registration's own
+        // counter, so this catches a team that competed even if the matches
+        // themselves have since been archived.
+        let registrations = self.team_season_repo.list_by_team(team_id).await?;
+        if registrations.iter().any(|r| r.matches_played > 0) {
+            return Err(DomainError::InvalidState(
+                "team has played matches in its current league; move refused rather than \
+                 orphaning its results"
+                    .to_string(),
+            ));
+        }
+
+        // Name and tag are unique per league, so a clash has to be reported
+        // as a conflict rather than surfacing as a constraint violation.
+        if let Some(existing) = self
+            .team_repo
+            .find_by_name(target_league_id, &team.name)
+            .await?
+            && existing.id != team_id
+        {
+            return Err(DomainError::Conflict(format!(
+                "a team named '{}' already exists in the target league",
+                team.name
+            )));
+        }
+        if let Some(existing) = self
+            .team_repo
+            .find_by_tag(target_league_id, &team.tag)
+            .await?
+            && existing.id != team_id
+        {
+            return Err(DomainError::Conflict(format!(
+                "the tag '{}' is already taken in the target league",
+                team.tag
+            )));
+        }
+
+        let moved = self
+            .team_repo
+            .move_to_league(team_id, target_league_id, target_season_id)
+            .await?;
+
+        info!(
+            team_id = %team_id,
+            from_league = %team.league_id,
+            to_league = %target_league_id,
+            to_season = %target_season_id,
+            "League team moved between leagues"
+        );
+
+        Ok(moved)
+    }
+
     /// Get player's team memberships across all seasons.
     #[instrument(skip(self))]
     pub async fn get_player_memberships(

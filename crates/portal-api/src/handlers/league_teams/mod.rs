@@ -25,8 +25,8 @@ pub use season::{
 };
 pub use team::{
     ListLeagueTeamsParams, ListTeamSeasonsParams, archive_team, create_team, disband_team,
-    get_team, list_teams_in_season, register_team_for_season, restore_team, transfer_ownership,
-    update_team,
+    get_team, list_teams_in_season, move_team, register_team_for_season, restore_team,
+    transfer_ownership, update_team,
 };
 pub use team_season::{
     add_team_member, demote_from_captain, get_my_league_teams, get_player_league_teams,

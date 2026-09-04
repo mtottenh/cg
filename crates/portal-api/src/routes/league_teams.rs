@@ -75,6 +75,8 @@ pub fn team_routes() -> Router<AppState> {
             "/{team_id}/transfer-ownership",
             post(league_teams::transfer_ownership),
         )
+        // Move a team into another league (platform admins only).
+        .route("/{team_id}/move", post(league_teams::move_team))
         // Image uploads (team settings manage permission — i.e. owner/captain/admin)
         .route("/{team_id}/logo", post(uploads::upload_team_logo))
         .route("/{team_id}/banner", post(uploads::upload_team_banner))

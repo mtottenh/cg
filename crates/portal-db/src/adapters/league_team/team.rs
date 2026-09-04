@@ -220,6 +220,141 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         Ok(LeagueTeam::from(row))
     }
 
+    async fn move_to_league(
+        &self,
+        id: LeagueTeamId,
+        target_league_id: LeagueId,
+        target_season_id: LeagueSeasonId,
+    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError> {
+        // One transaction: a half-moved team — new league, old season
+        // registrations — is a team registered in a league it does not
+        // belong to, which no listing would show and no admin could fix.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let now = Utc::now();
+
+        // `tournament_registrations.team_season_id` cascades on delete, so
+        // dropping the old registrations below would take a tournament entry
+        // with them without a word. Checked inside the transaction, because a
+        // check outside it could be raced by a registration landing between
+        // the look and the delete.
+        let (tournament_entries,): (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*)
+            FROM tournament_registrations tr
+            JOIN league_team_seasons lts ON lts.id = tr.team_season_id
+            WHERE lts.team_id = $1
+            ",
+        )
+        .bind(id.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        if tournament_entries > 0 {
+            return Err(DomainError::InvalidState(
+                "team is registered for a tournament in its current league; move refused rather \
+                 than deleting that entry"
+                    .to_string(),
+            ));
+        }
+
+        let team_row = sqlx::query_as::<_, LeagueTeamRow>(
+            r"
+            UPDATE league_teams
+            SET league_id = $2, updated_at = $3
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(target_league_id.as_uuid())
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or(DomainError::LeagueTeamNotFound(id))?;
+
+        // The roster to carry: the team's most recent registration. Older
+        // ones are historical and are being dropped with the old league.
+        let source_team_season: Option<(uuid::Uuid,)> = sqlx::query_as(
+            r"
+            SELECT id FROM league_team_seasons
+            WHERE team_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            ",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let team_season_row = sqlx::query_as::<_, LeagueTeamSeasonRow>(
+            r"
+            INSERT INTO league_team_seasons (team_id, season_id, status, registered_at)
+            VALUES ($1, $2, 'registered', $3)
+            ON CONFLICT (team_id, season_id) DO UPDATE SET updated_at = NOW()
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(target_season_id.as_uuid())
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        if let Some((source_id,)) = source_team_season
+            && source_id != team_season_row.id
+        {
+            // Insert rather than re-point: `league_team_members.season_id` is
+            // filled by an INSERT trigger, so an UPDATE of team_season_id
+            // would leave the denormalised season behind and quietly break
+            // the one-team-per-season unique index.
+            sqlx::query(
+                r"
+                INSERT INTO league_team_members (
+                    team_season_id, player_id, role, position, jersey_number,
+                    status, joined_at, added_by
+                )
+                SELECT $1, player_id, role, position, jersey_number,
+                       status, joined_at, added_by
+                FROM league_team_members
+                WHERE team_season_id = $2 AND status = 'active'
+                ON CONFLICT (team_season_id, player_id) DO NOTHING
+                ",
+            )
+            .bind(team_season_row.id)
+            .bind(source_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        }
+
+        // The old registrations point at seasons of a league this team has
+        // left. Members and invitations cascade with them.
+        sqlx::query("DELETE FROM league_team_seasons WHERE team_id = $1 AND id <> $2")
+            .bind(id.as_uuid())
+            .bind(team_season_row.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok((
+            LeagueTeam::from(team_row),
+            LeagueTeamSeason::from(team_season_row),
+        ))
+    }
+
     async fn list_by_owner(
         &self,
         league_id: LeagueId,

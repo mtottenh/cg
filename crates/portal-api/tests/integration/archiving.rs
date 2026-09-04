@@ -408,6 +408,15 @@ async fn test_archived_season_is_hidden_unless_asked_for() {
     );
 }
 
+/// The league's first season — the one its creation trigger makes.
+async fn first_season(app: &TestApp, league_id: &str) -> String {
+    let body: serde_json::Value = app
+        .get(&format!("/v1/league-seasons?league_id={league_id}"))
+        .await
+        .json();
+    body["data"][0]["id"].as_str().unwrap().to_string()
+}
+
 /// Whether a season's roster listing carries a team.
 async fn roster_has(app: &TestApp, season_id: &str, team_id: &str) -> bool {
     let body: serde_json::Value = app
@@ -432,12 +441,7 @@ async fn test_archived_team_leaves_the_season_roster_listing_and_comes_back() {
     let app = TestApp::new().await;
     let league_id = create_league(&app, "Team Archive League", "team-archive-league").await;
 
-    let body: serde_json::Value = app
-        .get(&format!("/v1/league-seasons?league_id={league_id}"))
-        .await
-        .json();
-    // The league trigger creates "Season 1".
-    let season_id = body["data"][0]["id"].as_str().unwrap().to_string();
+    let season_id = first_season(&app, &league_id).await;
 
     let response = app
         .post_json(
@@ -485,11 +489,7 @@ async fn test_include_archived_is_permission_gated() {
     let app = TestApp::new().await;
     let league_id = create_league(&app, "Gated Filters League", "gated-filters-league").await;
 
-    let body: serde_json::Value = app
-        .get(&format!("/v1/league-seasons?league_id={league_id}"))
-        .await
-        .json();
-    let season_id = body["data"][0]["id"].as_str().unwrap().to_string();
+    let season_id = first_season(&app, &league_id).await;
 
     // Anonymous
     app.get(&format!(
@@ -536,4 +536,287 @@ async fn test_include_archived_is_permission_gated() {
     ))
     .await
     .assert_status(StatusCode::OK);
+}
+
+// =============================================================================
+// Moving between leagues
+// =============================================================================
+
+/// A team filed under the wrong league can be moved — identity, roster and
+/// season registration together.
+#[tokio::test]
+async fn test_moving_a_team_carries_its_roster_into_the_target_season() {
+    let app = TestApp::new().await;
+    let from_league = create_league(&app, "Wrong League", "wrong-league").await;
+    let to_league = create_league(&app, "Right League", "right-league").await;
+
+    let from_season = first_season(&app, &from_league).await;
+    let to_season = first_season(&app, &to_league).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/league-seasons/{from_season}/teams"),
+            &json!({ "name": "Misfiled Team", "tag": "MIS" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    let team_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    let response = app
+        .post_json(
+            &format!("/v1/league-teams/{team_id}/move"),
+            &json!({ "league_id": to_league, "season_id": to_season }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["league_id"], to_league.as_str());
+
+    // It is in the new league's season...
+    assert!(roster_has(&app, &to_season, &team_id).await);
+    // ...and gone from the old one.
+    assert!(!roster_has(&app, &from_season, &team_id).await);
+
+    // The founding captain came with it, on the new season's roster.
+    let body: serde_json::Value = app
+        .get_auth(&format!("/v1/league-seasons/{to_season}/teams"))
+        .await
+        .json();
+    let moved = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["team_id"] == team_id.as_str())
+        .expect("team present in the target season");
+    assert_eq!(
+        moved["active_member_count"], 1,
+        "the roster must travel with the team, not be left behind"
+    );
+}
+
+/// The move is narrow on purpose: a team with results would either drag
+/// another league's seasons along or lose them.
+#[tokio::test]
+async fn test_moving_a_team_that_has_played_is_refused() {
+    let app = TestApp::new().await;
+    let from_league = create_league(&app, "Played League", "played-league").await;
+    let to_league = create_league(&app, "Target League", "target-league").await;
+
+    let from_season = first_season(&app, &from_league).await;
+    let to_season = first_season(&app, &to_league).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/league-seasons/{from_season}/teams"),
+            &json!({ "name": "Veteran Team", "tag": "VET" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    let team_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    sqlx::query("UPDATE league_team_seasons SET matches_played = 3 WHERE team_id = $1::uuid")
+        .bind(&team_id)
+        .execute(app.pool())
+        .await
+        .expect("record some history");
+
+    let response = app
+        .post_json(
+            &format!("/v1/league-teams/{team_id}/move"),
+            &json!({ "league_id": to_league, "season_id": to_season }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    // Still where it was.
+    let body: serde_json::Value = app
+        .get_auth(&format!("/v1/league-teams/{team_id}"))
+        .await
+        .json();
+    assert_eq!(body["data"]["league_id"], from_league.as_str());
+}
+
+/// A season in one league is not a destination in another.
+#[tokio::test]
+async fn test_moving_a_team_into_a_mismatched_season_is_refused() {
+    let app = TestApp::new().await;
+    let from_league = create_league(&app, "Origin League", "origin-league").await;
+    let other_league = create_league(&app, "Other League", "other-league").await;
+    let third_league = create_league(&app, "Third League", "third-league").await;
+
+    let from_season = first_season(&app, &from_league).await;
+    let third_season = first_season(&app, &third_league).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/league-seasons/{from_season}/teams"),
+            &json!({ "name": "Mismatch Team", "tag": "MSM" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    let team_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    // Target league says one thing, target season belongs to another.
+    app.post_json(
+        &format!("/v1/league-teams/{team_id}/move"),
+        &json!({ "league_id": other_league, "season_id": third_season }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// A tournament created against the wrong league can be re-filed while it is
+/// still empty.
+#[tokio::test]
+async fn test_moving_a_tournament_between_leagues() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    let from_league = create_league(&app, "From Cup League", "from-cup-league").await;
+    let to_league = create_league(&app, "To Cup League", "to-cup-league").await;
+
+    let to_season = first_season(&app, &to_league).await;
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "league_id": from_league,
+                "name": "Misfiled Cup",
+                "slug": "misfiled-cup",
+                "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
+                "participant_type": "individual",
+                "min_participants": 2,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "live",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/move"),
+            &json!({ "league_id": to_league, "season_id": to_season }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["league_id"], to_league.as_str());
+    assert_eq!(body["data"]["season_id"], to_season.as_str());
+
+    // And it can be detached entirely.
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/move"),
+            &json!({ "league_id": null, "season_id": null }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"]["league_id"].is_null() || body["data"].get("league_id").is_none());
+}
+
+/// Once somebody has entered, the tournament stays where it is: a
+/// registration is a team *in that league's season*.
+#[tokio::test]
+async fn test_moving_a_tournament_with_registrations_is_refused() {
+    let app = TestApp::new().await;
+    let from_league = create_league(&app, "Entered League", "entered-league").await;
+    let to_league = create_league(&app, "Empty League", "empty-league").await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "league_id": from_league,
+                "name": "Entered Cup",
+                "slug": "entered-cup",
+                "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
+                "participant_type": "individual",
+                "min_participants": 2,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "live",
+                "default_match_format": "bo3"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    let tournament_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/publish"))
+        .await
+        .assert_status(StatusCode::OK);
+    app.post_auth(&format!(
+        "/v1/tournaments/{tournament_id}/open-registration"
+    ))
+    .await
+    .assert_status(StatusCode::OK);
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/registrations/player"),
+        &json!({ "participant_name": "Someone" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/move"),
+        &json!({ "league_id": to_league, "season_id": null }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// Both moves are platform-admin actions: they cross a league boundary, so
+/// neither league's own admins can make them alone.
+#[tokio::test]
+async fn test_moves_require_platform_admin() {
+    let app = TestApp::new().await;
+    let league_id = create_league(&app, "Move Guard League", "move-guard-league").await;
+
+    let season_id = first_season(&app, &league_id).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/league-seasons/{season_id}/teams"),
+            &json!({ "name": "Guarded Team", "tag": "GRD" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    let team_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    let outsider = UserBuilder::new()
+        .username("moveoutsider")
+        .email("moveoutsider@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let token = portal_domain::generate_access_token(
+        outsider.id,
+        outsider.id,
+        "moveoutsider",
+        "test-jwt-secret",
+    )
+    .expect("token");
+
+    app.post_json_with_token(
+        &format!("/v1/league-teams/{team_id}/move"),
+        &json!({ "league_id": league_id, "season_id": season_id }),
+        &token,
+    )
+    .await
+    .assert_status(StatusCode::FORBIDDEN);
 }

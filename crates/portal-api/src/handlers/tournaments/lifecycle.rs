@@ -9,7 +9,7 @@
 use super::get_request_id;
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
 use crate::dto::requests::{
-    CreateTournamentRequest, ListTournamentsQuery, UpdateTournamentRequest,
+    CreateTournamentRequest, ListTournamentsQuery, MoveTournamentRequest, UpdateTournamentRequest,
 };
 use crate::dto::responses::{TournamentResponse, TournamentSummaryResponse};
 use crate::error::{ApiError, ApiResult};
@@ -624,6 +624,73 @@ pub async fn cancel_tournament(
     let tournament = state
         .tournament_service
         .cancel_tournament(tournament_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        TournamentResponse::from(tournament),
+        request_id,
+    )))
+}
+
+/// Move a tournament to another league and/or season.
+///
+/// The repair for a tournament filed under the wrong league. A platform-level
+/// action (`admin.tournaments.manage_any`): it moves a tournament between two
+/// leagues' competitions, which is not a decision either league's admins make
+/// alone. Refused once anyone has registered — see
+/// `TournamentService::move_tournament`.
+#[utoipa::path(
+    post,
+    path = "/v1/tournaments/{tournament_id}/move",
+    params(
+        ("tournament_id" = String, Path, description = "Tournament ID")
+    ),
+    request_body = MoveTournamentRequest,
+    responses(
+        (status = 200, description = "Tournament moved", body = DataResponse<TournamentResponse>),
+        (status = 400, description = "Invalid target, or the tournament cannot be moved", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden", body = ApiError),
+        (status = 404, description = "Tournament not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "tournaments"
+)]
+pub async fn move_tournament(
+    State(state): State<TournamentState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(tournament_id): Path<TournamentId>,
+    ValidatedJson(req): ValidatedJson<MoveTournamentRequest>,
+) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_permission(&auth, permissions::admin::TOURNAMENTS_MANAGE_ANY)
+        .await?;
+
+    let league_id = req
+        .league_id
+        .as_deref()
+        .map(|id| {
+            id.parse()
+                .map_err(|_| ApiError::bad_request("Invalid league ID format"))
+        })
+        .transpose()?;
+
+    let season_id = req
+        .season_id
+        .as_deref()
+        .map(|id| {
+            id.parse()
+                .map_err(|_| ApiError::bad_request("Invalid season ID format"))
+        })
+        .transpose()?;
+
+    let tournament = state
+        .tournament_service
+        .move_tournament(tournament_id, league_id, season_id)
         .await?;
 
     Ok(Json(DataResponse::new(

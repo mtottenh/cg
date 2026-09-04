@@ -369,6 +369,33 @@ impl RegisterTeamForSeasonRequest {
     }
 }
 
+/// Request to move a team into another league.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct MoveTeamRequest {
+    /// League to move the team into.
+    pub league_id: String,
+    /// Season in that league to register the team for. Required: a team's
+    /// participation and its roster are season-scoped, so a move with no
+    /// destination season would land the team in a league with no way to
+    /// play in it.
+    pub season_id: String,
+}
+
+impl MoveTeamRequest {
+    /// Parse the target league and season IDs.
+    pub fn parse_target(&self) -> Result<(LeagueId, LeagueSeasonId), crate::error::ApiError> {
+        let league_id = self
+            .league_id
+            .parse()
+            .map_err(|_| crate::error::ApiError::bad_request("Invalid league ID format"))?;
+        let season_id = self
+            .season_id
+            .parse()
+            .map_err(|_| crate::error::ApiError::bad_request("Invalid season ID format"))?;
+        Ok((league_id, season_id))
+    }
+}
+
 /// Request to transfer team ownership to another player.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct TransferOwnershipRequest {

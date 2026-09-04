@@ -2,7 +2,7 @@
 
 use crate::entities::league::{
     CreateLeagueCommand, League, LeagueAccessType, LeagueInvitation, LeagueInvitationStatus,
-    LeagueMember, LeagueMemberWithUser, LeagueMembershipType, UpdateLeagueCommand,
+    LeagueMember, LeagueMemberWithUser, LeagueMembershipType, LeagueStatus, UpdateLeagueCommand,
     UserLeagueMembership,
 };
 use crate::repositories::league::{
@@ -179,19 +179,27 @@ where
     }
 
     /// Search leagues.
+    ///
+    /// `status` filters on the league's own status: `Some(Active)` for the
+    /// public listing, `None` for admin listings that must see archived and
+    /// suspended leagues too.
     #[instrument(skip(self))]
     pub async fn search_leagues(
         &self,
         query: &str,
         game_id: Option<GameId>,
+        status: Option<LeagueStatus>,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<League>, i64), DomainError> {
         let leagues = self
             .league_repo
-            .search(query, game_id, limit, offset)
+            .search(query, game_id, status, limit, offset)
             .await?;
-        let total = self.league_repo.count_search(query, game_id).await?;
+        let total = self
+            .league_repo
+            .count_search(query, game_id, status)
+            .await?;
         Ok((leagues, total))
     }
 

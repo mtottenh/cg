@@ -136,6 +136,11 @@ pub struct UserLeagueMembershipResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub league_logo_url: Option<String>,
     pub game_id: String,
+    /// Status of the league itself. Memberships are returned for every
+    /// status — a league admin has to be able to see (and restore) a league
+    /// that has been archived. Typed as the enum so clients get a union
+    /// rather than `string` (as `LeagueResponse::status` already is).
+    pub league_status: LeagueStatus,
     pub membership_type: String,
     pub joined_at: DateTime<Utc>,
 }
@@ -148,6 +153,7 @@ impl From<UserLeagueMembership> for UserLeagueMembershipResponse {
             league_slug: membership.league_slug,
             league_logo_url: membership.league_logo_url,
             game_id: membership.game_id.to_string(),
+            league_status: membership.league_status,
             membership_type: membership.membership_type.as_str().to_string(),
             joined_at: membership.joined_at,
         }

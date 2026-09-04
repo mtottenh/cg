@@ -1791,3 +1791,194 @@ async fn test_league_invitation_row_names_a_user_without_a_player_profile() {
         "no player profile means no display name: {body}"
     );
 }
+
+/// The admin leagues screen has to see every league on the site, whatever its
+/// status and whoever created it.
+///
+/// Reported from live: three leagues existed, two showed. The screen was fed
+/// by `/v1/users/me/leagues`, which (a) only returns leagues you are a member
+/// of and (b) filtered out anything whose status was not `active` — so a
+/// league that had been archived, or one created by another operator,
+/// silently disappeared from the admin view of the site.
+#[tokio::test]
+async fn test_admin_league_listing_sees_archived_and_unjoined_leagues() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    // A league the dev user owns, later archived.
+    let archived = app
+        .post_json(
+            "/v1/leagues",
+            &json!({
+                "game_id": game_id,
+                "name": "Archived League",
+                "slug": "archived-league",
+            }),
+        )
+        .await;
+    archived.assert_status(StatusCode::CREATED);
+    let archived: serde_json::Value = archived.json();
+    let archived_id = archived["data"]["id"].as_str().unwrap();
+
+    sqlx::query("UPDATE leagues SET status = 'archived' WHERE id = $1::uuid")
+        .bind(archived_id)
+        .execute(app.pool())
+        .await
+        .expect("archive the league");
+
+    // A league nobody the caller knows created — no membership row for the
+    // dev user at all.
+    let other_owner = UserBuilder::new()
+        .username("otherowner")
+        .email("otherowner@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let other_token = create_token_for_user(&app, other_owner.id);
+    app.post_json_with_token(
+        "/v1/leagues",
+        &json!({
+            "game_id": game_id,
+            "name": "Someone Elses League",
+            "slug": "someone-elses-league",
+        }),
+        &other_token,
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    // Public listing: active leagues only, as before.
+    let public: serde_json::Value = app.get("/v1/leagues").await.json();
+    let public_names: Vec<&str> = public["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        !public_names.contains(&"Archived League"),
+        "archived leagues stay out of the public listing: {public_names:?}"
+    );
+
+    // Admin listing: everything.
+    let response = app.get_auth("/v1/admin/leagues").await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let names: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"Archived League"),
+        "admin listing must include archived leagues: {names:?}"
+    );
+    assert!(
+        names.contains(&"Someone Elses League"),
+        "admin listing must include leagues the caller never joined: {names:?}"
+    );
+
+    // ...and can still narrow to one status when asked.
+    let filtered: serde_json::Value = app
+        .get_auth("/v1/admin/leagues?status=archived")
+        .await
+        .json();
+    let filtered_names: Vec<&str> = filtered["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(filtered_names, vec!["Archived League"]);
+}
+
+/// The admin listing is permission-gated, not merely hidden in the UI.
+#[tokio::test]
+async fn test_admin_league_listing_requires_permission() {
+    let app = TestApp::new().await;
+
+    let user = UserBuilder::new()
+        .username("nonadminlister")
+        .email("nonadminlister@example.com")
+        .build_persisted(app.pool())
+        .await;
+    let token = create_token_for_user(&app, user.id);
+
+    app.get_with_token("/v1/admin/leagues", &token)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+}
+
+/// A membership survives archiving: the league admin who has to un-archive a
+/// league must still be able to see it in their own membership list, with the
+/// status attached so a caller can tell the two apart.
+#[tokio::test]
+async fn test_my_leagues_keeps_archived_memberships_and_reports_status() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let created = app
+        .post_json(
+            "/v1/leagues",
+            &json!({
+                "game_id": game_id,
+                "name": "Soon Archived",
+                "slug": "soon-archived",
+            }),
+        )
+        .await;
+    created.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = created.json();
+    let league_id = created["data"]["id"].as_str().unwrap();
+
+    let before: Vec<serde_json::Value> = app.get_auth("/v1/users/me/leagues").await.json();
+    let membership = before
+        .iter()
+        .find(|l| l["league_id"] == league_id)
+        .expect("membership present while active");
+    assert_eq!(membership["league_status"], "active");
+
+    sqlx::query("UPDATE leagues SET status = 'archived' WHERE id = $1::uuid")
+        .bind(league_id)
+        .execute(app.pool())
+        .await
+        .expect("archive the league");
+
+    let after: Vec<serde_json::Value> = app.get_auth("/v1/users/me/leagues").await.json();
+    let membership = after
+        .iter()
+        .find(|l| l["league_id"] == league_id)
+        .expect("membership survives archiving");
+    assert_eq!(membership["league_status"], "archived");
+}
+
+/// The `search` parameter the frontend has always sent was never declared on
+/// the handler, so serde dropped it and the league search box filtered
+/// nothing.
+#[tokio::test]
+async fn test_list_leagues_honours_the_search_parameter() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    for (name, slug) in [
+        ("Findable Cup", "findable-cup"),
+        ("Unrelated Ladder", "unrelated-ladder"),
+    ] {
+        app.post_json(
+            "/v1/leagues",
+            &json!({ "game_id": game_id, "name": name, "slug": slug }),
+        )
+        .await
+        .assert_status(StatusCode::CREATED);
+    }
+
+    let body: serde_json::Value = app.get("/v1/leagues?search=findable").await.json();
+    let names: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["Findable Cup"]);
+    assert_eq!(body["pagination"]["total_items"], 1);
+}

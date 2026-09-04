@@ -152,6 +152,7 @@ use utoipa_swagger_ui::SwaggerUi;
         leagues::get_league,
         leagues::get_league_by_slug,
         leagues::list_leagues,
+        leagues::admin_list_leagues,
         leagues::update_league,
         leagues::list_members,
         leagues::join_league,

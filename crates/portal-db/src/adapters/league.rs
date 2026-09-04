@@ -140,6 +140,8 @@ impl From<UserLeagueMembershipRow> for UserLeagueMembership {
             league_slug: row.league_slug,
             league_logo_url: row.league_logo_url,
             game_id: GameId::from(row.game_id),
+            league_status: LeagueStatus::from_str(&row.league_status)
+                .unwrap_or(LeagueStatus::Active),
             membership_type: LeagueMembershipType::from_str(&row.membership_type)
                 .unwrap_or(LeagueMembershipType::Member),
             joined_at: row.joined_at,
@@ -295,75 +297,60 @@ impl LeagueRepository for PgLeagueRepository {
         &self,
         query: &str,
         game_id: Option<GameId>,
+        status: Option<LeagueStatus>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<League>, DomainError> {
         let pattern = format!("%{}%", query.to_lowercase());
 
-        let leagues = match game_id {
-            Some(gid) => {
-                sqlx::query_as::<_, LeagueRow>(
-                    r"
-                    SELECT * FROM leagues
-                    WHERE game_id = $1 AND status = 'active'
-                      AND LOWER(name) LIKE $2
-                    ORDER BY name
-                    LIMIT $3 OFFSET $4
-                    ",
-                )
-                .bind(gid.as_uuid())
-                .bind(&pattern)
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(&self.pool)
-                .await
-            }
-            None => {
-                sqlx::query_as::<_, LeagueRow>(
-                    r"
-                    SELECT * FROM leagues
-                    WHERE status = 'active' AND LOWER(name) LIKE $1
-                    ORDER BY name
-                    LIMIT $2 OFFSET $3
-                    ",
-                )
-                .bind(&pattern)
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(&self.pool)
-                .await
-            }
-        }
+        // One statement with nullable filters rather than a branch per
+        // combination: the status filter is the caller's to choose (admin
+        // listings pass None), and the old per-branch SQL is how it came to
+        // be hard-coded to 'active' in the first place.
+        let leagues = sqlx::query_as::<_, LeagueRow>(
+            r"
+            SELECT * FROM leagues
+            WHERE LOWER(name) LIKE $1
+              AND ($2::uuid IS NULL OR game_id = $2::uuid)
+              AND ($3::text IS NULL OR status = $3::text)
+            ORDER BY name
+            LIMIT $4 OFFSET $5
+            ",
+        )
+        .bind(&pattern)
+        .bind(game_id.map(|g| g.as_uuid()))
+        .bind(status.map(|s| s.as_str()))
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(leagues.into_iter().map(League::from).collect())
     }
 
-    async fn count_search(&self, query: &str, game_id: Option<GameId>) -> Result<i64, DomainError> {
+    async fn count_search(
+        &self,
+        query: &str,
+        game_id: Option<GameId>,
+        status: Option<LeagueStatus>,
+    ) -> Result<i64, DomainError> {
         let pattern = format!("%{}%", query.to_lowercase());
 
-        let count: (i64,) =
-            match game_id {
-                Some(gid) => {
-                    sqlx::query_as(
-                        r"
-                    SELECT COUNT(*) FROM leagues
-                    WHERE game_id = $1 AND status = 'active' AND LOWER(name) LIKE $2
-                    ",
-                    )
-                    .bind(gid.as_uuid())
-                    .bind(&pattern)
-                    .fetch_one(&self.pool)
-                    .await
-                }
-                None => sqlx::query_as(
-                    "SELECT COUNT(*) FROM leagues WHERE status = 'active' AND LOWER(name) LIKE $1",
-                )
-                .bind(&pattern)
-                .fetch_one(&self.pool)
-                .await,
-            }
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM leagues
+            WHERE LOWER(name) LIKE $1
+              AND ($2::uuid IS NULL OR game_id = $2::uuid)
+              AND ($3::text IS NULL OR status = $3::text)
+            ",
+        )
+        .bind(&pattern)
+        .bind(game_id.map(|g| g.as_uuid()))
+        .bind(status.map(|s| s.as_str()))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(count.0)
     }
@@ -585,10 +572,11 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
             r"
             SELECT l.id as league_id, l.name as league_name, l.slug as league_slug,
                    l.logo_url as league_logo_url, l.game_id,
+                   l.status as league_status,
                    lm.membership_type, lm.joined_at
             FROM league_members lm
             INNER JOIN leagues l ON l.id = lm.league_id
-            WHERE lm.user_id = $1 AND l.status = 'active'
+            WHERE lm.user_id = $1
             ORDER BY lm.joined_at DESC
             ",
         )

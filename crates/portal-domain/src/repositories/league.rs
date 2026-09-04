@@ -2,7 +2,7 @@
 
 use crate::entities::league::{
     League, LeagueInvitation, LeagueInvitationStatus, LeagueMember, LeagueMemberWithUser,
-    LeagueMembershipType, UserLeagueMembership,
+    LeagueMembershipType, LeagueStatus, UserLeagueMembership,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -39,16 +39,28 @@ pub trait LeagueRepository: Send + Sync {
     async fn slug_exists(&self, slug: &str) -> Result<bool, DomainError>;
 
     /// Search leagues by name.
+    ///
+    /// `status` is the caller's choice, not the repository's: public listings
+    /// pass `Some(LeagueStatus::Active)`, admin listings pass `None` for
+    /// every status. It used to be hard-coded to `active` in the SQL, which
+    /// is how an archived league became invisible to the very operator who
+    /// has to un-archive it.
     async fn search(
         &self,
         query: &str,
         game_id: Option<GameId>,
+        status: Option<LeagueStatus>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<League>, DomainError>;
 
-    /// Count search results.
-    async fn count_search(&self, query: &str, game_id: Option<GameId>) -> Result<i64, DomainError>;
+    /// Count search results. `status` as per [`search`](Self::search).
+    async fn count_search(
+        &self,
+        query: &str,
+        game_id: Option<GameId>,
+        status: Option<LeagueStatus>,
+    ) -> Result<i64, DomainError>;
 }
 
 /// Data for creating a new league.

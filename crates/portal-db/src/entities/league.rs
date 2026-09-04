@@ -158,6 +158,10 @@ pub struct UserLeagueMembershipRow {
     pub league_slug: String,
     pub league_logo_url: Option<String>,
     pub game_id: Uuid,
+    /// The league's own status. Carried on the membership so a caller can
+    /// tell an archived league apart from an active one instead of the
+    /// query silently dropping it.
+    pub league_status: String,
 
     // Membership info
     pub membership_type: String,

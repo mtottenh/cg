@@ -328,6 +328,9 @@ pub struct UserLeagueMembership {
     pub league_logo_url: Option<String>,
     /// The game this league is for.
     pub game_id: GameId,
+    /// The league's status. A membership survives archiving — the operator
+    /// who has to restore an archived league is usually one of its admins.
+    pub league_status: LeagueStatus,
     /// The user's role in the league.
     pub membership_type: LeagueMembershipType,
     /// When the user joined.

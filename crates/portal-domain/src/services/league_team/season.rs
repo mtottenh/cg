@@ -223,12 +223,45 @@ where
     }
 
     /// List seasons for a league.
+    ///
+    /// `include_archived` is the caller's choice: player-facing listings pass
+    /// false, operator listings pass true.
     #[instrument(skip(self))]
     pub async fn list_seasons(
         &self,
         league_id: LeagueId,
+        include_archived: bool,
     ) -> Result<Vec<LeagueSeason>, DomainError> {
-        self.season_repo.list_by_league(league_id).await
+        self.season_repo
+            .list_by_league(league_id, include_archived)
+            .await
+    }
+
+    /// Archive a season: it stops appearing in player-facing listings, with
+    /// its own status untouched so restoring is exact.
+    #[instrument(skip(self))]
+    pub async fn archive_season(
+        &self,
+        season_id: LeagueSeasonId,
+        archived_by: UserId,
+    ) -> Result<LeagueSeason, DomainError> {
+        let season = self
+            .season_repo
+            .set_archived(season_id, Some(archived_by))
+            .await?;
+        info!(season_id = %season_id, %archived_by, "Season archived");
+        Ok(season)
+    }
+
+    /// Restore an archived season.
+    #[instrument(skip(self))]
+    pub async fn restore_season(
+        &self,
+        season_id: LeagueSeasonId,
+    ) -> Result<LeagueSeason, DomainError> {
+        let season = self.season_repo.set_archived(season_id, None).await?;
+        info!(season_id = %season_id, "Season restored");
+        Ok(season)
     }
 
     /// List active seasons for a league.

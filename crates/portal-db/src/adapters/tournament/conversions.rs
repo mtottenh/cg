@@ -78,6 +78,8 @@ impl From<TournamentRow> for Tournament {
             settings: row.settings,
             withdrawal_policy: row.withdrawal_policy.parse().unwrap_or_default(),
             status: row.status.parse().unwrap_or_default(),
+            archived_at: row.archived_at,
+            archived_by: row.archived_by.map(UserId::from_uuid),
             created_by: UserId::from_uuid(row.created_by),
             organization_id: row.organization_id,
             created_at: row.created_at,

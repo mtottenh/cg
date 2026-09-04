@@ -36,9 +36,9 @@ pub use demo::{
     AssociateDemoRequest, BatchCatalogDemoEntry, BatchCatalogDemosRequest, CatalogDemoRequest,
     CategorizeDemoRequest, DemoPlayerInputDto, DemoStatusCountsQuery, GetDemosForMatchQuery,
     LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest, PendingDemosQuery,
-    PipelineQuery, ProcessUnlinkedDemosQuery, ResumeTrackingQuery, SetDemoNotesRequest,
-    SetDemoVisibilityRequest, SubmitDemoStatsRequest, UnlinkDemoFromMatchRequest,
-    UpdateAutoLinkSettingRequest,
+    PipelineQuery, ProcessUnlinkedDemosQuery, RequeueDiscoveredMatchesRequest, ResumeTrackingQuery,
+    SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
+    UnlinkDemoFromMatchRequest, UpdateAutoLinkSettingRequest,
 };
 pub use dispute::{
     AddDisputeMessageRequest, AdminDisputeMessageRequest, AssignDisputeRequest, ListDisputesQuery,
@@ -65,10 +65,10 @@ pub use league::{
 };
 pub use league_team::{
     AddLeagueTeamMemberRequest, ApplyToLeagueTeamRequest, CreateLeagueSeasonRequest,
-    CreateLeagueTeamRequest, InviteToLeagueTeamRequest, RegisterParticipantRequest,
-    RegisterTeamForSeasonRequest, RespondToInvitationRequest, TransferOwnershipRequest,
-    UpdateLeagueSeasonRequest, UpdateLeagueTeamMemberRequest, UpdateLeagueTeamRequest,
-    WithdrawParticipantRequest,
+    CreateLeagueTeamRequest, InviteToLeagueTeamRequest, MoveTeamRequest,
+    RegisterParticipantRequest, RegisterTeamForSeasonRequest, RespondToInvitationRequest,
+    TransferOwnershipRequest, UpdateLeagueSeasonRequest, UpdateLeagueTeamMemberRequest,
+    UpdateLeagueTeamRequest, WithdrawParticipantRequest,
 };
 pub use player::{SocialLinksRequest, UpdatePlayerProfileRequest};
 pub use player_game_profile::SubmitRatingRequest;
@@ -88,9 +88,9 @@ pub use tournament::{
     CounterProposeRequest, CreateTournamentInvitationRequest, CreateTournamentRequest,
     CreateTournamentStageRequest, DeclareLineupRequest, DisputeMatchRequest, DisqualifyRequest,
     ForfeitMatchRequest, ListTournamentsQuery, ManualSeedRequest, MatchCheckInRequest,
-    ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest, RejectRegistrationRequest,
-    RejectScheduleProposalRequest, ResolveDisputeRequest, SeedAssignment,
-    SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
+    MoveTournamentRequest, ProposeScheduleRequest, RegisterPlayerRequest, RegisterTeamRequest,
+    RejectRegistrationRequest, RejectScheduleProposalRequest, ResolveDisputeRequest,
+    SeedAssignment, SetTournamentMapPoolRequest, SubmitMatchResultRequest, UpdateTournamentRequest,
     UpdateTournamentStageRequest, WithdrawRequest,
 };
 pub use veto::{

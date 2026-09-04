@@ -786,3 +786,166 @@ async fn test_pipeline_overview_reports_the_demo_stage() {
     assert_eq!(stage["not_applicable"], 1, "{body}");
     assert_eq!(stage["unavailable"], 1, "{body}");
 }
+
+// =============================================================================
+// Operator recovery — requeue
+// =============================================================================
+
+/// Grant the dev user `admin.demos.manage`.
+///
+/// The pipeline handlers check the permission through `permission_service`
+/// rather than the `PermissionChecker` extractor, so the dev-token bypass does
+/// not apply to them — the role has to be real. Same helper shape as
+/// `demos.rs::make_dev_user_admin`.
+async fn make_dev_user_admin(app: &TestApp) {
+    let dev_user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    portal_test::helpers::assign_role_to_user(app.pool(), dev_user_id, "platform_admin").await;
+}
+
+/// The repair path for budgets that were spent on something other than the
+/// match.
+///
+/// Live, the enricher wrote "Trying to work with closed connection" onto match
+/// after match: a dead Steam websocket charged to each match in turn. Those
+/// matches were never actually attempted, but `find_pending` excludes an
+/// exhausted row by design, so the queue could not recover on its own once the
+/// worker was fixed.
+#[tokio::test]
+async fn test_requeue_returns_exhausted_matches_to_the_queue() {
+    // Requeue is gated on admin.demos.manage; grant it before acting.
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+    let key = create_enricher_key(app.pool()).await;
+    let tracking = seed_tracking(&app, 76_561_198_000_000_301).await;
+    let id = seed_match(&app, tracking, &format!("CSGO-requeue-{}", unique_suffix())).await;
+
+    // Burn the whole budget the way the bug did.
+    let max = retry_state(&app, id).await.max_retries;
+    for _ in 0..max {
+        fail_one_attempt(&app, id, &key, "Trying to work with closed connection").await;
+        expire_enrich_backoff(&app, id).await;
+    }
+    assert!(
+        !pending_ids(&app, &key).await.contains(&id.to_string()),
+        "precondition: the match is out of the queue for good"
+    );
+
+    let response = app
+        .post_json(
+            "/v1/admin/pipeline/discovered-matches/requeue",
+            &json!({ "game": "cs2", "only_exhausted": true }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["requeued"], 1);
+
+    let state = retry_state(&app, id).await;
+    assert_eq!(state.status, "pending");
+    assert_eq!(
+        state.retry_count, 0,
+        "the budget is restored, not topped up"
+    );
+    assert!(state.claimed_at.is_none());
+
+    expire_enrich_backoff(&app, id).await;
+    assert!(
+        pending_ids(&app, &key).await.contains(&id.to_string()),
+        "the enricher must be able to pick it up again"
+    );
+}
+
+/// A match still inside its backoff is already going to be retried; a bulk
+/// requeue of "stuck" matches must not reset its counter and hide a genuine
+/// repeated failure.
+#[tokio::test]
+async fn test_requeue_leaves_matches_that_still_have_budget_alone() {
+    // Requeue is gated on admin.demos.manage; grant it before acting.
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+    let key = create_enricher_key(app.pool()).await;
+    let tracking = seed_tracking(&app, 76_561_198_000_000_302).await;
+    let id = seed_match(
+        &app,
+        tracking,
+        &format!("CSGO-budget-left-{}", unique_suffix()),
+    )
+    .await;
+
+    fail_one_attempt(&app, id, &key, "GC timeout").await;
+
+    let response = app
+        .post_json(
+            "/v1/admin/pipeline/discovered-matches/requeue",
+            &json!({ "only_exhausted": true }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["requeued"], 0);
+
+    assert_eq!(
+        retry_state(&app, id).await.retry_count,
+        1,
+        "a match with budget left keeps its attempt count"
+    );
+}
+
+/// The single-row control the failure list offers per match.
+#[tokio::test]
+async fn test_requeue_one_clears_the_error_and_restores_the_budget() {
+    // Requeue is gated on admin.demos.manage; grant it before acting.
+    let app = TestApp::new().await;
+    make_dev_user_admin(&app).await;
+    let key = create_enricher_key(app.pool()).await;
+    let tracking = seed_tracking(&app, 76_561_198_000_000_303).await;
+    let id = seed_match(
+        &app,
+        tracking,
+        &format!("CSGO-requeue-one-{}", unique_suffix()),
+    )
+    .await;
+
+    fail_one_attempt(&app, id, &key, "Trying to work with closed connection").await;
+
+    let response = app
+        .post_auth(&format!(
+            "/v1/admin/pipeline/discovered-matches/{id}/requeue"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "pending");
+    assert!(body["data"]["error"].is_null());
+
+    let state = retry_state(&app, id).await;
+    assert_eq!(state.retry_count, 0);
+    assert!(
+        pending_ids(&app, &key).await.contains(&id.to_string()),
+        "requeued immediately, with no backoff left to serve"
+    );
+}
+
+/// Requeue is an admin control, not something the enricher's own API key can
+/// reach.
+#[tokio::test]
+async fn test_requeue_requires_admin() {
+    let app = TestApp::new().await;
+
+    let user = UserBuilder::new()
+        .username(format!("nonadmin_{}", unique_suffix()))
+        .email(format!("nonadmin-{}@example.com", unique_suffix()))
+        .build_persisted(app.pool())
+        .await;
+    let token =
+        portal_domain::generate_access_token(user.id, user.id, "nonadmin", "test-jwt-secret")
+            .expect("token");
+
+    app.post_json_with_token(
+        "/v1/admin/pipeline/discovered-matches/requeue",
+        &json!({ "only_exhausted": true }),
+        &token,
+    )
+    .await
+    .assert_status(StatusCode::FORBIDDEN);
+}

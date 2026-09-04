@@ -325,6 +325,8 @@ impl TournamentBuilder {
         let slug = self.slug.unwrap_or_else(|| slug::slugify(&name));
 
         TournamentRow {
+            archived_at: None,
+            archived_by: None,
             id: self.id.unwrap_or_else(Uuid::now_v7),
             game_id,
             league_id: self.league_id,

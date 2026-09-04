@@ -611,11 +611,12 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
                 l.slug as league_slug,
                 l.logo_url as league_logo_url,
                 l.game_id,
+                l.status as league_status,
                 lm.membership_type,
                 lm.joined_at
             FROM league_members lm
             INNER JOIN leagues l ON l.id = lm.league_id
-            WHERE lm.user_id = $1 AND l.status = 'active'
+            WHERE lm.user_id = $1
             ORDER BY lm.joined_at DESC
             ",
         )

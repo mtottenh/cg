@@ -62,6 +62,13 @@ pub struct LeagueSeason {
     // Status
     pub status: SeasonStatus,
 
+    /// When the season was archived, or `None` while it is live. Orthogonal
+    /// to `status`, so a completed season that is put away is still
+    /// completed when it comes back.
+    pub archived_at: Option<DateTime<Utc>>,
+    /// Who archived it.
+    pub archived_by: Option<UserId>,
+
     // Metadata
     pub settings: serde_json::Value,
     pub created_by: UserId,
@@ -231,6 +238,13 @@ pub struct LeagueTeam {
 
     // Status
     pub status: LeagueTeamStatus,
+    /// When the team was archived, or `None` while it is live. Distinct from
+    /// `disbanded_at`: disbanding is the team saying it is over, archiving is
+    /// an operator putting it away — and only the latter is undone by
+    /// restoring.
+    pub archived_at: Option<DateTime<Utc>>,
+    /// Who archived it.
+    pub archived_by: Option<UserId>,
 
     // Timestamps
     pub created_at: DateTime<Utc>,
@@ -705,6 +719,8 @@ pub struct LeagueTeamSummary {
     pub team_logo_url: Option<String>,
     pub owner_player_id: PlayerId,
     pub team_status: LeagueTeamStatus,
+    /// When the team was archived, or `None` while it is live.
+    pub archived_at: Option<DateTime<Utc>>,
 
     // Season participation info
     pub team_season_id: Option<LeagueTeamSeasonId>,

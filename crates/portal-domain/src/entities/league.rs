@@ -23,6 +23,14 @@ pub struct League {
     pub access_type: LeagueAccessType,
     /// Current status of the league.
     pub status: LeagueStatus,
+    /// When the league was archived, or `None` while it is live.
+    ///
+    /// Archiving is orthogonal to `status`: it decides whether players can
+    /// see the league at all, and restoring is `None` again with the status
+    /// it had left untouched.
+    pub archived_at: Option<DateTime<Utc>>,
+    /// Who archived it.
+    pub archived_by: Option<UserId>,
     /// Current active season for this league.
     pub current_season_id: Option<LeagueSeasonId>,
     /// League-specific settings as JSON.
@@ -328,6 +336,9 @@ pub struct UserLeagueMembership {
     pub league_logo_url: Option<String>,
     /// The game this league is for.
     pub game_id: GameId,
+    /// The league's status. A membership survives archiving — the operator
+    /// who has to restore an archived league is usually one of its admins.
+    pub league_status: LeagueStatus,
     /// The user's role in the league.
     pub membership_type: LeagueMembershipType,
     /// When the user joined.

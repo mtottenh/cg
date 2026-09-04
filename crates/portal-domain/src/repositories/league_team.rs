@@ -57,9 +57,18 @@ pub trait LeagueSeasonRepository: Send + Sync {
     ) -> Result<LeagueSeason, DomainError>;
 
     /// List all seasons for a league.
-    async fn list_by_league(&self, league_id: LeagueId) -> Result<Vec<LeagueSeason>, DomainError>;
+    ///
+    /// `include_archived` is the caller's choice: player-facing listings pass
+    /// false, operator listings pass true.
+    async fn list_by_league(
+        &self,
+        league_id: LeagueId,
+        include_archived: bool,
+    ) -> Result<Vec<LeagueSeason>, DomainError>;
 
     /// List active seasons for a league (registration, active, playoffs).
+    /// Never includes archived seasons — "active" and "put away" are
+    /// contradictory.
     async fn list_active_by_league(
         &self,
         league_id: LeagueId,
@@ -87,6 +96,14 @@ pub trait LeagueSeasonRepository: Send + Sync {
         &self,
         id: LeagueSeasonId,
         status: SeasonStatus,
+    ) -> Result<LeagueSeason, DomainError>;
+
+    /// Archive or restore a season. `Some(user)` archives, `None` restores;
+    /// the season's own status is untouched either way.
+    async fn set_archived(
+        &self,
+        id: LeagueSeasonId,
+        archived_by: Option<UserId>,
     ) -> Result<LeagueSeason, DomainError>;
 
     /// Count teams registered in a season.
@@ -141,6 +158,17 @@ pub struct UpdateLeagueSeason {
 // =============================================================================
 // LEAGUE TEAM REPOSITORY (Persistent Identity)
 // =============================================================================
+
+/// Which teams a league listing should return.
+#[derive(Debug, Clone, Default)]
+pub struct LeagueTeamListFilter {
+    /// Restrict to one team status.
+    pub status: Option<LeagueTeamStatus>,
+    /// Case-insensitive substring match on name or tag.
+    pub search: Option<String>,
+    /// Include archived teams. Defaults to false: the player-facing answer.
+    pub include_archived: bool,
+}
 
 /// Repository trait for league team operations.
 ///
@@ -202,11 +230,40 @@ pub trait LeagueTeamRepository: Send + Sync {
     async fn list_by_league(
         &self,
         league_id: LeagueId,
-        status_filter: Option<LeagueTeamStatus>,
-        search: Option<String>,
+        filter: LeagueTeamListFilter,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<LeagueTeam>, i64), DomainError>;
+
+    /// Archive or restore a team. `Some(user)` archives, `None` restores.
+    ///
+    /// Distinct from disbanding, which is the team's own status: archiving is
+    /// an operator putting the team away, and restoring undoes exactly that.
+    async fn set_archived(
+        &self,
+        id: LeagueTeamId,
+        archived_by: Option<UserId>,
+    ) -> Result<LeagueTeam, DomainError>;
+
+    /// Move a team into another league, landing it in `target_season`.
+    ///
+    /// A team's identity is league-scoped but its *participation* is
+    /// season-scoped, and its roster hangs off the season registration — so a
+    /// move is not one column. In one transaction: the team's league changes,
+    /// it is registered for the target season, its most recent active roster
+    /// is carried across, and the registrations for the old league's seasons
+    /// (which belong to a league the team is no longer in) are dropped.
+    ///
+    /// Implementations MUST refuse a move that would lose or corrupt history
+    /// — a team with matches played or tournament registrations — rather than
+    /// silently orphaning it. See `LeagueTeamService::move_team_to_league`
+    /// for the checks.
+    async fn move_to_league(
+        &self,
+        id: LeagueTeamId,
+        target_league_id: LeagueId,
+        target_season_id: LeagueSeasonId,
+    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError>;
 
     /// List all teams owned by a player in a league.
     async fn list_by_owner(
@@ -355,6 +412,7 @@ pub trait LeagueTeamSeasonRepository: Send + Sync {
     async fn list_summaries(
         &self,
         season_id: LeagueSeasonId,
+        include_archived: bool,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<LeagueTeamSummary>, i64), DomainError>;

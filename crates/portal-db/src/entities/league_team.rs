@@ -43,6 +43,10 @@ pub struct LeagueSeasonRow {
     // Status
     pub status: String,
 
+    // Archival (orthogonal to status — see migration 0096)
+    pub archived_at: Option<DateTime<Utc>>,
+    pub archived_by: Option<Uuid>,
+
     // Metadata
     pub settings: serde_json::Value,
     pub created_by: Uuid,
@@ -120,6 +124,11 @@ pub struct LeagueTeamRow {
 
     // Status
     pub status: String,
+
+    // Archival. Distinct from `disbanded_at`: disbanding is the team saying
+    // it is over, archiving is an operator putting it away (see 0096).
+    pub archived_at: Option<DateTime<Utc>>,
+    pub archived_by: Option<Uuid>,
 
     // Timestamps
     pub created_at: DateTime<Utc>,
@@ -222,6 +231,9 @@ pub struct LeagueTeamSummaryRow {
     pub team_logo_url: Option<String>,
     pub owner_player_id: Uuid,
     pub team_status: String,
+    /// From `league_teams`, not the summary view: the listing needs to tell
+    /// an archived team apart from a live one to offer the restore.
+    pub archived_at: Option<DateTime<Utc>>,
 
     // Season participation info
     pub team_season_id: Option<Uuid>,

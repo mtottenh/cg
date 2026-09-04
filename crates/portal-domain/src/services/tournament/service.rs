@@ -7,8 +7,9 @@ use portal_core::types::{
     TournamentMatchStatus, TournamentRegistrationStatus, TournamentStatus,
 };
 use portal_core::{
-    DomainError, FieldError, LeagueTeamSeasonId, PlayerId, TournamentBracketId, TournamentId,
-    TournamentInvitationId, TournamentMatchId, UserId, ValidationError,
+    DomainError, FieldError, LeagueId, LeagueSeasonId, LeagueTeamSeasonId, PlayerId,
+    TournamentBracketId, TournamentId, TournamentInvitationId, TournamentMatchId, UserId,
+    ValidationError,
 };
 
 use crate::entities::tournament::{
@@ -368,6 +369,85 @@ where
         self.tournament_repo
             .update_status(id, TournamentStatus::Cancelled)
             .await
+    }
+
+    /// Move a tournament to another league and/or season.
+    ///
+    /// The repair for a tournament filed under the wrong league — which is
+    /// only safe while nobody has entered it. A registration points at a
+    /// *team season*, i.e. a team as it exists in one league's season, so
+    /// moving a tournament that has registrations would leave it full of
+    /// entrants belonging to a competition it is no longer part of. That is
+    /// refused rather than quietly carried across.
+    ///
+    /// `None` for both detaches the tournament from any league (standalone).
+    pub async fn move_tournament(
+        &self,
+        id: TournamentId,
+        league_id: Option<LeagueId>,
+        season_id: Option<LeagueSeasonId>,
+    ) -> Result<Tournament, DomainError> {
+        let tournament = self.get_tournament(id).await?;
+
+        if season_id.is_some() && league_id.is_none() {
+            return Err(DomainError::InvalidState(
+                "a season cannot be set without its league".to_string(),
+            ));
+        }
+
+        // That the season actually belongs to the league is checked by the
+        // repository, alongside the write — this service holds no season
+        // repository, and a check made here could be raced by the season
+        // moving between the look and the update.
+
+        if tournament.league_id == league_id && tournament.season_id == season_id {
+            return Err(DomainError::InvalidState(
+                "tournament is already there".to_string(),
+            ));
+        }
+
+        let registrations = self.tournament_repo.count_registrations(id).await?;
+        if registrations > 0 {
+            return Err(DomainError::InvalidState(format!(
+                "tournament has {registrations} registration(s) tied to its current league; \
+                 move refused rather than stranding them"
+            )));
+        }
+
+        let moved = self
+            .tournament_repo
+            .set_league_and_season(id, league_id, season_id)
+            .await?;
+
+        tracing::info!(
+            tournament_id = %id,
+            from_league = ?tournament.league_id,
+            to_league = ?league_id,
+            to_season = ?season_id,
+            "Tournament moved"
+        );
+
+        Ok(moved)
+    }
+
+    /// Archive a tournament: it stops appearing in player-facing listings.
+    ///
+    /// Orthogonal to status — a completed tournament that is put away is
+    /// still completed when it comes back — and distinct from cancelling,
+    /// which is a statement about the competition itself.
+    pub async fn archive_tournament(
+        &self,
+        id: TournamentId,
+        archived_by: UserId,
+    ) -> Result<Tournament, DomainError> {
+        self.tournament_repo
+            .set_archived(id, Some(archived_by))
+            .await
+    }
+
+    /// Restore an archived tournament.
+    pub async fn restore_tournament(&self, id: TournamentId) -> Result<Tournament, DomainError> {
+        self.tournament_repo.set_archived(id, None).await
     }
 
     /// Complete a tournament.

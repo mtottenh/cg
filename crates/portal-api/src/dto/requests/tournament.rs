@@ -812,11 +812,30 @@ pub struct ListTournamentsQuery {
     /// Search by name.
     #[serde(default)]
     pub search: Option<String>,
+
+    /// Include archived tournaments (and tournaments in archived leagues).
+    ///
+    /// Permission-gated: archiving exists to hide something from players, so
+    /// asking for the hidden rows requires `admin.tournaments.manage_any`.
+    #[serde(default)]
+    pub include_archived: bool,
 }
 
 // =============================================================================
 // MATCH LIFECYCLE REQUESTS
 // =============================================================================
+
+/// Request to move a tournament to another league and/or season.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct MoveTournamentRequest {
+    /// Target league, or `null` to detach the tournament from any league.
+    #[serde(default)]
+    pub league_id: Option<String>,
+    /// Target season within that league, or `null` for none. A season
+    /// without a league is refused.
+    #[serde(default)]
+    pub season_id: Option<String>,
+}
 
 /// Request to check in for a match.
 #[derive(Debug, Deserialize, Validate, ToSchema)]

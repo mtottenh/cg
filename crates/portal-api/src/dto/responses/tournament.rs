@@ -99,6 +99,12 @@ pub struct TournamentResponse {
     // by `wire_compat_tests` in portal-core.
     pub status: TournamentStatus,
 
+    /// When this was archived, or absent while it is live. Archived rows are
+    /// hidden from player-facing listings; nothing is deleted and the status
+    /// above is untouched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
+
     // Ownership
     pub created_by: String,
 
@@ -216,6 +222,7 @@ impl From<Tournament> for TournamentResponse {
             rules_url: t.rules_url,
             settings: t.settings,
             withdrawal_policy: t.withdrawal_policy.to_string(),
+            archived_at: t.archived_at,
             status: t.status,
             created_by: t.created_by.to_string(),
             created_at: t.created_at,
@@ -249,6 +256,11 @@ pub struct TournamentSummaryResponse {
     // clients get a union rather than `string` (P-31). Wire-compatible: asserted
     // by `wire_compat_tests` in portal-core.
     pub status: TournamentStatus,
+    /// When this was archived, or absent while it is live. Archived rows are
+    /// hidden from player-facing listings; nothing is deleted and the status
+    /// above is untouched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
     pub max_participants: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub starts_at: Option<DateTime<Utc>>,
@@ -270,6 +282,7 @@ impl From<Tournament> for TournamentSummaryResponse {
             format: t.format.to_string(),
             participant_type: t.participant_type.to_string(),
             status: t.status,
+            archived_at: t.archived_at,
             max_participants: t.max_participants,
             starts_at: t.starts_at,
             is_registration_open,

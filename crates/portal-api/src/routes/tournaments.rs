@@ -39,6 +39,18 @@ pub fn routes() -> Router<AppState> {
             "/{tournament_id}/cancel",
             post(tournaments::cancel_tournament),
         )
+        // Move a tournament between leagues/seasons (platform admins only).
+        .route("/{tournament_id}/move", post(tournaments::move_tournament))
+        // Archive/restore: hide a tournament from players without deleting
+        // it or changing what it was.
+        .route(
+            "/{tournament_id}/archive",
+            post(tournaments::archive_tournament),
+        )
+        .route(
+            "/{tournament_id}/restore",
+            post(tournaments::restore_tournament),
+        )
         .route(
             "/{tournament_id}/complete",
             post(tournaments::complete_tournament),

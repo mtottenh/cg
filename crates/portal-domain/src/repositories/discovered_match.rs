@@ -202,6 +202,27 @@ pub trait DiscoveredMatchRepository: Send + Sync {
     /// hand back again, i.e. permanently stuck.
     async fn count_retry_exhausted(&self, game_id: Option<GameId>) -> Result<i64, DomainError>;
 
+    /// Return failed matches to the enrichment queue with a fresh budget.
+    ///
+    /// `only_exhausted` narrows to the rows the enricher will never pick up
+    /// again on its own (`retry_count >= max_retries`); `None` for `game_id`
+    /// means every game. Returns how many rows were requeued.
+    ///
+    /// This exists because a bug in the worker can spend a budget on
+    /// something that was never the match's fault — a dead Steam socket
+    /// reported as a per-match GC failure, say. Nothing else can undo that:
+    /// `find_pending` excludes an exhausted row by design, so without this
+    /// the only recovery is hand-written SQL against production.
+    async fn requeue_failed(
+        &self,
+        game_id: Option<GameId>,
+        only_exhausted: bool,
+    ) -> Result<u64, DomainError>;
+
+    /// Return one match to the enrichment queue with a fresh budget,
+    /// whatever state it is in.
+    async fn requeue_one(&self, id: DiscoveredMatchId) -> Result<DiscoveredMatch, DomainError>;
+
     /// List rows, newest first, optionally filtered by game and status.
     async fn list_by_status(
         &self,

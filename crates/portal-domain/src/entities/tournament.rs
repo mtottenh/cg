@@ -93,6 +93,14 @@ pub struct Tournament {
     // Status
     pub status: TournamentStatus,
 
+    /// When the tournament was archived, or `None` while it is live.
+    /// Orthogonal to `status`: archiving decides whether players can see it,
+    /// so a completed tournament that is put away is still completed when it
+    /// comes back.
+    pub archived_at: Option<DateTime<Utc>>,
+    /// Who archived it.
+    pub archived_by: Option<UserId>,
+
     // Ownership
     pub created_by: UserId,
     pub organization_id: Option<uuid::Uuid>,

@@ -544,6 +544,61 @@ impl DiscoveredMatchRepository for PgDiscoveredMatchRepository {
         Ok(count)
     }
 
+    async fn requeue_failed(
+        &self,
+        game_id: Option<GameId>,
+        only_exhausted: bool,
+    ) -> Result<u64, DomainError> {
+        // `next_attempt_at` is staggered rather than set to NOW() for every
+        // row: a requeue of a large backlog that all became due in the same
+        // instant would arrive at the rate-limited GC as one burst.
+        let result = sqlx::query(
+            r"
+            UPDATE discovered_matches
+            SET status          = 'pending',
+                error           = NULL,
+                retry_count     = 0,
+                claimed_at      = NULL,
+                next_attempt_at = NOW() + (random() * 300) * INTERVAL '1 second',
+                updated_at      = NOW()
+            WHERE status = 'failed'
+              AND ($1::uuid IS NULL OR game_id = $1)
+              AND ($2::bool IS FALSE OR retry_count >= max_retries)
+            ",
+        )
+        .bind(game_id.map(|g| g.as_uuid()))
+        .bind(only_exhausted)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn requeue_one(&self, id: DiscoveredMatchId) -> Result<DiscoveredMatch, DomainError> {
+        let sql = format!(
+            r"
+            UPDATE discovered_matches
+            SET status          = 'pending',
+                error           = NULL,
+                retry_count     = 0,
+                claimed_at      = NULL,
+                next_attempt_at = NOW(),
+                updated_at      = NOW()
+            WHERE id = $1
+            RETURNING {COLUMNS}
+            "
+        );
+        let row = sqlx::query_as::<_, DiscoveredMatchRow>(&sql)
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?
+            .ok_or_else(|| DomainError::Internal("Discovered match not found".into()))?;
+
+        Ok(DiscoveredMatch::from(row))
+    }
+
     async fn list_by_status(
         &self,
         game_id: Option<GameId>,

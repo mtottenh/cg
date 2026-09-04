@@ -144,6 +144,24 @@ pub struct PipelineQuery {
     pub limit: Option<i64>,
 }
 
+/// Body for a bulk enrichment requeue.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+pub struct RequeueDiscoveredMatchesRequest {
+    /// Restrict to one game, by slug (e.g. `cs2`) or UUID. Omit for all games.
+    #[serde(default)]
+    pub game: Option<String>,
+    /// Only requeue rows whose retry budget is spent — the ones the enricher
+    /// will never pick up again on its own. Defaults to true, which is the
+    /// conservative reading of "unstick the pipeline": a match that is still
+    /// backing off is already going to be retried.
+    #[serde(default = "default_true")]
+    pub only_exhausted: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
 /// Query parameters for resuming a paused tracking entry.
 #[derive(Debug, Clone, Default, Deserialize, IntoParams)]
 pub struct ResumeTrackingQuery {

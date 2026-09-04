@@ -7,7 +7,7 @@ use crate::entities::league::{
 };
 use crate::repositories::league::{
     AddLeagueMember, CreateLeague, CreateLeagueInvitation, LeagueInvitationRepository,
-    LeagueMemberRepository, LeagueRepository, UpdateLeague,
+    LeagueListFilter, LeagueMemberRepository, LeagueRepository, UpdateLeague,
 };
 use portal_core::{DomainError, GameId, LeagueId, LeagueInvitationId, UserId};
 use std::sync::Arc;
@@ -162,37 +162,55 @@ where
         Ok(league)
     }
 
-    /// List leagues for a game with pagination.
-    #[instrument(skip(self))]
-    pub async fn list_leagues_by_game(
-        &self,
-        game_id: &GameId,
-        limit: i64,
-        offset: i64,
-    ) -> Result<(Vec<League>, i64), DomainError> {
-        let leagues = self
-            .league_repo
-            .list_by_game(game_id, limit, offset)
-            .await?;
-        let total = self.league_repo.count_by_game(game_id).await?;
-        Ok((leagues, total))
-    }
-
     /// Search leagues.
+    ///
+    /// `filter` decides what is visible: `LeagueListFilter::public()` for the
+    /// player-facing listing, a widened filter for admin listings that must
+    /// see archived and suspended leagues too.
     #[instrument(skip(self))]
     pub async fn search_leagues(
         &self,
         query: &str,
         game_id: Option<GameId>,
+        filter: LeagueListFilter,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<League>, i64), DomainError> {
         let leagues = self
             .league_repo
-            .search(query, game_id, limit, offset)
+            .search(query, game_id, filter, limit, offset)
             .await?;
-        let total = self.league_repo.count_search(query, game_id).await?;
+        let total = self
+            .league_repo
+            .count_search(query, game_id, filter)
+            .await?;
         Ok((leagues, total))
+    }
+
+    /// Archive a league: it stops appearing in player-facing listings, and so
+    /// do its seasons, teams and tournaments, without any of them being
+    /// touched. Its own status is unchanged, so restoring is exact.
+    #[instrument(skip(self))]
+    pub async fn archive_league(
+        &self,
+        league_id: LeagueId,
+        archived_by: UserId,
+    ) -> Result<League, DomainError> {
+        let league = self
+            .league_repo
+            .set_archived(league_id, Some(archived_by))
+            .await?;
+        info!(league_id = %league_id, %archived_by, "League archived");
+        Ok(league)
+    }
+
+    /// Restore an archived league. A season, team or tournament that was
+    /// archived in its own right stays archived.
+    #[instrument(skip(self))]
+    pub async fn restore_league(&self, league_id: LeagueId) -> Result<League, DomainError> {
+        let league = self.league_repo.set_archived(league_id, None).await?;
+        info!(league_id = %league_id, "League restored");
+        Ok(league)
     }
 
     // =========================================================================

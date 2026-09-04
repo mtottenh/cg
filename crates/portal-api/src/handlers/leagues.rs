@@ -16,7 +16,8 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{GameId, LeagueId, ScopeType, UserId, permissions};
-use portal_domain::entities::league::LeagueMembershipType;
+use portal_domain::entities::league::{LeagueMembershipType, LeagueStatus};
+use portal_domain::repositories::league::LeagueListFilter;
 
 /// Check league entry requirements using the eligibility service.
 ///
@@ -59,6 +60,36 @@ pub struct ListLeaguesParams {
     /// Filter by game ID.
     #[serde(default)]
     pub game_id: Option<String>,
+    /// Case-insensitive substring match on the league name. The frontend has
+    /// always sent this; until it was declared here serde dropped it and the
+    /// search box filtered nothing.
+    #[serde(default)]
+    pub search: Option<String>,
+    /// Page number (1-based).
+    #[serde(default = "default_page")]
+    pub page: i64,
+    /// Items per page.
+    #[serde(default = "default_per_page")]
+    pub per_page: i64,
+}
+
+/// Query parameters for the admin league listing.
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+pub struct AdminListLeaguesParams {
+    /// Filter by game ID.
+    #[serde(default)]
+    pub game_id: Option<String>,
+    /// Case-insensitive substring match on the league name.
+    #[serde(default)]
+    pub search: Option<String>,
+    /// Filter by league status (`active`, `archived`, `suspended`).
+    /// Omit for every status — which is the point of this endpoint.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Include archived leagues. Defaults to true: an operator listing that
+    /// hid archived leagues would hide the ones needing restoration.
+    #[serde(default = "default_true")]
+    pub include_archived: bool,
     /// Page number (1-based).
     #[serde(default = "default_page")]
     pub page: i64,
@@ -73,6 +104,10 @@ const fn default_page() -> i64 {
 
 const fn default_per_page() -> i64 {
     20
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// Create a new league.
@@ -210,21 +245,105 @@ pub async fn list_leagues(
     let offset = i64::from((page - 1) * per_page);
     let limit = i64::from(per_page);
 
-    let (leagues, total) = if let Some(game_id_str) = params.game_id {
-        let game_id: GameId = game_id_str
-            .parse()
-            .map_err(|_| ApiError::bad_request("Invalid game ID format"))?;
-        state
-            .league_service
-            .list_leagues_by_game(&game_id, limit, offset)
-            .await?
-    } else {
-        // Search all leagues with empty query
-        state
-            .league_service
-            .search_leagues("", None, limit, offset)
-            .await?
-    };
+    let game_id = params
+        .game_id
+        .map(|id| {
+            id.parse::<GameId>()
+                .map_err(|_| ApiError::bad_request("Invalid game ID format"))
+        })
+        .transpose()?;
+
+    // Public listing: active, unarchived leagues only. Everything else is
+    // reachable through the admin listing below.
+    let (leagues, total) = state
+        .league_service
+        .search_leagues(
+            params.search.as_deref().unwrap_or(""),
+            game_id,
+            LeagueListFilter::public(),
+            limit,
+            offset,
+        )
+        .await?;
+
+    let pagination = PaginationParams { page, per_page };
+
+    Ok(Json(PaginatedResponse::new(
+        leagues.into_iter().map(LeagueResponse::from).collect(),
+        &pagination,
+        total as u64,
+        request_id,
+    )))
+}
+
+/// List every league, for administrators.
+///
+/// The public listing hides everything that is not `active`, and
+/// `/v1/users/me/leagues` only ever returns leagues you are a *member* of.
+/// Neither is a usable source for the admin leagues screen: a league whose
+/// admin never joined it, or one that has been archived, simply vanished
+/// from the operator's view of the site.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/leagues",
+    params(AdminListLeaguesParams),
+    responses(
+        (status = 200, description = "All leagues", body = PaginatedResponse<LeagueResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn admin_list_leagues(
+    State(state): State<LeaguesState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Query(params): Query<AdminListLeaguesParams>,
+) -> ApiResult<Json<PaginatedResponse<LeagueResponse>>> {
+    perm_checker
+        .require_permission(&auth, permissions::admin::LEAGUES_MANAGE_ANY)
+        .await?;
+
+    let request_id = get_request_id(&headers);
+
+    let page = params.page.max(1) as u32;
+    let per_page = (params.per_page.clamp(1, 100)) as u32;
+    let offset = i64::from((page - 1) * per_page);
+    let limit = i64::from(per_page);
+
+    let game_id = params
+        .game_id
+        .map(|id| {
+            id.parse::<GameId>()
+                .map_err(|_| ApiError::bad_request("Invalid game ID format"))
+        })
+        .transpose()?;
+
+    let status = params
+        .status
+        .as_deref()
+        .map(|s| {
+            LeagueStatus::from_str(s).ok_or_else(|| {
+                ApiError::bad_request("Invalid status (expected active, archived or suspended)")
+            })
+        })
+        .transpose()?;
+
+    let (leagues, total) = state
+        .league_service
+        .search_leagues(
+            params.search.as_deref().unwrap_or(""),
+            game_id,
+            LeagueListFilter {
+                status,
+                include_archived: params.include_archived,
+            },
+            limit,
+            offset,
+        )
+        .await?;
 
     let pagination = PaginationParams { page, per_page };
 
@@ -280,6 +399,95 @@ pub async fn update_league(
         .league_service
         .update_league_authorized(league_id, cmd)
         .await?;
+
+    Ok(Json(DataResponse::new(
+        LeagueResponse::from(league),
+        request_id,
+    )))
+}
+
+/// Archive a league.
+///
+/// It disappears from every player-facing listing, and so do its seasons,
+/// teams and tournaments — none of which are written to, so restoring the
+/// league restores exactly what archiving it hid. The league's own status is
+/// untouched, and nothing is deleted.
+#[utoipa::path(
+    post,
+    path = "/v1/leagues/{league_id}/archive",
+    params(("league_id" = String, Path, description = "League ID")),
+    responses(
+        (status = 200, description = "League archived", body = DataResponse<LeagueResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
+        (status = 404, description = "League not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "leagues"
+)]
+pub async fn archive_league(
+    State(state): State<LeaguesState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(league_id): Path<LeagueId>,
+) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::SETTINGS_MANAGE,
+        )
+        .await?;
+
+    let league = state
+        .league_service
+        .archive_league(league_id, auth.user_id)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        LeagueResponse::from(league),
+        request_id,
+    )))
+}
+
+/// Restore an archived league.
+///
+/// A season, team or tournament that was archived in its own right stays
+/// archived — this undoes exactly the archiving of the league.
+#[utoipa::path(
+    post,
+    path = "/v1/leagues/{league_id}/restore",
+    params(("league_id" = String, Path, description = "League ID")),
+    responses(
+        (status = 200, description = "League restored", body = DataResponse<LeagueResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Missing required permission", body = ApiError),
+        (status = 404, description = "League not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "leagues"
+)]
+pub async fn restore_league(
+    State(state): State<LeaguesState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(league_id): Path<LeagueId>,
+) -> ApiResult<Json<DataResponse<LeagueResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    perm_checker
+        .require_league_permission(
+            &auth,
+            league_id.as_uuid(),
+            permissions::league::SETTINGS_MANAGE,
+        )
+        .await?;
+
+    let league = state.league_service.restore_league(league_id).await?;
 
     Ok(Json(DataResponse::new(
         LeagueResponse::from(league),

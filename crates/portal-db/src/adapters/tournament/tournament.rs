@@ -6,7 +6,7 @@ use chrono::Utc;
 use crate::DbPool;
 use crate::entities::tournament::TournamentRow;
 use portal_core::types::TournamentStatus;
-use portal_core::{DomainError, GameId, LeagueId, TournamentId, UserId};
+use portal_core::{DomainError, GameId, LeagueId, LeagueSeasonId, TournamentId, UserId};
 use portal_domain::entities::tournament::Tournament;
 use portal_domain::repositories::tournament::{
     CreateTournament, TournamentFilters, TournamentRepository, UpdateTournament,
@@ -332,20 +332,26 @@ impl TournamentRepository for PgTournamentRepository {
         // For simplicity, we use parameterized queries with NULL checks
         // since SQLx doesn't easily support dynamic query building.
         // Instead, we filter with Option checks in SQL.
+        // The join is only for the archive rule: a tournament in an archived
+        // league is hidden with it, without the league's archiving having
+        // written to the tournament (so restoring the league restores
+        // exactly what it hid). LEFT, because league_id is optional.
         let rows = sqlx::query_as::<_, TournamentRow>(r"
-            SELECT * FROM tournaments
-            WHERE ($1::uuid IS NULL OR game_id = $1)
-              AND ($2::uuid IS NULL OR league_id = $2)
-              AND ($3::uuid IS NULL OR season_id = $3)
-              AND ($4::text IS NULL OR status = $4)
-              AND ($5::text IS NULL OR format = $5)
-              AND ($6::text IS NULL OR participant_type = $6)
-              AND ($7::text IS NULL OR name ILIKE $7 OR slug ILIKE $7)
-              AND ($8::bool IS NULL OR NOT $8 OR starts_at > NOW())
-              AND ($9::bool IS NULL OR NOT $9 OR status IN ('published', 'registration', 'check_in', 'in_progress'))
-              AND kind = 'standard'
-            ORDER BY starts_at DESC NULLS LAST, created_at DESC
-            LIMIT $10 OFFSET $11
+            SELECT t.* FROM tournaments t
+            LEFT JOIN leagues l ON l.id = t.league_id
+            WHERE ($1::uuid IS NULL OR t.game_id = $1)
+              AND ($2::uuid IS NULL OR t.league_id = $2)
+              AND ($3::uuid IS NULL OR t.season_id = $3)
+              AND ($4::text IS NULL OR t.status = $4)
+              AND ($5::text IS NULL OR t.format = $5)
+              AND ($6::text IS NULL OR t.participant_type = $6)
+              AND ($7::text IS NULL OR t.name ILIKE $7 OR t.slug ILIKE $7)
+              AND ($8::bool IS NULL OR NOT $8 OR t.starts_at > NOW())
+              AND ($9::bool IS NULL OR NOT $9 OR t.status IN ('published', 'registration', 'check_in', 'in_progress'))
+              AND t.kind = 'standard'
+              AND ($10::bool IS TRUE OR (t.archived_at IS NULL AND l.archived_at IS NULL))
+            ORDER BY t.starts_at DESC NULLS LAST, t.created_at DESC
+            LIMIT $11 OFFSET $12
             ")
         .bind(filters.game_id.map(|id| id.as_uuid()))
         .bind(filters.league_id.map(|id| id.as_uuid()))
@@ -356,6 +362,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(filters.search.as_ref().map(|s| format!("%{s}%")))
         .bind(filters.upcoming)
         .bind(filters.active)
+        .bind(filters.include_archived)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -365,17 +372,19 @@ impl TournamentRepository for PgTournamentRepository {
         // Get count with same filters
         let count: (i64,) = sqlx::query_as(
             r"
-            SELECT COUNT(*) FROM tournaments
-            WHERE ($1::uuid IS NULL OR game_id = $1)
-              AND ($2::uuid IS NULL OR league_id = $2)
-              AND ($3::uuid IS NULL OR season_id = $3)
-              AND ($4::text IS NULL OR status = $4)
-              AND ($5::text IS NULL OR format = $5)
-              AND ($6::text IS NULL OR participant_type = $6)
-              AND ($7::text IS NULL OR name ILIKE $7 OR slug ILIKE $7)
-              AND ($8::bool IS NULL OR NOT $8 OR starts_at > NOW())
-              AND ($9::bool IS NULL OR NOT $9 OR status IN ('published', 'registration', 'check_in', 'in_progress'))
-              AND kind = 'standard'
+            SELECT COUNT(*) FROM tournaments t
+            LEFT JOIN leagues l ON l.id = t.league_id
+            WHERE ($1::uuid IS NULL OR t.game_id = $1)
+              AND ($2::uuid IS NULL OR t.league_id = $2)
+              AND ($3::uuid IS NULL OR t.season_id = $3)
+              AND ($4::text IS NULL OR t.status = $4)
+              AND ($5::text IS NULL OR t.format = $5)
+              AND ($6::text IS NULL OR t.participant_type = $6)
+              AND ($7::text IS NULL OR t.name ILIKE $7 OR t.slug ILIKE $7)
+              AND ($8::bool IS NULL OR NOT $8 OR t.starts_at > NOW())
+              AND ($9::bool IS NULL OR NOT $9 OR t.status IN ('published', 'registration', 'check_in', 'in_progress'))
+              AND t.kind = 'standard'
+              AND ($10::bool IS TRUE OR (t.archived_at IS NULL AND l.archived_at IS NULL))
             ",
         )
         .bind(filters.game_id.map(|id| id.as_uuid()))
@@ -387,6 +396,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(filters.search.as_ref().map(|s| format!("%{s}%")))
         .bind(filters.upcoming)
         .bind(filters.active)
+        .bind(filters.include_archived)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
@@ -520,5 +530,78 @@ impl TournamentRepository for PgTournamentRepository {
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
+    }
+
+    async fn set_league_and_season(
+        &self,
+        id: TournamentId,
+        league_id: Option<LeagueId>,
+        season_id: Option<LeagueSeasonId>,
+    ) -> Result<Tournament, DomainError> {
+        // The season must belong to the league it is being filed under.
+        // Checked here rather than in the service because the service holds
+        // no season repository, and because a check further away could be
+        // raced by the season itself moving.
+        if let (Some(league), Some(season)) = (league_id, season_id) {
+            let (belongs,): (bool,) = sqlx::query_as(
+                "SELECT EXISTS(SELECT 1 FROM league_seasons WHERE id = $1 AND league_id = $2)",
+            )
+            .bind(season.as_uuid())
+            .bind(league.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+            if !belongs {
+                return Err(DomainError::InvalidState(
+                    "target season belongs to a different league".to_string(),
+                ));
+            }
+        }
+
+        // Written as plain assignment, not COALESCE: NULL here means
+        // "standalone tournament", which is a destination like any other.
+        let row = sqlx::query_as::<_, TournamentRow>(
+            r"
+            UPDATE tournaments
+            SET league_id = $2, season_id = $3, updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(league_id.map(|l| l.as_uuid()))
+        .bind(season_id.map(|s| s.as_uuid()))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or(DomainError::TournamentNotFound(id))?;
+
+        Ok(Tournament::from(row))
+    }
+
+    async fn set_archived(
+        &self,
+        id: TournamentId,
+        archived_by: Option<UserId>,
+    ) -> Result<Tournament, DomainError> {
+        let row = sqlx::query_as::<_, TournamentRow>(
+            r"
+            UPDATE tournaments
+            SET archived_at = CASE WHEN $2::uuid IS NULL THEN NULL ELSE NOW() END,
+                archived_by = $2::uuid,
+                updated_at  = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(archived_by.map(|u| u.as_uuid()))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or(DomainError::TournamentNotFound(id))?;
+
+        Ok(Tournament::from(row))
     }
 }

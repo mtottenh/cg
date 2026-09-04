@@ -14,6 +14,10 @@ pub fn routes() -> Router<AppState> {
         .route("/{league_id}", get(leagues::get_league))
         .route("/{league_id}", patch(leagues::update_league))
         .route("/by-slug/{slug}", get(leagues::get_league_by_slug))
+        // Archive/restore: hide a league from players without destroying it
+        // or the seasons, teams and matches hanging off it.
+        .route("/{league_id}/archive", post(leagues::archive_league))
+        .route("/{league_id}/restore", post(leagues::restore_league))
         // League membership
         .route("/{league_id}/members", get(leagues::list_members))
         .route(

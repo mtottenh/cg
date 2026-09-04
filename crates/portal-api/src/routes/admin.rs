@@ -4,7 +4,8 @@ use axum::Router;
 use axum::routing::{delete, get, patch, post};
 
 use crate::handlers::{
-    admin, bans, demos, dispute, forfeit, progression, result_reviews, results, roles, tournaments,
+    admin, bans, demos, dispute, forfeit, leagues, progression, result_reviews, results, roles,
+    tournaments,
 };
 use crate::state::AppState;
 
@@ -12,6 +13,9 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/stats", get(admin::get_stats))
+        // Every league regardless of status or membership — the admin
+        // leagues screen's source of truth.
+        .route("/leagues", get(leagues::admin_list_leagues))
         // Ban routes
         .route("/bans", get(bans::list_bans).post(bans::create_ban))
         .route("/bans/{id}", get(bans::get_ban))
@@ -175,6 +179,15 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/pipeline/discovered-matches",
             get(demos::list_pipeline_discovered_matches),
+        )
+        // Recovery for matches a worker bug wrote off — see the handler.
+        .route(
+            "/pipeline/discovered-matches/requeue",
+            post(demos::requeue_pipeline_discovered_matches),
+        )
+        .route(
+            "/pipeline/discovered-matches/{id}/requeue",
+            post(demos::requeue_pipeline_discovered_match),
         )
         // Result review admin routes
         .route("/result-reviews", get(result_reviews::list_pending_reviews))

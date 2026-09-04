@@ -249,6 +249,33 @@ where
         Ok(result)
     }
 
+    /// Return failed matches to the enrichment queue with a fresh retry
+    /// budget.
+    ///
+    /// The operator-facing repair for a worker bug that spent budgets on
+    /// something other than the match: matches written off with
+    /// "Trying to work with closed connection" had never actually been asked
+    /// of Valve. `only_exhausted` limits it to the rows the enricher has
+    /// given up on for good.
+    #[instrument(skip(self))]
+    pub async fn requeue_failed(
+        &self,
+        game_id: Option<GameId>,
+        only_exhausted: bool,
+    ) -> Result<u64, DomainError> {
+        let requeued = self.repo.requeue_failed(game_id, only_exhausted).await?;
+        info!(requeued, only_exhausted, "Requeued failed matches");
+        Ok(requeued)
+    }
+
+    /// Return one match to the enrichment queue with a fresh retry budget.
+    #[instrument(skip(self))]
+    pub async fn requeue_one(&self, id: DiscoveredMatchId) -> Result<DiscoveredMatch, DomainError> {
+        let result = self.repo.requeue_one(id).await?;
+        info!(match_id = %id, "Match requeued for enrichment");
+        Ok(result)
+    }
+
     /// Queue depth per status, optionally scoped to one game (admin
     /// pipeline view — P-73).
     #[instrument(skip(self))]

@@ -23,6 +23,10 @@ pub struct LeagueRow {
     pub access_type: String, // open, invite_only, application
     pub status: String,      // active, archived, suspended
 
+    // Archival (orthogonal to status — see migration 0096)
+    pub archived_at: Option<DateTime<Utc>>,
+    pub archived_by: Option<Uuid>,
+
     // Format and team settings
     pub format_type: String, // team, individual
     pub default_team_size_min: Option<i32>,
@@ -158,6 +162,10 @@ pub struct UserLeagueMembershipRow {
     pub league_slug: String,
     pub league_logo_url: Option<String>,
     pub game_id: Uuid,
+    /// The league's own status. Carried on the membership so a caller can
+    /// tell an archived league apart from an active one instead of the
+    /// query silently dropping it.
+    pub league_status: String,
 
     // Membership info
     pub membership_type: String,

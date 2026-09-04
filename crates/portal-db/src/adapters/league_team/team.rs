@@ -6,10 +6,10 @@ use chrono::Utc;
 use crate::DbPool;
 use crate::entities::league_team::{LeagueTeamRow, LeagueTeamSeasonRow};
 use portal_core::types::{LeagueTeamRole, LeagueTeamStatus};
-use portal_core::{DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, PlayerId};
+use portal_core::{DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, PlayerId, UserId};
 use portal_domain::entities::league_team::{LeagueTeam, LeagueTeamSeason};
 use portal_domain::repositories::league_team::{
-    CreateLeagueTeam, LeagueTeamRepository, UpdateLeagueTeam,
+    CreateLeagueTeam, LeagueTeamListFilter, LeagueTeamRepository, UpdateLeagueTeam,
 };
 
 /// `PostgreSQL` implementation of `LeagueTeamRepository`.
@@ -152,85 +152,207 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
     async fn list_by_league(
         &self,
         league_id: LeagueId,
-        status_filter: Option<LeagueTeamStatus>,
-        search: Option<String>,
+        filter: LeagueTeamListFilter,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<LeagueTeam>, i64), DomainError> {
-        let search_pattern = search.as_ref().map(|s| format!("%{s}%"));
+        // One statement with nullable filters, not a branch per combination.
+        // The four-way branch this replaces had a count that applied none of
+        // the filters, so a filtered page reported the whole league's total
+        // and paginated against a length it did not have.
+        const WHERE: &str = r"
+            WHERE league_id = $1
+              AND ($2::text IS NULL OR status = $2)
+              AND ($3::text IS NULL OR name ILIKE $3 OR tag ILIKE $3)
+              AND ($4::bool IS TRUE OR archived_at IS NULL)
+        ";
 
-        let rows = if let (Some(status), Some(pattern)) = (&status_filter, &search_pattern) {
-            sqlx::query_as::<_, LeagueTeamRow>(
-                r"
-                SELECT * FROM league_teams
-                WHERE league_id = $1 AND status = $2 AND (name ILIKE $3 OR tag ILIKE $3)
-                ORDER BY name ASC
-                LIMIT $4 OFFSET $5
-                ",
-            )
-            .bind(league_id.as_uuid())
-            .bind(status.to_string())
-            .bind(pattern)
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await
-        } else if let Some(status) = &status_filter {
-            sqlx::query_as::<_, LeagueTeamRow>(
-                r"
-                SELECT * FROM league_teams
-                WHERE league_id = $1 AND status = $2
-                ORDER BY name ASC
-                LIMIT $3 OFFSET $4
-                ",
-            )
-            .bind(league_id.as_uuid())
-            .bind(status.to_string())
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await
-        } else if let Some(pattern) = &search_pattern {
-            sqlx::query_as::<_, LeagueTeamRow>(
-                r"
-                SELECT * FROM league_teams
-                WHERE league_id = $1 AND (name ILIKE $2 OR tag ILIKE $2)
-                ORDER BY name ASC
-                LIMIT $3 OFFSET $4
-                ",
-            )
-            .bind(league_id.as_uuid())
-            .bind(pattern)
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await
-        } else {
-            sqlx::query_as::<_, LeagueTeamRow>(
-                r"
-                SELECT * FROM league_teams
-                WHERE league_id = $1
-                ORDER BY name ASC
-                LIMIT $2 OFFSET $3
-                ",
-            )
-            .bind(league_id.as_uuid())
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await
-        }
+        let search_pattern = filter.search.as_ref().map(|s| format!("%{s}%"));
+        let status = filter.status.map(|s| s.to_string());
+
+        let rows = sqlx::query_as::<_, LeagueTeamRow>(&format!(
+            "SELECT * FROM league_teams {WHERE} ORDER BY name ASC LIMIT $5 OFFSET $6"
+        ))
+        .bind(league_id.as_uuid())
+        .bind(&status)
+        .bind(&search_pattern)
+        .bind(filter.include_archived)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        // Get total count
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM league_teams WHERE league_id = $1")
-                .bind(league_id.as_uuid())
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let count: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM league_teams {WHERE}"))
+            .bind(league_id.as_uuid())
+            .bind(&status)
+            .bind(&search_pattern)
+            .bind(filter.include_archived)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok((rows.into_iter().map(LeagueTeam::from).collect(), count.0))
+    }
+
+    async fn set_archived(
+        &self,
+        id: LeagueTeamId,
+        archived_by: Option<UserId>,
+    ) -> Result<LeagueTeam, DomainError> {
+        let row = sqlx::query_as::<_, LeagueTeamRow>(
+            r"
+            UPDATE league_teams
+            SET archived_at = CASE WHEN $2::uuid IS NULL THEN NULL ELSE NOW() END,
+                archived_by = $2::uuid,
+                updated_at  = NOW()
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(archived_by.map(|u| u.as_uuid()))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or(DomainError::LeagueTeamNotFound(id))?;
+
+        Ok(LeagueTeam::from(row))
+    }
+
+    async fn move_to_league(
+        &self,
+        id: LeagueTeamId,
+        target_league_id: LeagueId,
+        target_season_id: LeagueSeasonId,
+    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError> {
+        // One transaction: a half-moved team — new league, old season
+        // registrations — is a team registered in a league it does not
+        // belong to, which no listing would show and no admin could fix.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let now = Utc::now();
+
+        // `tournament_registrations.team_season_id` cascades on delete, so
+        // dropping the old registrations below would take a tournament entry
+        // with them without a word. Checked inside the transaction, because a
+        // check outside it could be raced by a registration landing between
+        // the look and the delete.
+        let (tournament_entries,): (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*)
+            FROM tournament_registrations tr
+            JOIN league_team_seasons lts ON lts.id = tr.team_season_id
+            WHERE lts.team_id = $1
+            ",
+        )
+        .bind(id.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        if tournament_entries > 0 {
+            return Err(DomainError::InvalidState(
+                "team is registered for a tournament in its current league; move refused rather \
+                 than deleting that entry"
+                    .to_string(),
+            ));
+        }
+
+        let team_row = sqlx::query_as::<_, LeagueTeamRow>(
+            r"
+            UPDATE league_teams
+            SET league_id = $2, updated_at = $3
+            WHERE id = $1
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(target_league_id.as_uuid())
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or(DomainError::LeagueTeamNotFound(id))?;
+
+        // The roster to carry: the team's most recent registration. Older
+        // ones are historical and are being dropped with the old league.
+        let source_team_season: Option<(uuid::Uuid,)> = sqlx::query_as(
+            r"
+            SELECT id FROM league_team_seasons
+            WHERE team_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            ",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let team_season_row = sqlx::query_as::<_, LeagueTeamSeasonRow>(
+            r"
+            INSERT INTO league_team_seasons (team_id, season_id, status, registered_at)
+            VALUES ($1, $2, 'registered', $3)
+            ON CONFLICT (team_id, season_id) DO UPDATE SET updated_at = NOW()
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(target_season_id.as_uuid())
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        if let Some((source_id,)) = source_team_season
+            && source_id != team_season_row.id
+        {
+            // Insert rather than re-point: `league_team_members.season_id` is
+            // filled by an INSERT trigger, so an UPDATE of team_season_id
+            // would leave the denormalised season behind and quietly break
+            // the one-team-per-season unique index.
+            sqlx::query(
+                r"
+                INSERT INTO league_team_members (
+                    team_season_id, player_id, role, position, jersey_number,
+                    status, joined_at, added_by
+                )
+                SELECT $1, player_id, role, position, jersey_number,
+                       status, joined_at, added_by
+                FROM league_team_members
+                WHERE team_season_id = $2 AND status = 'active'
+                ON CONFLICT (team_season_id, player_id) DO NOTHING
+                ",
+            )
+            .bind(team_season_row.id)
+            .bind(source_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        }
+
+        // The old registrations point at seasons of a league this team has
+        // left. Members and invitations cascade with them.
+        sqlx::query("DELETE FROM league_team_seasons WHERE team_id = $1 AND id <> $2")
+            .bind(id.as_uuid())
+            .bind(team_season_row.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok((
+            LeagueTeam::from(team_row),
+            LeagueTeamSeason::from(team_season_row),
+        ))
     }
 
     async fn list_by_owner(

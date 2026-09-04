@@ -2,7 +2,7 @@
 
 use crate::entities::league::{
     League, LeagueInvitation, LeagueInvitationStatus, LeagueMember, LeagueMemberWithUser,
-    LeagueMembershipType, UserLeagueMembership,
+    LeagueMembershipType, LeagueStatus, UserLeagueMembership,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -24,31 +24,66 @@ pub trait LeagueRepository: Send + Sync {
     /// Update a league.
     async fn update(&self, id: LeagueId, update: UpdateLeague) -> Result<League, DomainError>;
 
-    /// List leagues for a game.
-    async fn list_by_game(
-        &self,
-        game_id: &GameId,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<League>, DomainError>;
-
-    /// Count leagues for a game.
-    async fn count_by_game(&self, game_id: &GameId) -> Result<i64, DomainError>;
-
     /// Check if a slug already exists.
     async fn slug_exists(&self, slug: &str) -> Result<bool, DomainError>;
 
     /// Search leagues by name.
+    ///
+    /// The visibility rules are the caller's choice, not the repository's —
+    /// see [`LeagueListFilter`]. They used to be hard-coded into the SQL,
+    /// which is how an archived league became invisible to the very operator
+    /// who has to un-archive it.
     async fn search(
         &self,
         query: &str,
         game_id: Option<GameId>,
+        filter: LeagueListFilter,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<League>, DomainError>;
 
-    /// Count search results.
-    async fn count_search(&self, query: &str, game_id: Option<GameId>) -> Result<i64, DomainError>;
+    /// Count search results. Same filter as [`search`](Self::search).
+    async fn count_search(
+        &self,
+        query: &str,
+        game_id: Option<GameId>,
+        filter: LeagueListFilter,
+    ) -> Result<i64, DomainError>;
+
+    /// Archive or restore a league.
+    ///
+    /// `Some(user)` archives it as of now; `None` restores it. The league's
+    /// own `status` is left alone either way — archiving says whether players
+    /// can see the league, not what state it is in.
+    async fn set_archived(
+        &self,
+        id: LeagueId,
+        archived_by: Option<UserId>,
+    ) -> Result<League, DomainError>;
+}
+
+/// Which leagues a listing should return.
+///
+/// Both fields default to the player-facing answer: live, active leagues.
+/// An operator listing opts in to the rest explicitly, so widening a listing
+/// is always a visible decision at the call site.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LeagueListFilter {
+    /// Restrict to one status. `None` means every status.
+    pub status: Option<LeagueStatus>,
+    /// Include archived leagues.
+    pub include_archived: bool,
+}
+
+impl LeagueListFilter {
+    /// What players see: active, not archived.
+    #[must_use]
+    pub const fn public() -> Self {
+        Self {
+            status: Some(LeagueStatus::Active),
+            include_archived: false,
+        }
+    }
 }
 
 /// Data for creating a new league.

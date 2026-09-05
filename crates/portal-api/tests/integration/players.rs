@@ -2,6 +2,9 @@
 
 use crate::common::TestApp;
 use axum::http::StatusCode;
+use portal_api::state::AppState;
+use portal_core::PlayerId;
+use portal_domain::repositories::UpdatePlayer;
 use portal_test::prelude::*;
 use serde_json::json;
 
@@ -355,4 +358,95 @@ async fn test_upload_avatar_no_file_field() {
         )
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+// =============================================================================
+// Images fit to shape; images can be removed (by the player, or an admin)
+// =============================================================================
+
+/// A 16:9 photo — the common case — for a 4:1 banner. Before, the processor
+/// refused it for its aspect ratio, so no player banner ever saved.
+#[tokio::test]
+async fn test_upload_banner_is_cropped_to_fit_not_refused() {
+    let app = TestApp::new().await;
+    let png = generate_test_png(1920, 1080);
+    let response = app
+        .post_multipart_auth(
+            "/v1/players/me/banner",
+            "file",
+            "banner.png",
+            "image/png",
+            &png,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body["data"]["banner_url"].is_string(),
+        "an off-ratio banner is cropped and saved: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_player_removes_own_banner() {
+    let app = TestApp::new().await;
+    let png = generate_test_png(400, 100);
+    app.post_multipart_auth("/v1/players/me/banner", "file", "b.png", "image/png", &png)
+        .await
+        .assert_status(StatusCode::OK);
+
+    let response = app.delete_auth("/v1/players/me/banner").await;
+    response.assert_status(StatusCode::OK);
+    assert!(response.json::<serde_json::Value>()["data"]["banner_url"].is_null());
+
+    let me: serde_json::Value = app.get_auth("/v1/players/me").await.json();
+    assert!(me["data"]["banner_url"].is_null(), "the removal persisted");
+}
+
+/// Taking down another player's image needs `admin.users.manage`; a plain
+/// user gets 403 and the image stays.
+#[tokio::test]
+async fn test_admin_takes_down_a_players_avatar_and_others_cannot() {
+    let app = TestApp::new().await;
+    let state = AppState::new(app.pool().clone(), "test-jwt-secret").await;
+
+    let target = UserBuilder::new()
+        .username("takedown_target")
+        .build_persisted(app.pool())
+        .await;
+    let target_player = PlayerId::from(target.id);
+    state
+        .player_service
+        .update_profile(
+            target_player,
+            UpdatePlayer {
+                avatar_url: Some("https://example.com/not-ours.png".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let bystander = UserBuilder::new()
+        .username("bystander")
+        .build_persisted(app.pool())
+        .await;
+    let token = create_test_token(bystander.id, bystander.id, "bystander", TEST_JWT_SECRET);
+    app.delete_with_token(&format!("/v1/admin/players/{target_player}/avatar"), &token)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    let still: serde_json::Value = app
+        .get_auth(&format!("/v1/players/{target_player}"))
+        .await
+        .json();
+    assert!(
+        still["data"]["avatar_url"].is_string(),
+        "a refused takedown changes nothing"
+    );
+
+    let response = app
+        .delete_auth(&format!("/v1/admin/players/{target_player}/avatar"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert!(response.json::<serde_json::Value>()["data"]["avatar_url"].is_null());
 }

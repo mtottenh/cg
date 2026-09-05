@@ -14,8 +14,14 @@ pub fn routes() -> Router<AppState> {
             "/me",
             get(players::get_my_profile).patch(players::update_my_profile),
         )
-        .route("/me/avatar", post(uploads::upload_player_avatar))
-        .route("/me/banner", post(uploads::upload_player_banner))
+        .route(
+            "/me/avatar",
+            post(uploads::upload_player_avatar).delete(uploads::delete_player_avatar),
+        )
+        .route(
+            "/me/banner",
+            post(uploads::upload_player_banner).delete(uploads::delete_player_banner),
+        )
         .route(
             "/me/steam-tracking",
             post(steam_tracking::register_tracking)

@@ -395,8 +395,8 @@ pub struct LeagueTeamState {
     /// Player service (invitation lists resolve invited players' display
     /// names/avatars).
     pub player_service: AppPlayerService,
-    /// Player CS2 profiles (team-season skill stats).
-    pub player_game_profile_service: AppPlayerGameProfileService,
+    /// Premier rating history (team-season skill stats).
+    pub rating_history_repo: Arc<PgPlayerRatingHistoryRepository>,
     /// League service (roster additions resolve the league's entry
     /// requirements).
     pub league_service: AppLeagueService,
@@ -413,7 +413,7 @@ impl FromRef<AppState> for LeagueTeamState {
             league_season_service: s.league_season_service.clone(),
             league_season_participant_service: s.league_season_participant_service.clone(),
             player_service: s.player_service.clone(),
-            player_game_profile_service: s.player_game_profile_service.clone(),
+            rating_history_repo: Arc::clone(&s.rating_history_repo),
             league_service: s.league_service.clone(),
             eligibility_service: s.eligibility_service.clone(),
         }

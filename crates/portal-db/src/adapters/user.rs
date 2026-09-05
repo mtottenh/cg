@@ -7,7 +7,8 @@ use portal_core::{DomainError, PlayerId, UserId};
 use portal_domain::entities::user::UserStatus as DomainUserStatus;
 use portal_domain::entities::{Player, SocialLinks, User, UserWithCredentials};
 use portal_domain::repositories::{
-    CreatePlayer, CreateUser, PlayerRepository, PlayerSearchFilters, UpdatePlayer, UserRepository,
+    CreatePlayer, CreateUser, PlayerRepository, PlayerSearchFilters, ProfileImage, UpdatePlayer,
+    UserRepository,
 };
 use sqlx::Row;
 
@@ -504,6 +505,21 @@ impl PlayerRepository for PgPlayerRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(row.get("count"))
+    }
+
+    async fn clear_image(&self, id: PlayerId, image: ProfileImage) -> Result<Player, DomainError> {
+        // The column comes from a two-variant enum, never from input.
+        let sql = format!(
+            "UPDATE players SET {} = NULL, updated_at = NOW() WHERE id = $1 RETURNING *",
+            image.column()
+        );
+        let row = sqlx::query_as::<_, PlayerRow>(&sql)
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?
+            .ok_or(DomainError::PlayerNotFound(id))?;
+        Ok(Player::from(row))
     }
 
     async fn update(&self, id: PlayerId, cmd: UpdatePlayer) -> Result<Player, DomainError> {

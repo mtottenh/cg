@@ -17,6 +17,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use portal_core::{LeagueTeamSeasonId, PlayerId};
+use portal_domain::repositories::PlayerRatingHistoryRepository;
 
 /// Get a team's seasonal participation.
 #[utoipa::path(
@@ -58,9 +59,10 @@ pub async fn get_team_season(
 
 /// Aggregate CS2 skill and match history for a team's roster this season.
 ///
-/// The rating figures are over the roster's CS2 Premier ratings (from each
-/// member's game profile); members without a profile are excluded and
-/// reported as `member_count - rated_count`. Past games are read off the
+/// The rating figures are over the roster's CS2 Premier ratings — each
+/// member's most recent non-zero rating-history entry, the same number the
+/// profile page shows. Members with no history are excluded and reported
+/// as `member_count - rated_count`. Past games are read off the
 /// team's per-season match tallies — this season, and summed across every
 /// season the team has played.
 #[utoipa::path(
@@ -95,16 +97,15 @@ pub async fn get_team_season_stats(
         .get_members(team_season_id)
         .await?;
     let player_ids: Vec<PlayerId> = members.iter().map(|m| m.player_id).collect();
-    let profiles = if player_ids.is_empty() {
-        Vec::new()
-    } else {
-        state
-            .player_game_profile_service
-            .find_by_players_and_game(&player_ids, league.game_id)
-            .await?
-    };
+    // Premier ratings: each member's latest non-zero rating-history entry —
+    // the number the profile page shows. The game profile's `rating` is an
+    // internal default that never tracks Premier, so it is not used here.
+    let latest = state
+        .rating_history_repo
+        .latest_ratings_for_players(&player_ids, league.game_id)
+        .await?;
 
-    let mut ratings: Vec<i32> = profiles.iter().map(|p| p.rating).collect();
+    let mut ratings: Vec<i32> = latest.iter().map(|(_, rating)| *rating).collect();
     ratings.sort_unstable();
     let rated_count = ratings.len();
     let total_rating: i64 = ratings.iter().map(|&r| i64::from(r)).sum();

@@ -56,6 +56,15 @@ pub trait PlayerRatingHistoryRepository: Send + Sync + 'static {
         limit: Option<i64>,
     ) -> Result<Vec<PlayerRatingHistory>, DomainError>;
 
+    /// The most recent non-zero rating per player, for a set of players in a
+    /// game — the same "current rating" the profile page shows. Players with
+    /// no history are absent from the result.
+    async fn latest_ratings_for_players(
+        &self,
+        player_ids: &[PlayerId],
+        game_id: GameId,
+    ) -> Result<Vec<(PlayerId, i32)>, DomainError>;
+
     /// Get aggregate rating statistics for a player in a game.
     ///
     /// Joins player_game_profiles (for current/peak) with aggregates

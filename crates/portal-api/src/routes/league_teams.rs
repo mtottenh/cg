@@ -78,8 +78,14 @@ pub fn team_routes() -> Router<AppState> {
         // Move a team into another league (platform admins only).
         .route("/{team_id}/move", post(league_teams::move_team))
         // Image uploads (team settings manage permission — i.e. owner/captain/admin)
-        .route("/{team_id}/logo", post(uploads::upload_team_logo))
-        .route("/{team_id}/banner", post(uploads::upload_team_banner))
+        .route(
+            "/{team_id}/logo",
+            post(uploads::upload_team_logo).delete(uploads::delete_team_logo),
+        )
+        .route(
+            "/{team_id}/banner",
+            post(uploads::upload_team_banner).delete(uploads::delete_team_banner),
+        )
 }
 
 /// League team season routes (nested under /league-team-seasons).

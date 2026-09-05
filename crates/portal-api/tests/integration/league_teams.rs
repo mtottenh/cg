@@ -2,6 +2,10 @@
 
 use crate::common::TestApp;
 use axum::http::StatusCode;
+use chrono::Utc;
+use portal_api::state::AppState;
+use portal_core::{GameId, PlayerId};
+use portal_domain::repositories::{CreatePlayerRatingHistory, PlayerRatingHistoryRepository};
 use portal_test::prelude::*;
 use serde_json::json;
 use sqlx::Row;
@@ -2863,4 +2867,103 @@ async fn test_team_season_stats_unknown_is_404() {
         ))
         .await;
     response.assert_status(StatusCode::NOT_FOUND);
+}
+
+// =============================================================================
+// Branding: a logo by URL, and clearing it; stats read the Premier rating
+// =============================================================================
+
+#[tokio::test]
+async fn test_team_logo_by_url_can_be_set_and_cleared() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    let league = create_test_league(&app, &game_id, "logo-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "logo-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+    let (team_id, _) = create_test_team(&app, season_id, "Logo Team", "LOGO").await;
+
+    // URL mode: the owner links a logo.
+    let response = app
+        .patch_json(
+            &format!("/v1/league-teams/{team_id}"),
+            &json!({ "logo_url": "https://example.com/logo.png" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(
+        response.json::<serde_json::Value>()["data"]["logo_url"],
+        "https://example.com/logo.png"
+    );
+
+    // Someone with no standing on the team cannot clear it.
+    let stranger = UserBuilder::new()
+        .username("logo_stranger")
+        .build_persisted(app.pool())
+        .await;
+    let token = create_test_token(stranger.id, stranger.id, "logo_stranger", TEST_JWT_SECRET);
+    app.delete_with_token(&format!("/v1/league-teams/{team_id}/logo"), &token)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+
+    // The owner (also the platform admin in tests) can.
+    let response = app
+        .delete_auth(&format!("/v1/league-teams/{team_id}/logo"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert!(response.json::<serde_json::Value>()["data"]["logo_url"].is_null());
+    let team: serde_json::Value = app
+        .get_auth(&format!("/v1/league-teams/{team_id}"))
+        .await
+        .json();
+    assert!(team["data"]["logo_url"].is_null(), "the removal persisted");
+}
+
+/// The stats block reads the Premier rating history, not the game profile's
+/// internal default — the profile page's number and the team's must agree.
+#[tokio::test]
+async fn test_team_season_stats_use_premier_rating_history() {
+    let app = TestApp::new().await;
+    let state = AppState::new(app.pool().clone(), "test-jwt-secret").await;
+    let cs2 = get_game_id(app.pool(), "cs2").await;
+    let league = create_test_league(&app, &cs2.to_string(), "premier-league").await;
+    let league_id = league["data"]["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "premier-season").await;
+    let season_id = season["data"]["id"].as_str().unwrap();
+    let (team_id, team_season_id) = create_test_team(&app, season_id, "Premier Team", "PREM").await;
+    let team: serde_json::Value = app
+        .get_auth(&format!("/v1/league-teams/{team_id}"))
+        .await
+        .json();
+    let owner: PlayerId = team["data"]["owner_player_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Two history rows; the newest non-zero one is the current rating.
+    for (rating, minutes_ago) in [(14_763, 60), (18_250, 1)] {
+        state
+            .rating_history_repo
+            .create(CreatePlayerRatingHistory {
+                player_id: owner,
+                game_id: GameId::from(cs2),
+                rating,
+                source: "test".to_string(),
+                recorded_at: Utc::now() - chrono::Duration::minutes(minutes_ago),
+                rank_type_id: 11,
+                discovered_match_id: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    let stats = &app
+        .get(&format!("/v1/league-team-seasons/{team_season_id}/stats"))
+        .await
+        .json::<serde_json::Value>()["data"];
+    assert_eq!(stats["rated_count"], 1, "{stats}");
+    assert_eq!(stats["max_rating"], 18_250);
+    assert_eq!(stats["total_rating"], 18_250);
+    assert_eq!(stats["median_rating"], 18_250.0);
 }

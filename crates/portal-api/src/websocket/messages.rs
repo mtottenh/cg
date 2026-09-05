@@ -234,10 +234,10 @@ pub enum ServerMessage {
     },
 }
 
-/// Lobby state payload for auth success — the presence snapshot a joiner
-/// starts from. Built AFTER the connection joins the lobby, so it reflects
-/// who is really there; `player_connected` / `player_disconnected` then keep
-/// it current.
+/// The presence snapshot a joiner starts from, sent with `auth_success`.
+///
+/// Built AFTER the connection joins the lobby, so it reflects who is really
+/// there; `player_connected` / `player_disconnected` then keep it current.
 #[derive(Debug, Clone, Serialize)]
 pub struct LobbyStatePayload {
     /// Match ID.

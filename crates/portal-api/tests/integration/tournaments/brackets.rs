@@ -1145,7 +1145,7 @@ async fn test_group_results_confirmed_by_captains_seed_the_playoffs() {
     let brackets = brackets["data"].as_array().unwrap();
     let playoff = brackets
         .iter()
-        .find(|b| b["bracket_type"] == "single_elimination")
+        .find(|b| b["bracket_type"] == "single_elim")
         .expect("a single-elimination playoff bracket was generated");
     let mut expected_qualifiers: Vec<String> = Vec::new();
     for group in brackets

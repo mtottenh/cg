@@ -101,7 +101,11 @@ impl ImageProcessor {
         let (width, height) = img.dimensions();
 
         // 5. Validate dimensions
-        Self::validate_dimensions(width, height, config)?;
+        // Too small is a refusal; too big is not. Anything with a target size
+        // is cropped and scaled to it below, so a phone photo or a 4K
+        // wallpaper is simply more source pixels — the decode limits above
+        // are what guard memory. Only a config with no target keeps the cap.
+        Self::validate_dimensions(width, height, config, config.resize_to.is_none())?;
 
         // 6. Fit the image to the target shape. With a resize target the
         //    image is centre-cropped to that shape — a 16:9 photo becomes a
@@ -172,6 +176,7 @@ impl ImageProcessor {
         width: u32,
         height: u32,
         config: &ImageConfig,
+        enforce_max: bool,
     ) -> Result<(), ImageError> {
         let (min_w, min_h) = config.min_dimensions;
         let (max_w, max_h) = config.max_dimensions;
@@ -185,7 +190,7 @@ impl ImageProcessor {
             });
         }
 
-        if width > max_w || height > max_h {
+        if enforce_max && (width > max_w || height > max_h) {
             return Err(ImageError::DimensionsTooLarge {
                 width,
                 height,
@@ -334,6 +339,44 @@ mod tests {
         let config = ImageConfig::player_banner();
         let processed = ImageProcessor::process(&png_data, &config).expect("cropped, not refused");
         assert_eq!(processed.dimensions, (1200, 300));
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(width, height, image::Rgba([30, 90, 160, 255]));
+        let mut buf = Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    fn a_phone_photo_becomes_a_banner_instead_of_being_refused() {
+        // 4032×3024 is a stock phone photo: far taller than the banner's old
+        // 1200px ceiling and nowhere near 4:1. It comes out as the banner
+        // target, cropped from the middle.
+        let out = ImageProcessor::process(&png(4032, 3024), &ImageConfig::player_banner())
+            .expect("accepted");
+        assert_eq!(out.dimensions, (1200, 300));
+    }
+
+    #[test]
+    fn a_4k_wallpaper_becomes_a_team_banner() {
+        let out = ImageProcessor::process(&png(3840, 2160), &ImageConfig::team_banner())
+            .expect("accepted");
+        assert_eq!(out.dimensions, (1920, 480));
+    }
+
+    #[test]
+    fn oversize_is_still_refused_when_nothing_would_scale_it() {
+        let config = ImageConfig {
+            max_dimensions: (2048, 2048),
+            resize_to: None,
+            aspect_ratio_range: None,
+            ..ImageConfig::player_avatar()
+        };
+        assert!(matches!(
+            ImageProcessor::process(&png(3000, 3000), &config),
+            Err(ImageError::DimensionsTooLarge { .. })
+        ));
     }
 
     #[test]

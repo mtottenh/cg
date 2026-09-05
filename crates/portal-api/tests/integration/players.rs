@@ -387,6 +387,42 @@ async fn test_upload_banner_is_cropped_to_fit_not_refused() {
     );
 }
 
+/// What people actually upload: a phone photo (4032×3024) as a banner and a
+/// large square as an avatar. Both used to be refused — the photo for its
+/// height (the banner capped at 1200px) and the avatar for its bytes (2MB) —
+/// which is why no player on the live site had ever saved a banner. Anything
+/// with a target size is now scaled to it.
+#[tokio::test]
+async fn test_a_phone_photo_is_scaled_into_a_banner() {
+    let app = TestApp::new().await;
+    let photo = generate_test_png(4032, 3024);
+    let response = app
+        .post_multipart_auth(
+            "/v1/players/me/banner",
+            "file",
+            "IMG_0421.png",
+            "image/png",
+            &photo,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"]["banner_url"].is_string(), "{body}");
+
+    let big_square = generate_test_png(1500, 1500);
+    let response = app
+        .post_multipart_auth(
+            "/v1/players/me/avatar",
+            "file",
+            "me.png",
+            "image/png",
+            &big_square,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert!(response.json::<serde_json::Value>()["data"]["avatar_url"].is_string());
+}
+
 #[tokio::test]
 async fn test_player_removes_own_banner() {
     let app = TestApp::new().await;

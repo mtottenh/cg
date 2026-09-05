@@ -49,6 +49,9 @@ async fn seed_available_server(state: &AppState, game_id: &str, name: &str) -> G
                 rcon_ok: true,
                 gamestate: Some(AgentGamestate::None),
                 reported_matchzy_id: None,
+                last_map: None,
+                last_player_count: None,
+                status_output: None,
             },
             false,
         )

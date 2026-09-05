@@ -34,6 +34,7 @@ mod result_review;
 mod results;
 mod roles;
 mod saga_lifecycle;
+mod server_console;
 mod standings_idempotency;
 mod steam_auth;
 mod steam_tracking;

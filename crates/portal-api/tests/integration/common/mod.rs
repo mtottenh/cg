@@ -1,5 +1,6 @@
 //! Test helpers for API integration tests.
 
+pub mod agent;
 pub mod minio;
 pub mod ws;
 
@@ -60,6 +61,24 @@ impl TestApp {
 
         let db = TestDb::new().await;
         let state = AppState::new(db.pool.clone(), "test-jwt-secret").await;
+        let app = Self::with_connect_info(create_app(state));
+
+        Self {
+            app,
+            db,
+            server_addr: None,
+        }
+    }
+
+    /// Like [`TestApp::new`], but the agent WebSocket accepts the
+    /// `x-dev-server-id` header in place of a client certificate, so a
+    /// scripted [`agent::FakeAgent`] can connect.
+    pub async fn new_with_agent_dev_auth() -> Self {
+        Self::init_tracing();
+
+        let db = TestDb::new().await;
+        let mut state = AppState::new(db.pool.clone(), "test-jwt-secret").await;
+        state.agent_insecure_dev_auth = true;
         let app = Self::with_connect_info(create_app(state));
 
         Self {

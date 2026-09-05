@@ -16,7 +16,8 @@ use sha2::{Digest, Sha256};
 use crate::entities::{AgentCertificate, GameServer, HeartbeatUpdate, ServerBooking};
 use crate::repositories::{
     AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateServerBooking,
-    GameServerRepository, RecordHeartbeat, ServerBookingRepository, UpdateGameServer,
+    GameServerRepository, HeartbeatStatus, RecordHeartbeat, ServerBookingRepository,
+    UpdateGameServer,
 };
 
 use super::ca::{AGENT_CERT_VALIDITY_DAYS, CertificateAuthority, IssuedCertificate};
@@ -327,6 +328,11 @@ where
                     gamestate: heartbeat.gamestate,
                     status,
                     at: Utc::now(),
+                    cs2_status: heartbeat.status_output.map(|raw_output| HeartbeatStatus {
+                        map: heartbeat.last_map,
+                        player_count: heartbeat.last_player_count,
+                        raw_output,
+                    }),
                 },
             )
             .await?;

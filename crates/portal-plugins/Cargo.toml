@@ -23,6 +23,9 @@ uuid = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# Console output parsing (CS2 `status`)
+regex = "1"
+
 # Tracing
 tracing = { workspace = true }
 

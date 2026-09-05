@@ -9,19 +9,21 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::errors::DomainError;
 use portal_core::ids::{
-    GameId, GameServerId, MatchSubstitutionId, PlayerId, ServerAgentCertId, ServerBookingId,
-    ServerEventId, ServerReservationId, TournamentId, TournamentMatchId, TournamentRegistrationId,
-    UserId,
+    AdminServerCommandId, GameId, GameServerId, MatchSubstitutionId, PlayerId, ServerAgentCertId,
+    ServerBookingId, ServerEventId, ServerReservationId, TournamentId, TournamentMatchId,
+    TournamentRegistrationId, UserId,
 };
 use portal_core::types::{GameServerStatus, ReservationStatus, SubstitutionStatus};
 use portal_domain::entities::{
-    AgentCertificate, GameServer, MatchSubstitution, ServerBooking, ServerEvent, ServerReservation,
+    AdminServerCommand, AgentCertificate, GameServer, MatchSubstitution, ServerBooking,
+    ServerEvent, ServerReservation,
 };
 use portal_domain::repositories::{
-    AgentCertRepository, CreateAgentCertificate, CreateGameServer, CreateMatchSubstitution,
-    CreateServerBooking, CreateServerEvent, CreateServerReservation, GameServerRepository,
-    MatchSubstitutionRepository, RecordHeartbeat, ServerBookingRepository, ServerEventRepository,
-    ServerReservationRepository, UpdateGameServer,
+    AdminServerCommandRepository, AgentCertRepository, CreateAdminServerCommand,
+    CreateAgentCertificate, CreateGameServer, CreateMatchSubstitution, CreateServerBooking,
+    CreateServerEvent, CreateServerReservation, GameServerRepository, MatchSubstitutionRepository,
+    RecordHeartbeat, ServerBookingRepository, ServerEventRepository, ServerReservationRepository,
+    UpdateGameServer,
 };
 
 /// Explicit column list: `ip_address` must go through `host()` to come back
@@ -29,6 +31,7 @@ use portal_domain::repositories::{
 const SERVER_COLS: &str = "id, name, game_id, host(ip_address) AS ip_address, port, gotv_port, \
      region, enabled, allow_pugs, status, current_match_id, agent_cert_serial, \
      agent_cert_expires_at, agent_version, last_heartbeat_at, last_gamestate, \
+     last_map, last_player_count, last_status_output, last_status_at, \
      enrollment_token_hash, enrollment_token_expires_at, created_at, updated_at";
 
 // =============================================================================
@@ -63,6 +66,10 @@ impl From<GameServerRow> for GameServer {
                 .last_gamestate
                 .as_deref()
                 .map(portal_core::types::AgentGamestate::parse_lenient),
+            last_map: row.last_map,
+            last_player_count: row.last_player_count,
+            last_status_output: row.last_status_output,
+            last_status_at: row.last_status_at,
             enrollment_token_hash: row.enrollment_token_hash,
             enrollment_token_expires_at: row.enrollment_token_expires_at,
             created_at: row.created_at,
@@ -336,20 +343,46 @@ impl GameServerRepository for PgGameServerRepository {
         id: GameServerId,
         heartbeat: RecordHeartbeat,
     ) -> Result<(), DomainError> {
-        sqlx::query(
-            "UPDATE game_servers SET \
-                agent_version = $2, last_heartbeat_at = $3, last_gamestate = $4, \
-                status = $5, updated_at = NOW() \
-             WHERE id = $1",
-        )
-        .bind(id.as_uuid())
-        .bind(&heartbeat.agent_version)
-        .bind(heartbeat.at)
-        .bind(heartbeat.gamestate.map(|g| g.to_string()))
-        .bind(heartbeat.status.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(internal)?;
+        // The status columns are written only by a heartbeat that carried a
+        // CS2 `status`; an older agent leaves the last known values alone.
+        match heartbeat.cs2_status {
+            Some(cs2) => {
+                sqlx::query(
+                    "UPDATE game_servers SET \
+                        agent_version = $2, last_heartbeat_at = $3, last_gamestate = $4, \
+                        status = $5, last_map = $6, last_player_count = $7, \
+                        last_status_output = $8, last_status_at = $3, updated_at = NOW() \
+                     WHERE id = $1",
+                )
+                .bind(id.as_uuid())
+                .bind(&heartbeat.agent_version)
+                .bind(heartbeat.at)
+                .bind(heartbeat.gamestate.map(|g| g.to_string()))
+                .bind(heartbeat.status.to_string())
+                .bind(cs2.map)
+                .bind(cs2.player_count)
+                .bind(cs2.raw_output)
+                .execute(&self.pool)
+                .await
+                .map_err(internal)?;
+            }
+            None => {
+                sqlx::query(
+                    "UPDATE game_servers SET \
+                        agent_version = $2, last_heartbeat_at = $3, last_gamestate = $4, \
+                        status = $5, updated_at = NOW() \
+                     WHERE id = $1",
+                )
+                .bind(id.as_uuid())
+                .bind(&heartbeat.agent_version)
+                .bind(heartbeat.at)
+                .bind(heartbeat.gamestate.map(|g| g.to_string()))
+                .bind(heartbeat.status.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(internal)?;
+            }
+        }
         Ok(())
     }
 
@@ -1358,5 +1391,99 @@ impl MatchSubstitutionRepository for PgMatchSubstitutionRepository {
         .await
         .map_err(internal)?;
         Ok(())
+    }
+}
+
+// =============================================================================
+// Admin Server Command Repository (console audit)
+// =============================================================================
+
+#[derive(Debug, sqlx::FromRow)]
+struct AdminServerCommandRow {
+    id: uuid::Uuid,
+    server_id: uuid::Uuid,
+    reservation_id: Option<uuid::Uuid>,
+    admin_user_id: uuid::Uuid,
+    kind: String,
+    command: String,
+    output: Option<String>,
+    ok: bool,
+    force: bool,
+    created_at: DateTime<Utc>,
+}
+
+impl From<AdminServerCommandRow> for AdminServerCommand {
+    fn from(row: AdminServerCommandRow) -> Self {
+        Self {
+            id: AdminServerCommandId::from(row.id),
+            server_id: GameServerId::from(row.server_id),
+            reservation_id: row.reservation_id.map(ServerReservationId::from),
+            admin_user_id: UserId::from(row.admin_user_id),
+            kind: row.kind,
+            command: row.command,
+            output: row.output,
+            ok: row.ok,
+            force: row.force,
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// `PostgreSQL` implementation of `AdminServerCommandRepository`.
+#[derive(Debug, Clone)]
+pub struct PgAdminServerCommandRepository {
+    pool: DbPool,
+}
+
+impl PgAdminServerCommandRepository {
+    /// Create a new PostgreSQL admin server command repository.
+    #[must_use]
+    pub const fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl AdminServerCommandRepository for PgAdminServerCommandRepository {
+    async fn insert(
+        &self,
+        cmd: CreateAdminServerCommand,
+    ) -> Result<AdminServerCommand, DomainError> {
+        let row = sqlx::query_as::<_, AdminServerCommandRow>(
+            "INSERT INTO admin_server_commands \
+                (id, server_id, reservation_id, admin_user_id, kind, command, output, ok, force) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             RETURNING *",
+        )
+        .bind(AdminServerCommandId::new().as_uuid())
+        .bind(cmd.server_id.as_uuid())
+        .bind(cmd.reservation_id.map(|r| r.as_uuid()))
+        .bind(cmd.admin_user_id.as_uuid())
+        .bind(cmd.kind)
+        .bind(cmd.command)
+        .bind(cmd.output)
+        .bind(cmd.ok)
+        .bind(cmd.force)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.into())
+    }
+
+    async fn list_by_server(
+        &self,
+        server_id: GameServerId,
+        limit: i64,
+    ) -> Result<Vec<AdminServerCommand>, DomainError> {
+        let rows = sqlx::query_as::<_, AdminServerCommandRow>(
+            "SELECT * FROM admin_server_commands \
+             WHERE server_id = $1 ORDER BY created_at DESC LIMIT $2",
+        )
+        .bind(server_id.as_uuid())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 }

@@ -78,8 +78,8 @@ pub use forfeit::{
     ProcessForfeitCommand, WithdrawFromTournamentCommand,
 };
 pub use game_server::{
-    AgentCertificate, GameServer, HeartbeatUpdate, MatchSubstitution, ServerBooking, ServerEvent,
-    ServerReservation,
+    AdminServerCommand, AgentCertificate, GameServer, HeartbeatUpdate, MatchSubstitution,
+    ServerBooking, ServerEvent, ServerReservation,
 };
 pub use league::{
     CreateLeagueCommand, League, LeagueAccessType, LeagueInvitation, LeagueInvitationStatus,

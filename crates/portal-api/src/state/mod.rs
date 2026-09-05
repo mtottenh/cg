@@ -27,13 +27,14 @@ use crate::websocket::VetoLobbyManager;
 use crate::websocket::agent_manager::AgentConnectionManager;
 use portal_db::{
     ActionItemRepository, DbPool, GameRepository, PermissionRepository, PgAdhocTeamRepository,
-    PgAgentCertRepository, PgApiKeyRepository, PgAvailabilityOverrideRepository,
-    PgAvailabilityWindowRepository, PgAwardRepository, PgBanRepository, PgDemoMatchLinkRepository,
-    PgDemoPlayerRepository, PgDemoPlayerStatsRepository, PgDemoRepository,
-    PgDiscoveredMatchRepository, PgDisputeMessageRepository, PgDisputeRepository,
-    PgEntityChangeRepository, PgEvidenceRepository, PgForfeitRecordRepository,
-    PgGameServerRepository, PgLeagueInvitationRepository, PgLeagueMemberRepository,
-    PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
+    PgAdminServerCommandRepository, PgAgentCertRepository, PgApiKeyRepository,
+    PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgAwardRepository,
+    PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
+    PgDemoPlayerStatsRepository, PgDemoRepository, PgDiscoveredMatchRepository,
+    PgDisputeMessageRepository, PgDisputeRepository, PgEntityChangeRepository,
+    PgEvidenceRepository, PgForfeitRecordRepository, PgGameServerRepository,
+    PgLeagueInvitationRepository, PgLeagueMemberRepository, PgLeagueRepository,
+    PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
     PgLeagueTeamSeasonRepository, PgMatchLineupRepository, PgMatchStatusLogRepository,
     PgMatchSubstitutionRepository, PgPermissionRepository, PgPlayerGameProfileRepository,
@@ -302,6 +303,8 @@ pub struct AppState {
     pub server_reservation_repo: Arc<PgServerReservationRepository>,
     /// Raw MatchZy webhook events.
     pub server_event_repo: Arc<PgServerEventRepository>,
+    /// Admin console commands sent to game servers (audit).
+    pub admin_server_command_repo: Arc<PgAdminServerCommandRepository>,
     /// Mid-series substitutions (§6.8).
     pub match_substitution_repo: Arc<PgMatchSubstitutionRepository>,
     /// Per-map game rows (populated by the server event pipeline).
@@ -904,6 +907,8 @@ impl AppState {
             .map_or(true, |v| !matches!(v.as_str(), "false" | "0" | "no"));
         let server_reservation_repo = Arc::new(PgServerReservationRepository::new(db_pool.clone()));
         let server_event_repo = Arc::new(PgServerEventRepository::new(db_pool.clone()));
+        let admin_server_command_repo =
+            Arc::new(PgAdminServerCommandRepository::new(db_pool.clone()));
         let match_substitution_repo = Arc::new(PgMatchSubstitutionRepository::new(db_pool.clone()));
         let tournament_match_game_repo =
             Arc::new(PgTournamentMatchGameRepository::new(db_pool.clone()));
@@ -1020,6 +1025,7 @@ impl AppState {
             game_server_registry,
             server_reservation_repo,
             server_event_repo,
+            admin_server_command_repo,
             match_substitution_repo,
             tournament_match_game_repo,
             league_team_member_repo: Arc::clone(&league_team_member_repo),

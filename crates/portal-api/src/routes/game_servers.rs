@@ -5,7 +5,7 @@
 //! machine-facing endpoints authenticated by enrollment tokens / client
 //! certificates, excluded from the public OpenAPI spec.
 
-use crate::handlers::game_servers::{admin, agent, match_server, matchzy, substitutions};
+use crate::handlers::game_servers::{admin, agent, console, match_server, matchzy, substitutions};
 use crate::state::AppState;
 use axum::Router;
 use axum::routing::{get, post};
@@ -70,7 +70,14 @@ pub fn admin_routes() -> Router<AppState> {
             post(admin::mint_enrollment_token),
         )
         .route("/{server_id}/revoke", post(admin::revoke_agent))
-        .route("/{server_id}/command", post(admin::send_command))
+        .route("/{server_id}/command", post(console::send_command))
+        .route("/{server_id}/console", get(console::get_console))
+        .route(
+            "/{server_id}/console/history",
+            get(console::get_console_history),
+        )
+        .route("/{server_id}/console/map", post(console::change_map))
+        .route("/{server_id}/console/action", post(console::run_action))
         .route(
             "/{server_id}/bookings",
             get(admin::list_bookings).post(admin::create_booking),

@@ -8,6 +8,7 @@
 //! - CS2-specific stats (K/D, ADR, HLTV rating, etc.)
 //! - Demo evidence discovery and validation
 
+pub mod console;
 pub mod demo_client;
 pub mod demo_stats;
 pub mod evidence_validator;

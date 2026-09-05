@@ -11,7 +11,8 @@ use portal_core::types::{AgentGamestate, GameServerStatus, ReservationStatus, Su
 use std::net::IpAddr;
 
 use crate::entities::{
-    AgentCertificate, GameServer, MatchSubstitution, ServerBooking, ServerEvent, ServerReservation,
+    AdminServerCommand, AgentCertificate, GameServer, MatchSubstitution, ServerBooking,
+    ServerEvent, ServerReservation,
 };
 
 /// Fields for registering a new game server.
@@ -47,6 +48,17 @@ pub struct RecordHeartbeat {
     pub gamestate: Option<AgentGamestate>,
     pub status: GameServerStatus,
     pub at: DateTime<Utc>,
+    /// Present only when the heartbeat carried a CS2 `status` (agent
+    /// 0.2.0+); the status columns are left untouched otherwise.
+    pub cs2_status: Option<HeartbeatStatus>,
+}
+
+/// What a heartbeat's `status_output` said, ready to store.
+#[derive(Debug, Clone)]
+pub struct HeartbeatStatus {
+    pub map: Option<String>,
+    pub player_count: Option<i32>,
+    pub raw_output: String,
 }
 
 /// Repository for registered game servers.
@@ -458,4 +470,32 @@ pub trait MatchSubstitutionRepository: Send + Sync + 'static {
         id: MatchSubstitutionId,
         at: DateTime<Utc>,
     ) -> Result<(), DomainError>;
+}
+
+/// A new audit row for an admin console command.
+#[derive(Debug, Clone)]
+pub struct CreateAdminServerCommand {
+    pub server_id: GameServerId,
+    pub reservation_id: Option<ServerReservationId>,
+    pub admin_user_id: UserId,
+    pub kind: String,
+    pub command: String,
+    pub output: Option<String>,
+    pub ok: bool,
+    pub force: bool,
+}
+
+/// Audit trail of console commands admins sent to game servers.
+#[async_trait]
+pub trait AdminServerCommandRepository: Send + Sync + 'static {
+    async fn insert(
+        &self,
+        cmd: CreateAdminServerCommand,
+    ) -> Result<AdminServerCommand, DomainError>;
+    /// Newest first.
+    async fn list_by_server(
+        &self,
+        server_id: GameServerId,
+        limit: i64,
+    ) -> Result<Vec<AdminServerCommand>, DomainError>;
 }

@@ -12,10 +12,7 @@ use portal_core::ids::{GameId, GameServerId, ServerBookingId, TournamentId};
 use portal_core::permissions;
 use portal_core::types::GameServerStatus;
 use portal_domain::entities::{GameServer, ServerBooking};
-use portal_domain::repositories::{
-    CreateGameServer, CreateServerBooking, ServerEventRepository, ServerReservationRepository,
-    UpdateGameServer,
-};
+use portal_domain::repositories::{CreateGameServer, CreateServerBooking, UpdateGameServer};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
@@ -96,6 +93,13 @@ pub struct GameServerResponse {
     pub last_heartbeat_at: Option<String>,
     /// MatchZy gamestate from the last heartbeat.
     pub last_gamestate: Option<String>,
+    /// Engine map name from the last heartbeat that carried CS2's `status`
+    /// (agent 0.2.0+); absent for older agents.
+    pub last_map: Option<String>,
+    /// Humans plus bots at that heartbeat.
+    pub last_player_count: Option<i32>,
+    /// When the last `status` arrived; absent when the agent sends none.
+    pub last_status_at: Option<String>,
     /// Whether an unexpired enrollment token is outstanding.
     pub enrollment_open: bool,
     pub created_at: String,
@@ -121,6 +125,9 @@ impl GameServerResponse {
             agent_cert_expires_at: s.agent_cert_expires_at.map(|dt| dt.to_rfc3339()),
             last_heartbeat_at: s.last_heartbeat_at.map(|dt| dt.to_rfc3339()),
             last_gamestate: s.last_gamestate.map(|g| g.to_string()),
+            last_map: s.last_map.clone(),
+            last_player_count: s.last_player_count,
+            last_status_at: s.last_status_at.map(|dt| dt.to_rfc3339()),
             enrollment_open: s.enrollment_open(Utc::now()),
             created_at: s.created_at.to_rfc3339(),
             updated_at: s.updated_at.to_rfc3339(),
@@ -611,108 +618,4 @@ pub async fn delete_booking(
         .await
         .map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Request body for the console passthrough.
-#[derive(Debug, Deserialize, ToSchema, Validate)]
-pub struct SendCommandRequest {
-    /// Console command to execute (e.g. `css_pause`, `mp_pause_match`).
-    #[validate(length(min = 1, max = 512, message = "command must be 1-512 characters"))]
-    pub command: String,
-}
-
-/// Console output from the server.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct SendCommandResponse {
-    /// Raw console output.
-    pub output: String,
-}
-
-/// Run a console command on a server via its agent (admin passthrough).
-///
-/// Every invocation is logged with the acting admin (audit trail).
-#[utoipa::path(
-    post,
-    path = "/v1/admin/game-servers/{server_id}/command",
-    params(("server_id" = String, Path, description = "Game server ID")),
-    request_body = SendCommandRequest,
-    responses(
-        (status = 200, description = "Command output", body = DataResponse<SendCommandResponse>),
-        (status = 403, description = "Missing admin.servers.manage", body = ApiError),
-        (status = 409, description = "Agent not connected", body = ApiError),
-    ),
-    security(("bearer_auth" = [])),
-    tag = "game_servers"
-)]
-pub async fn send_command(
-    State(state): State<GameServerState>,
-    auth: AuthenticatedUser,
-    perm_checker: PermissionChecker,
-    headers: HeaderMap,
-    Path(server_id): Path<String>,
-    Json(body): Json<SendCommandRequest>,
-) -> ApiResult<Json<DataResponse<SendCommandResponse>>> {
-    perm_checker
-        .require_permission(&auth, permissions::admin::SERVERS_MANAGE)
-        .await?;
-    let request_id = get_request_id(&headers);
-    let id = parse_server_id(&server_id)?;
-    body.validate()
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let server = state.registry.get(id).await.map_err(ApiError::from)?;
-
-    // Audit: the passthrough is the sharpest tool in the box.
-    tracing::info!(
-        admin = %auth.username, admin_user_id = %auth.user_id,
-        server = %server.name, server_id = %id, command = %body.command,
-        "admin console passthrough"
-    );
-
-    let command_text = body.command.clone();
-    let outcome = state
-        .agent_manager
-        .send_command(
-            id,
-            crate::websocket::agent_manager::AgentCommand::Exec {
-                command: body.command,
-            },
-        )
-        .await
-        .map_err(ApiError::from)?;
-    let output = outcome.output.or(outcome.error).unwrap_or_default();
-
-    // Durable audit row (actor + command + output), alongside the tracing
-    // line above — §9 (review minor).
-    if let Some(reservation) = state
-        .server_reservation_repo
-        .find_live_by_server(id)
-        .await
-        .ok()
-        .flatten()
-    {
-        let event = state
-            .server_event_repo
-            .insert(portal_domain::repositories::CreateServerEvent {
-                reservation_id: Some(reservation.id),
-                server_id: id,
-                event_type: "admin_command".to_string(),
-                map_number: None,
-                round_number: None,
-                payload: serde_json::json!({
-                    "admin_user_id": auth.user_id.to_string(),
-                    "admin": auth.username,
-                    "command": command_text,
-                    "output": output,
-                }),
-            })
-            .await;
-        if let Ok(Some(event)) = event {
-            let _ = state.server_event_repo.mark_processed(event.id, None).await;
-        }
-    }
-
-    Ok(Json(DataResponse::new(
-        SendCommandResponse { output },
-        request_id,
-    )))
 }

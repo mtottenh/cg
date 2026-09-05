@@ -2818,9 +2818,9 @@ async fn test_team_season_stats() {
     let app = TestApp::new().await;
     let game_id = get_game_id(app.pool(), "cs2").await.to_string();
     let league = create_test_league(&app, &game_id, "stats-league").await;
-    let league_id = league["id"].as_str().unwrap();
+    let league_id = league["data"]["id"].as_str().unwrap();
     let season = create_test_season(&app, league_id, "stats-season").await;
-    let season_id = season["id"].as_str().unwrap();
+    let season_id = season["data"]["id"].as_str().unwrap();
     let (_team_id, team_season_id) = create_test_team(&app, season_id, "Stat Team", "STAT").await;
 
     let response = app

@@ -1104,6 +1104,53 @@ async fn test_uphold_on_claim_path_leaves_the_claimed_result_on_the_match() {
     assert_eq!(m["p2"], 0);
 }
 
+/// The dispute an organiser opens from the queue must name the teams, not
+/// hand over registration ids: the list attached the match context but the
+/// detail endpoint did not, so the modal showed four UUIDs.
+#[tokio::test]
+async fn test_dispute_detail_names_the_match_and_the_sides() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, dispute_id, winner_reg) =
+        raise_dispute_on_a_claim(&app, "dispute-names").await;
+    let m: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}"
+        ))
+        .await
+        .json();
+
+    let response = app.get(&format!("/v1/disputes/{dispute_id}")).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let dispute = &body["data"]["dispute"];
+    assert!(
+        dispute["participant1_name"].is_string() && dispute["participant2_name"].is_string(),
+        "both sides are named: {dispute}"
+    );
+    assert!(
+        dispute["disputed_by_name"].is_string(),
+        "the raiser is named"
+    );
+    assert_eq!(
+        dispute["original_winner_registration_id"].as_str(),
+        Some(winner_reg.as_str())
+    );
+    let winner_name =
+        if m["data"]["participant1_registration_id"].as_str() == Some(winner_reg.as_str()) {
+            dispute["participant1_name"].clone()
+        } else {
+            dispute["participant2_name"].clone()
+        };
+    assert_eq!(
+        dispute["original_winner_name"], winner_name,
+        "the claimed winner is named as one of the sides"
+    );
+    assert!(
+        dispute["tournament_slug"].is_string(),
+        "links back to the tournament"
+    );
+}
+
 /// P-78: a rematch un-completes the match, so the previous winner and score
 /// must not survive it.
 ///

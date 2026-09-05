@@ -60,6 +60,11 @@ impl ServerStatus {
 
 static MAP_LINE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"(?im)^\s*map\s*:\s*(\S+)").unwrap());
+/// CS2 1.41 prints no `map :` line; the level is spawngroup 1:
+/// `loaded spawngroup(  1)  : SV:  [1: de_anubis | main lump | mapload]`.
+static SPAWNGROUP_LINE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?im)^\s*loaded spawngroup\(\s*1\)\s*:\s*SV:\s*\[1:\s*([^\s|\]]+)").unwrap()
+});
 static HOSTNAME_LINE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"(?im)^\s*hostname\s*:\s*(.+?)\s*$").unwrap());
 static PLAYERS_LINE: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -72,10 +77,12 @@ static ROW_HASH: LazyLock<regex::Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
-/// CS2 shape: `  2  00:35   30    0     active 786432 1.2.3.4:27005 'Name'`.
+/// CS2 shape: `  2  00:35   30    0     active 786432 1.2.3.4:27005 'Name'`;
+/// a bot row has `BOT` for its time and no address column at all:
+/// `   0      BOT    0    0     active      0 'Maximus'` (real 1.41 dump).
 static ROW_CS2: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
-        r"^\s*(?P<userid>\d+)\s+(?P<time>\S+)\s+(?P<ping>\d+)\s+(?P<loss>\d+)\s+(?P<state>\S+)\s+\d+\s+(?P<adr>\S+)\s+'(?P<name>.*)'\s*$",
+        r"^\s*(?P<userid>\d+)\s+(?P<time>\S+)\s+(?P<ping>\d+)\s+(?P<loss>\d+)\s+(?P<state>\S+)\s+\d+(?:\s+(?P<adr>[^'\s]+))?\s+'(?P<name>.*)'\s*$",
     )
     .unwrap()
 });
@@ -94,13 +101,16 @@ pub fn parse_status(output: &str) -> ServerStatus {
     if let Some(c) = HOSTNAME_LINE.captures(output) {
         status.hostname = Some(c[1].to_string());
     }
-    if let Some(c) = MAP_LINE.captures(output) {
-        let printed = &c[1];
+    let printed_map = MAP_LINE
+        .captures(output)
+        .or_else(|| SPAWNGROUP_LINE.captures(output))
+        .map(|c| c[1].to_string());
+    if let Some(printed) = printed_map {
         status.map = Some(
             printed
                 .rsplit(['/', '\\'])
                 .next()
-                .unwrap_or(printed)
+                .unwrap_or(&printed)
                 .trim_end_matches(".vpk")
                 .to_string(),
         );
@@ -146,7 +156,9 @@ fn parse_player_row(line: &str) -> Option<ConnectedPlayer> {
         });
     }
     if let Some(c) = ROW_CS2.captures(trimmed) {
-        let bot = c["time"].eq_ignore_ascii_case("BOT") || c["adr"].eq_ignore_ascii_case("BOT");
+        let bot = c["time"].eq_ignore_ascii_case("BOT")
+            || c.name("adr")
+                .is_some_and(|a| a.as_str().eq_ignore_ascii_case("BOT"));
         return Some(ConnectedPlayer {
             userid: c["userid"].parse().ok()?,
             name: c["name"].to_string(),
@@ -326,16 +338,36 @@ pub fn custom_map_command(input: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    const CS2_STATUS: &str = "hostname: CS2 10 Mans #1\n\
-version : 1.40.7.3/14073 10529 secure  public\n\
-os/type : Linux dedicated\n\
-map     : de_ancient\n\
-players : 2 humans, 1 bots (12 max) (not hibernating) (unreserved)\n\
-\n\
+    /// Captured from a managed host (CS2 1.41.7.8, hibernating, two bots),
+    /// with two human rows in the same column layout added after the bots.
+    const CS2_STATUS: &str = "Server:  Running [0.0.0.0:27015]\n\
+Client:  Disconnected\n\
+----- Status -----\n\
+@ Current  :  game\n\
+source   : console\n\
+hostname : CS2 10 Mans #1\n\
+spawn    : 1\n\
+version  : 1.41.7.8/14178 10896 insecure (secure mode enabled, disconnected from Steam3) public\n\
+steamid  : [I:0:1] (1)\n\
+udp/ip   : 0.0.0.0:27015\n\
+os/type  : Linux dedicated\n\
+players  : 2 humans, 1 bots (12 max) (not hibernating) (unreserved)\n\
+---------spawngroups----\n\
+loaded spawngroup(  1)  : SV:  [1: de_ancient | main lump | mapload]\n\
+loaded spawngroup(  2)  : SV:  [2: prefabs/misc/terrorist_team_intro | main lump | mapload | point_prefab]\n\
+loaded spawngroup(  8)  : SV:  [8: maps/prefabs/de_ancient/de_ancient_skybox | main lump | mapload | point_prefab]\n\
+---------players--------\n\
   id     time ping loss      state   rate adr name\n\
-  0     BOT    0    0     active      0 BOT 'Kyle'\n\
-  2  05:23   31    0     active 786432 203.0.113.9:27005 'Player One'\n\
-  3  00:12   58    2     active 786432 198.51.100.4:27005 'Two [U:1:12345678]'\n\
+   0      BOT    0    0     active      0 'Kyle'\n\
+   2    05:23   31    0     active 786432 203.0.113.9:27005 'Player One'\n\
+   3    00:12   58    2     active 786432 198.51.100.4:27005 'Two [U:1:12345678]'\n\
+#end\n";
+
+    /// A `map :` line, as older builds print it, wins over the spawngroup.
+    const CS2_STATUS_WITH_MAP_LINE: &str = "hostname: old\n\
+map     : de_nuke\n\
+players : 0 humans, 0 bots (10 max) (not hibernating) (unreserved)\n\
+loaded spawngroup(  1)  : SV:  [1: de_anubis | main lump | mapload]\n\
 #end\n";
 
     const CSGO_STATUS: &str = "hostname: legacy\n\
@@ -366,6 +398,14 @@ players : 1 humans, 0 bots (10/0 max) (hibernating)\n\
         assert_eq!(one.steam_id64, None);
         let two = &s.players[2];
         assert_eq!(two.steam_id64, Some(STEAM64_BASE + 12_345_678));
+    }
+
+    #[test]
+    fn map_line_wins_over_spawngroup() {
+        assert_eq!(
+            parse_status(CS2_STATUS_WITH_MAP_LINE).map.as_deref(),
+            Some("de_nuke")
+        );
     }
 
     #[test]

@@ -8,8 +8,8 @@
 //! its departure on its last.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use dashmap::DashMap;
 use portal_core::{TournamentMatchId, TournamentRegistrationId};
@@ -55,6 +55,12 @@ impl VetoLobby {
         }
     }
 
+    /// The presence refcount. A poisoned lock still holds a usable map — a
+    /// panic elsewhere must not take the whole lobby's presence with it.
+    fn presence(&self) -> MutexGuard<'_, HashMap<TournamentRegistrationId, usize>> {
+        self.presence.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Subscribe to lobby broadcasts.
     ///
     /// Returns a receiver that will receive all broadcast messages.
@@ -80,10 +86,12 @@ impl VetoLobby {
             self.spectator_count.fetch_add(1, Ordering::SeqCst);
             true
         } else if let Some(reg_id) = conn.registration_id.filter(|_| conn.is_participant()) {
-            let mut presence = self.presence.lock().unwrap_or_else(|e| e.into_inner());
+            let mut presence = self.presence();
             let count = presence.entry(reg_id).or_insert(0);
             *count += 1;
-            *count == 1
+            let first = *count == 1;
+            drop(presence);
+            first
         } else {
             false
         };
@@ -103,8 +111,8 @@ impl VetoLobby {
             self.spectator_count.fetch_sub(1, Ordering::SeqCst);
             true
         } else if let Some(reg_id) = conn.registration_id.filter(|_| conn.is_participant()) {
-            let mut presence = self.presence.lock().unwrap_or_else(|e| e.into_inner());
-            match presence.get_mut(&reg_id) {
+            let mut presence = self.presence();
+            let last = match presence.get_mut(&reg_id) {
                 Some(count) if *count > 1 => {
                     *count -= 1;
                     false
@@ -114,7 +122,9 @@ impl VetoLobby {
                     true
                 }
                 None => true,
-            }
+            };
+            drop(presence);
+            last
         } else {
             false
         };
@@ -142,21 +152,13 @@ impl VetoLobby {
     /// Registrations with at least one live participant socket.
     #[must_use]
     pub fn connected_participant_ids(&self) -> Vec<String> {
-        self.presence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .keys()
-            .map(ToString::to_string)
-            .collect()
+        self.presence().keys().map(ToString::to_string).collect()
     }
 
     /// Whether a registration has at least one live participant socket.
     #[must_use]
     pub fn is_participant_connected(&self, registration_id: TournamentRegistrationId) -> bool {
-        self.presence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&registration_id)
+        self.presence().contains_key(&registration_id)
     }
 
     /// The username of one connected participant socket for a registration,

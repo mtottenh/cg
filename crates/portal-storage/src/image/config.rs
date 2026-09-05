@@ -35,7 +35,7 @@ impl ImageConfig {
     #[must_use]
     pub fn team_logo() -> Self {
         Self {
-            max_size_bytes: 5 * 1024 * 1024, // 5MB
+            max_size_bytes: 10 * 1024 * 1024, // 10MB
             min_dimensions: (64, 64),
             max_dimensions: (4096, 4096),
             aspect_ratio_range: Some((0.9, 1.1)), // Nearly square
@@ -56,7 +56,7 @@ impl ImageConfig {
     #[must_use]
     pub fn team_banner() -> Self {
         Self {
-            max_size_bytes: 10 * 1024 * 1024, // 10MB
+            max_size_bytes: 12 * 1024 * 1024, // 12MB
             min_dimensions: (480, 120),
             max_dimensions: (8192, 2048),
             aspect_ratio_range: Some((3.5, 4.5)), // Approximately 4:1
@@ -77,7 +77,7 @@ impl ImageConfig {
     #[must_use]
     pub fn player_avatar() -> Self {
         Self {
-            max_size_bytes: 2 * 1024 * 1024, // 2MB
+            max_size_bytes: 10 * 1024 * 1024, // 10MB
             min_dimensions: (32, 32),
             max_dimensions: (2048, 2048),
             aspect_ratio_range: Some((0.9, 1.1)), // Nearly square
@@ -98,7 +98,7 @@ impl ImageConfig {
     #[must_use]
     pub fn player_banner() -> Self {
         Self {
-            max_size_bytes: 5 * 1024 * 1024, // 5MB
+            max_size_bytes: 12 * 1024 * 1024, // 12MB
             min_dimensions: (400, 100),
             max_dimensions: (4800, 1200),
             aspect_ratio_range: Some((3.5, 4.5)), // Approximately 4:1

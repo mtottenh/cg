@@ -11,8 +11,8 @@ use portal_core::{
 };
 use portal_domain::entities::league_team::{LeagueTeam, LeagueTeamSeason};
 use portal_domain::repositories::league_team::{
-    CreateLeagueTeam, LeagueTeamListFilter, LeagueTeamRepository, MovedTeam, UpdateLeagueTeam,
-    WithdrawnEntry,
+    CreateLeagueTeam, LeagueTeamListFilter, LeagueTeamRepository, MovedTeam, TeamImage,
+    UpdateLeagueTeam, WithdrawnEntry,
 };
 
 /// `PostgreSQL` implementation of `LeagueTeamRepository`.
@@ -111,6 +111,25 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
+        Ok(LeagueTeam::from(row))
+    }
+
+    async fn clear_image(
+        &self,
+        id: LeagueTeamId,
+        image: TeamImage,
+    ) -> Result<LeagueTeam, DomainError> {
+        // The column comes from a two-variant enum, never from input.
+        let sql = format!(
+            "UPDATE league_teams SET {} = NULL, updated_at = NOW() WHERE id = $1 RETURNING *",
+            image.column()
+        );
+        let row = sqlx::query_as::<_, LeagueTeamRow>(&sql)
+            .bind(id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?
+            .ok_or(DomainError::LeagueTeamNotFound(id))?;
         Ok(LeagueTeam::from(row))
     }
 

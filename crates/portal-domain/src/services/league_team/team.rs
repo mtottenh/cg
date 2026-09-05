@@ -5,6 +5,7 @@ use crate::entities::league_team::{
     LeagueTeamSeason, LeagueTeamSummary, PlayerLeagueTeamMembership, UpdateLeagueTeamCommand,
 };
 use crate::repositories::EntityChangeRepository;
+use crate::repositories::TeamImage;
 use crate::repositories::league_team::{
     AddLeagueTeamMember, CreateLeagueTeam, LeagueSeasonRepository, LeagueTeamListFilter,
     LeagueTeamMemberRepository, LeagueTeamRepository, LeagueTeamSeasonRepository, MovedTeam,
@@ -87,6 +88,17 @@ where
             .find_by_id(id)
             .await?
             .ok_or(DomainError::LeagueTeamNotFound(id))
+    }
+
+    /// Remove one of the team's branding images (the URL only; the caller
+    /// owns the stored file). Unlike `update_team_authorized` this works on
+    /// a disbanded team: a takedown must not be blocked by the team's state.
+    pub async fn clear_image(
+        &self,
+        id: LeagueTeamId,
+        image: TeamImage,
+    ) -> Result<LeagueTeam, DomainError> {
+        self.team_repo.clear_image(id, image).await
     }
 
     /// Get a team season by ID.

@@ -136,6 +136,34 @@ impl PlayerRatingHistoryRepository for PgPlayerRatingHistoryRepository {
         Ok(rows.into_iter().map(PlayerRatingHistory::from).collect())
     }
 
+    async fn latest_ratings_for_players(
+        &self,
+        player_ids: &[PlayerId],
+        game_id: GameId,
+    ) -> Result<Vec<(PlayerId, i32)>, DomainError> {
+        if player_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<uuid::Uuid> = player_ids.iter().map(PlayerId::as_uuid).collect();
+        let rows = sqlx::query_as::<_, (uuid::Uuid, i32)>(
+            r"
+            SELECT DISTINCT ON (player_id) player_id, rating
+            FROM player_rating_history
+            WHERE player_id = ANY($1) AND game_id = $2 AND rating > 0
+            ORDER BY player_id, recorded_at DESC
+            ",
+        )
+        .bind(&ids)
+        .bind(game_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, rating)| (PlayerId::from(id), rating))
+            .collect())
+    }
+
     async fn get_rating_stats(
         &self,
         player_id: PlayerId,

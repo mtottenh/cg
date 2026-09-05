@@ -103,8 +103,14 @@ impl ImageProcessor {
         // 5. Validate dimensions
         Self::validate_dimensions(width, height, config)?;
 
-        // 6. Validate aspect ratio
-        if let Some((min_ratio, max_ratio)) = config.aspect_ratio_range {
+        // 6. Fit the image to the target shape. With a resize target the
+        //    image is centre-cropped to that shape — a 16:9 photo becomes a
+        //    4:1 banner by losing its top and bottom, never by being refused
+        //    or squashed. Only a configuration with a ratio band but no
+        //    target still rejects, because there is nothing to crop to.
+        let img = if let Some((target_w, target_h)) = config.resize_to {
+            Self::center_crop_to_aspect(&img, target_w, target_h)
+        } else if let Some((min_ratio, max_ratio)) = config.aspect_ratio_range {
             let ratio = width as f32 / height as f32;
             if ratio < min_ratio || ratio > max_ratio {
                 return Err(ImageError::InvalidAspectRatio {
@@ -113,9 +119,14 @@ impl ImageProcessor {
                     max: max_ratio,
                 });
             }
-        }
+            img
+        } else {
+            img
+        };
+        let (width, height) = img.dimensions();
 
-        // 7. Resize if configured
+        // 7. Resize if configured (the crop above made the shape match, so
+        //    this is a pure scale)
         let (processed_img, final_dims) = if let Some((target_w, target_h)) = config.resize_to {
             let resized = img.resize_exact(target_w, target_h, FilterType::Lanczos3);
             (resized, (target_w, target_h))
@@ -126,7 +137,8 @@ impl ImageProcessor {
         // 8. Encode to output format
         let main = Self::encode_image(&processed_img, config)?;
 
-        // 9. Generate thumbnail if configured
+        // 9. Generate thumbnail if configured, from the cropped image so it
+        //    shows the same framing as the main image
         let thumbnail = if let Some((thumb_w, thumb_h)) = config.thumbnail_size {
             let thumb = img.resize_exact(thumb_w, thumb_h, FilterType::Lanczos3);
             Some(Self::encode_image(&thumb, config)?)
@@ -183,6 +195,37 @@ impl ImageProcessor {
         }
 
         Ok(())
+    }
+
+    /// The largest centred sub-rectangle of `img` with the aspect ratio
+    /// `target_w:target_h`. An image already at that ratio comes back whole.
+    pub(crate) fn center_crop_to_aspect(
+        img: &DynamicImage,
+        target_w: u32,
+        target_h: u32,
+    ) -> DynamicImage {
+        let (w, h) = img.dimensions();
+        if w == 0 || h == 0 || target_w == 0 || target_h == 0 {
+            return img.clone();
+        }
+        // Compare w/h against target_w/target_h without floats:
+        // w * target_h > h * target_w  <=>  image is wider than the target.
+        let (crop_w, crop_h) =
+            if u64::from(w) * u64::from(target_h) > u64::from(h) * u64::from(target_w) {
+                // Too wide: keep full height, narrow the width.
+                let cw = u64::from(h) * u64::from(target_w) / u64::from(target_h);
+                (u32::try_from(cw).unwrap_or(w).clamp(1, w), h)
+            } else {
+                // Too tall (or exact): keep full width, shorten the height.
+                let ch = u64::from(w) * u64::from(target_h) / u64::from(target_w);
+                (w, u32::try_from(ch).unwrap_or(h).clamp(1, h))
+            };
+        if (crop_w, crop_h) == (w, h) {
+            return img.clone();
+        }
+        let x = (w - crop_w) / 2;
+        let y = (h - crop_h) / 2;
+        img.crop_imm(x, y, crop_w, crop_h)
     }
 
     fn encode_image(img: &DynamicImage, config: &ImageConfig) -> Result<Bytes, ImageError> {
@@ -276,13 +319,47 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_aspect_ratio() {
-        // Create a 200x100 image (2:1 ratio) for an avatar that expects 1:1
-        let png_data = create_test_png(200, 100);
+    fn off_ratio_images_are_cropped_to_the_target_not_refused() {
+        // A 2:1 image for a square avatar: cropped to the middle square, then
+        // scaled to the avatar target. Before, this was refused outright —
+        // which is why no player banner (a 4:1 target fed 16:9 photos) ever
+        // saved.
+        let png_data = create_test_png(400, 200);
         let config = ImageConfig::player_avatar();
+        let processed = ImageProcessor::process(&png_data, &config).expect("cropped, not refused");
+        assert_eq!(processed.dimensions, config.resize_to.unwrap());
 
+        // A 16:9 photo for a 4:1 player banner.
+        let png_data = create_test_png(1920, 1080);
+        let config = ImageConfig::player_banner();
+        let processed = ImageProcessor::process(&png_data, &config).expect("cropped, not refused");
+        assert_eq!(processed.dimensions, (1200, 300));
+    }
+
+    #[test]
+    fn center_crop_keeps_the_middle() {
+        use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
+        // Left half red, right half blue; cropping 400x100 to 1:1 keeps the
+        // middle 100x100, which straddles the seam: 50 red, 50 blue columns.
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_fn(400, 100, |x, _| {
+            if x < 200 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 255, 255])
+            }
+        });
+        let cropped = ImageProcessor::center_crop_to_aspect(&DynamicImage::ImageRgba8(img), 1, 1);
+        assert_eq!(cropped.dimensions(), (100, 100));
+        assert_eq!(cropped.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
+        assert_eq!(cropped.get_pixel(99, 0), Rgba([0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn a_ratio_band_without_a_target_still_rejects() {
+        let mut config = ImageConfig::player_avatar();
+        config.resize_to = None;
+        let png_data = create_test_png(200, 100);
         let result = ImageProcessor::process(&png_data, &config);
-
         assert!(matches!(result, Err(ImageError::InvalidAspectRatio { .. })));
     }
 }

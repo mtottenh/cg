@@ -5,7 +5,7 @@ use axum::routing::{delete, get, patch, post};
 
 use crate::handlers::{
     admin, bans, demos, dispute, forfeit, leagues, progression, result_reviews, results, roles,
-    tournaments,
+    tournaments, uploads,
 };
 use crate::state::AppState;
 
@@ -13,6 +13,15 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/stats", get(admin::get_stats))
+        // Content takedown: a player's images, by an admin.
+        .route(
+            "/players/{player_id}/avatar",
+            delete(uploads::admin_delete_player_avatar),
+        )
+        .route(
+            "/players/{player_id}/banner",
+            delete(uploads::admin_delete_player_banner),
+        )
         // Every league regardless of status or membership — the admin
         // leagues screen's source of truth.
         .route("/leagues", get(leagues::admin_list_leagues))

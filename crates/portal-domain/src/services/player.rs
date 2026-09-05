@@ -3,7 +3,7 @@
 use crate::entities::Player;
 use crate::entities::league_team::PlayerLeagueTeamMembership;
 use crate::repositories::league_team::LeagueTeamMemberRepository;
-use crate::repositories::{PlayerRepository, PlayerSearchFilters, UpdatePlayer};
+use crate::repositories::{PlayerRepository, PlayerSearchFilters, ProfileImage, UpdatePlayer};
 use portal_core::{DomainError, FieldError, LeagueSeasonId, PlayerId, UserId, ValidationError};
 use std::sync::Arc;
 use tracing::instrument;
@@ -47,6 +47,16 @@ where
             .find_by_id(id)
             .await?
             .ok_or(DomainError::PlayerNotFound(id))
+    }
+
+    /// Remove one of the player's profile images (the URL only; the caller
+    /// owns the stored file).
+    pub async fn clear_image(
+        &self,
+        id: PlayerId,
+        image: ProfileImage,
+    ) -> Result<Player, DomainError> {
+        self.player_repo.clear_image(id, image).await
     }
 
     /// Get a player by user ID.

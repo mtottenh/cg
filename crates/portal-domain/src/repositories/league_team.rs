@@ -187,6 +187,24 @@ pub struct LeagueTeamListFilter {
     pub include_archived: bool,
 }
 
+/// A team's uploadable branding images.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeamImage {
+    Logo,
+    Banner,
+}
+
+impl TeamImage {
+    /// The column that holds this image's URL.
+    #[must_use]
+    pub const fn column(self) -> &'static str {
+        match self {
+            Self::Logo => "logo_url",
+            Self::Banner => "banner_url",
+        }
+    }
+}
+
 /// Repository trait for league team operations.
 ///
 /// Teams have persistent identity at the league level (not season level).
@@ -241,6 +259,14 @@ pub trait LeagueTeamRepository: Send + Sync {
         &self,
         id: LeagueTeamId,
         update: UpdateLeagueTeam,
+    ) -> Result<LeagueTeam, DomainError>;
+
+    /// Remove one of the team's branding images (the URL; the file is the
+    /// caller's to delete). Works on a disbanded team too — a takedown must.
+    async fn clear_image(
+        &self,
+        id: LeagueTeamId,
+        image: TeamImage,
     ) -> Result<LeagueTeam, DomainError>;
 
     /// List teams in a league with optional filters and pagination.

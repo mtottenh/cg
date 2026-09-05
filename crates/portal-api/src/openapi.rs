@@ -186,6 +186,12 @@ use utoipa_swagger_ui::SwaggerUi;
         uploads::upload_player_avatar,
         uploads::upload_player_banner,
         uploads::upload_team_logo,
+        uploads::delete_team_logo,
+        uploads::delete_team_banner,
+        uploads::delete_player_avatar,
+        uploads::delete_player_banner,
+        uploads::admin_delete_player_avatar,
+        uploads::admin_delete_player_banner,
         uploads::upload_team_banner,
         // Users
         users::get_current_user,

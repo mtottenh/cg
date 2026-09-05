@@ -76,7 +76,8 @@ pub use league::{
 pub use league_team::{
     AddLeagueTeamMember, CreateLeagueSeason, CreateLeagueTeam, CreateLeagueTeamInvitation,
     LeagueSeasonRepository, LeagueTeamInvitationRepository, LeagueTeamMemberRepository,
-    LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueSeason, UpdateLeagueTeam,
+    LeagueTeamRepository, LeagueTeamSeasonRepository, TeamImage, UpdateLeagueSeason,
+    UpdateLeagueTeam,
 };
 pub use match_lifecycle::{CreateMatchStatusLog, MatchStatusLogRepository};
 pub use match_lineup::{MatchLineupRepository, MaterializeDemoLineup};
@@ -105,7 +106,8 @@ pub use tournament::{
     UpsertTournamentMapPool, VetoActionRepository, VetoSessionRepository,
 };
 pub use user::{
-    CreatePlayer, CreateUser, PlayerRepository, PlayerSearchFilters, UpdatePlayer, UserRepository,
+    CreatePlayer, CreateUser, PlayerRepository, PlayerSearchFilters, ProfileImage, UpdatePlayer,
+    UserRepository,
 };
 pub use veto_delegate::{CreateVetoDelegate, VetoDelegateRepository};
 pub use veto_lobby_message::{CreateVetoLobbyMessage, VetoLobbyMessageRepository};

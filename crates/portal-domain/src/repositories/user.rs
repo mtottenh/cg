@@ -136,6 +136,29 @@ pub trait PlayerRepository: Send + Sync {
 
     /// Update a player profile.
     async fn update(&self, id: PlayerId, cmd: UpdatePlayer) -> Result<Player, DomainError>;
+
+    /// Remove one of the player's profile images (the URL; the file is the
+    /// caller's to delete). Used by the player and by admins taking content
+    /// down.
+    async fn clear_image(&self, id: PlayerId, image: ProfileImage) -> Result<Player, DomainError>;
+}
+
+/// A player's uploadable profile images.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileImage {
+    Avatar,
+    Banner,
+}
+
+impl ProfileImage {
+    /// The column that holds this image's URL.
+    #[must_use]
+    pub const fn column(self) -> &'static str {
+        match self {
+            Self::Avatar => "avatar_url",
+            Self::Banner => "banner_url",
+        }
+    }
 }
 
 /// Data for creating a new player.

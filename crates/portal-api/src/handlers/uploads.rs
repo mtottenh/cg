@@ -10,12 +10,14 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum_extra::extract::Multipart;
 use bytes::Bytes;
-use portal_core::{LeagueTeamId, permissions};
+use portal_core::{LeagueTeamId, PlayerId, permissions};
 use portal_domain::entities::league_team::UpdateLeagueTeamCommand;
-use portal_domain::repositories::UpdatePlayer;
+use portal_domain::repositories::{ProfileImage, TeamImage, UpdatePlayer};
+use portal_storage::StorageBackend;
 use portal_storage::StoreRequest;
 use portal_storage::image::{ImageProcessor, ImageType};
 use serde::Serialize;
+use std::sync::Arc;
 use utoipa::ToSchema;
 
 /// Extract request ID from headers.
@@ -307,6 +309,247 @@ pub async fn upload_team_banner(
         ImageType::TeamBanner,
         &request_id,
         |cmd, url| cmd.banner_url = Some(url),
+    )
+    .await
+}
+
+// =============================================================================
+// Removing images (the player, the team, and admins taking content down)
+// =============================================================================
+
+/// Best-effort removal of the stored object behind a URL this portal minted.
+/// A URL from elsewhere (a linked logo) is left alone; a storage failure is
+/// logged, not surfaced — the URL is already cleared, which is what the
+/// caller asked for.
+async fn remove_stored_file(storage: &Arc<dyn StorageBackend>, url: &str) {
+    let base = format!("{}/", storage.public_url("").trim_end_matches('/'));
+    if let Some(key) = url.strip_prefix(&base)
+        && !key.is_empty()
+        && let Err(e) = storage.delete(key).await
+    {
+        tracing::warn!(url, error = %e, "stored image not removed after clearing its URL");
+    }
+}
+
+async fn clear_team_image(
+    state: UploadsState,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
+    team_id: LeagueTeamId,
+    image: TeamImage,
+    request_id: &str,
+) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
+    perm.require_team_permission(&auth, team_id.as_uuid(), permissions::team::SETTINGS_MANAGE)
+        .await?;
+    let before = state.league_team_service.get_team(team_id).await?;
+    let updated = state
+        .league_team_service
+        .clear_image(team_id, image)
+        .await?;
+    let old = match image {
+        TeamImage::Logo => before.logo_url,
+        TeamImage::Banner => before.banner_url,
+    };
+    if let Some(url) = old {
+        remove_stored_file(&state.storage, &url).await;
+    }
+    tracing::info!(user_id = %auth.user_id, %team_id, ?image, "team image cleared");
+    Ok(Json(DataResponse::new(
+        LeagueTeamResponse::from(updated),
+        request_id,
+    )))
+}
+
+/// Remove a league-team's logo (owner, captain, or a platform admin).
+#[utoipa::path(
+    delete,
+    path = "/v1/league-teams/{team_id}/logo",
+    params(("team_id" = String, Path, description = "Team ID")),
+    responses(
+        (status = 200, description = "Logo removed", body = DataResponse<LeagueTeamResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden - requires team.settings.manage", body = ApiError),
+        (status = 404, description = "Team not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "league-teams"
+)]
+pub async fn delete_team_logo(
+    State(state): State<UploadsState>,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
+    headers: HeaderMap,
+    Path(team_id): Path<LeagueTeamId>,
+) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
+    let request_id = get_request_id(&headers).to_string();
+    clear_team_image(state, auth, perm, team_id, TeamImage::Logo, &request_id).await
+}
+
+/// Remove a league-team's banner (owner, captain, or a platform admin).
+#[utoipa::path(
+    delete,
+    path = "/v1/league-teams/{team_id}/banner",
+    params(("team_id" = String, Path, description = "Team ID")),
+    responses(
+        (status = 200, description = "Banner removed", body = DataResponse<LeagueTeamResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Forbidden - requires team.settings.manage", body = ApiError),
+        (status = 404, description = "Team not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "league-teams"
+)]
+pub async fn delete_team_banner(
+    State(state): State<UploadsState>,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
+    headers: HeaderMap,
+    Path(team_id): Path<LeagueTeamId>,
+) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
+    let request_id = get_request_id(&headers).to_string();
+    clear_team_image(state, auth, perm, team_id, TeamImage::Banner, &request_id).await
+}
+
+async fn clear_player_image(
+    state: &UploadsState,
+    player_id: PlayerId,
+    image: ProfileImage,
+    request_id: &str,
+) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
+    let before = state.player_service.get_player(player_id).await?;
+    let updated = state.player_service.clear_image(player_id, image).await?;
+    let old = match image {
+        ProfileImage::Avatar => before.avatar_url,
+        ProfileImage::Banner => before.banner_url,
+    };
+    if let Some(url) = old {
+        remove_stored_file(&state.storage, &url).await;
+    }
+    Ok(Json(DataResponse::new(
+        PlayerResponse::from(updated),
+        request_id,
+    )))
+}
+
+/// Remove your own avatar.
+#[utoipa::path(
+    delete,
+    path = "/v1/players/me/avatar",
+    responses(
+        (status = 200, description = "Avatar removed", body = DataResponse<PlayerResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "players"
+)]
+pub async fn delete_player_avatar(
+    State(state): State<UploadsState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
+    let request_id = get_request_id(&headers).to_string();
+    clear_player_image(&state, auth.player_id, ProfileImage::Avatar, &request_id).await
+}
+
+/// Remove your own banner.
+#[utoipa::path(
+    delete,
+    path = "/v1/players/me/banner",
+    responses(
+        (status = 200, description = "Banner removed", body = DataResponse<PlayerResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "players"
+)]
+pub async fn delete_player_banner(
+    State(state): State<UploadsState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
+    let request_id = get_request_id(&headers).to_string();
+    clear_player_image(&state, auth.player_id, ProfileImage::Banner, &request_id).await
+}
+
+async fn admin_clear_player_image(
+    state: &UploadsState,
+    auth: &AuthenticatedUser,
+    perm: &PermissionChecker,
+    player_id: PlayerId,
+    image: ProfileImage,
+    request_id: &str,
+) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
+    perm.require_permission(auth, permissions::admin::USERS_MANAGE)
+        .await?;
+    // A takedown is logged with the acting admin; the image itself is gone
+    // from storage as well as the profile.
+    tracing::info!(
+        admin = %auth.username, admin_user_id = %auth.user_id, %player_id, ?image,
+        "admin removed a player's image"
+    );
+    clear_player_image(state, player_id, image, request_id).await
+}
+
+/// Take down a player's avatar (admin).
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/players/{player_id}/avatar",
+    params(("player_id" = String, Path, description = "Player ID")),
+    responses(
+        (status = 200, description = "Avatar removed", body = DataResponse<PlayerResponse>),
+        (status = 403, description = "Missing admin.users.manage", body = ApiError),
+        (status = 404, description = "Player not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn admin_delete_player_avatar(
+    State(state): State<UploadsState>,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
+    headers: HeaderMap,
+    Path(player_id): Path<PlayerId>,
+) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
+    let request_id = get_request_id(&headers).to_string();
+    admin_clear_player_image(
+        &state,
+        &auth,
+        &perm,
+        player_id,
+        ProfileImage::Avatar,
+        &request_id,
+    )
+    .await
+}
+
+/// Take down a player's banner (admin).
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/players/{player_id}/banner",
+    params(("player_id" = String, Path, description = "Player ID")),
+    responses(
+        (status = 200, description = "Banner removed", body = DataResponse<PlayerResponse>),
+        (status = 403, description = "Missing admin.users.manage", body = ApiError),
+        (status = 404, description = "Player not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn admin_delete_player_banner(
+    State(state): State<UploadsState>,
+    auth: AuthenticatedUser,
+    perm: PermissionChecker,
+    headers: HeaderMap,
+    Path(player_id): Path<PlayerId>,
+) -> ApiResult<Json<DataResponse<PlayerResponse>>> {
+    let request_id = get_request_id(&headers).to_string();
+    admin_clear_player_image(
+        &state,
+        &auth,
+        &perm,
+        player_id,
+        ProfileImage::Banner,
+        &request_id,
     )
     .await
 }

@@ -472,7 +472,7 @@ impl From<LeagueTeamMemberWithPlayer> for LeagueTeamMemberWithPlayerResponse {
 pub struct TeamSeasonStatsResponse {
     /// Roster size this season (current members).
     pub member_count: i32,
-    /// How many of them have a CS2 profile that fed the rating figures.
+    /// How many of them have a CS2 Premier rating on record.
     pub rated_count: i32,
     /// Median CS2 Premier rating across rated members; `null` when none is rated.
     pub median_rating: Option<f64>,

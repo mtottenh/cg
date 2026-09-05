@@ -572,6 +572,7 @@ impl LeagueMemberRepository for PgLeagueMemberRepository {
             FROM league_members lm
             INNER JOIN leagues l ON l.id = lm.league_id
             WHERE lm.user_id = $1
+              AND l.archived_at IS NULL
             ORDER BY lm.joined_at DESC
             ",
         )

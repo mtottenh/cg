@@ -35,6 +35,29 @@ async fn create_league(app: &TestApp, name: &str, slug: &str) -> String {
     body["data"]["id"].as_str().unwrap().to_string()
 }
 
+/// The league ids in the current player's own membership list. Note the
+/// endpoint returns a BARE array, not a `{data: [...]}` envelope.
+async fn my_league_ids(app: &TestApp) -> Vec<String> {
+    let body: serde_json::Value = app.get_auth("/v1/users/me/leagues").await.json();
+    body.as_array()
+        .expect("/v1/users/me/leagues returns a bare array")
+        .iter()
+        .map(|m| m["league_id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The team ids in the current player's own team list
+/// (`/v1/players/me/league-teams`).
+async fn my_team_ids(app: &TestApp) -> Vec<String> {
+    let body: serde_json::Value = app.get_auth("/v1/players/me/league-teams").await.json();
+    body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["team_id"].as_str().unwrap().to_string())
+        .collect()
+}
+
 /// The names in the public league listing.
 async fn public_league_names(app: &TestApp) -> Vec<String> {
     let body: serde_json::Value = app.get("/v1/leagues?per_page=100").await.json();
@@ -480,6 +503,71 @@ async fn test_archived_team_leaves_the_season_roster_listing_and_comes_back() {
         .assert_status(StatusCode::OK);
 
     assert!(roster_has(&app, &season_id, &team_id).await);
+}
+
+/// A player's own league list feeds the sidebar's "your league" switcher and
+/// the Find a team page, so an archived league must drop out of it (and come
+/// back on restore) even though the membership row is untouched.
+#[tokio::test]
+async fn test_archived_league_leaves_the_players_own_league_list() {
+    let app = TestApp::new().await;
+    let league_id = create_league(&app, "Mine To Archive", "mine-to-archive").await;
+
+    assert!(
+        my_league_ids(&app).await.contains(&league_id),
+        "the creator is a member, so the league is in their own list"
+    );
+
+    app.post_auth(&format!("/v1/leagues/{league_id}/archive"))
+        .await
+        .assert_status(StatusCode::OK);
+    assert!(
+        !my_league_ids(&app).await.contains(&league_id),
+        "an archived league is gone from the player's own list"
+    );
+
+    app.post_auth(&format!("/v1/leagues/{league_id}/restore"))
+        .await
+        .assert_status(StatusCode::OK);
+    assert!(my_league_ids(&app).await.contains(&league_id));
+}
+
+/// A player's own team list must drop a team whose SEASON was archived — not
+/// only its team or its league — so the My Teams page never offers a team in
+/// a season that has been put away.
+#[tokio::test]
+async fn test_archived_season_hides_the_players_team_in_it() {
+    let app = TestApp::new().await;
+    let league_id = create_league(&app, "Season Hides Team", "season-hides-team").await;
+    let season_id = first_season(&app, &league_id).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/league-seasons/{season_id}/teams"),
+            &json!({ "name": "In A Season", "tag": "SEAS" }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    let team_id = created["data"]["team"]["id"].as_str().unwrap().to_string();
+
+    assert!(
+        my_team_ids(&app).await.contains(&team_id),
+        "creating a team registers the creator, so it is in their team list"
+    );
+
+    app.post_auth(&format!("/v1/league-seasons/{season_id}/archive"))
+        .await
+        .assert_status(StatusCode::OK);
+    assert!(
+        !my_team_ids(&app).await.contains(&team_id),
+        "a team in an archived season is gone from the player's team list"
+    );
+
+    app.post_auth(&format!("/v1/league-seasons/{season_id}/restore"))
+        .await
+        .assert_status(StatusCode::OK);
+    assert!(my_team_ids(&app).await.contains(&team_id));
 }
 
 // =============================================================================

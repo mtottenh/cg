@@ -342,15 +342,17 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
     ) -> Result<Vec<PlayerLeagueTeamMembership>, DomainError> {
         let rows = sqlx::query_as::<_, PlayerLeagueTeamMembershipRow>(
             // The joins are only the archive rule: a player's own team list
-            // must not show a team, or a whole league, that has been put
-            // away. Neither archiving wrote to the membership, so both are
-            // undone exactly by restoring.
+            // must not show a team, a season, or a whole league that has been
+            // put away. Archiving wrote to none of them, so each is undone
+            // exactly by restoring.
             r"
             SELECT v.* FROM v_player_league_teams v
             JOIN league_teams t ON t.id = v.team_id
+            JOIN league_seasons s ON s.id = v.season_id
             JOIN leagues l ON l.id = v.league_id
             WHERE v.player_id = $1
               AND t.archived_at IS NULL
+              AND s.archived_at IS NULL
               AND l.archived_at IS NULL
             ORDER BY v.joined_at DESC
             ",

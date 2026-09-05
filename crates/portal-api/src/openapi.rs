@@ -62,8 +62,8 @@ use crate::dto::responses::{
     LoserResultResponse, MapInfoResponse, MapPickBanFormatResponse, MapStatusResponse,
     MatchLineupPlayerResponse, MatchLineupResponse, MatchParticipantsResponse,
     MatchResultOverrideResponse, MatchStatusDetailsResponse, MatchStatusLogResponse,
-    MyTournamentRegistrationsResponse, PaginationMetaResponse, PermissionResponse,
-    PlatformStatsResponse, PlayerLeagueTeamMembershipResponse, PlayerResponse,
+    MovedTeamResponse, MyTournamentRegistrationsResponse, PaginationMetaResponse,
+    PermissionResponse, PlatformStatsResponse, PlayerLeagueTeamMembershipResponse, PlayerResponse,
     PlayerSearchResponse, ProgressionResponse, RankTierResponse, RegisterResponse,
     ResultClaimResponse, ResultClaimSubmissionResponse, ResultConfirmationResponse,
     ResultDisputeResponse, RoleResponse, RoleWithPermissionsResponse, ScheduleProposalResponse,
@@ -73,7 +73,8 @@ use crate::dto::responses::{
     TournamentResponse, TournamentStageResponse, TournamentSummaryResponse, UploadInfoResponse,
     UserLeagueMembershipResponse, UserResponse, UserRoleAssignmentResponse,
     ValidationResultResponse, VetoActionResponse, VetoActionResultResponse, VetoFormatResponse,
-    VetoSessionResponse, VetoSessionStateResponse, WithdrawalResponse, WorkshopMapDetailsResponse,
+    VetoSessionResponse, VetoSessionStateResponse, WithdrawalResponse, WithdrawnEntryResponse,
+    WorkshopMapDetailsResponse,
 };
 use crate::error::{ApiError, FieldErrorDto};
 use crate::handlers::{
@@ -578,6 +579,8 @@ use utoipa_swagger_ui::SwaggerUi;
 
             // League Teams
             LeagueTeamResponse,
+            MovedTeamResponse,
+            WithdrawnEntryResponse,
             LeagueTeamSeasonResponse,
             LeagueTeamWithSeasonResponse,
             LeagueTeamSummaryResponse,

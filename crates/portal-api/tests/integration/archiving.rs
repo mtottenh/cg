@@ -600,6 +600,170 @@ async fn test_moving_a_team_carries_its_roster_into_the_target_season() {
     );
 }
 
+/// A cup that has not started holds nothing but the entry row, so the move
+/// withdraws the team and says which cups it left.
+#[tokio::test]
+async fn test_moving_a_team_withdraws_it_from_cups_that_have_not_started() {
+    let app = TestApp::new().await;
+    let from_league = create_league(&app, "Busy League", "busy-league").await;
+    let to_league = create_league(&app, "Quiet League", "quiet-league").await;
+    let from_season = first_season(&app, &from_league).await;
+    let to_season = first_season(&app, &to_league).await;
+    let (team_id, team_season_id) = create_team(&app, &from_season, "Early Birds", "EARLY").await;
+    let cup = create_open_team_cup(
+        &app,
+        &from_league,
+        &from_season,
+        "Autumn Open",
+        "autumn-open",
+    )
+    .await;
+    app.post_json(
+        &format!("/v1/tournaments/{cup}/registrations/team"),
+        &json!({ "team_season_id": team_season_id, "participant_name": "Early Birds" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+
+    let response = app
+        .post_json(
+            &format!("/v1/league-teams/{team_id}/move"),
+            &json!({ "league_id": to_league, "season_id": to_season }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["league_id"], to_league.as_str());
+    let withdrawn = body["data"]["withdrawn_from"].as_array().unwrap();
+    assert_eq!(
+        withdrawn.len(),
+        1,
+        "the move must name the cup it withdrew the team from"
+    );
+    assert_eq!(withdrawn[0]["tournament_id"], cup.as_str());
+    assert_eq!(withdrawn[0]["tournament_name"], "Autumn Open");
+
+    // The entry is gone from the cup, not lingering on a season the team left.
+    let regs: serde_json::Value = app
+        .get_auth(&format!("/v1/tournaments/{cup}/registrations"))
+        .await
+        .json();
+    assert_eq!(regs["data"].as_array().map_or(0, Vec::len), 0);
+    assert!(roster_has(&app, &to_season, &team_id).await);
+}
+
+/// Once a cup has a bracket its matches reference the entry; the move is
+/// refused, and the entry stays.
+#[tokio::test]
+async fn test_moving_a_team_entered_in_a_scheduled_cup_is_refused() {
+    let app = TestApp::new().await;
+    let from_league = create_league(&app, "Bracket League", "bracket-league").await;
+    let to_league = create_league(&app, "Other League", "other-league").await;
+    let from_season = first_season(&app, &from_league).await;
+    let to_season = first_season(&app, &to_league).await;
+    let (team_id, team_season_id) = create_team(&app, &from_season, "Locked In", "LOCK").await;
+    let cup = create_open_team_cup(
+        &app,
+        &from_league,
+        &from_season,
+        "Winter Open",
+        "winter-open",
+    )
+    .await;
+    app.post_json(
+        &format!("/v1/tournaments/{cup}/registrations/team"),
+        &json!({ "team_season_id": team_season_id, "participant_name": "Locked In" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+    app.post_auth(&format!("/v1/tournaments/{cup}/close-registration"))
+        .await
+        .assert_status(StatusCode::OK);
+
+    let response = app
+        .post_json(
+            &format!("/v1/league-teams/{team_id}/move"),
+            &json!({ "league_id": to_league, "season_id": to_season }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Winter Open"),
+        "the refusal must name the cup: {body}"
+    );
+    let regs: serde_json::Value = app
+        .get_auth(&format!("/v1/tournaments/{cup}/registrations"))
+        .await
+        .json();
+    assert_eq!(regs["data"].as_array().map_or(0, Vec::len), 1);
+    assert!(roster_has(&app, &from_season, &team_id).await);
+}
+
+/// A one-a-side team cup in `registration`, inside the given league season.
+async fn create_open_team_cup(
+    app: &TestApp,
+    league_id: &str,
+    season_id: &str,
+    name: &str,
+    slug: &str,
+) -> String {
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "league_id": league_id,
+                "season_id": season_id,
+                "name": name,
+                "slug": slug,
+                "format": "single_elimination",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
+                "participant_type": "team",
+                "team_size": 1,
+                "min_participants": 2,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "live",
+                "default_match_format": "bo1"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    let id = created["data"]["id"].as_str().unwrap().to_string();
+    app.post_auth(&format!("/v1/tournaments/{id}/publish"))
+        .await
+        .assert_status(StatusCode::OK);
+    app.post_auth(&format!("/v1/tournaments/{id}/open-registration"))
+        .await
+        .assert_status(StatusCode::OK);
+    id
+}
+
+/// A team in the season, returning (team id, team-season id).
+async fn create_team(app: &TestApp, season_id: &str, name: &str, tag: &str) -> (String, String) {
+    let response = app
+        .post_json(
+            &format!("/v1/league-seasons/{season_id}/teams"),
+            &json!({ "name": name, "tag": tag }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = response.json();
+    (
+        created["data"]["team"]["id"].as_str().unwrap().to_string(),
+        created["data"]["team_season"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    )
+}
+
 /// The move is narrow on purpose: a team with results would either drag
 /// another league's seasons along or lose them.
 #[tokio::test]

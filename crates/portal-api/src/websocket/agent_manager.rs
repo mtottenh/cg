@@ -134,6 +134,9 @@ pub struct AgentHeartbeatFrame {
     /// was unreachable).
     #[serde(default)]
     pub get5_status: Option<serde_json::Value>,
+    /// Raw CS2 `status` output (agent 0.2.0+), at most 8 KiB as sent.
+    #[serde(default)]
+    pub status_output: Option<String>,
 }
 
 /// Inbound frames, distinguished structurally: heartbeats carry `type`,

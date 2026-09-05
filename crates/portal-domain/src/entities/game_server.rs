@@ -7,9 +7,9 @@
 
 use chrono::{DateTime, Utc};
 use portal_core::ids::{
-    GameId, GameServerId, MatchSubstitutionId, PlayerId, ServerAgentCertId, ServerBookingId,
-    ServerEventId, ServerReservationId, TournamentId, TournamentMatchId, TournamentRegistrationId,
-    UserId,
+    AdminServerCommandId, GameId, GameServerId, MatchSubstitutionId, PlayerId, ServerAgentCertId,
+    ServerBookingId, ServerEventId, ServerReservationId, TournamentId, TournamentMatchId,
+    TournamentRegistrationId, UserId,
 };
 use portal_core::types::{
     AgentGamestate, GameServerStatus, ReservationKind, ReservationStatus, SubstitutionStatus,
@@ -42,6 +42,16 @@ pub struct GameServer {
     pub agent_version: Option<String>,
     pub last_heartbeat_at: Option<DateTime<Utc>>,
     pub last_gamestate: Option<AgentGamestate>,
+    /// Engine map name from the last heartbeat that carried a CS2 `status`
+    /// (agent 0.2.0+); absent for older agents.
+    pub last_map: Option<String>,
+    /// Humans plus bots connected at that heartbeat.
+    pub last_player_count: Option<i32>,
+    /// That heartbeat's raw `status` output, player addresses redacted.
+    pub last_status_output: Option<String>,
+    /// When the last `status` was received; the console treats an agent
+    /// without one as "does not send status", never as "empty server".
+    pub last_status_at: Option<DateTime<Utc>>,
 
     /// One-time enrollment token (SHA-256 hex) and its expiry.
     pub enrollment_token_hash: Option<String>,
@@ -134,6 +144,28 @@ pub struct HeartbeatUpdate {
     pub gamestate: Option<AgentGamestate>,
     /// The `matchid` MatchZy reports as loaded, if any.
     pub reported_matchzy_id: Option<i64>,
+    /// Parsed from the heartbeat's `status_output` (agent 0.2.0+).
+    pub last_map: Option<String>,
+    pub last_player_count: Option<i32>,
+    /// The raw `status_output`, already bounded and with addresses redacted.
+    pub status_output: Option<String>,
+}
+
+/// One console command an admin sent to a game server (the audit row).
+#[derive(Debug, Clone)]
+pub struct AdminServerCommand {
+    pub id: AdminServerCommandId,
+    pub server_id: GameServerId,
+    pub reservation_id: Option<ServerReservationId>,
+    pub admin_user_id: UserId,
+    /// `raw`, `map_change`, or `action:<name>`.
+    pub kind: String,
+    /// What was sent, secrets masked.
+    pub command: String,
+    pub output: Option<String>,
+    pub ok: bool,
+    pub force: bool,
+    pub created_at: DateTime<Utc>,
 }
 
 /// A match's claim on a server for one play-through (§4).

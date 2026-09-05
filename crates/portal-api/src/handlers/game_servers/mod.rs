@@ -7,6 +7,7 @@
 
 pub mod admin;
 pub mod agent;
+pub mod console;
 pub mod match_server;
 pub mod matchzy;
 pub mod substitutions;

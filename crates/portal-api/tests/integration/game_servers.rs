@@ -237,6 +237,9 @@ async fn test_heartbeat_busyness_rules() {
         rcon_ok,
         gamestate,
         reported_matchzy_id: None,
+        last_map: None,
+        last_player_count: None,
+        status_output: None,
     };
 
     // Idle heartbeat: offline → available
@@ -310,6 +313,9 @@ async fn test_stale_sweep_marks_offline() {
                 rcon_ok: true,
                 gamestate: Some(AgentGamestate::None),
                 reported_matchzy_id: None,
+                last_map: None,
+                last_player_count: None,
+                status_output: None,
             },
             false,
         )

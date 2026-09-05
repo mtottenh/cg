@@ -32,9 +32,10 @@ pub mod repositories;
 pub mod transaction;
 
 pub use adapters::{
-    MatchCompletionTxInput, MatchCompletionTxOutput, PgAdhocTeamRepository, PgAgentCertRepository,
-    PgApiKeyRepository, PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository,
-    PgAwardRepository, PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
+    MatchCompletionTxInput, MatchCompletionTxOutput, PgAdhocTeamRepository,
+    PgAdminServerCommandRepository, PgAgentCertRepository, PgApiKeyRepository,
+    PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgAwardRepository,
+    PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
     PgDemoPlayerStatsRepository, PgDemoRepository, PgDiscoveredMatchRepository,
     PgDisputeMessageRepository, PgDisputeRepository, PgEntityChangeRepository,
     PgEvidenceRepository, PgForfeitRecordRepository, PgGameServerRepository,

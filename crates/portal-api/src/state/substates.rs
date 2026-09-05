@@ -310,7 +310,7 @@ pub struct GameServerState {
     pub public_base_url: String,
     /// Reservation lookups (heartbeat §6.7 ours-vs-external detection).
     pub server_reservation_repo: Arc<portal_db::PgServerReservationRepository>,
-    /// Event rows (admin-command audit trail).
+    /// Event rows (MatchZy ingest).
     pub server_event_repo: Arc<portal_db::PgServerEventRepository>,
 }
 

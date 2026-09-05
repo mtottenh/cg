@@ -4006,6 +4006,7 @@ dependencies = [
  "futures-util",
  "portal-core",
  "proptest",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

@@ -25,6 +25,7 @@ use portal_core::ids::GameServerId;
 use portal_core::types::AgentGamestate;
 use portal_domain::entities::{GameServer, HeartbeatUpdate};
 use portal_domain::repositories::ServerReservationRepository;
+use portal_plugins::games::cs2::console;
 use serde::{Deserialize, Serialize};
 
 /// Header set by Caddy after client-cert verification.
@@ -245,11 +246,24 @@ async fn handle_agent_message(
                 let m = s.get("matchid")?;
                 m.as_i64().or_else(|| m.as_str()?.parse().ok())
             });
+            // CS2's `status` (agent 0.2.0+): the map and who is connected.
+            // Parsed here rather than in the domain crate, which must not
+            // depend on the plugin crate; stored raw with addresses redacted.
+            let cs2 = hb.status_output.as_deref().map(|raw| {
+                let redacted = console::redact_addresses(raw);
+                let parsed = console::parse_status(&redacted);
+                (parsed, console::sanitise_output(&redacted, 8 * 1024))
+            });
             let update = HeartbeatUpdate {
                 agent_version: hb.agent_version,
                 rcon_ok: hb.rcon_ok,
                 gamestate,
                 reported_matchzy_id,
+                last_map: cs2.as_ref().and_then(|(p, _)| p.map.clone()),
+                last_player_count: cs2
+                    .as_ref()
+                    .map(|(p, _)| i32::try_from(p.player_count()).unwrap_or(i32::MAX)),
+                status_output: cs2.map(|(_, raw)| raw),
             };
             // §6.7 rule 3: a loaded match is OURS when a live reservation
             // exists and the reported matchid matches (or is unreported).

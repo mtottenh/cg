@@ -448,6 +448,11 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for an admin console command sent to a game server.
+    AdminServerCommandId
+);
+
+define_id!(
     /// Unique identifier for a raw game-server webhook event.
     ServerEventId
 );

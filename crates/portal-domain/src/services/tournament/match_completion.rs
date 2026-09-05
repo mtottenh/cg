@@ -14,7 +14,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use portal_core::types::{BracketType, TournamentMatchStatus};
 use portal_core::{
-    DomainError, ResultClaimId, ResultReviewId, SagaId, TournamentMatchId, TournamentRegistrationId,
+    DomainError, ResultClaimId, ResultReviewId, SagaId, TournamentBracketId, TournamentMatchId,
+    TournamentRegistrationId, TournamentStageId,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, instrument, warn};
@@ -106,6 +107,22 @@ pub trait MatchStatsUpdater: Send + Sync + 'static {
     ) -> Result<(), DomainError>;
 }
 
+/// Trait for moving a multi-stage tournament on when a stage finishes.
+///
+/// Used by the saga so the last group result seeds the playoffs without
+/// depending on the full `ProgressionService`.
+#[async_trait]
+pub trait StageAdvancer: Send + Sync + 'static {
+    /// If `bracket_id` belongs to a group stage whose brackets have all
+    /// finished, generate the next stage from the standings and open it.
+    /// Returns the stage that was opened; `None` when there was nothing to
+    /// do (bracket or stage unfinished, not a group stage, already advanced).
+    async fn advance_if_stage_complete(
+        &self,
+        bracket_id: TournamentBracketId,
+    ) -> Result<Option<TournamentStageId>, DomainError>;
+}
+
 // =============================================================================
 // INPUT/OUTPUT TYPES
 // =============================================================================
@@ -142,6 +159,9 @@ pub struct MatchCompletionOutput {
     pub loser_next_match_id: Option<TournamentMatchId>,
     /// Whether standings were updated.
     pub standings_updated: bool,
+    /// Whether this result finished a group stage and seeded the next one.
+    #[serde(default)]
+    pub stage_advanced: bool,
     /// Whether a review is pending.
     pub review_pending: bool,
     /// The review ID if one was created.
@@ -163,7 +183,7 @@ pub struct MatchCompletionOutput {
 /// - Winner advancement to next match
 /// - Loser routing (elimination or losers bracket)
 /// - Standings updates for round robin/swiss
-pub struct MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU> {
+pub struct MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA> {
     match_repo: Arc<TMR>,
     bracket_repo: Arc<TBR>,
     registration_repo: Arc<TRR>,
@@ -173,10 +193,11 @@ pub struct MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU> {
     demo_validator: Arc<MDV>,
     review_creator: Arc<RC>,
     stats_updater: Arc<MSU>,
+    stage_advancer: Arc<SA>,
 }
 
-impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU> Clone
-    for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU>
+impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA> Clone
+    for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA>
 {
     fn clone(&self) -> Self {
         Self {
@@ -189,12 +210,13 @@ impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU> Clone
             demo_validator: Arc::clone(&self.demo_validator),
             review_creator: Arc::clone(&self.review_creator),
             stats_updater: Arc::clone(&self.stats_updater),
+            stage_advancer: Arc::clone(&self.stage_advancer),
         }
     }
 }
 
-impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU>
-    MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU>
+impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA>
+    MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA>
 where
     TMR: TournamentMatchRepository,
     TBR: TournamentBracketRepository,
@@ -205,6 +227,7 @@ where
     MDV: MatchDemoValidator,
     RC: ReviewCreator,
     MSU: MatchStatsUpdater,
+    SA: StageAdvancer,
 {
     /// Create a new match completion saga.
     #[allow(clippy::too_many_arguments)]
@@ -218,6 +241,7 @@ where
         demo_validator: Arc<MDV>,
         review_creator: Arc<RC>,
         stats_updater: Arc<MSU>,
+        stage_advancer: Arc<SA>,
     ) -> Self {
         Self {
             match_repo,
@@ -229,6 +253,7 @@ where
             demo_validator,
             review_creator,
             stats_updater,
+            stage_advancer,
         }
     }
 
@@ -335,6 +360,7 @@ where
                 winner_next_match_id: None,
                 loser_next_match_id: None,
                 standings_updated: false,
+                stage_advanced: false,
                 review_pending: false,
                 review_id: review.as_ref().map(|r| r.id),
                 summary: "Match completion already applied; resume skipped".to_string(),
@@ -471,27 +497,28 @@ where
             .step_update_standings(saga_coordinator, execution, match_, &bracket)
             .await?;
 
+        // Step 7.5: Seed the next stage if this was the last group result
+        let stage_advanced = self
+            .step_advance_stage(saga_coordinator, execution, match_)
+            .await?;
+
         // Step 8: Update player stats (best-effort, non-blocking)
         self.step_update_player_stats(saga_coordinator, execution, &input)
             .await;
 
-        // Build summary
-        let summary = self.build_summary(
-            winner_next_match_id.is_some(),
-            loser_next_match_id.is_some(),
-            standings_updated,
-            &bracket,
-        );
-
-        Ok(MatchCompletionOutput {
+        let mut output = MatchCompletionOutput {
             match_id: input.match_id,
             winner_next_match_id,
             loser_next_match_id,
             standings_updated,
+            stage_advanced,
             review_pending: false,
             review_id: None,
-            summary,
-        })
+            summary: String::new(),
+        };
+        output.summary = Self::build_summary(&output, &bracket);
+
+        Ok(output)
     }
 
     // =========================================================================
@@ -1070,6 +1097,50 @@ where
         Ok(true)
     }
 
+    /// Step 7.5: Seed the next stage when this result finished a group stage.
+    ///
+    /// Until this step existed the groups → playoffs transition lived only in
+    /// `ProgressionService::process_match_completion`, which nothing but the
+    /// admin reapply endpoint calls — so a groups-and-playoffs cup whose
+    /// results arrived the normal way (captain claim + confirm, forfeit,
+    /// review) sat at "every group match complete, playoffs pending" for
+    /// good. Runs after the standings recompute because the seeding reads
+    /// them; idempotent because the advancer skips a stage already completed.
+    async fn step_advance_stage(
+        &self,
+        saga_coordinator: &SagaCoordinator<SR>,
+        execution: &mut SagaExecution,
+        match_: &TournamentMatch,
+    ) -> Result<bool, DomainError> {
+        const STEP_NAME: &str = "advance_stage";
+
+        let opened = self
+            .stage_advancer
+            .advance_if_stage_complete(match_.bracket_id)
+            .await?;
+
+        let output = match opened {
+            Some(stage_id) => serde_json::json!({
+                "action": "next_stage_seeded",
+                "stage_id": stage_id.to_string(),
+            }),
+            None => serde_json::json!({ "action": "not_applicable" }),
+        };
+        saga_coordinator
+            .complete_step(execution, STEP_NAME, Some(output))
+            .await?;
+
+        if let Some(stage_id) = opened {
+            info!(
+                match_id = %match_.id,
+                stage_id = %stage_id,
+                "Group stage complete; next stage seeded"
+            );
+        }
+
+        Ok(opened.is_some())
+    }
+
     /// Step 8: Update player stats (best-effort).
     ///
     /// This step is non-critical — if it fails, we log and continue.
@@ -1198,24 +1269,18 @@ where
         }
     }
 
-    fn build_summary(
-        &self,
-        winner_advanced: bool,
-        loser_dropped: bool,
-        standings_updated: bool,
-        bracket: &TournamentBracket,
-    ) -> String {
+    fn build_summary(output: &MatchCompletionOutput, bracket: &TournamentBracket) -> String {
         let mut parts = Vec::new();
 
         parts.push("Match completed".to_string());
 
-        if winner_advanced {
+        if output.winner_next_match_id.is_some() {
             parts.push("winner advanced to next match".to_string());
         } else {
             parts.push("winner crowned as champion".to_string());
         }
 
-        if loser_dropped {
+        if output.loser_next_match_id.is_some() {
             parts.push("loser dropped to losers bracket".to_string());
         } else if matches!(
             bracket.bracket_type,
@@ -1224,8 +1289,12 @@ where
             parts.push("loser eliminated".to_string());
         }
 
-        if standings_updated {
+        if output.standings_updated {
             parts.push("standings updated".to_string());
+        }
+
+        if output.stage_advanced {
+            parts.push("next stage seeded".to_string());
         }
 
         parts.join(", ")
@@ -1233,8 +1302,8 @@ where
 }
 
 #[async_trait]
-impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU> Saga
-    for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU>
+impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA> Saga
+    for MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA>
 where
     TMR: TournamentMatchRepository,
     TBR: TournamentBracketRepository,
@@ -1245,6 +1314,7 @@ where
     MDV: MatchDemoValidator,
     RC: ReviewCreator,
     MSU: MatchStatsUpdater,
+    SA: StageAdvancer,
 {
     type Input = MatchCompletionInput;
     type Output = MatchCompletionOutput;
@@ -1305,6 +1375,7 @@ mod tests {
             winner_next_match_id: Some(TournamentMatchId::new()),
             loser_next_match_id: None,
             standings_updated: false,
+            stage_advanced: false,
             review_pending: false,
             review_id: None,
             summary: "Match completed".to_string(),
@@ -1322,6 +1393,7 @@ mod tests {
             winner_next_match_id: None,
             loser_next_match_id: None,
             standings_updated: true,
+            stage_advanced: false,
             review_pending: false,
             review_id: None,
             summary: "Match completed, standings updated".to_string(),
@@ -1363,6 +1435,7 @@ mod tests {
             winner_next_match_id: Some(TournamentMatchId::new()),
             loser_next_match_id: Some(TournamentMatchId::new()),
             standings_updated: true,
+            stage_advanced: false,
             review_pending: false,
             review_id: None,
             summary: "All done".to_string(),

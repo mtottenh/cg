@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use portal_core::types::{
     BracketType, MatchFormat, MatchFormatPlan, MatchParticipantSource, StageFormat, StageStatus,
     TournamentMatchStatus,
@@ -27,6 +28,7 @@ use crate::repositories::tournament::{
 use super::bracket_generator::groups;
 use super::bracket_generator::{BracketGenerator, CrossLinkType};
 use super::helpers;
+use super::match_completion::StageAdvancer;
 
 /// Result of processing match progression.
 #[derive(Debug, Clone)]
@@ -235,28 +237,12 @@ where
         let bracket_complete = self.check_bracket_completion(match_.bracket_id).await?;
 
         // Check for stage advancement (groups → playoffs)
-        let mut stage_advanced = false;
+        let stage_advanced = self
+            .advance_stage_if_complete(match_.bracket_id)
+            .await?
+            .is_some();
 
         let tournament_complete = if bracket_complete {
-            // Check if the completed bracket's stage is a group stage
-            let stage = self
-                .stage_repo
-                .find_by_id(bracket.stage_id)
-                .await?
-                .ok_or_else(|| {
-                    DomainError::Internal(format!("Stage {} not found", bracket.stage_id))
-                })?;
-
-            if stage.format == StageFormat::GroupStage {
-                // Check if ALL brackets in this stage are complete
-                let all_groups_done = self.check_stage_completion(stage.id).await?;
-                if all_groups_done {
-                    self.advance_to_next_stage(match_.tournament_id, &stage)
-                        .await?;
-                    stage_advanced = true;
-                }
-            }
-
             self.check_tournament_completion(match_.tournament_id)
                 .await?
         } else {
@@ -533,6 +519,52 @@ where
         Ok(true)
     }
 
+    /// Seed the next stage once the last group result is in.
+    ///
+    /// If `bracket_id` belongs to a group stage whose brackets have all
+    /// finished, the following stage is generated from the group standings
+    /// and the two stage statuses flip. Returns the stage that was opened.
+    ///
+    /// Safe to call after every result and to re-run: an unfinished bracket,
+    /// a non-group stage, a group stage with nothing after it (a plain round
+    /// robin), or a stage already marked `Completed` (a saga re-drive after
+    /// the playoffs were seeded) all return `None` without touching anything.
+    #[instrument(skip(self))]
+    pub async fn advance_stage_if_complete(
+        &self,
+        bracket_id: TournamentBracketId,
+    ) -> Result<Option<TournamentStageId>, DomainError> {
+        if !self.check_bracket_completion(bracket_id).await? {
+            return Ok(None);
+        }
+        let bracket = self.get_bracket(bracket_id).await?;
+        let stage = self
+            .stage_repo
+            .find_by_id(bracket.stage_id)
+            .await?
+            .ok_or_else(|| {
+                DomainError::Internal(format!("Stage {} not found", bracket.stage_id))
+            })?;
+        if stage.format != StageFormat::GroupStage || stage.status == StageStatus::Completed {
+            return Ok(None);
+        }
+        if self
+            .stage_repo
+            .find_next_stage(bracket.tournament_id, stage.stage_order)
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        if !self.check_stage_completion(stage.id).await? {
+            return Ok(None);
+        }
+        let next_stage_id = self
+            .advance_to_next_stage(bracket.tournament_id, &stage)
+            .await?;
+        Ok(Some(next_stage_id))
+    }
+
     /// Advance from a completed group stage to the playoff stage.
     ///
     /// Reads standings from each group, cross-seeds for playoffs, and generates
@@ -541,7 +573,7 @@ where
         &self,
         tournament_id: TournamentId,
         completed_stage: &crate::entities::tournament::TournamentStage,
-    ) -> Result<(), DomainError> {
+    ) -> Result<TournamentStageId, DomainError> {
         // Find the next stage
         let next_stage = self
             .stage_repo
@@ -663,7 +695,7 @@ where
             "Advanced from group stage to playoffs"
         );
 
-        Ok(())
+        Ok(next_stage.id)
     }
 
     /// Generate a Single Elimination playoff bracket.
@@ -1324,6 +1356,25 @@ where
                 "Target match already has both participants".to_string(),
             ))
         }
+    }
+}
+
+/// The saga's view of the service: one call per completed match that seeds
+/// the playoffs exactly when the last group result lands.
+#[async_trait]
+impl<TMR, TBR, TSR, TRR, TSTR> StageAdvancer for ProgressionService<TMR, TBR, TSR, TRR, TSTR>
+where
+    TMR: TournamentMatchRepository + 'static,
+    TBR: TournamentBracketRepository + 'static,
+    TSR: TournamentStageRepository + 'static,
+    TRR: TournamentRegistrationRepository + 'static,
+    TSTR: TournamentStandingsRepository + 'static,
+{
+    async fn advance_if_stage_complete(
+        &self,
+        bracket_id: TournamentBracketId,
+    ) -> Result<Option<TournamentStageId>, DomainError> {
+        self.advance_stage_if_complete(bracket_id).await
     }
 }
 

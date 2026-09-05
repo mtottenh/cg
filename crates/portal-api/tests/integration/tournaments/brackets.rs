@@ -1,4 +1,5 @@
 use super::*;
+use crate::results::transition_match_to_in_progress;
 
 async fn create_de_tournament(app: &TestApp, slug: &str, min_participants: i32) -> String {
     let game_id = get_game_id(app.pool(), "cs2").await.to_string();
@@ -1001,5 +1002,202 @@ async fn test_groups_with_de_playoffs() {
         brackets.len(),
         2,
         "Should have 2 group brackets (no playoffs yet)"
+    );
+}
+
+/// Confirm a win for `winner` through the captain claim → opponent confirm
+/// flow, which runs the match-completion saga exactly as production does.
+async fn confirm_win_via_claims(
+    app: &TestApp,
+    tournament_id: &str,
+    match_id: &str,
+    winner_reg: &str,
+    winner_token: &str,
+    loser_token: &str,
+    winner_is_p1: bool,
+) {
+    transition_match_to_ready(app, tournament_id, match_id).await;
+    transition_match_to_in_progress(app, tournament_id, match_id).await;
+    let (p1, p2) = if winner_is_p1 { (2, 0) } else { (0, 2) };
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": winner_reg,
+                "participant1_score": p1,
+                "participant2_score": p2,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+            winner_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    app.post_with_token(
+        &format!("/v1/matches/{match_id}/result/{claim_id}/confirm"),
+        loser_token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
+/// The last group result, arriving the way every real result does (captain
+/// claim + opponent confirm, i.e. the match-completion saga), must seed the
+/// playoffs. The groups → playoffs transition used to live only behind the
+/// admin "reapply progression" endpoint, so a real cup sat at "all group
+/// matches complete, playoffs pending" until an admin noticed.
+#[tokio::test]
+async fn test_group_results_confirmed_by_captains_seed_the_playoffs() {
+    let app = TestApp::new().await;
+    let tournament_id = create_gp_tournament(
+        &app,
+        "gp-captains-advance",
+        4,
+        json!({
+            "group_count": 2,
+            "advance_per_group": 2,
+            "group_format": "round_robin",
+            "playoff_format": "single_elimination"
+        }),
+    )
+    .await;
+
+    // Eight registered players, each with their own token; the dev user is
+    // the tournament admin, not a participant.
+    let mut tokens: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for i in 1..=8 {
+        let username = format!("gp_cap{i}");
+        let (user_id, player_id) = create_test_player(&app, &username).await;
+        let reg =
+            insert_test_registration(&app, &tournament_id, player_id, user_id, &username).await;
+        tokens.insert(
+            reg,
+            create_test_token(user_id, player_id, &username, TEST_JWT_SECRET),
+        );
+    }
+    assign_role_to_user(
+        app.pool(),
+        get_dev_user_id(app.pool()).await,
+        "platform_admin",
+    )
+    .await;
+
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
+        &json!({ "algorithm": "random" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
+        .await
+        .assert_status(StatusCode::OK);
+
+    // Play every group match. Participant 1 wins the even-numbered ones so
+    // the standings are not a straight seed order.
+    let body: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches?per_page=100"
+        ))
+        .await
+        .json();
+    let group_matches: Vec<serde_json::Value> = body["data"].as_array().unwrap().clone();
+    assert_eq!(group_matches.len(), 12, "two groups of four");
+    for (i, m) in group_matches.iter().enumerate() {
+        let match_id = m["id"].as_str().unwrap();
+        let p1 = m["participant1_registration_id"].as_str().unwrap();
+        let p2 = m["participant2_registration_id"].as_str().unwrap();
+        let (winner, loser) = if i % 2 == 0 { (p1, p2) } else { (p2, p1) };
+        confirm_win_via_claims(
+            &app,
+            &tournament_id,
+            match_id,
+            winner,
+            &tokens[winner],
+            &tokens[loser],
+            i % 2 == 0,
+        )
+        .await;
+    }
+
+    // The group stage is over and the playoffs are live.
+    let stages: serde_json::Value = app
+        .get(&format!("/v1/tournaments/{tournament_id}/stages"))
+        .await
+        .json();
+    let stages = stages["data"].as_array().unwrap();
+    assert_eq!(stages[0]["name"], "Group Stage");
+    assert_eq!(
+        stages[0]["status"], "completed",
+        "group stage closes itself"
+    );
+    assert_eq!(stages[1]["name"], "Playoffs");
+    assert_eq!(stages[1]["status"], "active", "playoffs open themselves");
+
+    // A playoff bracket exists, holding the top two of each group.
+    let brackets: serde_json::Value = app
+        .get(&format!("/v1/tournaments/{tournament_id}/brackets"))
+        .await
+        .json();
+    let brackets = brackets["data"].as_array().unwrap();
+    let playoff = brackets
+        .iter()
+        .find(|b| b["bracket_type"] == "single_elim")
+        .expect("a single-elimination playoff bracket was generated");
+    let mut expected_qualifiers: Vec<String> = Vec::new();
+    for group in brackets
+        .iter()
+        .filter(|b| b["bracket_type"] == "round_robin")
+    {
+        let standings: serde_json::Value = app
+            .get(&format!(
+                "/v1/tournaments/{tournament_id}/brackets/{}/standings",
+                group["id"].as_str().unwrap()
+            ))
+            .await
+            .json();
+        for row in standings["data"].as_array().unwrap() {
+            if row["position"].as_i64().unwrap() <= 2 {
+                expected_qualifiers.push(row["registration_id"].as_str().unwrap().to_string());
+            }
+        }
+    }
+    expected_qualifiers.sort();
+
+    let body: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches?per_page=100"
+        ))
+        .await
+        .json();
+    let semis: Vec<&serde_json::Value> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["bracket_id"] == playoff["id"] && m["round"] == 1)
+        .collect();
+    assert_eq!(semis.len(), 2, "four qualifiers make two semi-finals");
+    let mut seeded: Vec<String> = semis
+        .iter()
+        .flat_map(|m| {
+            [
+                m["participant1_registration_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                m["participant2_registration_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            ]
+        })
+        .collect();
+    seeded.sort();
+    assert_eq!(
+        seeded, expected_qualifiers,
+        "the semi-finals hold exactly the top two of each group"
     );
 }

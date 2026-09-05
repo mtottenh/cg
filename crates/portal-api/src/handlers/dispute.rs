@@ -327,10 +327,14 @@ pub async fn get_dispute(
         .get_dispute_with_thread(dispute_id, include_internal)
         .await?;
 
-    Ok(Json(DataResponse::new(
-        DisputeWithThreadResponse::from(dispute_with_thread),
-        request_id,
-    )))
+    // Same names as the list: the organiser opening a dispute from the queue
+    // was handed bare registration ids for the match, the winner and the
+    // raiser, because only the list attached the match context.
+    let mut response = DisputeWithThreadResponse::from(dispute_with_thread);
+    response.dispute =
+        dispute_with_context(&state, dispute, &mut std::collections::HashMap::new()).await;
+
+    Ok(Json(DataResponse::new(response, request_id)))
 }
 
 /// Whether `auth` has standing to view a dispute's thread.

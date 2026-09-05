@@ -61,7 +61,7 @@ pub use forfeit::ForfeitService;
 pub use lineup::LineupService;
 pub use match_completion::{
     DemoValidationOutcome, MatchCompletionInput, MatchCompletionOutput, MatchCompletionSaga,
-    MatchDemoValidator, MatchStatsUpdater, ReviewCreator,
+    MatchDemoValidator, MatchStatsUpdater, ReviewCreator, StageAdvancer,
 };
 pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails, MatchStatusTransitioner};
 pub use progression::{Advancement, LoserResult, ProgressionResult, ProgressionService};

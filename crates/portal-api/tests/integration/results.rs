@@ -11,7 +11,7 @@ use crate::tournaments::transition_match_to_ready;
 
 /// Helper to transition a match to InProgress status (for result submission tests).
 /// The transition path is: Ready → Scheduled → InProgress
-async fn transition_match_to_in_progress(app: &TestApp, tournament_id: &str, match_id: &str) {
+pub async fn transition_match_to_in_progress(app: &TestApp, tournament_id: &str, match_id: &str) {
     // First schedule the match (required step: Ready → Scheduled)
     let scheduled_time = chrono::Utc::now() + chrono::Duration::minutes(5);
     let response = app

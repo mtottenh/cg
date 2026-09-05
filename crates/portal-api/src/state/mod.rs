@@ -224,6 +224,7 @@ pub type AppMatchCompletionSaga = MatchCompletionSaga<
     DemoValidatorAdapter,
     ReviewCreatorAdapter,
     AppStatsUpdaterAdapter,
+    AppProgressionService,
 >;
 
 /// Application state shared across handlers.
@@ -985,6 +986,7 @@ impl AppState {
             demo_validator_adapter,
             review_creator_adapter,
             stats_updater_adapter,
+            Arc::new(progression_service.clone()),
         );
 
         Self {

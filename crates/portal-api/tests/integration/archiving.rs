@@ -35,13 +35,12 @@ async fn create_league(app: &TestApp, name: &str, slug: &str) -> String {
     body["data"]["id"].as_str().unwrap().to_string()
 }
 
-/// The league ids in the current player's own membership list
-/// (`/v1/users/me/leagues`).
+/// The league ids in the current player's own membership list. Note the
+/// endpoint returns a BARE array, not a `{data: [...]}` envelope.
 async fn my_league_ids(app: &TestApp) -> Vec<String> {
     let body: serde_json::Value = app.get_auth("/v1/users/me/leagues").await.json();
-    body["data"]
-        .as_array()
-        .unwrap()
+    body.as_array()
+        .expect("/v1/users/me/leagues returns a bare array")
         .iter()
         .map(|m| m["league_id"].as_str().unwrap().to_string())
         .collect()

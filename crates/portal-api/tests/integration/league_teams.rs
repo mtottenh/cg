@@ -2808,3 +2808,59 @@ async fn test_applicant_can_withdraw_their_own_join_request() {
             .unwrap();
     assert_eq!(status, "cancelled", "withdrawal must persist");
 }
+
+/// The team detail page's stats block: roster CS2 rating aggregates and the
+/// team's past-games tallies. A brand-new one-player team has played nothing,
+/// so the game counts are zero; the rating figures reflect only members that
+/// have a CS2 profile (`rated_count` says how many did).
+#[tokio::test]
+async fn test_team_season_stats() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    let league = create_test_league(&app, &game_id, "stats-league").await;
+    let league_id = league["id"].as_str().unwrap();
+    let season = create_test_season(&app, league_id, "stats-season").await;
+    let season_id = season["id"].as_str().unwrap();
+    let (_team_id, team_season_id) = create_test_team(&app, season_id, "Stat Team", "STAT").await;
+
+    let response = app
+        .get(&format!("/v1/league-team-seasons/{team_season_id}/stats"))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let stats = &response.json::<serde_json::Value>()["data"];
+
+    assert_eq!(stats["member_count"], 1, "the creator is the only member");
+    assert!(
+        stats["rated_count"].as_i64().unwrap() <= 1,
+        "rated_count never exceeds the roster"
+    );
+    assert_eq!(
+        stats["past_games_season"], 0,
+        "a new team has played nothing"
+    );
+    assert_eq!(stats["past_games_all_time"], 0);
+    // The rating shape is consistent: figures are present exactly when a
+    // member is rated.
+    if stats["rated_count"].as_i64().unwrap() == 0 {
+        assert!(stats["median_rating"].is_null());
+        assert!(stats["max_rating"].is_null());
+        assert_eq!(stats["total_rating"], 0);
+    } else {
+        assert!(stats["median_rating"].is_number());
+        assert!(stats["max_rating"].is_number());
+        assert!(stats["total_rating"].as_i64().unwrap() >= 0);
+    }
+}
+
+/// Stats for a team season that does not exist are a 404.
+#[tokio::test]
+async fn test_team_season_stats_unknown_is_404() {
+    let app = TestApp::new().await;
+    let response = app
+        .get(&format!(
+            "/v1/league-team-seasons/{}/stats",
+            uuid::Uuid::now_v7()
+        ))
+        .await;
+    response.assert_status(StatusCode::NOT_FOUND);
+}

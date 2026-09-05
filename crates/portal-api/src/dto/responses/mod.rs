@@ -73,7 +73,7 @@ pub use league_team::{
     LeagueTeamInvitationWithTeamResponse, LeagueTeamMemberResponse,
     LeagueTeamMemberWithPlayerResponse, LeagueTeamResponse, LeagueTeamSeasonResponse,
     LeagueTeamSummaryResponse, LeagueTeamWithSeasonResponse, MovedTeamResponse,
-    PlayerLeagueTeamMembershipResponse, WithdrawnEntryResponse,
+    PlayerLeagueTeamMembershipResponse, TeamSeasonStatsResponse, WithdrawnEntryResponse,
 };
 pub use lineup::{MatchLineupPlayerResponse, MatchLineupResponse};
 pub use pipeline::{

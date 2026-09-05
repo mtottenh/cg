@@ -24,9 +24,10 @@ use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use crate::state::VetoWsState;
+use crate::websocket::messages::{LobbyParticipantPayload, LobbyStatePayload};
 use crate::websocket::{
     ChatBroadcast, ClientChatType, ClientMessage, ClientVetoAction, CoinFlipResultBroadcast,
-    ConnectionId, LobbyBroadcast, ParticipantConnectionBroadcast, ServerMessage,
+    ConnectionId, Joined, LobbyBroadcast, ParticipantConnectionBroadcast, ServerMessage,
     VetoActionBroadcast, VetoCompleteBroadcast, VetoConnection, VetoLobby, VetoStateBroadcast,
 };
 
@@ -35,6 +36,12 @@ const AUTH_TIMEOUT_SECS: u64 = 10;
 
 /// Ping interval in seconds.
 const PING_INTERVAL_SECS: u64 = 30;
+
+/// A socket that has sent nothing — no text, no ping, no pong to our ping —
+/// for this long is gone even if TCP has not noticed. Three ping intervals:
+/// the browser answers every server ping, and the client also sends its own
+/// `ping` every 25 s, so a live socket never gets near this.
+const LIVENESS_TIMEOUT: Duration = Duration::from_secs(PING_INTERVAL_SECS * 3);
 
 /// WebSocket upgrade handler for veto lobby.
 ///
@@ -63,8 +70,8 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
     )
     .await;
 
-    let (connection, lobby_state) = match auth_result {
-        Ok(Ok((conn, lobby_state))) => (conn, lobby_state),
+    let (connection, match_) = match auth_result {
+        Ok(Ok((conn, match_))) => (conn, match_),
         Ok(Err(err)) => {
             warn!(%match_id, %connection_id, error = %err, "Authentication failed");
             let msg = ServerMessage::AuthError { error: err.clone() };
@@ -85,16 +92,19 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
         }
     };
 
-    // Get or create the lobby
-    let lobby = state.veto_lobby_manager.get_or_create_lobby(match_id);
+    // Join: subscribe and add under the manager's lock, so nothing between
+    // is missed and a concurrent teardown cannot strand this socket.
+    let Joined {
+        lobby,
+        mut broadcast_rx,
+        presence_changed,
+    } = state
+        .veto_lobby_manager
+        .join(match_id, connection_id, connection.clone());
 
-    // Add connection to lobby
-    lobby.add_connection(connection_id, connection.clone());
-
-    // Subscribe to broadcasts
-    let mut broadcast_rx = lobby.subscribe();
-
-    // Send auth success with lobby state
+    // The snapshot is built now — after joining — so it says who is really
+    // here, including this socket.
+    let lobby_state = build_lobby_state(&state, match_id, &match_, &lobby).await;
     let auth_success = ServerMessage::AuthSuccess {
         role: connection.role.as_str().to_string(),
         registration_id: connection.registration_id.map(|id| id.to_string()),
@@ -110,19 +120,23 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
         .is_err()
     {
         lobby.remove_connection(&connection_id);
+        state.veto_lobby_manager.remove_if_empty(&match_id);
         return;
     }
 
-    // Broadcast participant connected if applicable
+    // Announce the arrival only when presence actually changed: a team's
+    // first socket, not its second tab or an overlapping reconnect.
     if connection.is_participant() {
         if let Some(reg_id) = connection.registration_id {
-            lobby.broadcast(LobbyBroadcast::ParticipantConnected(
-                ParticipantConnectionBroadcast {
-                    registration_id: reg_id,
-                    team_name: connection.team_name.clone().unwrap_or_default(),
-                    username: connection.username.clone(),
-                },
-            ));
+            if presence_changed {
+                lobby.broadcast(LobbyBroadcast::ParticipantConnected(
+                    ParticipantConnectionBroadcast {
+                        registration_id: reg_id,
+                        team_name: connection.team_name.clone().unwrap_or_default(),
+                        username: connection.username.clone(),
+                    },
+                ));
+            }
 
             // Auto coin flip if both teams present and session is in CoinFlip status
             try_auto_coin_flip(&state, match_id, &lobby).await;
@@ -145,12 +159,18 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
 
     // Set up ping interval
     let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
+    // Any frame from the client proves it is alive; a silence longer than
+    // LIVENESS_TIMEOUT means a half-open socket, and its presence is stale.
+    let mut last_seen = tokio::time::Instant::now();
 
     // Main event loop
     loop {
         tokio::select! {
             // Handle incoming messages from client
             msg = receiver.next() => {
+                if let Some(Ok(_)) = &msg {
+                    last_seen = tokio::time::Instant::now();
+                }
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         crate::observability::record_ws_message("lobby", "in");
@@ -200,8 +220,12 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
                     }
                 }
             }
-            // Send ping periodically
+            // Send ping periodically; drop a socket that has gone silent.
             _ = ping_interval.tick() => {
+                if last_seen.elapsed() > LIVENESS_TIMEOUT {
+                    info!(%match_id, %connection_id, "Connection silent past the liveness timeout; dropping");
+                    break;
+                }
                 if sender.send(Message::Ping(vec![].into())).await.is_err() {
                     break;
                 }
@@ -209,10 +233,14 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
         }
     }
 
-    // Clean up
-    if let Some(removed) = lobby.remove_connection(&connection_id) {
+    // Clean up. A departure is announced only when the team's LAST socket
+    // leaves — another tab, or a reconnect that overlapped this teardown,
+    // keeps the team present.
+    if let Some((removed, presence_changed)) = lobby.remove_connection(&connection_id) {
         if removed.is_participant() {
-            if let Some(reg_id) = removed.registration_id {
+            if let Some(reg_id) = removed.registration_id
+                && presence_changed
+            {
                 lobby.broadcast(LobbyBroadcast::ParticipantDisconnected(
                     ParticipantConnectionBroadcast {
                         registration_id: reg_id,
@@ -228,10 +256,8 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
         }
     }
 
-    // Clean up empty lobbies
-    if lobby.is_empty() {
-        state.veto_lobby_manager.remove_lobby(&match_id);
-    }
+    // Tear the lobby down only if — checked under the lock — it is empty.
+    state.veto_lobby_manager.remove_if_empty(&match_id);
 
     info!(%match_id, %connection_id, "WebSocket connection closed");
 }
@@ -241,13 +267,7 @@ async fn wait_for_auth(
     receiver: &mut futures_util::stream::SplitStream<WebSocket>,
     match_id: TournamentMatchId,
     state: &VetoWsState,
-) -> Result<
-    (
-        VetoConnection,
-        crate::websocket::messages::LobbyStatePayload,
-    ),
-    String,
-> {
+) -> Result<(VetoConnection, portal_domain::entities::TournamentMatch), String> {
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => {
@@ -278,13 +298,7 @@ async fn authenticate_user(
     token: &str,
     match_id: TournamentMatchId,
     state: &VetoWsState,
-) -> Result<
-    (
-        VetoConnection,
-        crate::websocket::messages::LobbyStatePayload,
-    ),
-    String,
-> {
+) -> Result<(VetoConnection, portal_domain::entities::TournamentMatch), String> {
     use portal_domain::repositories::TournamentMatchRepository;
     use portal_domain::services::tournament::VetoAuthorizationRole;
 
@@ -382,33 +396,54 @@ async fn authenticate_user(
     let connection = connection
         .unwrap_or_else(|| VetoConnection::spectator(user_id, player_id, claims.username));
 
-    // Build lobby state with real match data
-    let lobby_state = crate::websocket::messages::LobbyStatePayload {
-        match_id: match_id.to_string(),
-        session: None, // Will be populated by caller if veto session exists
-        participants: crate::websocket::messages::ParticipantsPayload {
-            participant1: crate::websocket::messages::ParticipantPayload {
-                registration_id: match_
-                    .participant1_registration_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_default(),
-                name: match_.participant1_name.unwrap_or_default(),
-                is_connected: false, // Will be updated after joining lobby
-            },
-            participant2: crate::websocket::messages::ParticipantPayload {
-                registration_id: match_
-                    .participant2_registration_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_default(),
-                name: match_.participant2_name.unwrap_or_default(),
-                is_connected: false, // Will be updated after joining lobby
-            },
-        },
-        spectator_count: 0,
-        connected_participants: vec![],
-    };
+    Ok((connection, match_))
+}
 
-    Ok((connection, lobby_state))
+/// The presence snapshot a joiner starts from, read off the lobby it has
+/// just joined: both registrations with whether anyone from them is here,
+/// the spectator count, and the veto session if one exists.
+async fn build_lobby_state(
+    state: &VetoWsState,
+    match_id: TournamentMatchId,
+    match_: &portal_domain::entities::TournamentMatch,
+    lobby: &Arc<VetoLobby>,
+) -> LobbyStatePayload {
+    let participant = |reg: Option<portal_core::TournamentRegistrationId>,
+                       name: &Option<String>| {
+        reg.map(|reg_id| LobbyParticipantPayload {
+            registration_id: reg_id.to_string(),
+            team_name: name.clone().unwrap_or_default(),
+            username: lobby.connected_username(reg_id).unwrap_or_default(),
+            connected: lobby.is_participant_connected(reg_id),
+        })
+    };
+    let participants = [
+        participant(
+            match_.participant1_registration_id,
+            &match_.participant1_name,
+        ),
+        participant(
+            match_.participant2_registration_id,
+            &match_.participant2_name,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let session = state
+        .veto_service
+        .get_session_state(match_id)
+        .await
+        .ok()
+        .map(|s| crate::dto::responses::VetoSessionResponse::from(s.session));
+
+    LobbyStatePayload {
+        match_id: match_id.to_string(),
+        session,
+        participants,
+        spectator_count: lobby.spectator_count(),
+    }
 }
 
 /// Handle a client message.

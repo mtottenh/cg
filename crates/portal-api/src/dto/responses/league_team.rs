@@ -467,7 +467,26 @@ impl From<LeagueTeamMemberWithPlayer> for LeagueTeamMemberWithPlayerResponse {
 // PLAYER MEMBERSHIP RESPONSES
 // =============================================================================
 
-/// Response DTO for a player's league team membership.
+/// Aggregate CS2 skill and match history for a team's roster in a season.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TeamSeasonStatsResponse {
+    /// Roster size this season (current members).
+    pub member_count: i32,
+    /// How many of them have a CS2 profile that fed the rating figures.
+    pub rated_count: i32,
+    /// Median CS2 Premier rating across rated members; `null` when none is rated.
+    pub median_rating: Option<f64>,
+    /// Sum of the rated members' CS2 Premier ratings.
+    pub total_rating: i64,
+    /// The highest CS2 Premier rating on the roster; `null` when none is rated.
+    pub max_rating: Option<i32>,
+    /// Completed matches this team has played this season.
+    pub past_games_season: i32,
+    /// Completed matches this team has played across every season.
+    pub past_games_all_time: i64,
+}
+
+/// A player's membership of a league team.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PlayerLeagueTeamMembershipResponse {
     // Player info

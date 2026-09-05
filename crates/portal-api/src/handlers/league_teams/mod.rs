@@ -30,7 +30,8 @@ pub use team::{
 };
 pub use team_season::{
     add_team_member, demote_from_captain, get_my_league_teams, get_player_league_teams,
-    get_team_season, get_team_season_members, leave_team, promote_to_captain, remove_team_member,
+    get_team_season, get_team_season_members, get_team_season_stats, leave_team,
+    promote_to_captain, remove_team_member,
 };
 
 use axum::http::HeaderMap;

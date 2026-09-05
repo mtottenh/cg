@@ -8,7 +8,7 @@ use crate::dto::common::DataResponse;
 use crate::dto::requests::AddLeagueTeamMemberRequest;
 use crate::dto::responses::{
     LeagueTeamMemberResponse, LeagueTeamMemberWithPlayerResponse, LeagueTeamSeasonResponse,
-    PlayerLeagueTeamMembershipResponse,
+    PlayerLeagueTeamMembershipResponse, TeamSeasonStatsResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
@@ -52,6 +52,95 @@ pub async fn get_team_season(
 
     Ok(Json(DataResponse::new(
         LeagueTeamSeasonResponse::from(team_season).with_roster_lock(season.roster_lock_status),
+        request_id,
+    )))
+}
+
+/// Aggregate CS2 skill and match history for a team's roster this season.
+///
+/// The rating figures are over the roster's CS2 Premier ratings (from each
+/// member's game profile); members without a profile are excluded and
+/// reported as `member_count - rated_count`. Past games are read off the
+/// team's per-season match tallies — this season, and summed across every
+/// season the team has played.
+#[utoipa::path(
+    get,
+    path = "/v1/league-team-seasons/{team_season_id}/stats",
+    params(("team_season_id" = String, Path, description = "Team Season ID")),
+    responses(
+        (status = 200, description = "Team season stats", body = DataResponse<TeamSeasonStatsResponse>),
+        (status = 404, description = "Team season not found", body = ApiError),
+    ),
+    tag = "league_teams"
+)]
+pub async fn get_team_season_stats(
+    State(state): State<LeagueTeamState>,
+    headers: HeaderMap,
+    Path(team_season_id): Path<LeagueTeamSeasonId>,
+) -> ApiResult<Json<DataResponse<TeamSeasonStatsResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    let team_season = state
+        .league_team_service
+        .get_team_season(team_season_id)
+        .await?;
+    let team = state
+        .league_team_service
+        .get_team(team_season.team_id)
+        .await?;
+    let league = state.league_service.get_league(team.league_id).await?;
+
+    let members = state
+        .league_team_service
+        .get_members(team_season_id)
+        .await?;
+    let player_ids: Vec<PlayerId> = members.iter().map(|m| m.player_id).collect();
+    let profiles = if player_ids.is_empty() {
+        Vec::new()
+    } else {
+        state
+            .player_game_profile_service
+            .find_by_players_and_game(&player_ids, league.game_id)
+            .await?
+    };
+
+    let mut ratings: Vec<i32> = profiles.iter().map(|p| p.rating).collect();
+    ratings.sort_unstable();
+    let rated_count = ratings.len();
+    let total_rating: i64 = ratings.iter().map(|&r| i64::from(r)).sum();
+    let max_rating = ratings.last().copied();
+    let median_rating = if ratings.is_empty() {
+        None
+    } else {
+        let mid = ratings.len() / 2;
+        Some(if ratings.len() % 2 == 1 {
+            f64::from(ratings[mid])
+        } else {
+            f64::midpoint(f64::from(ratings[mid - 1]), f64::from(ratings[mid]))
+        })
+    };
+
+    // All-time is summed over the team's per-season match tallies, which the
+    // completion saga already maintains — no per-match scan here.
+    let all_seasons = state
+        .league_team_service
+        .list_seasons_for_team(team_season.team_id)
+        .await?;
+    let past_games_all_time: i64 = all_seasons
+        .iter()
+        .map(|s| i64::from(s.matches_played))
+        .sum();
+
+    Ok(Json(DataResponse::new(
+        TeamSeasonStatsResponse {
+            member_count: i32::try_from(members.len()).unwrap_or(i32::MAX),
+            rated_count: i32::try_from(rated_count).unwrap_or(i32::MAX),
+            median_rating,
+            total_rating,
+            max_rating,
+            past_games_season: team_season.matches_played,
+            past_games_all_time,
+        },
         request_id,
     )))
 }

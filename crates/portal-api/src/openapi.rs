@@ -67,8 +67,8 @@ use crate::dto::responses::{
     PlayerSearchResponse, ProgressionResponse, RankTierResponse, RegisterResponse,
     ResultClaimResponse, ResultClaimSubmissionResponse, ResultConfirmationResponse,
     ResultDisputeResponse, RoleResponse, RoleWithPermissionsResponse, ScheduleProposalResponse,
-    SeededParticipantResponse, SocialLinksResponse, SuggestedTimeResponse, TeamSizeConfig,
-    TimeSlotResponse, TournamentBracketResponse, TournamentInvitationResponse,
+    SeededParticipantResponse, SocialLinksResponse, SuggestedTimeResponse, TeamSeasonStatsResponse,
+    TeamSizeConfig, TimeSlotResponse, TournamentBracketResponse, TournamentInvitationResponse,
     TournamentMapPoolResponse, TournamentMatchResponse, TournamentRegistrationResponse,
     TournamentResponse, TournamentStageResponse, TournamentSummaryResponse, UploadInfoResponse,
     UserLeagueMembershipResponse, UserResponse, UserRoleAssignmentResponse,
@@ -216,6 +216,7 @@ use utoipa_swagger_ui::SwaggerUi;
         league_teams::team::register_team_for_season,
         // League Team Seasons
         league_teams::team_season::get_team_season,
+        league_teams::team_season::get_team_season_stats,
         // League Team Members (Seasonal Roster)
         league_teams::team_season::get_team_season_members,
         league_teams::team_season::add_team_member,
@@ -599,6 +600,7 @@ use utoipa_swagger_ui::SwaggerUi;
             LeagueTeamMemberResponse,
             LeagueTeamMemberWithPlayerResponse,
             PlayerLeagueTeamMembershipResponse,
+            TeamSeasonStatsResponse,
             AddLeagueTeamMemberRequest,
             UpdateLeagueTeamMemberRequest,
 

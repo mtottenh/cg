@@ -88,6 +88,10 @@ pub fn team_season_routes() -> Router<AppState> {
     Router::new()
         // Team season info
         .route("/{team_season_id}", get(league_teams::get_team_season))
+        .route(
+            "/{team_season_id}/stats",
+            get(league_teams::get_team_season_stats),
+        )
         // Roster management
         .route(
             "/{team_season_id}/members",

@@ -455,6 +455,14 @@ where
 
     /// List team season registrations for a season.
     #[instrument(skip(self))]
+    /// Every season this team has taken part in (all-time), for career totals.
+    pub async fn list_seasons_for_team(
+        &self,
+        team_id: LeagueTeamId,
+    ) -> Result<Vec<LeagueTeamSeason>, DomainError> {
+        self.team_season_repo.list_by_team(team_id).await
+    }
+
     pub async fn list_team_seasons(
         &self,
         season_id: LeagueSeasonId,

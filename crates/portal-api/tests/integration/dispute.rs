@@ -1113,13 +1113,13 @@ async fn test_dispute_detail_names_the_match_and_the_sides() {
     let (tournament_id, match_id, dispute_id, winner_reg) =
         raise_dispute_on_a_claim(&app, "dispute-names").await;
     let m: serde_json::Value = app
-        .get(&format!(
+        .get_auth(&format!(
             "/v1/tournaments/{tournament_id}/matches/{match_id}"
         ))
         .await
         .json();
 
-    let response = app.get(&format!("/v1/disputes/{dispute_id}")).await;
+    let response = app.get_auth(&format!("/v1/disputes/{dispute_id}")).await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();
     let dispute = &body["data"]["dispute"];

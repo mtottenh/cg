@@ -10,6 +10,7 @@ use portal_domain::entities::league_team::{
     LeagueTeamInvitationWithTeam, LeagueTeamMember, LeagueTeamMemberWithPlayer, LeagueTeamSeason,
     LeagueTeamSummary, PlayerLeagueTeamMembership,
 };
+use portal_domain::repositories::league_team::{MovedTeam, WithdrawnEntry};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -146,6 +147,42 @@ pub struct LeagueTeamResponse {
     pub updated_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disbanded_at: Option<DateTime<Utc>>,
+}
+
+/// A cup the team was withdrawn from by a cross-league move.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WithdrawnEntryResponse {
+    pub tournament_id: String,
+    pub tournament_name: String,
+}
+
+impl From<WithdrawnEntry> for WithdrawnEntryResponse {
+    fn from(e: WithdrawnEntry) -> Self {
+        Self {
+            tournament_id: e.tournament_id.to_string(),
+            tournament_name: e.tournament_name,
+        }
+    }
+}
+
+/// The team after a cross-league move, plus the cups it was withdrawn from.
+/// The team's own fields are flattened so the shape stays a `LeagueTeamResponse`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MovedTeamResponse {
+    #[serde(flatten)]
+    #[schema(inline)]
+    pub team: LeagueTeamResponse,
+    /// Entries in cups that had not started, dropped by the move.
+    pub withdrawn_from: Vec<WithdrawnEntryResponse>,
+}
+
+impl From<MovedTeam> for MovedTeamResponse {
+    fn from(m: MovedTeam) -> Self {
+        Self {
+            team: LeagueTeamResponse::from(m.team),
+            withdrawn_from: m.withdrawn_from.into_iter().map(Into::into).collect(),
+        }
+    }
 }
 
 impl From<LeagueTeam> for LeagueTeamResponse {

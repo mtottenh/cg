@@ -7,7 +7,8 @@ use crate::entities::league_team::{
 use crate::repositories::EntityChangeRepository;
 use crate::repositories::league_team::{
     AddLeagueTeamMember, CreateLeagueTeam, LeagueSeasonRepository, LeagueTeamListFilter,
-    LeagueTeamMemberRepository, LeagueTeamRepository, LeagueTeamSeasonRepository, UpdateLeagueTeam,
+    LeagueTeamMemberRepository, LeagueTeamRepository, LeagueTeamSeasonRepository, MovedTeam,
+    UpdateLeagueTeam,
 };
 use crate::services::league_team::roster_lock::{
     AuditedOverride, RosterChange, RosterLockOverride, enforce_roster_lock,
@@ -905,17 +906,21 @@ where
     /// Refused when:
     /// - the target season does not belong to the target league (the move
     ///   would register the team outside the league it just joined),
-    /// - the team has played matches or holds tournament registrations,
+    /// - the team has played matches, or is entered in a cup that already
+    ///   has a bracket (scheduled, started or finished),
     /// - the name or tag is already taken in the target league,
     /// - a roster member is already on another team in the target season
     ///   (the one-primary-team-per-season rule).
+    ///
+    /// An entry in a cup that has not started is withdrawn by the move and
+    /// named in `MovedTeam::withdrawn_from`, so the caller can say so.
     #[instrument(skip(self))]
     pub async fn move_team_to_league(
         &self,
         team_id: LeagueTeamId,
         target_league_id: LeagueId,
         target_season_id: LeagueSeasonId,
-    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError> {
+    ) -> Result<MovedTeam, DomainError> {
         let team = self.get_team(team_id).await?;
 
         if team.league_id == target_league_id {
@@ -982,6 +987,7 @@ where
             from_league = %team.league_id,
             to_league = %target_league_id,
             to_season = %target_season_id,
+            withdrawn_from = moved.withdrawn_from.len(),
             "League team moved between leagues"
         );
 

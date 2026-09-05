@@ -6,10 +6,13 @@ use chrono::Utc;
 use crate::DbPool;
 use crate::entities::league_team::{LeagueTeamRow, LeagueTeamSeasonRow};
 use portal_core::types::{LeagueTeamRole, LeagueTeamStatus};
-use portal_core::{DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, PlayerId, UserId};
+use portal_core::{
+    DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, PlayerId, TournamentId, UserId,
+};
 use portal_domain::entities::league_team::{LeagueTeam, LeagueTeamSeason};
 use portal_domain::repositories::league_team::{
-    CreateLeagueTeam, LeagueTeamListFilter, LeagueTeamRepository, UpdateLeagueTeam,
+    CreateLeagueTeam, LeagueTeamListFilter, LeagueTeamRepository, MovedTeam, UpdateLeagueTeam,
+    WithdrawnEntry,
 };
 
 /// `PostgreSQL` implementation of `LeagueTeamRepository`.
@@ -225,7 +228,7 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         id: LeagueTeamId,
         target_league_id: LeagueId,
         target_season_id: LeagueSeasonId,
-    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError> {
+    ) -> Result<MovedTeam, DomainError> {
         // One transaction: a half-moved team — new league, old season
         // registrations — is a team registered in a league it does not
         // belong to, which no listing would show and no admin could fix.
@@ -238,30 +241,54 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         let now = Utc::now();
 
         // `tournament_registrations.team_season_id` cascades on delete, so
-        // dropping the old registrations below would take a tournament entry
-        // with them without a word. Checked inside the transaction, because a
-        // check outside it could be raced by a registration landing between
-        // the look and the delete.
-        let (tournament_entries,): (i64,) = sqlx::query_as(
+        // dropping the old registrations below takes the team's tournament
+        // entries with them. Whether that is a withdrawal or a loss of
+        // history depends on the cup: before a bracket exists an entry is a
+        // row and nothing else, so it is dropped and reported; once the cup
+        // is scheduled or under way, matches reference the entry and the
+        // move is refused. Withdrawn, eliminated, disqualified and no-show
+        // rows are not entries any more and do not count. Checked inside the
+        // transaction, because a check outside it could be raced by a
+        // registration landing between the look and the delete.
+        let live_entries: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
             r"
-            SELECT COUNT(*)
+            SELECT t.id, t.name, t.status::text
             FROM tournament_registrations tr
             JOIN league_team_seasons lts ON lts.id = tr.team_season_id
+            JOIN tournaments t ON t.id = tr.tournament_id
             WHERE lts.team_id = $1
+              AND tr.status IN ('pending', 'approved', 'checked_in', 'active')
+            ORDER BY t.name
             ",
         )
         .bind(id.as_uuid())
-        .fetch_one(&mut *tx)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
-
-        if tournament_entries > 0 {
-            return Err(DomainError::InvalidState(
-                "team is registered for a tournament in its current league; move refused rather \
-                 than deleting that entry"
-                    .to_string(),
-            ));
+        if let Some((_, name, status)) = live_entries.iter().find(|(_, _, status)| {
+            !matches!(
+                status.as_str(),
+                "draft" | "published" | "registration" | "cancelled"
+            )
+        }) {
+            let state = match status.as_str() {
+                "scheduled" => "a bracket",
+                "in_progress" => "started",
+                _ => "finished",
+            };
+            return Err(DomainError::InvalidState(format!(
+                "team is entered in '{name}', which has {state}; move refused rather than \
+                 leaving a hole in its bracket"
+            )));
         }
+        let withdrawn_from: Vec<WithdrawnEntry> = live_entries
+            .into_iter()
+            .filter(|(_, _, status)| status != "cancelled")
+            .map(|(tournament_id, tournament_name, _)| WithdrawnEntry {
+                tournament_id: TournamentId::from_uuid(tournament_id),
+                tournament_name,
+            })
+            .collect();
 
         let team_row = sqlx::query_as::<_, LeagueTeamRow>(
             r"
@@ -349,10 +376,11 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok((
-            LeagueTeam::from(team_row),
-            LeagueTeamSeason::from(team_season_row),
-        ))
+        Ok(MovedTeam {
+            team: LeagueTeam::from(team_row),
+            team_season: LeagueTeamSeason::from(team_season_row),
+            withdrawn_from,
+        })
     }
 
     async fn list_by_owner(

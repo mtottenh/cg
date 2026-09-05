@@ -25,8 +25,25 @@ use portal_core::types::{
 };
 use portal_core::{
     DomainError, LeagueId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId,
-    LeagueTeamMemberId, LeagueTeamSeasonId, PlayerId, UserId,
+    LeagueTeamMemberId, LeagueTeamSeasonId, PlayerId, TournamentId, UserId,
 };
+
+/// A tournament entry the team was withdrawn from by a move: the cup had not
+/// started, so the entry was dropped rather than the move refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithdrawnEntry {
+    pub tournament_id: TournamentId,
+    pub tournament_name: String,
+}
+
+/// What a cross-league move produced.
+#[derive(Debug, Clone)]
+pub struct MovedTeam {
+    pub team: LeagueTeam,
+    pub team_season: LeagueTeamSeason,
+    /// Entries in cups that had not started, dropped by the move.
+    pub withdrawn_from: Vec<WithdrawnEntry>,
+}
 
 // =============================================================================
 // LEAGUE SEASON REPOSITORY
@@ -255,15 +272,16 @@ pub trait LeagueTeamRepository: Send + Sync {
     /// (which belong to a league the team is no longer in) are dropped.
     ///
     /// Implementations MUST refuse a move that would lose or corrupt history
-    /// — a team with matches played or tournament registrations — rather than
-    /// silently orphaning it. See `LeagueTeamService::move_team_to_league`
-    /// for the checks.
+    /// — a team with matches played, or an entry in a cup that already has a
+    /// bracket — rather than silently orphaning it. An entry in a cup that has
+    /// not started is withdrawn and reported in `withdrawn_from`. See
+    /// `LeagueTeamService::move_team_to_league` for the checks.
     async fn move_to_league(
         &self,
         id: LeagueTeamId,
         target_league_id: LeagueId,
         target_season_id: LeagueSeasonId,
-    ) -> Result<(LeagueTeam, LeagueTeamSeason), DomainError>;
+    ) -> Result<MovedTeam, DomainError>;
 
     /// List all teams owned by a player in a league.
     async fn list_by_owner(

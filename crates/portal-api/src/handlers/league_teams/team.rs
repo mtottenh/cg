@@ -8,7 +8,7 @@ use crate::dto::requests::{
 };
 use crate::dto::responses::{
     LeagueTeamResponse, LeagueTeamSeasonResponse, LeagueTeamSummaryResponse,
-    LeagueTeamWithSeasonResponse,
+    LeagueTeamWithSeasonResponse, MovedTeamResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{
@@ -404,7 +404,7 @@ pub async fn restore_team(
     params(("team_id" = String, Path, description = "Team ID")),
     request_body = MoveTeamRequest,
     responses(
-        (status = 200, description = "Team moved", body = DataResponse<LeagueTeamResponse>),
+        (status = 200, description = "Team moved; `withdrawn_from` names cups it left", body = DataResponse<MovedTeamResponse>),
         (status = 400, description = "Invalid target, or the team cannot be moved", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Missing required permission", body = ApiError),
@@ -421,7 +421,7 @@ pub async fn move_team(
     headers: HeaderMap,
     Path(team_id): Path<LeagueTeamId>,
     ValidatedJson(req): ValidatedJson<MoveTeamRequest>,
-) -> ApiResult<Json<DataResponse<LeagueTeamResponse>>> {
+) -> ApiResult<Json<DataResponse<MovedTeamResponse>>> {
     let request_id = get_request_id(&headers);
 
     perm.require_permission(&auth, permissions::admin::TEAMS_MANAGE_ANY)
@@ -429,13 +429,13 @@ pub async fn move_team(
 
     let (league_id, season_id) = req.parse_target()?;
 
-    let (team, _team_season) = state
+    let moved = state
         .league_team_service
         .move_team_to_league(team_id, league_id, season_id)
         .await?;
 
     Ok(Json(DataResponse::new(
-        LeagueTeamResponse::from(team),
+        MovedTeamResponse::from(moved),
         request_id,
     )))
 }

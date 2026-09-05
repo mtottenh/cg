@@ -21,6 +21,11 @@ pub struct LeagueResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logo_url: Option<String>,
     pub access_type: String,
+    /// The season the league is currently running (maintained by trigger as
+    /// seasons open and close). Absent until the league has one. Clients open
+    /// the league on this season rather than the newest-created one.
+    #[schema(value_type = Option<String>)]
+    pub current_season_id: Option<String>,
     // Typed as the enum so the schema publishes its permitted values and
     // clients get a union, not `string` (P-112/P-178). Wire-compatible: serde
     // snake_case matches the old `as_str()` strings.
@@ -56,6 +61,7 @@ impl From<League> for LeagueResponse {
             description: league.description,
             logo_url: league.logo_url,
             access_type: league.access_type.as_str().to_string(),
+            current_season_id: league.current_season_id.map(|id| id.to_string()),
             status: league.status,
             archived_at: league.archived_at,
             settings: league.settings,

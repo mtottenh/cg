@@ -356,10 +356,14 @@ impl VetoFormatConfig {
         self.sequence.len()
     }
 
-    /// Check if an action number would complete the veto.
+    /// Whether the veto is complete once `action_number` is the next action to
+    /// perform. Action numbers are 1-based, so a seven-action format is
+    /// complete when the next action would be number 8 — not 7, which is the
+    /// trailing decider itself. (`>=` here ended every standard format one
+    /// action early and left the decider map `available`.)
     #[must_use]
     pub fn is_complete_at(&self, action_number: usize) -> bool {
-        action_number >= self.sequence.len()
+        action_number > self.sequence.len()
     }
 
     /// Count picks in this format (maps that will be played).
@@ -407,4 +411,40 @@ pub struct VetoFormatActionConfig {
 
     /// Action type.
     pub action_type: VetoActionType,
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn standard_formats_complete_only_after_their_last_action() {
+        for format in [
+            VetoFormatConfig::bo1(),
+            VetoFormatConfig::bo3(),
+            VetoFormatConfig::bo5(),
+        ] {
+            let n = format.action_count();
+            assert!(
+                matches!(
+                    format.get_action(n - 1).map(|a| a.action_type),
+                    Some(VetoActionType::Decider)
+                ),
+                "{} should end in a decider",
+                format.id
+            );
+            // After action n-1 the next action is n (the decider): not complete.
+            assert!(
+                !format.is_complete_at(n),
+                "{}: decider must still run",
+                format.id
+            );
+            // After the decider the next action would be n+1: complete.
+            assert!(
+                format.is_complete_at(n + 1),
+                "{}: complete after decider",
+                format.id
+            );
+        }
+    }
 }

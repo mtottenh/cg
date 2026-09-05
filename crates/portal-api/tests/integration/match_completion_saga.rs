@@ -897,6 +897,7 @@ async fn test_lifecycle_redrives_failed_completion_saga() {
         evidence_sweep_every: 20,
         saga_stuck_after: chrono::Duration::minutes(10),
         batch_limit: 100,
+        veto_coin_flip_grace: chrono::Duration::seconds(15),
     };
     let summary = run_lifecycle_pass(&state, &cfg, false).await;
 
@@ -999,6 +1000,7 @@ async fn test_permanently_failed_saga_raises_progression_stall_review() {
         evidence_sweep_every: 20,
         saga_stuck_after: chrono::Duration::minutes(10),
         batch_limit: 100,
+        veto_coin_flip_grace: chrono::Duration::seconds(15),
     };
     let summary = run_lifecycle_pass(&state, &cfg, false).await;
     assert_eq!(

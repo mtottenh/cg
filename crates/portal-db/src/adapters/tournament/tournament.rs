@@ -252,7 +252,7 @@ impl TournamentRepository for PgTournamentRepository {
         // start, or a retry after a crash that never rebuilt) matches 0 rows.
         let row = sqlx::query_as::<_, TournamentRow>(
             r"
-            UPDATE tournaments SET started_at = $2, status = 'in_progress', updated_at = $2
+            UPDATE tournaments SET started_at = $2, starts_at = COALESCE(starts_at, $2), status = 'in_progress', updated_at = $2
             WHERE id = $1 AND status IN ('scheduled', 'registration')
             RETURNING *
             ",
@@ -271,7 +271,7 @@ impl TournamentRepository for PgTournamentRepository {
 
         let row = sqlx::query_as::<_, TournamentRow>(
             r"
-            UPDATE tournaments SET started_at = $2, status = 'in_progress', updated_at = $2
+            UPDATE tournaments SET started_at = $2, starts_at = COALESCE(starts_at, $2), status = 'in_progress', updated_at = $2
             WHERE id = $1
             RETURNING *
             ",

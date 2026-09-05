@@ -296,6 +296,7 @@ fn lifecycle_cfg() -> portal_api::background::LifecycleConfig {
         evidence_sweep_every: 20,
         saga_stuck_after: chrono::Duration::minutes(10),
         batch_limit: 100,
+        veto_coin_flip_grace: chrono::Duration::seconds(15),
     }
 }
 

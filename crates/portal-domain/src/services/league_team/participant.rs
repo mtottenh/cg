@@ -45,7 +45,7 @@ where
             .ok_or(DomainError::LeagueSeasonNotFound(season_id))?;
 
         if !season.is_registration_open() {
-            return Err(DomainError::RegistrationClosed);
+            return Err(DomainError::LeagueSeasonNotOpen);
         }
 
         // Check if already registered

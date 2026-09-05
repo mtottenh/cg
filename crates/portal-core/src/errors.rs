@@ -485,6 +485,13 @@ pub enum DomainError {
     #[error("tournament registration is closed")]
     RegistrationClosed,
 
+    /// The league season is not accepting team registrations or roster
+    /// changes (draft, or already under way). Distinct from
+    /// `RegistrationClosed`, whose message is about tournaments and used to
+    /// be shown to a player creating a team on a draft season.
+    #[error("league season is not open for team registration")]
+    LeagueSeasonNotOpen,
+
     /// The team is already registered for this tournament.
     #[error("team is already registered for this tournament")]
     AlreadyRegistered,

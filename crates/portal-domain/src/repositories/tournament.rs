@@ -1333,6 +1333,11 @@ pub trait VetoSessionRepository: Send + Sync {
     /// Find sessions with expired action deadlines.
     async fn find_timed_out(&self) -> Result<Vec<VetoSession>, DomainError>;
 
+    /// List sessions in one status. The lifecycle pass uses it to start
+    /// pending sessions whose match has reached pick/ban and to flip coin
+    /// flips nobody has flipped.
+    async fn find_by_status(&self, status: VetoStatus) -> Result<Vec<VetoSession>, DomainError>;
+
     /// Delete a veto session.
     async fn delete(&self, id: VetoSessionId) -> Result<(), DomainError>;
 }

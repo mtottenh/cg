@@ -287,6 +287,9 @@ impl From<DomainError> for ApiError {
             DomainError::RegistrationClosed => {
                 Self::bad_request("Tournament registration is closed")
             }
+            DomainError::LeagueSeasonNotOpen => {
+                Self::bad_request("This season isn't open for team registration yet")
+            }
             DomainError::RequirementsNotMet(msg) => {
                 Self::bad_request(format!("Requirements not met: {msg}"))
             }

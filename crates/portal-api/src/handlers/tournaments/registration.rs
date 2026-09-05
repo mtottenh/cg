@@ -351,6 +351,24 @@ pub async fn register_team(
         .get_members(team_season_id)
         .await?;
     let player_ids: Vec<PlayerId> = members.iter().map(|m| m.player_id).collect();
+
+    // Roster size. A team of one could enter a five-a-side cup and be marked
+    // Approved; the organiser inherited a bracket of unfieldable entries with
+    // no signal. `members` is the active seasonal roster (captain, players,
+    // substitutes); `team_size` is what a lineup needs.
+    if let Some(needed) = tournament.team_size.and_then(|n| usize::try_from(n).ok()) {
+        let on_roster = members
+            .iter()
+            .filter(|m| m.status == portal_core::types::LeagueTeamMemberStatus::Active)
+            .count();
+        if on_roster < needed {
+            return Err(ApiError::bad_request(format!(
+                "This team has {on_roster} of the {needed} players this tournament needs. \
+                 Invite more players before registering."
+            )));
+        }
+    }
+
     // Whole-roster check: per-player rules plus team aggregate bounds.
     check_eligibility_for_team(&state, &tournament, &player_ids).await?;
 

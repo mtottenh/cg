@@ -689,6 +689,8 @@ pub struct DisputeState {
     pub league_team_service: AppLeagueTeamService,
     /// Tournament match repository.
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
+    /// Tournament service (names the tournament a dispute belongs to).
+    pub tournament_service: AppTournamentService,
 }
 
 impl FromRef<AppState> for DisputeState {
@@ -698,6 +700,7 @@ impl FromRef<AppState> for DisputeState {
             registration_service: s.registration_service.clone(),
             league_team_service: s.league_team_service.clone(),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
+            tournament_service: s.tournament_service.clone(),
         }
     }
 }

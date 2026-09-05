@@ -170,6 +170,18 @@ where
     ) -> Result<VetoSession, DomainError> {
         let session = self.get_session(session_id).await?;
 
+        // Idempotent for a session that is already under way: the pick/ban
+        // hook starts a pre-created session when both sides check in, and a
+        // caller that then starts it deliberately (the veto fixture, an
+        // admin) must not be refused for arriving second.
+        if matches!(
+            session.status,
+            VetoStatus::CoinFlip | VetoStatus::InProgress
+        ) {
+            info!(session_id = %session_id, status = %session.status, "Veto session already started");
+            return Ok(session);
+        }
+
         if !session.status.can_start() {
             return Err(DomainError::InvalidState(format!(
                 "Cannot start veto session in {} status",
@@ -198,9 +210,18 @@ where
             return Ok(session);
         }
 
+        // `started_at` is what the lifecycle grace for an unflipped coin is
+        // measured from, so stamp it here as the wheel path already does.
         let session = self
             .session_repo
-            .update_status(session_id, VetoStatus::CoinFlip)
+            .update(
+                session_id,
+                UpdateVetoSession {
+                    status: Some(VetoStatus::CoinFlip),
+                    started_at: Some(Utc::now()),
+                    ..Default::default()
+                },
+            )
             .await?;
 
         info!(session_id = %session_id, "Veto session started, awaiting coin flip");
@@ -353,7 +374,7 @@ where
             .ok_or_else(|| DomainError::InvalidState("Action index out of bounds".to_string()))?;
 
         // Record the action
-        let mut result = self
+        let result = self
             .record_action_internal(
                 &session,
                 &format,
@@ -366,7 +387,21 @@ where
             )
             .await?;
 
-        // Auto-chain decider actions (team 0 = automatic, last remaining map)
+        self.chain_deciders(session_id, &format, result).await
+    }
+
+    /// Auto-chain decider actions (team 0 = automatic, last remaining map).
+    ///
+    /// Shared by the player action path and the timeout path: when the sixth
+    /// action of a Bo3 is a timeout auto-ban, the decider still has to land
+    /// in the same pass, otherwise the session sits on a team-0 action that
+    /// no player can perform.
+    async fn chain_deciders(
+        &self,
+        session_id: VetoSessionId,
+        format: &VetoFormatConfig,
+        mut result: VetoActionResult,
+    ) -> Result<VetoActionResult, DomainError> {
         while !result.veto_complete {
             if let Some(next_type) = result.next_action_type {
                 if !matches!(next_type, VetoActionType::Decider) {
@@ -394,7 +429,7 @@ where
             result = self
                 .record_action_internal(
                     &updated_session,
-                    &format,
+                    format,
                     next_format_action,
                     &decider_map,
                     None,
@@ -548,7 +583,7 @@ where
             "Timeout auto-action performed"
         );
 
-        Ok(result)
+        self.chain_deciders(session_id, &format, result).await
     }
 
     /// Select a side for a picked map (e.g., CT vs T for CS2).
@@ -688,6 +723,13 @@ where
     /// Find all sessions with expired action deadlines.
     pub async fn find_timed_out_sessions(&self) -> Result<Vec<VetoSession>, DomainError> {
         self.session_repo.find_timed_out().await
+    }
+
+    pub async fn find_sessions_by_status(
+        &self,
+        status: VetoStatus,
+    ) -> Result<Vec<VetoSession>, DomainError> {
+        self.session_repo.find_by_status(status).await
     }
 
     // =========================================================================

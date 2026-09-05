@@ -636,7 +636,8 @@ async fn test_ws_full_bo1_veto_flow() {
     )
     .await;
 
-    // Bo1: 6 alternating bans (the decider is auto-resolved as the remaining map)
+    // Bo1: 6 alternating bans, then the trailing decider runs by itself and
+    // selects the one map left
     assert!(
         do_veto_action(&mut ws_a, &mut ws_b, "de_dust2", false)
             .await
@@ -670,18 +671,18 @@ async fn test_ws_full_bo1_veto_flow() {
         "Should receive VetoComplete after final ban"
     );
 
-    if let Some(ServerMessage::VetoComplete { session, .. }) = complete {
+    if let Some(ServerMessage::VetoComplete {
+        selected_maps,
+        session,
+    }) = complete
+    {
         assert_eq!(session["status"].as_str().unwrap(), "completed");
-        // The remaining map (de_vertigo) is the decider
+        // The decider picked the last map (de_vertigo); nothing is left over.
+        assert_eq!(selected_maps, vec!["de_vertigo".to_string()]);
         let remaining = session["remaining_maps"]
             .as_array()
             .expect("Session should have remaining_maps");
-        assert_eq!(
-            remaining.len(),
-            1,
-            "Should have exactly 1 remaining map (decider)"
-        );
-        assert_eq!(remaining[0].as_str().unwrap(), "de_vertigo");
+        assert!(remaining.is_empty(), "The decider leaves no map unselected");
     }
 
     // Verify via REST
@@ -711,7 +712,7 @@ async fn test_ws_full_bo3_veto_flow() {
     )
     .await;
 
-    // Bo3: Ban-Ban-Pick-Pick-Ban-Ban (decider auto-resolved)
+    // Bo3: Ban-Ban-Pick-Pick-Ban-Ban, then the decider runs by itself
     assert!(
         do_veto_action(&mut ws_a, &mut ws_b, "de_dust2", false)
             .await
@@ -751,16 +752,15 @@ async fn test_ws_full_bo3_veto_flow() {
     }) = complete
     {
         assert_eq!(session["status"].as_str().unwrap(), "completed");
-        // 2 picks in selected_maps
-        assert_eq!(selected_maps.len(), 2, "Bo3 should have 2 picked maps");
+        // Two picks and the decider: three maps, in game order.
+        assert_eq!(selected_maps.len(), 3, "Bo3 should have 3 selected maps");
         assert!(selected_maps.contains(&"de_mirage".to_string()));
         assert!(selected_maps.contains(&"de_inferno".to_string()));
-        // The decider is the remaining map
+        assert_eq!(selected_maps.last().map(String::as_str), Some("de_vertigo"));
         let remaining = session["remaining_maps"]
             .as_array()
             .expect("Session should have remaining_maps");
-        assert_eq!(remaining.len(), 1, "Should have 1 remaining map (decider)");
-        assert_eq!(remaining[0].as_str().unwrap(), "de_vertigo");
+        assert!(remaining.is_empty(), "The decider leaves no map unselected");
     }
 
     // Verify via REST
@@ -790,7 +790,7 @@ async fn test_ws_full_bo5_veto_flow() {
     )
     .await;
 
-    // Bo5: Ban-Ban-Pick-Pick-Pick-Pick (decider auto-resolved)
+    // Bo5: Ban-Ban-Pick-Pick-Pick-Pick, then the decider runs by itself
     assert!(
         do_veto_action(&mut ws_a, &mut ws_b, "de_dust2", false)
             .await
@@ -830,18 +830,17 @@ async fn test_ws_full_bo5_veto_flow() {
     }) = complete
     {
         assert_eq!(session["status"].as_str().unwrap(), "completed");
-        // 4 picks in selected_maps
-        assert_eq!(selected_maps.len(), 4, "Bo5 should have 4 picked maps");
+        // Four picks and the decider: five maps, in game order.
+        assert_eq!(selected_maps.len(), 5, "Bo5 should have 5 selected maps");
         assert!(selected_maps.contains(&"de_mirage".to_string()));
         assert!(selected_maps.contains(&"de_inferno".to_string()));
         assert!(selected_maps.contains(&"de_ancient".to_string()));
         assert!(selected_maps.contains(&"de_anubis".to_string()));
-        // The decider is the remaining map
+        assert_eq!(selected_maps.last().map(String::as_str), Some("de_vertigo"));
         let remaining = session["remaining_maps"]
             .as_array()
             .expect("Session should have remaining_maps");
-        assert_eq!(remaining.len(), 1, "Should have 1 remaining map (decider)");
-        assert_eq!(remaining[0].as_str().unwrap(), "de_vertigo");
+        assert!(remaining.is_empty(), "The decider leaves no map unselected");
     }
 
     // Verify via REST

@@ -234,39 +234,33 @@ pub enum ServerMessage {
     },
 }
 
-/// Lobby state payload for auth success.
+/// Lobby state payload for auth success — the presence snapshot a joiner
+/// starts from. Built AFTER the connection joins the lobby, so it reflects
+/// who is really there; `player_connected` / `player_disconnected` then keep
+/// it current.
 #[derive(Debug, Clone, Serialize)]
 pub struct LobbyStatePayload {
     /// Match ID.
     pub match_id: String,
-    /// Current veto session if exists.
+    /// Current veto session if one exists.
     pub session: Option<VetoSessionResponse>,
-    /// Participant information.
-    pub participants: ParticipantsPayload,
-    /// Number of spectators.
+    /// Both registrations, present or not.
+    pub participants: Vec<LobbyParticipantPayload>,
+    /// Number of spectators, including the joiner if they are one.
     pub spectator_count: usize,
-    /// Connected participant registration IDs.
-    pub connected_participants: Vec<String>,
 }
 
-/// Participants information.
+/// One registration's presence in the snapshot.
 #[derive(Debug, Clone, Serialize)]
-pub struct ParticipantsPayload {
-    /// First participant.
-    pub participant1: ParticipantPayload,
-    /// Second participant.
-    pub participant2: ParticipantPayload,
-}
-
-/// Single participant information.
-#[derive(Debug, Clone, Serialize)]
-pub struct ParticipantPayload {
+pub struct LobbyParticipantPayload {
     /// Registration ID.
     pub registration_id: String,
-    /// Display name.
-    pub name: String,
-    /// Whether currently connected.
-    pub is_connected: bool,
+    /// Team display name.
+    pub team_name: String,
+    /// A connected user from that team, or empty when nobody is.
+    pub username: String,
+    /// Whether the registration has at least one live socket.
+    pub connected: bool,
 }
 
 /// Chat author payload.

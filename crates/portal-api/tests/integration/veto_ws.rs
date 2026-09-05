@@ -1408,3 +1408,193 @@ async fn test_ws_picker_cannot_select_side() {
         other => panic!("Expected Error for the picker selecting side, got: {other:?}"),
     }
 }
+
+// ============================================================================
+// PRESENCE: the join snapshot, second tabs, overlapping reconnects
+// ============================================================================
+
+/// The next frame within `ms`, or `None` if the socket stays quiet.
+async fn next_within(ws: &mut WsStream, ms: u64) -> Option<ServerMessage> {
+    tokio::time::timeout(std::time::Duration::from_millis(ms), ws_next_message(ws))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Drain frames for `ms` and assert none of them is a presence change.
+async fn assert_no_presence_change_within(ws: &mut WsStream, ms: u64, why: &str) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(ms);
+    while let Ok(Some(msg)) = tokio::time::timeout_at(deadline, ws_next_message(ws)).await {
+        assert!(
+            !matches!(
+                msg,
+                ServerMessage::PlayerConnected { .. } | ServerMessage::PlayerDisconnected { .. }
+            ),
+            "{why}: got {msg:?}"
+        );
+    }
+}
+
+/// Wait up to 5s for a PlayerConnected / PlayerDisconnected for `team`.
+async fn wait_for_presence(ws: &mut WsStream, team: &str, connected: bool) -> bool {
+    for _ in 0..10 {
+        match next_within(ws, 1_000).await {
+            Some(ServerMessage::PlayerConnected { team_name, .. })
+                if connected && team_name.contains(team) =>
+            {
+                return true;
+            }
+            Some(ServerMessage::PlayerDisconnected { team_name, .. })
+                if !connected && team_name.contains(team) =>
+            {
+                return true;
+            }
+            Some(_) => {}
+            None => return false,
+        }
+    }
+    false
+}
+
+/// A joiner's `auth_success` must say who is already here. Before the fix
+/// the snapshot was built before joining and hard-coded to nobody, so a
+/// player opening a lobby their opponent was already in saw them as absent.
+#[tokio::test]
+async fn test_ws_join_snapshot_reports_who_is_already_connected() {
+    let mut app = TestApp::new().await;
+    let setup = setup_ws_veto_scenario(&app).await;
+    let addr = app.start_server().await;
+    let match_id = setup.match_id.to_string();
+
+    // Team A and a spectator are in the lobby first.
+    let mut ws_a = connect_veto_ws(addr, &match_id).await;
+    let _ = ws_authenticate(&mut ws_a, &setup.team_a_captain_token).await;
+    drain_initial_messages(&mut ws_a).await;
+    let mut ws_spec = connect_veto_ws(addr, &match_id).await;
+    let _ = ws_authenticate(&mut ws_spec, &setup.spectator_token).await;
+    drain_initial_messages(&mut ws_spec).await;
+
+    // Team B joins and reads its snapshot.
+    let mut ws_b = connect_veto_ws(addr, &match_id).await;
+    let auth = ws_authenticate(&mut ws_b, &setup.team_b_captain_token).await;
+    let ServerMessage::AuthSuccess { lobby_state, .. } = auth else {
+        panic!("expected AuthSuccess, got {auth:?}");
+    };
+
+    let participants = lobby_state["participants"]
+        .as_array()
+        .expect("participants is an array the client can iterate");
+    assert_eq!(participants.len(), 2, "both registrations, present or not");
+    let alpha = participants
+        .iter()
+        .find(|p| p["team_name"].as_str().unwrap_or("").contains("Alpha"))
+        .expect("Team Alpha is listed");
+    assert_eq!(alpha["connected"], true, "Team A was already connected");
+    assert!(
+        alpha["username"].as_str().unwrap_or("").contains("captain"),
+        "the connected user is named: {alpha}"
+    );
+    let bravo = participants
+        .iter()
+        .find(|p| !p["team_name"].as_str().unwrap_or("").contains("Alpha"))
+        .expect("the other team is listed");
+    assert_eq!(bravo["connected"], true, "the joiner counts itself");
+    assert_eq!(lobby_state["spectator_count"], 1);
+    assert!(
+        lobby_state["session"].is_object(),
+        "the veto session rides along: {}",
+        lobby_state["session"]
+    );
+}
+
+/// A second tab is not a second arrival, and closing one tab is not a
+/// departure. Before the fix every socket announced itself and every close
+/// announced a departure, so a captain with two tabs open flapped between
+/// present and absent for everyone else.
+#[tokio::test]
+async fn test_ws_second_tab_does_not_flap_presence() {
+    let mut app = TestApp::new().await;
+    let setup = setup_ws_veto_scenario(&app).await;
+    let addr = app.start_server().await;
+    let match_id = setup.match_id.to_string();
+
+    let mut ws_b = connect_veto_ws(addr, &match_id).await;
+    let _ = ws_authenticate(&mut ws_b, &setup.team_b_captain_token).await;
+    drain_initial_messages(&mut ws_b).await;
+
+    // First tab: an arrival.
+    let mut tab1 = connect_veto_ws(addr, &match_id).await;
+    let _ = ws_authenticate(&mut tab1, &setup.team_a_captain_token).await;
+    assert!(
+        wait_for_presence(&mut ws_b, "Alpha", true).await,
+        "the first socket announces Team A"
+    );
+
+    // Second tab: silence.
+    let mut tab2 = connect_veto_ws(addr, &match_id).await;
+    let _ = ws_authenticate(&mut tab2, &setup.team_a_captain_token).await;
+    assert_no_presence_change_within(&mut ws_b, 500, "a second tab must not re-announce").await;
+
+    // Close the first tab: still silence, Team A is still here.
+    drop(tab1);
+    assert_no_presence_change_within(&mut ws_b, 700, "closing one tab is not a departure").await;
+
+    // Close the last tab: now the departure.
+    drop(tab2);
+    assert!(
+        wait_for_presence(&mut ws_b, "Alpha", false).await,
+        "the last socket leaving announces the departure"
+    );
+}
+
+/// A reconnect whose new socket opens before the old one is torn down must
+/// not read as a departure to the other team — that was the false
+/// "disconnected" after a real "connected".
+#[tokio::test]
+async fn test_ws_overlapping_reconnect_keeps_the_team_present() {
+    let mut app = TestApp::new().await;
+    let setup = setup_ws_veto_scenario(&app).await;
+    let addr = app.start_server().await;
+    let match_id = setup.match_id.to_string();
+
+    let mut ws_b = connect_veto_ws(addr, &match_id).await;
+    let _ = ws_authenticate(&mut ws_b, &setup.team_b_captain_token).await;
+    drain_initial_messages(&mut ws_b).await;
+
+    let old = connect_veto_ws(addr, &match_id).await;
+    let mut old = old;
+    let _ = ws_authenticate(&mut old, &setup.team_a_captain_token).await;
+    assert!(wait_for_presence(&mut ws_b, "Alpha", true).await);
+
+    // The client reconnects: the new socket is up before the old one closes.
+    let mut fresh = connect_veto_ws(addr, &match_id).await;
+    let _ = ws_authenticate(&mut fresh, &setup.team_a_captain_token).await;
+    drop(old);
+    assert_no_presence_change_within(
+        &mut ws_b,
+        800,
+        "an overlapping reconnect must not announce a departure",
+    )
+    .await;
+
+    // A newcomer's snapshot agrees: Team A is present.
+    let mut ws_spec = connect_veto_ws(addr, &match_id).await;
+    let auth = ws_authenticate(&mut ws_spec, &setup.spectator_token).await;
+    let ServerMessage::AuthSuccess { lobby_state, .. } = auth else {
+        panic!("expected AuthSuccess, got {auth:?}");
+    };
+    let alpha = lobby_state["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["team_name"].as_str().unwrap_or("").contains("Alpha"))
+        .cloned()
+        .expect("Team Alpha listed");
+    assert_eq!(alpha["connected"], true, "{alpha}");
+
+    drop(fresh);
+    assert!(
+        wait_for_presence(&mut ws_b, "Alpha", false).await,
+        "once the surviving socket closes, the departure is announced"
+    );
+}

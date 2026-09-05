@@ -20,7 +20,7 @@ pub mod timeout_task;
 
 pub use connection::{ConnectionRole, VetoConnection};
 pub use lobby::{ConnectionId, VetoLobby};
-pub use lobby_manager::VetoLobbyManager;
+pub use lobby_manager::{Joined, VetoLobbyManager};
 pub use messages::{
     ChatBroadcast, ClientChatType, ClientMessage, ClientVetoAction, CoinFlipResultBroadcast,
     LiveScoreBroadcast, LobbyBroadcast, ParticipantConnectionBroadcast, ServerAssignmentBroadcast,

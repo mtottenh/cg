@@ -5,9 +5,17 @@
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
+/// Pinned MinIO image tag. Bump deliberately, not automatically.
+const MINIO_IMAGE_TAG: &str = "RELEASE.2025-09-07T16-13-09Z";
+
 /// Start a MinIO container and return (container handle, endpoint URL).
 pub async fn start_minio() -> (ContainerAsync<GenericImage>, String) {
-    let container = GenericImage::new("minio/minio", "latest")
+    // quay.io, not Docker Hub: `minio/minio` was withdrawn from Docker Hub
+    // and now 404s with "pull access denied ... repository does not exist",
+    // which failed every S3 integration test. quay.io is MinIO's own
+    // registry. Pinned rather than `latest` so an upstream change cannot
+    // silently break CI again.
+    let container = GenericImage::new("quay.io/minio/minio", MINIO_IMAGE_TAG)
         .with_exposed_port(9000.into())
         .with_env_var("MINIO_ROOT_USER", "minioadmin")
         .with_env_var("MINIO_ROOT_PASSWORD", "minioadmin")

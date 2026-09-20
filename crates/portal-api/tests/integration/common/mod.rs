@@ -60,7 +60,11 @@ impl TestApp {
         Self::init_tracing();
 
         let db = TestDb::new().await;
-        let state = AppState::new(db.pool.clone(), "test-jwt-secret").await;
+        // Fixtures catalog demos into "test-bucket"; admit it so the
+        // explorer allowlist does not 404 every download in tests.
+        let state = AppState::new(db.pool.clone(), "test-jwt-secret")
+            .await
+            .with_demo_bucket_allowlist(vec!["test-bucket".to_string()]);
         let app = Self::with_connect_info(create_app(state));
 
         Self {

@@ -1184,6 +1184,17 @@ impl AppState {
     /// demo client from issuing SSRF-adjacent requests.
     #[cfg(feature = "test-utils")]
     #[must_use]
+    /// Override the demo bucket explorer allowlist.
+    ///
+    /// Production sets this from DEMO_BUCKET_ALLOWLIST; tests use it to
+    /// admit their fixture bucket without touching process-global env,
+    /// which would race across parallel tests.
+    #[must_use]
+    pub fn with_demo_bucket_allowlist(mut self, buckets: Vec<String>) -> Self {
+        self.demo_bucket_allowlist = buckets;
+        self
+    }
+
     pub fn with_cs2_demo_url_unchecked(mut self, url: String) -> Self {
         self.cs2_demo_base_url = Some(url);
         self

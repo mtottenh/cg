@@ -37,10 +37,9 @@ use crate::dto::requests::{
 use crate::dto::responses::AutoLinkSettingResponse;
 use crate::dto::responses::demo::{
     BatchCatalogErrorResponse, BatchCatalogResultResponse, BucketListingResponse,
-    BucketObjectDownloadResponse, BucketObjectResponse, DemoBucketResponse,
-    DemoDownloadResponse, DemoListResponse,
-    DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse, DemoPlayerResponse,
-    DemoPlayerStatsResponse as DemoCatalogPlayerStatsResponse, DemoResponse,
+    BucketObjectDownloadResponse, BucketObjectResponse, DemoBucketResponse, DemoDownloadResponse,
+    DemoListResponse, DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse,
+    DemoPlayerResponse, DemoPlayerStatsResponse as DemoCatalogPlayerStatsResponse, DemoResponse,
     DemoStatusCountsResponse, DemoValidationResultResponse, ProcessUnlinkedDemosResponse,
 };
 use crate::dto::responses::pipeline::{

@@ -970,9 +970,8 @@ impl AppState {
         // Explorer allowlist. Defaults to just the demo upload bucket so a
         // missing env var cannot silently expose the whole account; prod
         // sets both buckets explicitly via Ansible.
-        let demo_bucket_allowlist: Vec<String> = std::env::var("DEMO_BUCKET_ALLOWLIST")
-            .ok()
-            .map_or_else(
+        let demo_bucket_allowlist: Vec<String> =
+            std::env::var("DEMO_BUCKET_ALLOWLIST").ok().map_or_else(
                 || vec![demo_upload_bucket.clone()],
                 |raw| {
                     raw.split(',')

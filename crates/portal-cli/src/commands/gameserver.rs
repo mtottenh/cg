@@ -216,6 +216,7 @@ async fn create(
 ) -> Result<()> {
     if let Some((id,)) =
         sqlx::query_as::<_, (uuid::Uuid,)>("SELECT id FROM game_servers WHERE name = $1")
+            .bind(name)
             .fetch_optional(pool)
             .await
             .context("looking up game server by name")?
@@ -229,6 +230,7 @@ async fn create(
 
     let game_id: uuid::Uuid =
         sqlx::query_as::<_, (uuid::Uuid,)>("SELECT id FROM games WHERE slug = $1")
+            .bind(game_slug)
             .fetch_optional(pool)
             .await
             .context("resolving game slug")?

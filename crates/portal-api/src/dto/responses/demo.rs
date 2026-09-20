@@ -443,6 +443,54 @@ pub struct DemoDownloadResponse {
     pub download_url: String,
 }
 
+/// One bucket the admin explorer is permitted to browse.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct DemoBucketResponse {
+    /// Bucket name.
+    pub name: String,
+    /// True when this is the bucket new MatchZy uploads are written to.
+    pub is_upload_target: bool,
+}
+
+/// One object in a bucket listing.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BucketObjectResponse {
+    /// Full object key.
+    pub key: String,
+    /// Size in bytes.
+    pub size: i64,
+    /// Last-modified timestamp, when the backend reports one.
+    pub last_modified: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// One page of a bucket listing.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BucketListingResponse {
+    /// Bucket that was listed.
+    pub bucket: String,
+    /// Prefix the listing was scoped to.
+    pub prefix: String,
+    /// Objects directly under the prefix.
+    pub objects: Vec<BucketObjectResponse>,
+    /// Child "folders" rolled up by the delimiter.
+    pub common_prefixes: Vec<String>,
+    /// Opaque cursor for the next page; absent when the listing is complete.
+    pub next_cursor: Option<String>,
+}
+
+/// A presigned, time-limited download URL for a single bucket object.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BucketObjectDownloadResponse {
+    /// Bucket the object lives in.
+    pub bucket: String,
+    /// Object key.
+    pub key: String,
+    /// Presigned URL.
+    pub download_url: String,
+    /// Seconds until the URL expires.
+    pub expires_in_secs: u64,
+}
+
 /// Current state of the demo auto-link setting.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct AutoLinkSettingResponse {

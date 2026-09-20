@@ -36,7 +36,9 @@ use crate::dto::requests::{
 };
 use crate::dto::responses::AutoLinkSettingResponse;
 use crate::dto::responses::demo::{
-    BatchCatalogErrorResponse, BatchCatalogResultResponse, DemoDownloadResponse, DemoListResponse,
+    BatchCatalogErrorResponse, BatchCatalogResultResponse, BucketListingResponse,
+    BucketObjectDownloadResponse, BucketObjectResponse, DemoBucketResponse,
+    DemoDownloadResponse, DemoListResponse,
     DemoMatchLinkResponse, DemoMatchLinkWithDemoResponse, DemoMetadataResponse, DemoPlayerResponse,
     DemoPlayerStatsResponse as DemoCatalogPlayerStatsResponse, DemoResponse,
     DemoStatusCountsResponse, DemoValidationResultResponse, ProcessUnlinkedDemosResponse,
@@ -457,6 +459,10 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::process_unlinked_demos,
         demos::get_auto_link_setting,
         demos::update_auto_link_setting,
+        // Read-only bucket explorer (allowlisted buckets only)
+        demos::list_demo_buckets,
+        demos::browse_demo_bucket,
+        demos::download_bucket_object,
         // Ingestion pipeline operator reads (P-73) — admin-authenticated
         // equivalents of the X-API-Key /v1/internal reads.
         demos::get_pipeline_overview,
@@ -831,6 +837,10 @@ use utoipa_swagger_ui::SwaggerUi;
             MarkDemoFailedRequest,
             SetDemoNotesRequest,
             DemoDownloadResponse,
+            DemoBucketResponse,
+            BucketObjectResponse,
+            BucketListingResponse,
+            BucketObjectDownloadResponse,
             ProcessUnlinkedDemosResponse,
             UpdateAutoLinkSettingRequest,
             AutoLinkSettingResponse,

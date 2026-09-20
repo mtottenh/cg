@@ -58,6 +58,7 @@ use crate::steam_openid::{SteamAuthConfig, SteamOpenIdVerifier};
 use crate::websocket::VetoLobbyManager;
 use crate::websocket::agent_manager::AgentConnectionManager;
 use portal_domain::services::game_server::CertificateAuthority;
+use portal_domain::services::tournament::EvidenceS3Client;
 use portal_plugins::PluginManager;
 
 // ============================================================================
@@ -726,7 +727,19 @@ pub struct DemoState {
     /// Demo service.
     pub demo_service: AppDemoService,
     /// Validated CS2 demo service base URL (None if unset at startup).
+    ///
+    /// This is the demo-stats PARSER, not a file host — it must never be
+    /// used to build download URLs. Downloads presign via `object_storage`.
     pub cs2_demo_base_url: Option<String>,
+    /// Bucket-parameterised object store: presigns demo downloads and backs
+    /// the admin bucket explorer.
+    pub object_storage: Arc<dyn EvidenceS3Client>,
+    /// Buckets the explorer and download presigner may touch. Security
+    /// boundary — see `AppState::demo_bucket_allowlist`.
+    pub demo_bucket_allowlist: Vec<String>,
+    /// Bucket new MatchZy uploads land in; flagged in the explorer's bucket
+    /// list so operators can tell it from the legacy archive.
+    pub demo_upload_bucket: String,
     /// Permission service (admin demo catalog endpoints).
     pub permission_service: AppPermissionService,
     /// Game repository (validate game_id on catalog_demo).
@@ -759,6 +772,9 @@ impl FromRef<AppState> for DemoState {
             demo_service: s.demo_service.clone(),
             evidence_service: s.evidence_service.clone(),
             cs2_demo_base_url: s.cs2_demo_base_url.clone(),
+            object_storage: Arc::clone(&s.object_storage),
+            demo_bucket_allowlist: s.demo_bucket_allowlist.clone(),
+            demo_upload_bucket: s.demo_upload_bucket.clone(),
             permission_service: s.permission_service.clone(),
             game_repo: s.game_repo.clone(),
             plugin_manager: Arc::clone(&s.plugin_manager),

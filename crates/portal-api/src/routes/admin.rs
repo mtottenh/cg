@@ -151,6 +151,19 @@ pub fn routes() -> Router<AppState> {
         .route("/demos", post(demos::catalog_demo))
         .route("/demos/batch", post(demos::batch_catalog_demos))
         .route("/demos/stats", get(demos::get_demo_status_counts))
+        // Read-only bucket explorer. Every route is gated on the
+        // DEMO_BUCKET_ALLOWLIST — see handlers::demos::ensure_bucket_allowed.
+        // Declared before "/demos/{id}" cannot shadow these because the
+        // literal "buckets" segment is more specific than the {id} capture.
+        .route("/demos/buckets", get(demos::list_demo_buckets))
+        .route(
+            "/demos/buckets/{bucket}/objects",
+            get(demos::browse_demo_bucket),
+        )
+        .route(
+            "/demos/buckets/{bucket}/download",
+            get(demos::download_bucket_object),
+        )
         .route("/demos/{id}/stats", post(demos::submit_demo_stats))
         .route(
             "/demos/{id}/stats-failed",

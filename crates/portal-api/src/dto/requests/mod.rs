@@ -33,12 +33,13 @@ pub use award::{
 };
 pub use ban::{CreateBanRequest, LiftBanRequest, ListBansQuery};
 pub use demo::{
-    AssociateDemoRequest, BatchCatalogDemoEntry, BatchCatalogDemosRequest, CatalogDemoRequest,
-    CategorizeDemoRequest, DemoPlayerInputDto, DemoStatusCountsQuery, GetDemosForMatchQuery,
-    LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest, PendingDemosQuery,
-    PipelineQuery, ProcessUnlinkedDemosQuery, RequeueDiscoveredMatchesRequest, ResumeTrackingQuery,
-    SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
-    UnlinkDemoFromMatchRequest, UpdateAutoLinkSettingRequest,
+    AssociateDemoRequest, BatchCatalogDemoEntry, BatchCatalogDemosRequest, BrowseBucketQuery,
+    BucketObjectQuery, CatalogDemoRequest, CategorizeDemoRequest, DemoPlayerInputDto,
+    DemoStatusCountsQuery, GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery,
+    MarkDemoFailedRequest, PendingDemosQuery, PipelineQuery, ProcessUnlinkedDemosQuery,
+    RequeueDiscoveredMatchesRequest, ResumeTrackingQuery, SetDemoNotesRequest,
+    SetDemoVisibilityRequest, SubmitDemoStatsRequest, UnlinkDemoFromMatchRequest,
+    UpdateAutoLinkSettingRequest,
 };
 pub use dispute::{
     AddDisputeMessageRequest, AdminDisputeMessageRequest, AssignDisputeRequest, ListDisputesQuery,

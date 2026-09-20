@@ -43,6 +43,7 @@ pub use award::{
 pub use ban::{BanListResponse, BanResponse, PaginationMetaResponse};
 pub use demo::{
     AutoLinkSettingResponse, BatchCatalogErrorResponse, BatchCatalogResultResponse,
+    BucketListingResponse, BucketObjectDownloadResponse, BucketObjectResponse, DemoBucketResponse,
     DemoDownloadResponse, DemoIdListResponse, DemoListResponse, DemoMatchLinkResponse,
     DemoMatchLinkWithDemoResponse, DemoMetadataResponse, DemoPlayerResponse, DemoResponse,
     DemoStatusCountsResponse, DemoValidationResultResponse, DemoWithPlayersResponse,

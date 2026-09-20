@@ -133,6 +133,31 @@ pub struct DemoStatusCountsQuery {
     pub game_id: Option<Uuid>,
 }
 
+/// Query parameters for browsing one allowlisted bucket.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+pub struct BrowseBucketQuery {
+    /// Key prefix to scope the listing to. Empty lists the bucket root.
+    pub prefix: Option<String>,
+    /// Delimiter for folder-style rollup. Defaults to `/`; pass an empty
+    /// string for a flat listing.
+    pub delimiter: Option<String>,
+    /// Opaque cursor from a previous page's `next_cursor`.
+    pub cursor: Option<String>,
+    /// Page size (default 100, max 1000).
+    pub limit: Option<i32>,
+}
+
+/// Query parameters for presigning one bucket object.
+///
+/// The key travels as a query parameter, not a path segment: demo keys
+/// contain slashes (`matchzy/74/foo.dem`) and would otherwise be split
+/// across path segments.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+pub struct BucketObjectQuery {
+    /// Full object key to presign.
+    pub key: String,
+}
+
 /// Query parameters for the admin ingestion-pipeline reads (P-73).
 #[derive(Debug, Clone, Default, Deserialize, IntoParams)]
 pub struct PipelineQuery {

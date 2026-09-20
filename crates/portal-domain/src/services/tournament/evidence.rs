@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use portal_core::{DomainError, EvidenceId, TournamentMatchId, TournamentRegistrationId};
 use tracing::{info, instrument, warn};
 
@@ -24,12 +24,54 @@ use crate::repositories::tournament::{
 };
 use crate::services::tournament::registration_actor::{RegistrationActor, find_actor_registration};
 
+/// One object returned by a bucket listing.
+#[derive(Debug, Clone)]
+pub struct StoredObject {
+    /// Full object key.
+    pub key: String,
+    /// Size in bytes.
+    pub size: i64,
+    /// Last-modified timestamp, when the backend reports one.
+    pub last_modified: Option<DateTime<Utc>>,
+}
+
+/// One page of a bucket listing.
+///
+/// `common_prefixes` is only populated when the caller passes a delimiter —
+/// it is how folder-style browsing is expressed over a flat keyspace.
+#[derive(Debug, Clone, Default)]
+pub struct ObjectPage {
+    /// Objects directly under the requested prefix.
+    pub objects: Vec<StoredObject>,
+    /// Rolled-up child prefixes ("folders"), delimiter-dependent.
+    pub common_prefixes: Vec<String>,
+    /// Opaque cursor for the next page; `None` when the listing is complete.
+    pub next_cursor: Option<String>,
+}
+
 /// S3 client trait for presigned URLs.
 ///
 /// This trait abstracts the S3 operations needed by the evidence service.
 /// It matches the S3EvidenceClient trait in portal-storage.
 #[async_trait::async_trait]
 pub trait EvidenceS3Client: Send + Sync + 'static {
+    /// List one page of objects under `prefix`.
+    ///
+    /// `delimiter` (normally `"/"`) rolls keys up into
+    /// [`ObjectPage::common_prefixes`]; `cursor` continues a previous page.
+    ///
+    /// Implementations MUST bound the response to `max_keys`. The caller is
+    /// an interactive browse UI, and buckets here hold hundreds of 300 MB
+    /// demos — an unbounded walk is a memory and latency hazard.
+    async fn list_objects_page(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        delimiter: Option<&str>,
+        cursor: Option<&str>,
+        max_keys: i32,
+    ) -> Result<ObjectPage, DomainError>;
+
     /// Generate a presigned PUT URL for uploading.
     async fn presign_put(
         &self,

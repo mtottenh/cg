@@ -55,7 +55,8 @@ pub use bracket_generator::{
 pub use checkin::{CheckInService, CheckInStatus};
 pub use dispute::DisputeService;
 pub use evidence::{
-    EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig,
+    EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig, ObjectPage,
+    StoredObject,
 };
 pub use forfeit::ForfeitService;
 pub use lineup::LineupService;

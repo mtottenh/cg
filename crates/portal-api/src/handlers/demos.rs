@@ -2,14 +2,16 @@
 
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
-    AssociateDemoRequest, BatchCatalogDemosRequest, CatalogDemoRequest, CategorizeDemoRequest,
-    DemoStatusCountsQuery, GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery,
-    MarkDemoFailedRequest, PipelineQuery, ProcessUnlinkedDemosQuery,
-    RequeueDiscoveredMatchesRequest, ResumeTrackingQuery, SetDemoNotesRequest,
-    SetDemoVisibilityRequest, SubmitDemoStatsRequest, UpdateAutoLinkSettingRequest,
+    AssociateDemoRequest, BatchCatalogDemosRequest, BrowseBucketQuery, BucketObjectQuery,
+    CatalogDemoRequest, CategorizeDemoRequest, DemoStatusCountsQuery, GetDemosForMatchQuery,
+    LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest, PipelineQuery,
+    ProcessUnlinkedDemosQuery, RequeueDiscoveredMatchesRequest, ResumeTrackingQuery,
+    SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
+    UpdateAutoLinkSettingRequest,
 };
 use crate::dto::responses::{
     AutoLinkSettingResponse, BatchCatalogErrorResponse, BatchCatalogResultResponse,
+    BucketListingResponse, BucketObjectDownloadResponse, BucketObjectResponse, DemoBucketResponse,
     DemoDownloadResponse, DemoExtractionQueueResponse, DemoListResponse, DemoMatchLinkResponse,
     DemoMatchLinkWithDemoResponse, DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse,
     DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, PipelineOverviewResponse,
@@ -31,6 +33,7 @@ use portal_domain::entities::demo::{Demo, DemoFilter, DemoPlayerStats, ParsedDem
 use portal_domain::services::DemoPlayerInput;
 use portal_domain::services::system_settings;
 use portal_domain::services::tournament::RegistrationActor;
+use std::time::Duration;
 use validator::Validate;
 
 /// Extract request ID from headers.
@@ -551,11 +554,16 @@ pub async fn get_demo_download(
     let demo = state.demo_service.get_demo(demo_id).await?;
     authorize_demo_read(&state, &perm, &auth, &demo).await?;
 
-    // Build download URL using cs2_demo_base_url if available, otherwise construct from S3 coordinates
-    let download_url = match &state.cs2_demo_base_url {
-        Some(base_url) => demo.s3_url(base_url),
-        None => format!("s3://{}/{}", demo.s3_bucket, demo.s3_key),
-    };
+    // Presign against the demo's OWN bucket. This used to build a URL from
+    // `cs2_demo_base_url`, which is the demo-stats PARSER host (it only
+    // serves /stats/{filename} and /health) — every download 404'd. Taking
+    // the bucket from the row also means legacy-bucket demos work unchanged.
+    ensure_bucket_allowed(&state, &demo.s3_bucket)?;
+    let download_url = state
+        .object_storage
+        .presign_get(&demo.s3_bucket, &demo.s3_key, DEMO_DOWNLOAD_TTL)
+        .await
+        .map_err(|e| ApiError::internal(format!("presigning demo download failed: {e}")))?;
 
     Ok(Json(DataResponse::new(
         DemoDownloadResponse {
@@ -567,6 +575,204 @@ pub async fn get_demo_download(
         },
         request_id,
     )))
+}
+
+/// Lifetime of a presigned demo/object download URL.
+///
+/// Long enough to start a 300 MB transfer on a slow link, short enough that
+/// a leaked URL is not a durable credential.
+const DEMO_DOWNLOAD_TTL: Duration = Duration::from_secs(15 * 60);
+
+/// Default page size for a bucket listing.
+const BUCKET_PAGE_DEFAULT: i32 = 100;
+
+/// Reject any bucket that is not on the configured allowlist.
+///
+/// THE security boundary for the explorer: the API's credentials can read
+/// every bucket on the account, so a caller-supplied bucket name must never
+/// reach the S3 client unchecked. Returns 404 rather than 403 so the
+/// response does not confirm whether an un-allowlisted bucket exists.
+fn ensure_bucket_allowed(state: &DemoState, bucket: &str) -> ApiResult<()> {
+    if state
+        .demo_bucket_allowlist
+        .iter()
+        .any(|allowed| allowed == bucket)
+    {
+        return Ok(());
+    }
+    tracing::warn!(%bucket, "rejected bucket outside the explorer allowlist");
+    Err(ApiError::not_found("Bucket not found"))
+}
+
+/// Admin gate shared by the explorer endpoints.
+async fn require_admin(state: &DemoState, auth: &AuthenticatedUser) -> ApiResult<()> {
+    let is_admin = state
+        .permission_service
+        .is_admin(auth.user_id)
+        .await
+        .unwrap_or(false);
+    if is_admin {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("Admin access required"))
+    }
+}
+
+/// List the buckets the explorer may browse.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/demos/buckets",
+    responses(
+        (status = 200, description = "Allowlisted buckets", body = DataResponse<Vec<DemoBucketResponse>>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn list_demo_buckets(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+) -> ApiResult<Json<DataResponse<Vec<DemoBucketResponse>>>> {
+    let request_id = get_request_id(&headers);
+    require_admin(&state, &auth).await?;
+
+    let buckets = state
+        .demo_bucket_allowlist
+        .iter()
+        .map(|name| DemoBucketResponse {
+            is_upload_target: *name == state.demo_upload_bucket,
+            name: name.clone(),
+        })
+        .collect();
+
+    Ok(Json(DataResponse::new(buckets, request_id)))
+}
+
+/// Browse one page of an allowlisted bucket.
+///
+/// Read-only: there is deliberately no write, delete or catalog action here.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/demos/buckets/{bucket}/objects",
+    params(("bucket" = String, Path, description = "Bucket name"), BrowseBucketQuery),
+    responses(
+        (status = 200, description = "One page of objects", body = DataResponse<BucketListingResponse>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Bucket not allowlisted", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn browse_demo_bucket(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(bucket): Path<String>,
+    Query(query): Query<BrowseBucketQuery>,
+) -> ApiResult<Json<DataResponse<BucketListingResponse>>> {
+    let request_id = get_request_id(&headers);
+    require_admin(&state, &auth).await?;
+    ensure_bucket_allowed(&state, &bucket)?;
+
+    let prefix = query.prefix.unwrap_or_default();
+    // An explicitly empty delimiter means "flat listing"; absent means "/".
+    let delimiter = match query.delimiter.as_deref() {
+        Some("") => None,
+        Some(d) => Some(d.to_string()),
+        None => Some("/".to_string()),
+    };
+    let limit = query.limit.unwrap_or(BUCKET_PAGE_DEFAULT).clamp(1, 1000);
+
+    let page = state
+        .object_storage
+        .list_objects_page(
+            &bucket,
+            &prefix,
+            delimiter.as_deref(),
+            query.cursor.as_deref(),
+            limit,
+        )
+        .await
+        .map_err(|e| ApiError::internal(format!("listing bucket failed: {e}")))?;
+
+    let response = BucketListingResponse {
+        bucket,
+        prefix,
+        objects: page
+            .objects
+            .into_iter()
+            .map(|o| BucketObjectResponse {
+                key: o.key,
+                size: o.size,
+                last_modified: o.last_modified,
+            })
+            .collect(),
+        common_prefixes: page.common_prefixes,
+        next_cursor: page.next_cursor,
+    };
+
+    Ok(Json(DataResponse::new(response, request_id)))
+}
+
+/// Presign a time-limited download for one object in an allowlisted bucket.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/demos/buckets/{bucket}/download",
+    params(("bucket" = String, Path, description = "Bucket name"), BucketObjectQuery),
+    responses(
+        (status = 200, description = "Presigned download URL", body = DataResponse<BucketObjectDownloadResponse>),
+        (status = 400, description = "Missing or invalid key", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+        (status = 404, description = "Bucket not allowlisted, or object missing", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn download_bucket_object(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Path(bucket): Path<String>,
+    Query(query): Query<BucketObjectQuery>,
+) -> ApiResult<Json<DataResponse<BucketObjectDownloadResponse>>> {
+    let request_id = get_request_id(&headers);
+    require_admin(&state, &auth).await?;
+    ensure_bucket_allowed(&state, &bucket)?;
+
+    let key = query.key.trim();
+    if key.is_empty() {
+        return Err(ApiError::bad_request("key is required"));
+    }
+
+    // Presigning succeeds for a key that does not exist, handing the user a
+    // URL that 404s later; check first so the error arrives here instead.
+    let exists = state
+        .object_storage
+        .object_exists(&bucket, key)
+        .await
+        .map_err(|e| ApiError::internal(format!("checking object failed: {e}")))?;
+    if !exists {
+        return Err(ApiError::not_found("Object not found"));
+    }
+
+    let download_url = state
+        .object_storage
+        .presign_get(&bucket, key, DEMO_DOWNLOAD_TTL)
+        .await
+        .map_err(|e| ApiError::internal(format!("presigning download failed: {e}")))?;
+
+    let response = BucketObjectDownloadResponse {
+        bucket,
+        key: key.to_string(),
+        download_url,
+        expires_in_secs: DEMO_DOWNLOAD_TTL.as_secs(),
+    };
+
+    Ok(Json(DataResponse::new(response, request_id)))
 }
 
 /// Get demo status counts for admin dashboard.

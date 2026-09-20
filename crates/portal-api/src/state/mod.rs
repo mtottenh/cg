@@ -57,7 +57,7 @@ use portal_domain::services::{
     SystemSettingsService, TournamentService, UserService,
     game_server::{CertificateAuthority, GameServerRegistryService},
     tournament::{
-        AvailabilityService, CheckInService, DisputeService, EvidenceService,
+        AvailabilityService, CheckInService, DisputeService, EvidenceS3Client, EvidenceService,
         EvidenceServiceConfig, ForfeitService, LineupService, MatchCompletionSaga,
         MatchLifecycleService, ProgressionService, RegistrationService, ResultReviewService,
         ResultService, SchedulingService, SeedingService, StandingsService,
@@ -320,6 +320,16 @@ pub struct AppState {
     pub demo_upload_storage: Arc<dyn StorageBackend>,
     /// Bucket name recorded in the demo catalog for uploaded demos.
     pub demo_upload_bucket: String,
+    /// Bucket-parameterised object store used for demo downloads and the
+    /// admin bucket explorer. Shares the evidence backend because the
+    /// credentials and endpoint are the same; every call names its bucket
+    /// explicitly, so it spans `portal-demos` and the legacy bucket alike.
+    pub object_storage: Arc<dyn EvidenceS3Client>,
+    /// Buckets the admin explorer and the demo-download presigner are
+    /// permitted to touch (`DEMO_BUCKET_ALLOWLIST`). The API's credentials
+    /// can read every bucket on the account, so this is the security
+    /// boundary — never widen it from a request parameter.
+    pub demo_bucket_allowlist: Vec<String>,
     /// Fire-and-forget veto-completion trigger for server assignment; the
     /// drain task (`spawn_server_assignment_task`) runs the actual flow.
     pub server_assignment_tx:
@@ -805,6 +815,12 @@ impl AppState {
             evidence_bucket,
             ..Default::default()
         };
+        // A second handle on the same backend for AppState.object_storage:
+        // the explorer and the demo-download presigner need the same
+        // credentials and endpoint. EvidenceService is generic over a sized
+        // client, so it keeps the concrete type while we erase ours to
+        // `dyn` — both are cheap clones of the same config.
+        let object_storage: Arc<dyn EvidenceS3Client> = Arc::new(evidence_storage.clone());
         let evidence_service = EvidenceService::new(
             Arc::clone(&evidence_repo),
             Arc::clone(&tournament_match_repo),
@@ -951,6 +967,22 @@ impl AppState {
                 )
             };
 
+        // Explorer allowlist. Defaults to just the demo upload bucket so a
+        // missing env var cannot silently expose the whole account; prod
+        // sets both buckets explicitly via Ansible.
+        let demo_bucket_allowlist: Vec<String> =
+            std::env::var("DEMO_BUCKET_ALLOWLIST").ok().map_or_else(
+                || vec![demo_upload_bucket.clone()],
+                |raw| {
+                    raw.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
+                },
+            );
+        tracing::info!(buckets = ?demo_bucket_allowlist, "Demo bucket explorer allowlist");
+
         // Create match completion saga with adapters
         let saga_execution_repo = Arc::new(PgSagaExecutionRepository::new(db_pool.clone()));
         let progression_log_repo = Arc::new(PgProgressionLogRepository::new(db_pool.clone()));
@@ -1034,6 +1066,8 @@ impl AppState {
             public_base_url,
             demo_upload_storage,
             demo_upload_bucket,
+            object_storage,
+            demo_bucket_allowlist,
             server_assignment_tx,
             server_assignment_rx: Arc::new(tokio::sync::Mutex::new(Some(server_assignment_rx))),
             agent_manager,
@@ -1152,6 +1186,17 @@ impl AppState {
     #[must_use]
     pub fn with_cs2_demo_url_unchecked(mut self, url: String) -> Self {
         self.cs2_demo_base_url = Some(url);
+        self
+    }
+
+    /// Override the demo bucket explorer allowlist.
+    ///
+    /// Production sets this from DEMO_BUCKET_ALLOWLIST; tests use it to
+    /// admit their fixture bucket without touching process-global env,
+    /// which would race across parallel tests.
+    #[must_use]
+    pub fn with_demo_bucket_allowlist(mut self, buckets: Vec<String>) -> Self {
+        self.demo_bucket_allowlist = buckets;
         self
     }
 }

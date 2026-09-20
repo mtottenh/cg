@@ -248,6 +248,17 @@ pub struct ObjectInfo {
     pub last_modified: Option<DateTime<Utc>>,
 }
 
+/// One page of a bucket listing.
+#[derive(Debug, Clone, Default)]
+pub struct ObjectPage {
+    /// Objects directly under the requested prefix.
+    pub objects: Vec<ObjectInfo>,
+    /// Rolled-up child prefixes; only populated when a delimiter is given.
+    pub common_prefixes: Vec<String>,
+    /// Continuation token for the next page, or `None` when complete.
+    pub next_continuation_token: Option<String>,
+}
+
 /// Trait for S3 operations needed by the evidence system.
 #[async_trait]
 pub trait S3EvidenceClient: Send + Sync + 'static {
@@ -275,11 +286,27 @@ pub trait S3EvidenceClient: Send + Sync + 'static {
     async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
 
     /// List objects with a prefix.
+    ///
+    /// Walks every page — only safe for keyspaces known to be small. Prefer
+    /// [`Self::list_objects_page`] for anything user-facing.
     async fn list_objects(
         &self,
         bucket: &str,
         prefix: &str,
     ) -> Result<Vec<ObjectInfo>, StorageError>;
+
+    /// List a single, bounded page of objects under a prefix.
+    ///
+    /// `delimiter` rolls keys up into `common_prefixes` for folder-style
+    /// browsing; `continuation_token` resumes a previous page.
+    async fn list_objects_page(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        delimiter: Option<&str>,
+        continuation_token: Option<&str>,
+        max_keys: i32,
+    ) -> Result<ObjectPage, StorageError>;
 
     /// Check if an object exists.
     async fn object_exists(&self, bucket: &str, key: &str) -> Result<bool, StorageError>;
@@ -423,6 +450,68 @@ impl S3EvidenceClient for S3Storage {
         }
 
         Ok(objects)
+    }
+
+    #[instrument(skip(self))]
+    async fn list_objects_page(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        delimiter: Option<&str>,
+        continuation_token: Option<&str>,
+        max_keys: i32,
+    ) -> Result<ObjectPage, StorageError> {
+        let mut request = self
+            .client
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(prefix)
+            .max_keys(max_keys.clamp(1, 1000));
+
+        if let Some(delimiter) = delimiter {
+            request = request.delimiter(delimiter);
+        }
+        if let Some(token) = continuation_token {
+            request = request.continuation_token(token);
+        }
+
+        let response = request.send().await.map_err(|e| StorageError::S3 {
+            message: format!("Failed to list objects: {e}"),
+        })?;
+
+        let objects = response
+            .contents
+            .unwrap_or_default()
+            .into_iter()
+            .map(|obj| ObjectInfo {
+                key: obj.key().unwrap_or("").to_string(),
+                size: obj.size().unwrap_or(0),
+                last_modified: obj
+                    .last_modified()
+                    .and_then(|dt| DateTime::from_timestamp(dt.secs(), dt.subsec_nanos())),
+            })
+            .collect();
+
+        let common_prefixes = response
+            .common_prefixes
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| p.prefix)
+            .collect();
+
+        // S3 only returns a continuation token while truncated; normalise the
+        // "complete" case to None so callers can treat it as an end marker.
+        let next_continuation_token = if response.is_truncated.unwrap_or(false) {
+            response.next_continuation_token
+        } else {
+            None
+        };
+
+        Ok(ObjectPage {
+            objects,
+            common_prefixes,
+            next_continuation_token,
+        })
     }
 
     #[instrument(skip(self))]

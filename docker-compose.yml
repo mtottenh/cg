@@ -91,7 +91,8 @@ services:
         condition: service_healthy
 
   minio:
-    image: minio/minio:latest
+    # Docker Hub's minio/minio was withdrawn; quay.io is MinIO's own registry.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: portal-minio
     environment:
       MINIO_ROOT_USER: minioadmin

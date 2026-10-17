@@ -2,7 +2,7 @@
 
 use crate::entities::league::{
     CreateLeagueCommand, League, LeagueAccessType, LeagueInvitation, LeagueInvitationStatus,
-    LeagueMember, LeagueMemberWithUser, LeagueMembershipType, UpdateLeagueCommand,
+    LeagueMember, LeagueMemberWithUser, LeagueMembershipType, LeagueStatus, UpdateLeagueCommand,
     UserLeagueMembership,
 };
 use crate::repositories::league::{
@@ -243,6 +243,7 @@ where
         user_id: UserId,
     ) -> Result<LeagueMember, DomainError> {
         let league = self.get_league(league_id).await?;
+        ensure_accepting_members(&league)?;
 
         // Only open leagues can be joined directly
         if league.access_type != LeagueAccessType::Open {
@@ -429,6 +430,7 @@ where
         message: Option<String>,
     ) -> Result<LeagueInvitation, DomainError> {
         let league = self.get_league(league_id).await?;
+        ensure_accepting_members(&league)?;
 
         // Check league access type
         if league.access_type != LeagueAccessType::Application {
@@ -545,6 +547,7 @@ where
         if invitation.user_id != user_id {
             return Err(DomainError::InvitationInvalid);
         }
+        ensure_accepting_members(&self.get_league(invitation.league_id).await?)?;
 
         // Check status. `Accepted` is allowed through ONLY as recovery from
         // a partial write (status flipped, membership never inserted); if the
@@ -613,6 +616,7 @@ where
             .find_by_id(invitation_id)
             .await?
             .ok_or(DomainError::InvitationInvalid)?;
+        ensure_accepting_members(&self.get_league(invitation.league_id).await?)?;
 
         // Check status. As in `accept_invitation`, `Accepted` is allowed
         // through only to recover an application whose membership insert
@@ -777,6 +781,24 @@ where
             invitation_repo: Arc::clone(&self.invitation_repo),
         }
     }
+}
+
+/// An archived or suspended league takes no new members. Archiving hides the
+/// league from listings; without this a direct link (or a pending invite)
+/// still let people in.
+fn ensure_accepting_members(league: &League) -> Result<(), DomainError> {
+    if league.archived_at.is_some() {
+        return Err(DomainError::InvalidState(
+            "this league has been archived".to_string(),
+        ));
+    }
+    if league.status != LeagueStatus::Active {
+        return Err(DomainError::InvalidState(format!(
+            "this league is {} and not taking new members",
+            league.status.as_str()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

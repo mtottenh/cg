@@ -117,7 +117,9 @@ impl Tournament {
     /// Check if registration is currently open.
     #[must_use]
     pub fn is_registration_open(&self) -> bool {
-        if !self.status.is_registration_open() {
+        // Archived is hidden, not closed: the status may still say
+        // `registration`, and a direct link would otherwise still sign up.
+        if self.archived_at.is_some() || !self.status.is_registration_open() {
             return false;
         }
 

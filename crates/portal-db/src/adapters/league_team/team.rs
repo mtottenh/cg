@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
+use super::roster_release;
 use crate::DbPool;
 use crate::entities::league_team::{LeagueTeamRow, LeagueTeamSeasonRow};
 use portal_core::types::{LeagueTeamRole, LeagueTeamStatus};
@@ -14,6 +15,48 @@ use portal_domain::repositories::league_team::{
     CreateLeagueTeam, LeagueTeamListFilter, LeagueTeamRepository, MovedTeam, TeamImage,
     UpdateLeagueTeam, WithdrawnEntry,
 };
+
+/// Refuse a restore that would push a season past `max_teams`.
+///
+/// An archived team does not hold a season slot (`count_teams` skips it), so
+/// the slot may have been taken while it was away.
+async fn restore_capacity_check(
+    conn: &mut sqlx::PgConnection,
+    team_id: uuid::Uuid,
+    live: &[uuid::Uuid],
+) -> Result<(), DomainError> {
+    let full: Option<(String,)> = sqlx::query_as(
+        r"
+        SELECT s.name
+        FROM league_team_seasons mine
+        JOIN league_seasons s ON s.id = mine.season_id
+        WHERE mine.id = ANY($1)
+          AND s.max_teams IS NOT NULL
+          AND (
+            SELECT COUNT(*)
+            FROM league_team_seasons lts
+            JOIN league_teams t ON t.id = lts.team_id
+            WHERE lts.season_id = s.id
+              AND lts.team_id <> $2
+              AND lts.status NOT IN ('withdrawn', 'disqualified')
+              AND t.archived_at IS NULL
+              AND t.status <> 'disbanded'
+          ) >= s.max_teams
+        LIMIT 1
+        ",
+    )
+    .bind(live)
+    .bind(team_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|e| DomainError::Internal(e.to_string()))?;
+    match full {
+        Some((season,)) => Err(DomainError::Conflict(format!(
+            "'{season}' has filled its team slots since this team was archived"
+        ))),
+        None => Ok(()),
+    }
+}
 
 /// `PostgreSQL` implementation of `LeagueTeamRepository`.
 #[derive(Debug, Clone)]
@@ -222,22 +265,88 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         id: LeagueTeamId,
         archived_by: Option<UserId>,
     ) -> Result<LeagueTeam, DomainError> {
+        // One transaction: the archive flag, the seats it releases and the
+        // cup entries it withdraws move together (see `roster_release`).
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // Locked so a concurrent archive/restore cannot interleave with the
+        // seat bookkeeping, which keys on `archived_at`.
+        let current = sqlx::query_as::<_, LeagueTeamRow>(
+            "SELECT * FROM league_teams WHERE id = $1 FOR UPDATE",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or(DomainError::LeagueTeamNotFound(id))?;
+
+        let live = roster_release::live_team_season_ids(&mut tx, id.as_uuid()).await?;
+        let now = Utc::now();
+
+        match (archived_by, current.archived_at) {
+            (Some(_), None) => {
+                roster_release::withdraw_open_cup_entries(&mut tx, &live, now).await?;
+                roster_release::release_seats(&mut tx, &live, "inactive", now).await?;
+            }
+            (None, Some(archived_at)) => {
+                restore_capacity_check(&mut tx, id.as_uuid(), &live).await?;
+                // Seats come back exactly as archiving left them — except a
+                // primary seat whose player has since joined another team
+                // that season; the one-team rule outranks the restore.
+                sqlx::query(
+                    r"
+                    UPDATE league_team_members m
+                    SET status = 'active', left_at = NULL
+                    WHERE m.team_season_id = ANY($1)
+                      AND m.status = 'inactive'
+                      AND m.left_at = $2
+                      AND NOT (
+                        m.role IN ('captain', 'player')
+                        AND EXISTS (
+                          SELECT 1 FROM league_team_members o
+                          WHERE o.player_id = m.player_id
+                            AND o.season_id = m.season_id
+                            AND o.status = 'active'
+                            AND o.role IN ('captain', 'player')
+                        )
+                      )
+                    ",
+                )
+                .bind(&live)
+                .bind(archived_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| DomainError::Internal(e.to_string()))?;
+            }
+            // Archiving an archived team, or restoring a live one: nothing
+            // to release or bring back.
+            _ => {}
+        }
+
         let row = sqlx::query_as::<_, LeagueTeamRow>(
             r"
             UPDATE league_teams
-            SET archived_at = CASE WHEN $2::uuid IS NULL THEN NULL ELSE NOW() END,
+            SET archived_at = CASE WHEN $2::uuid IS NULL THEN NULL ELSE COALESCE(archived_at, $3) END,
                 archived_by = $2::uuid,
-                updated_at  = NOW()
+                updated_at  = $3
             WHERE id = $1
             RETURNING *
             ",
         )
         .bind(id.as_uuid())
         .bind(archived_by.map(|u| u.as_uuid()))
-        .fetch_optional(&self.pool)
+        .bind(now)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?
-        .ok_or(DomainError::LeagueTeamNotFound(id))?;
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(LeagueTeam::from(row))
     }
@@ -435,6 +544,28 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
             None
         };
 
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // A disbanded team is over: it withdraws from every season it is
+        // still in, and its players are free to join someone else.
+        if status == LeagueTeamStatus::Disbanded {
+            let live = roster_release::live_team_season_ids(&mut tx, id.as_uuid()).await?;
+            roster_release::withdraw_open_cup_entries(&mut tx, &live, now).await?;
+            roster_release::release_seats(&mut tx, &live, "left", now).await?;
+            sqlx::query(
+                "UPDATE league_team_seasons SET status = 'withdrawn', updated_at = $2 WHERE id = ANY($1)",
+            )
+            .bind(&live)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        }
+
         let row = sqlx::query_as::<_, LeagueTeamRow>(
             r"
             UPDATE league_teams SET
@@ -449,9 +580,13 @@ impl LeagueTeamRepository for PgLeagueTeamRepository {
         .bind(status.to_string())
         .bind(disbanded_at)
         .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(LeagueTeam::from(row))
     }

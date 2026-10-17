@@ -26,7 +26,6 @@ where
     SR: LeagueSeasonRepository,
 {
     invitation_repo: Arc<IR>,
-    #[allow(dead_code)]
     team_repo: Arc<TR>,
     team_season_repo: Arc<TSR>,
     member_repo: Arc<TMR>,
@@ -64,6 +63,21 @@ where
         }
     }
 
+    /// [`super::ensure_roster_live`] for a roster this service is about to
+    /// invite, accept or seat onto.
+    async fn ensure_roster_live(
+        &self,
+        team_season: &crate::entities::league_team::LeagueTeamSeason,
+        season: &crate::entities::league_team::LeagueSeason,
+    ) -> Result<(), DomainError> {
+        let team = self
+            .team_repo
+            .find_by_id(team_season.team_id)
+            .await?
+            .ok_or(DomainError::LeagueTeamNotFound(team_season.team_id))?;
+        super::ensure_roster_live(self.season_repo.as_ref(), &team, team_season, season).await
+    }
+
     /// Create an invitation (captain invites player to seasonal roster).
     #[instrument(skip(self))]
     pub async fn create_invitation(
@@ -88,6 +102,8 @@ where
             .find_by_id(team_season.season_id)
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
+
+        self.ensure_roster_live(&team_season, &season).await?;
 
         // P-15: this used to ask only the *primary* question, so a substitute
         // could be invited onto a hard-locked roster that
@@ -182,6 +198,8 @@ where
             .find_by_id(team_season.season_id)
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
+
+        self.ensure_roster_live(&team_season, &season).await?;
 
         // P-148: this used to open with `if !season.is_registration_open()`,
         // which made the join path the ONLY roster path still frozen by the
@@ -325,6 +343,10 @@ where
             .find_by_id(team_season.season_id)
             .await?
             .ok_or(DomainError::LeagueSeasonNotFound(team_season.season_id))?;
+
+        // The seat itself: an invite issued while the team was live must not
+        // land a player on it after it was disbanded, withdrawn or archived.
+        self.ensure_roster_live(&team_season, &season).await?;
 
         // §9.3: the SEATED player (the invitee/applicant, not necessarily the
         // acceptor) must belong to the league at seat time — an application

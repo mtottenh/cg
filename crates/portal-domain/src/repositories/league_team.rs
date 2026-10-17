@@ -123,8 +123,13 @@ pub trait LeagueSeasonRepository: Send + Sync {
         archived_by: Option<UserId>,
     ) -> Result<LeagueSeason, DomainError>;
 
-    /// Count teams registered in a season.
+    /// Count teams holding a slot in a season: not withdrawn or
+    /// disqualified, and the team itself neither archived nor disbanded.
     async fn count_teams(&self, season_id: LeagueSeasonId) -> Result<i64, DomainError>;
+
+    /// Whether the season is archived, in its own right or through its
+    /// league (the archive cascade is inherited, never written).
+    async fn is_archived(&self, season_id: LeagueSeasonId) -> Result<bool, DomainError>;
 
     /// Count individual participants in a season (for individual format).
     async fn count_participants(&self, season_id: LeagueSeasonId) -> Result<i64, DomainError>;
@@ -280,6 +285,13 @@ pub trait LeagueTeamRepository: Send + Sync {
 
     /// Archive or restore a team. `Some(user)` archives, `None` restores.
     ///
+    /// Archiving releases the seats of the team's live rosters (as
+    /// `inactive`, `left_at = archived_at`) and withdraws its entries in cups
+    /// without a bracket, refusing if it holds one in a cup that has one.
+    /// Restoring re-checks the seasons' `max_teams` and brings those seats
+    /// back, except a primary seat whose player has joined another team in
+    /// that season meanwhile.
+    ///
     /// Distinct from disbanding, which is the team's own status: archiving is
     /// an operator putting the team away, and restoring undoes exactly that.
     async fn set_archived(
@@ -317,6 +329,11 @@ pub trait LeagueTeamRepository: Send + Sync {
     ) -> Result<Vec<LeagueTeam>, DomainError>;
 
     /// Update team status.
+    ///
+    /// Disbanding MUST, in the same transaction, withdraw the team from every
+    /// season it is still taking part in, release those rosters' seats and
+    /// withdraw its entries in cups without a bracket — refusing if it holds
+    /// an entry in a cup that has one.
     async fn update_status(
         &self,
         id: LeagueTeamId,
@@ -446,6 +463,10 @@ pub trait LeagueTeamSeasonRepository: Send + Sync {
     ) -> Result<Vec<LeagueTeamSeason>, DomainError>;
 
     /// Update team-season status.
+    ///
+    /// Withdrawing MUST, in the same transaction, release the roster's seats
+    /// and withdraw its entries in cups without a bracket — refusing if it
+    /// holds an entry in a cup that has one.
     async fn update_status(
         &self,
         id: LeagueTeamSeasonId,

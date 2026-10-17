@@ -14,6 +14,7 @@ mod conversions;
 mod invitation;
 mod member;
 mod participant;
+mod roster_release;
 mod season;
 mod team;
 mod team_season;

@@ -127,6 +127,28 @@ pub(super) async fn require_registration_actor(
     Ok(())
 }
 
+/// Refuse a sign-up to a cup whose league has been archived. The cup itself
+/// is checked by `Tournament::is_registration_open`; the league's archive is
+/// inherited, never written onto the cup, so it has to be asked here.
+pub(super) async fn ensure_league_live(
+    state: &TournamentState,
+    tournament: &portal_domain::entities::Tournament,
+) -> Result<(), ApiError> {
+    if let Some(league_id) = tournament.league_id
+        && state
+            .league_service
+            .get_league(league_id)
+            .await?
+            .archived_at
+            .is_some()
+    {
+        return Err(ApiError::bad_request(
+            "This tournament's league has been archived",
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve the restrictions that actually bind a tournament: its own,
 /// composed strictest-wins with its league's entry requirements when it
 /// belongs to a league. A league tournament may tighten league rules but

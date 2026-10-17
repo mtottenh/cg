@@ -38,7 +38,9 @@ pub use roster_lock::{RosterChange, RosterLockOverride};
 pub use season::LeagueSeasonService;
 pub use team::LeagueTeamService;
 
+use crate::entities::league_team::{LeagueSeason, LeagueTeam, LeagueTeamSeason};
 use crate::repositories::league::LeagueMemberRepository;
+use crate::repositories::league_team::LeagueSeasonRepository;
 use portal_core::{DomainError, LeagueId, PlayerId};
 use std::sync::Arc;
 
@@ -62,4 +64,50 @@ pub(crate) async fn ensure_league_member(
     } else {
         Err(DomainError::NotLeagueMember)
     }
+}
+
+/// Refuse to act in a season that has been archived, directly or through its
+/// league. The listings hide an archived season by joining its parents; the
+/// write paths have to ask the same question or a direct link still works.
+pub(crate) async fn ensure_season_live<SR: LeagueSeasonRepository>(
+    seasons: &SR,
+    season: &LeagueSeason,
+) -> Result<(), DomainError> {
+    if season.archived_at.is_some() || seasons.is_archived(season.id).await? {
+        return Err(DomainError::InvalidState(
+            "this season has been archived".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// THE "can this roster still take a player" rule, for every path that
+/// invites, applies or seats someone on it.
+///
+/// Disbanding, withdrawing and archiving release a roster's seats; without
+/// this, an invite or application made before (or after) that could still
+/// seat a player on a team that is gone — spending their one primary seat
+/// for the season on it.
+pub(crate) async fn ensure_roster_live<SR: LeagueSeasonRepository>(
+    seasons: &SR,
+    team: &LeagueTeam,
+    team_season: &LeagueTeamSeason,
+    season: &LeagueSeason,
+) -> Result<(), DomainError> {
+    if team.status.is_terminal() {
+        return Err(DomainError::InvalidState(
+            "this team has been disbanded".to_string(),
+        ));
+    }
+    if team.archived_at.is_some() {
+        return Err(DomainError::InvalidState(
+            "this team has been archived".to_string(),
+        ));
+    }
+    if team_season.is_terminal() {
+        return Err(DomainError::InvalidState(
+            "this team is no longer taking part in the season".to_string(),
+        ));
+    }
+    ensure_season_live(seasons, season).await
 }

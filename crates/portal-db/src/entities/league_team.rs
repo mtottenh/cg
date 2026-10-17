@@ -471,6 +471,8 @@ pub struct PlayerLeagueTeamMembershipRow {
     pub team_name: String,
     pub team_tag: String,
     pub team_logo_url: Option<String>,
+    /// `league_teams.status`, joined by the adapter (not part of the view).
+    pub team_status: String,
 
     // Team season info
     pub team_season_id: Uuid,

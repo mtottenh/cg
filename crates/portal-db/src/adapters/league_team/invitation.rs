@@ -16,8 +16,6 @@ use portal_domain::repositories::league_team::{
     AddLeagueTeamMember, CreateLeagueTeamInvitation, LeagueTeamInvitationRepository,
 };
 
-use crate::entities::league_team::LeagueTeamMemberRow;
-
 /// `PostgreSQL` implementation of `LeagueTeamInvitationRepository`.
 #[derive(Debug, Clone)]
 pub struct PgLeagueTeamInvitationRepository {
@@ -147,6 +145,12 @@ impl LeagueTeamInvitationRepository for PgLeagueTeamInvitationRepository {
             JOIN league_seasons s ON s.id = ts.season_id
             JOIN leagues l ON l.id = s.league_id
             WHERE i.player_id = $1 AND i.status = 'pending' AND i.expires_at > NOW()
+              -- An invite onto a roster that can no longer seat anyone is not
+              -- something the player can act on.
+              AND ts.status NOT IN ('eliminated', 'disqualified', 'withdrawn')
+              AND t.status <> 'disbanded' AND t.archived_at IS NULL
+              AND s.status NOT IN ('completed', 'cancelled') AND s.archived_at IS NULL
+              AND l.archived_at IS NULL
             ORDER BY i.created_at DESC
             ",
         )
@@ -276,33 +280,13 @@ impl LeagueTeamInvitationRepository for PgLeagueTeamInvitationRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        let member_id = uuid::Uuid::now_v7();
-        let row = sqlx::query_as::<_, LeagueTeamMemberRow>(
-            r"
-            INSERT INTO league_team_members (
-                id, team_season_id, player_id, role, position, jersey_number, added_by, joined_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING *
-            ",
-        )
-        .bind(member_id)
-        .bind(member.team_season_id.as_uuid())
-        .bind(member.player_id.as_uuid())
-        .bind(member.role.to_string())
-        .bind(&member.position)
-        .bind(member.jersey_number)
-        .bind(member.added_by.map(|u| u.as_uuid()))
-        .bind(now)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let seated = super::member::seat_member(&mut tx, &member, now).await?;
 
         tx.commit()
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        Ok(LeagueTeamMember::from(row))
+        Ok(seated)
     }
 
     async fn cancel_pending_for_player(
@@ -332,7 +316,21 @@ impl LeagueTeamInvitationRepository for PgLeagueTeamInvitationRepository {
 
     async fn count_pending_for_player(&self, player_id: PlayerId) -> Result<i64, DomainError> {
         let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM league_team_invitations WHERE player_id = $1 AND status = 'pending' AND expires_at > NOW()",
+            // Same liveness filter as `find_pending_for_player`, so the badge
+            // counts what the list shows.
+            r"
+            SELECT COUNT(*)
+            FROM league_team_invitations i
+            JOIN league_team_seasons ts ON ts.id = i.team_season_id
+            JOIN league_teams t ON t.id = ts.team_id
+            JOIN league_seasons s ON s.id = ts.season_id
+            JOIN leagues l ON l.id = s.league_id
+            WHERE i.player_id = $1 AND i.status = 'pending' AND i.expires_at > NOW()
+              AND ts.status NOT IN ('eliminated', 'disqualified', 'withdrawn')
+              AND t.status <> 'disbanded' AND t.archived_at IS NULL
+              AND s.status NOT IN ('completed', 'cancelled') AND s.archived_at IS NULL
+              AND l.archived_at IS NULL
+            ",
         )
         .bind(player_id.as_uuid())
         .fetch_one(&self.pool)

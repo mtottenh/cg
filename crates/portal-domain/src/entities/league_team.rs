@@ -168,7 +168,10 @@ impl LeagueSeason {
     /// Check if a new team can register for this season.
     #[must_use]
     pub fn can_register_team(&self) -> bool {
-        self.is_registration_open()
+        // An archived season is hidden, not closed — its status may still
+        // say `registration`. The league's archive needs a repository and is
+        // checked by `ensure_season_live`.
+        self.archived_at.is_none() && self.is_registration_open()
     }
 }
 
@@ -682,6 +685,7 @@ pub struct PlayerLeagueTeamMembership {
     pub team_name: String,
     pub team_tag: String,
     pub team_logo_url: Option<String>,
+    pub team_status: LeagueTeamStatus,
 
     // Team season info
     pub team_season_id: LeagueTeamSeasonId,

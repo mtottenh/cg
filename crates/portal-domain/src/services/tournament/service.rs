@@ -924,6 +924,17 @@ where
             return Err(DomainError::Conflict("Already checked in".to_string()));
         }
 
+        // Only an approved entry checks in. Without this a pending entry
+        // skipped approval (and the capacity check that comes with it), and
+        // a rejected one — rejection is stored as `withdrawn` — came back.
+        // `CheckInService::check_in` already asked; this path did not.
+        if !registration.status.can_check_in() {
+            return Err(DomainError::InvalidState(format!(
+                "Cannot check in registration in {} status",
+                registration.status
+            )));
+        }
+
         self.registration_repo
             .check_in(registration_id, checked_in_by)
             .await

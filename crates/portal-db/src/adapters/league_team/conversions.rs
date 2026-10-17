@@ -203,6 +203,7 @@ impl From<PlayerLeagueTeamMembershipRow> for PlayerLeagueTeamMembership {
             team_name: row.team_name,
             team_tag: row.team_tag,
             team_logo_url: row.team_logo_url,
+            team_status: row.team_status.parse().unwrap_or_default(),
             team_season_id: LeagueTeamSeasonId::from_uuid(row.team_season_id),
             team_season_status: row.team_season_status.parse().unwrap_or_default(),
             role: row.role.parse().unwrap_or_default(),

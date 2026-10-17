@@ -5,17 +5,21 @@
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
-/// Pinned MinIO image tag. Bump deliberately, not automatically.
-const MINIO_IMAGE_TAG: &str = "RELEASE.2025-09-07T16-13-09Z";
+/// Pinned MinIO image. Bump deliberately, not automatically.
+///
+/// Chainguard's build, pinned by digest: MinIO withdrew `minio/minio` from
+/// Docker Hub and then closed `quay.io/minio/minio` to anonymous pulls
+/// (401 "access to the requested resource is not authorized"), which failed
+/// every S3 integration test locally and in CI. Chainguard's free tier
+/// publishes only `latest`, so the digest is the pin; the tag is decoration
+/// Docker ignores once a digest is given.
+const MINIO_IMAGE: &str = "cgr.dev/chainguard/minio";
+const MINIO_IMAGE_TAG: &str =
+    "latest@sha256:c93745c56fccdaf0e5dcb88999a96a65a136428beb045ef5d546255a80d747a7";
 
 /// Start a MinIO container and return (container handle, endpoint URL).
 pub async fn start_minio() -> (ContainerAsync<GenericImage>, String) {
-    // quay.io, not Docker Hub: `minio/minio` was withdrawn from Docker Hub
-    // and now 404s with "pull access denied ... repository does not exist",
-    // which failed every S3 integration test. quay.io is MinIO's own
-    // registry. Pinned rather than `latest` so an upstream change cannot
-    // silently break CI again.
-    let container = GenericImage::new("quay.io/minio/minio", MINIO_IMAGE_TAG)
+    let container = GenericImage::new(MINIO_IMAGE, MINIO_IMAGE_TAG)
         .with_exposed_port(9000.into())
         .with_env_var("MINIO_ROOT_USER", "minioadmin")
         .with_env_var("MINIO_ROOT_PASSWORD", "minioadmin")

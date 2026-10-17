@@ -221,6 +221,18 @@ where
             ));
         }
 
+        // Withdrawing mid-cup is this path's purpose (it forfeits what is
+        // left), but an entry that is already over — eliminated, withdrawn
+        // (also how a rejection is stored), disqualified, no-show — has
+        // nothing to withdraw from. Without this, withdrawing an eliminated
+        // entry rewrote its result to `withdrawn`.
+        if !registration.status.can_withdraw() {
+            return Err(DomainError::InvalidState(format!(
+                "Cannot withdraw a registration in {} status",
+                registration.status
+            )));
+        }
+
         // Update registration status to withdrawn
         self.registration_repo
             .update_status(registration_id, TournamentRegistrationStatus::Withdrawn)

@@ -13,7 +13,7 @@
 //! boundary, so everything registration-shaped lives together here.
 
 use super::{
-    check_eligibility_for_players, check_eligibility_for_team, get_request_id,
+    check_eligibility_for_players, check_eligibility_for_team, ensure_league_live, get_request_id,
     require_registration_actor,
 };
 use crate::dto::common::{DataResponse, PaginatedResponse, PaginationParams};
@@ -330,6 +330,7 @@ pub async fn revoke_invitation(
 pub async fn register_team(
     State(state): State<TournamentState>,
     auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
     ValidatedJson(req): ValidatedJson<RegisterTeamRequest>,
@@ -346,6 +347,46 @@ pub async fn register_team(
         .tournament_service
         .get_tournament(tournament_id)
         .await?;
+    ensure_league_live(&state, &tournament).await?;
+
+    // Who may enter this team: one of its captains, or the cup's staff.
+    // Until now nothing asked, so any signed-in user could enter any team
+    // in any cup — the UI only ever offered a captain's own teams.
+    let is_staff = perm_checker
+        .has_scoped_permission(
+            &auth,
+            portal_core::permissions::tournament::PARTICIPANTS_MANAGE,
+            portal_core::ScopeType::Tournament,
+            tournament_id.as_uuid(),
+        )
+        .await
+        || perm_checker
+            .has_admin_override(&auth, portal_core::ScopeType::Tournament)
+            .await;
+    if !is_staff
+        && !state
+            .league_team_service
+            .is_captain(team_season_id, auth.player_id)
+            .await?
+    {
+        return Err(ApiError::forbidden(
+            "Only a captain of this team can register it",
+        ));
+    }
+
+    // The team must still be able to play, and must belong to the league
+    // (and season) the cup runs in — a league cup is for that league's teams.
+    let (team, team_season, season) = state.league_team_service.live_entry(team_season_id).await?;
+    if tournament
+        .season_id
+        .is_some_and(|s| s != team_season.season_id)
+        || tournament.league_id.is_some_and(|l| l != team.league_id)
+    {
+        return Err(ApiError::bad_request(
+            "This team is not registered in the league season this tournament belongs to",
+        ));
+    }
+
     let members = state
         .league_team_service
         .get_members(team_season_id)
@@ -355,8 +396,21 @@ pub async fn register_team(
     // Roster size. A team of one could enter a five-a-side cup and be marked
     // Approved; the organiser inherited a bracket of unfieldable entries with
     // no signal. `members` is the active seasonal roster (captain, players,
-    // substitutes); `team_size` is what a lineup needs.
-    if let Some(needed) = tournament.team_size.and_then(|n| usize::try_from(n).ok()) {
+    // substitutes). A lineup needs the cup's `team_size`, and a cup run in
+    // the team's own season also holds it to that season's floor
+    // (`team_size_min`); the larger binds. A cup outside the season does not
+    // inherit the season's rules. The season's `team_size_max` is a cap
+    // enforced as members are added, never a number to reach.
+    let season_floor = (tournament.season_id == Some(season.id))
+        .then_some(season.team_size_min)
+        .flatten();
+    let needed = tournament
+        .team_size
+        .into_iter()
+        .chain(season_floor)
+        .max()
+        .and_then(|n| usize::try_from(n).ok());
+    if let Some(needed) = needed {
         let on_roster = members
             .iter()
             .filter(|m| m.status == portal_core::types::LeagueTeamMemberStatus::Active)
@@ -429,6 +483,7 @@ pub async fn register_player(
         .tournament_service
         .get_tournament(tournament_id)
         .await?;
+    ensure_league_live(&state, &tournament).await?;
     check_eligibility_for_players(&state, &tournament, &[player_id]).await?;
 
     let registration = state

@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
+use super::roster_release;
 use crate::DbPool;
 use crate::entities::league_team::{LeagueTeamSeasonRow, LeagueTeamSummaryRow};
 use portal_core::types::{LeagueTeamRole, LeagueTeamSeasonStatus};
@@ -272,6 +273,20 @@ impl LeagueTeamSeasonRepository for PgLeagueTeamSeasonRepository {
             None
         };
 
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // A withdrawn team has left the season: its seats are released so
+        // its players may join another team in it (see `roster_release`).
+        if status == LeagueTeamSeasonStatus::Withdrawn {
+            let ids = [id.as_uuid()];
+            roster_release::withdraw_open_cup_entries(&mut tx, &ids, now).await?;
+            roster_release::release_seats(&mut tx, &ids, "left", now).await?;
+        }
+
         let row = sqlx::query_as::<_, LeagueTeamSeasonRow>(
             r"
             UPDATE league_team_seasons SET
@@ -286,9 +301,13 @@ impl LeagueTeamSeasonRepository for PgLeagueTeamSeasonRepository {
         .bind(status.to_string())
         .bind(registered_at)
         .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(LeagueTeamSeason::from(row))
     }

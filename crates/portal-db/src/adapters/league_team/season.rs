@@ -329,7 +329,17 @@ impl LeagueSeasonRepository for PgLeagueSeasonRepository {
 
     async fn count_teams(&self, season_id: LeagueSeasonId) -> Result<i64, DomainError> {
         let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM league_team_seasons WHERE season_id = $1 AND status NOT IN ('withdrawn', 'disqualified')",
+            // An archived or disbanded team holds no slot: it cannot play,
+            // and restoring an archived one re-checks capacity.
+            r"
+            SELECT COUNT(*)
+            FROM league_team_seasons lts
+            JOIN league_teams t ON t.id = lts.team_id
+            WHERE lts.season_id = $1
+              AND lts.status NOT IN ('withdrawn', 'disqualified')
+              AND t.archived_at IS NULL
+              AND t.status <> 'disbanded'
+            ",
         )
         .bind(season_id.as_uuid())
         .fetch_one(&self.pool)
@@ -337,6 +347,25 @@ impl LeagueSeasonRepository for PgLeagueSeasonRepository {
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(count.0)
+    }
+
+    async fn is_archived(&self, season_id: LeagueSeasonId) -> Result<bool, DomainError> {
+        let archived: Option<(bool,)> = sqlx::query_as(
+            r"
+            SELECT s.archived_at IS NOT NULL OR l.archived_at IS NOT NULL
+            FROM league_seasons s
+            JOIN leagues l ON l.id = s.league_id
+            WHERE s.id = $1
+            ",
+        )
+        .bind(season_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        archived
+            .map(|(a,)| a)
+            .ok_or(DomainError::LeagueSeasonNotFound(season_id))
     }
 
     async fn count_participants(&self, season_id: LeagueSeasonId) -> Result<i64, DomainError> {

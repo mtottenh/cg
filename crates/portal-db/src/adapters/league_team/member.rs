@@ -14,6 +14,62 @@ use portal_domain::entities::league_team::{
 };
 use portal_domain::repositories::league_team::{AddLeagueTeamMember, LeagueTeamMemberRepository};
 
+/// Seat a player on a seasonal roster — the one INSERT both `add_member`
+/// and invitation acceptance go through.
+///
+/// `league_team_members_unique` is per (roster, player) and a departure only
+/// stamps `left_at`, so a plain INSERT made it impossible to rejoin a roster
+/// once left. A previous seat is therefore reopened rather than duplicated;
+/// a seat that is still open is `AlreadyTeamMember`.
+pub(super) async fn seat_member(
+    conn: &mut sqlx::PgConnection,
+    cmd: &AddLeagueTeamMember,
+    now: chrono::DateTime<Utc>,
+) -> Result<LeagueTeamMember, DomainError> {
+    // Note: season_id is auto-populated by trigger from team_season_id
+    let row = sqlx::query_as::<_, LeagueTeamMemberRow>(
+        r"
+        INSERT INTO league_team_members (
+            id, team_season_id, player_id, role, position, jersey_number, added_by, joined_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (team_season_id, player_id) DO UPDATE SET
+            role = EXCLUDED.role,
+            position = EXCLUDED.position,
+            jersey_number = EXCLUDED.jersey_number,
+            added_by = EXCLUDED.added_by,
+            joined_at = EXCLUDED.joined_at,
+            status = 'active',
+            left_at = NULL
+        WHERE league_team_members.left_at IS NOT NULL
+        RETURNING *
+        ",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(cmd.team_season_id.as_uuid())
+    .bind(cmd.player_id.as_uuid())
+    .bind(cmd.role.to_string())
+    .bind(&cmd.position)
+    .bind(cmd.jersey_number)
+    .bind(cmd.added_by.map(|u| u.as_uuid()))
+    .bind(now)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|e| match &e {
+        // The service checks this first; the index settles a race between
+        // two seats landing at once.
+        sqlx::Error::Database(db) if db.constraint() == Some("idx_one_primary_team_per_season") => {
+            DomainError::Conflict(
+                "player is already a primary member of another team in this season".to_string(),
+            )
+        }
+        _ => DomainError::Internal(e.to_string()),
+    })?
+    .ok_or(DomainError::AlreadyTeamMember)?;
+
+    Ok(LeagueTeamMember::from(row))
+}
+
 /// `PostgreSQL` implementation of `LeagueTeamMemberRepository`.
 #[derive(Debug, Clone)]
 pub struct PgLeagueTeamMemberRepository {
@@ -62,32 +118,12 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
     }
 
     async fn add_member(&self, cmd: AddLeagueTeamMember) -> Result<LeagueTeamMember, DomainError> {
-        let id = uuid::Uuid::now_v7();
-        let now = Utc::now();
-
-        // Note: season_id is auto-populated by trigger from team_season_id
-        let row = sqlx::query_as::<_, LeagueTeamMemberRow>(
-            r"
-            INSERT INTO league_team_members (
-                id, team_season_id, player_id, role, position, jersey_number, added_by, joined_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING *
-            ",
-        )
-        .bind(id)
-        .bind(cmd.team_season_id.as_uuid())
-        .bind(cmd.player_id.as_uuid())
-        .bind(cmd.role.to_string())
-        .bind(&cmd.position)
-        .bind(cmd.jersey_number)
-        .bind(cmd.added_by.map(|u| u.as_uuid()))
-        .bind(now)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
-
-        Ok(LeagueTeamMember::from(row))
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        seat_member(&mut conn, &cmd, Utc::now()).await
     }
 
     async fn update_role(
@@ -323,6 +359,7 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
             WHERE m.season_id = $1
               AND m.player_id = $2
               AND m.role IN ('captain', 'player')
+              AND m.status = 'active'
               AND m.left_at IS NULL
             LIMIT 1
             ",
@@ -346,7 +383,7 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
             // put away. Archiving wrote to none of them, so each is undone
             // exactly by restoring.
             r"
-            SELECT v.* FROM v_player_league_teams v
+            SELECT v.*, t.status AS team_status FROM v_player_league_teams v
             JOIN league_teams t ON t.id = v.team_id
             JOIN league_seasons s ON s.id = v.season_id
             JOIN leagues l ON l.id = v.league_id
@@ -375,7 +412,7 @@ impl LeagueTeamMemberRepository for PgLeagueTeamMemberRepository {
     ) -> Result<Vec<PlayerLeagueTeamMembership>, DomainError> {
         let rows = sqlx::query_as::<_, PlayerLeagueTeamMembershipRow>(
             r"
-            SELECT v.* FROM v_player_league_teams v
+            SELECT v.*, t.status AS team_status FROM v_player_league_teams v
             JOIN league_teams t ON t.id = v.team_id
             JOIN leagues l ON l.id = v.league_id
             WHERE v.player_id = $1 AND v.season_id = $2

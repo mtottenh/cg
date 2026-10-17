@@ -364,16 +364,21 @@ impl TournamentRegistrationRepository for PgTournamentRegistrationRepository {
                 checked_in_by = $3,
                 status = 'checked_in',
                 updated_at = $2
-            WHERE id = $1
+            WHERE id = $1 AND status = 'approved'
             RETURNING *
             ",
         )
         .bind(id.as_uuid())
         .bind(now)
         .bind(checked_in_by.as_uuid())
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        // The services check the status first; this settles a status that
+        // changed (withdrawn, rejected) between that look and this write.
+        .ok_or_else(|| {
+            DomainError::InvalidState("only an approved registration can check in".to_string())
+        })?;
 
         Ok(TournamentRegistration::from(row))
     }

@@ -1,6 +1,7 @@
 //! Tests for LeagueTeamInvitationService.
 
 use super::helpers::{make_invitation, make_member, make_season, make_team, make_team_season};
+use crate::entities::league_team::LeagueTeam;
 use crate::repositories::league_team::{
     MockLeagueSeasonRepository, MockLeagueTeamInvitationRepository, MockLeagueTeamMemberRepository,
     MockLeagueTeamRepository, MockLeagueTeamSeasonRepository,
@@ -14,10 +15,10 @@ use std::sync::Arc;
 
 fn create_service(
     invitation_repo: MockLeagueTeamInvitationRepository,
-    team_repo: MockLeagueTeamRepository,
+    mut team_repo: MockLeagueTeamRepository,
     team_season_repo: MockLeagueTeamSeasonRepository,
     member_repo: MockLeagueTeamMemberRepository,
-    season_repo: MockLeagueSeasonRepository,
+    mut season_repo: MockLeagueSeasonRepository,
 ) -> LeagueTeamInvitationService<
     MockLeagueTeamInvitationRepository,
     MockLeagueTeamRepository,
@@ -33,6 +34,16 @@ fn create_service(
     league_member_repo
         .expect_is_member_by_player()
         .returning(|_, _| Ok(true));
+    // Fallbacks for the roster-liveness guard (`ensure_roster_live`), set
+    // after each test's own expectations so those still win: a live team
+    // owned by nobody in particular, in a season whose league is live.
+    team_repo.expect_find_by_id().returning(|id| {
+        Ok(Some(LeagueTeam {
+            id,
+            ..make_team(LeagueId::new())
+        }))
+    });
+    season_repo.expect_is_archived().returning(|_| Ok(false));
     LeagueTeamInvitationService::new(
         Arc::new(invitation_repo),
         Arc::new(team_repo),

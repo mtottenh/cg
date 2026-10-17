@@ -33,6 +33,7 @@ mod registration_identity;
 mod result_review;
 mod results;
 mod roles;
+mod roster_release;
 mod saga_lifecycle;
 mod server_console;
 mod standings_idempotency;

@@ -172,6 +172,7 @@ where
         if !season.can_register_team() {
             return Err(DomainError::LeagueSeasonNotOpen);
         }
+        super::ensure_season_live(self.season_repo.as_ref(), &season).await?;
 
         // P-147: `create_team_with_season_and_captain` below seats a captain on
         // a brand-new seasonal roster, and used to do so without the roster
@@ -301,10 +302,24 @@ where
             ));
         }
 
+        // A disbanded team is over and an archived one is put away; neither
+        // enters a new season.
+        if team.status.is_terminal() {
+            return Err(DomainError::InvalidState(
+                "team is disbanded and can no longer be modified".to_string(),
+            ));
+        }
+        if team.archived_at.is_some() {
+            return Err(DomainError::InvalidState(
+                "team is archived; restore it first".to_string(),
+            ));
+        }
+
         // Verify season accepts registrations
         if !season.can_register_team() {
             return Err(DomainError::LeagueSeasonNotOpen);
         }
+        super::ensure_season_live(self.season_repo.as_ref(), &season).await?;
 
         // §9.3: a returning owner may have left the league since last season.
         super::ensure_league_member(
@@ -329,6 +344,19 @@ where
             return Err(DomainError::Conflict(
                 "team is already registered for this season".to_string(),
             ));
+        }
+
+        // The owner is seated as captain, so the one-team-per-season rule
+        // applies to them as to anyone else — asked here rather than left
+        // to the unique index, which can only answer with a 500.
+        if let Some(existing_team_season_id) = self
+            .member_repo
+            .find_primary_team_in_season(season_id, registering_player_id)
+            .await?
+        {
+            return Err(DomainError::Conflict(format!(
+                "player is already a primary member of team {existing_team_season_id} in this season"
+            )));
         }
 
         // Check if max teams limit is reached
@@ -530,6 +558,9 @@ where
             lock_override.map(|o| self.audited(o)),
         )
         .await?;
+
+        let team = self.get_team(team_season.team_id).await?;
+        super::ensure_roster_live(self.season_repo.as_ref(), &team, &team_season, &season).await?;
 
         // §9.3: the seated player must belong to the league.
         super::ensure_league_member(&self.league_member_repo, season.league_id, player_id).await?;
@@ -1041,6 +1072,27 @@ where
         player_id: PlayerId,
     ) -> Result<bool, DomainError> {
         self.member_repo.is_captain(team_season_id, player_id).await
+    }
+
+    /// Resolve a seasonal roster that is about to be entered in a cup, and
+    /// refuse one that can no longer play: a disbanded or archived team, a
+    /// registration that has left the season, or an archived season.
+    pub async fn live_entry(
+        &self,
+        team_season_id: LeagueTeamSeasonId,
+    ) -> Result<
+        (
+            LeagueTeam,
+            LeagueTeamSeason,
+            crate::entities::league_team::LeagueSeason,
+        ),
+        DomainError,
+    > {
+        let team_season = self.get_team_season(team_season_id).await?;
+        let season = self.season_for_team_season(team_season_id).await?;
+        let team = self.get_team(team_season.team_id).await?;
+        super::ensure_roster_live(self.season_repo.as_ref(), &team, &team_season, &season).await?;
+        Ok((team, team_season, season))
     }
 
     /// Check if a player is the team owner.

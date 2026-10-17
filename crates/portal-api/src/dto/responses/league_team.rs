@@ -499,6 +499,13 @@ pub struct PlayerLeagueTeamMembershipResponse {
     pub team_tag: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_logo_url: Option<String>,
+    /// Whether the team still exists (`disbanded` teams keep their history
+    /// but take no part in anything), so a client can tell a live roster
+    /// from a finished one without fetching each team.
+    pub team_status: LeagueTeamStatus,
+    /// Where this roster stands in its season; `withdrawn`, `eliminated`
+    /// and `disqualified` are over.
+    pub team_season_status: LeagueTeamSeasonStatus,
 
     // Membership info
     // P-112: typed as the enum so the schema publishes its permitted values and
@@ -529,6 +536,8 @@ impl From<PlayerLeagueTeamMembership> for PlayerLeagueTeamMembershipResponse {
             player_id: membership.player_id.to_string(),
             team_id: membership.team_id.to_string(),
             team_season_id: membership.team_season_id.to_string(),
+            team_status: membership.team_status,
+            team_season_status: membership.team_season_status,
             team_name: membership.team_name,
             team_tag: membership.team_tag,
             team_logo_url: membership.team_logo_url,

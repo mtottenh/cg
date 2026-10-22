@@ -741,6 +741,151 @@ async fn test_unknown_demo_outcome_is_rejected() {
     assert_eq!(retry_state(&app, id).await.demo_status, "pending");
 }
 
+/// The recovery path, end to end: a demo that only succeeds on a later attempt
+/// still lands its rank data and fills in the map, and re-delivery does not
+/// double-count.
+///
+/// This is precisely what the production failure cost. The demo was not up on
+/// the first try, the match was closed out as `enriched`, and these rows were
+/// never written by anything.
+#[tokio::test]
+async fn test_successful_demo_result_lands_ratings_and_backfills_the_map() {
+    let app = TestApp::new().await;
+    let key = create_enricher_key(app.pool()).await;
+
+    let steam_id_64: i64 = 76_561_198_000_000_213;
+    let account_id = (steam_id_64 - 76_561_197_960_265_728) as u32;
+
+    let user = UserBuilder::new()
+        .username(format!("rank_{}", unique_suffix()))
+        .email(format!("rank-{}@example.com", unique_suffix()))
+        .build_persisted(app.pool())
+        .await;
+    sqlx::query("UPDATE players SET steam_id = $1, steam_id_64 = $2 WHERE id = $3")
+        .bind(steam_id_64.to_string())
+        .bind(steam_id_64)
+        .bind(user.id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    let game_id = portal_test::helpers::get_game_id(app.pool(), "cs2").await;
+    let (tracking,): (Uuid,) = sqlx::query_as(
+        "INSERT INTO steam_tracking (player_id, game_id, steam_id_64, game_auth_code) \
+         VALUES ($1, $2, $3, 'AAAA-BBBBB-CCCC') RETURNING id",
+    )
+    .bind(user.id)
+    .bind(game_id)
+    .bind(steam_id_64)
+    .fetch_one(app.pool())
+    .await
+    .expect("seed tracking");
+
+    let id = seed_match(&app, tracking, "CSGO-demo-success").await;
+
+    // Enrich with GC data that carries the player but NO map name — the demo
+    // header is usually the only place the map appears.
+    key_post(
+        &app,
+        &format!("/v1/internal/discovered-matches/{id}/claim"),
+        &json!({}),
+        &key,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    key_post(
+        &app,
+        &format!("/v1/internal/discovered-matches/{id}/enriched"),
+        &json!({
+            "gc_data": [{
+                "map": "",
+                "team_scores": [13, 7],
+                "match_duration_secs": 2400,
+                "players": [{
+                    "account_id": account_id,
+                    "team": 1,
+                    "kills": 20, "deaths": 10, "assists": 5,
+                    "score": 60, "headshots": 8, "mvps": 3,
+                    "entry_3k": 1, "entry_4k": 0, "entry_5k": 0
+                }]
+            }],
+            "demo_url": "http://replay1.valve.net/730/8.dem.bz2"
+        }),
+        &key,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // Stats land at enrichment so a match whose demo never appears still
+    // counts — but with no map, which is the gap the demo closes.
+    let (map,): (String,) =
+        sqlx::query_as("SELECT map FROM player_match_history WHERE discovered_match_id = $1")
+            .bind(id)
+            .fetch_one(app.pool())
+            .await
+            .expect("match history is written at enrichment time");
+    assert_eq!(map, "", "GC supplied no map name");
+
+    // First attempt 404s, second succeeds — the whole point of the stage.
+    assert_eq!(lease_demo_jobs(&app, &key, 5).await.len(), 1);
+    report_demo(
+        &app,
+        id,
+        &key,
+        &json!({ "outcome": "unavailable", "error": "404" }),
+    )
+    .await;
+    expire_demo_backoff(&app, id).await;
+    assert_eq!(lease_demo_jobs(&app, &key, 5).await.len(), 1);
+
+    let success = json!({
+        "outcome": "succeeded",
+        "map_name": "de_dust2",
+        "player_ratings": [{
+            "account_id": account_id,
+            "rank_id": 15250,
+            "rank_type_id": 11,
+            "wins": 42,
+            "rank_change": 250.0
+        }]
+    });
+    report_demo(&app, id, &key, &success).await;
+
+    assert_eq!(retry_state(&app, id).await.demo_status, "succeeded");
+
+    let ratings: Vec<(i32,)> = sqlx::query_as(
+        "SELECT rating FROM player_rating_history \
+         WHERE player_id = $1 AND source = 'demo_rank_update'",
+    )
+    .bind(user.id)
+    .fetch_all(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(ratings.len(), 1, "the rank update must land on the retry");
+    assert_eq!(ratings[0].0, 15250);
+
+    let (map,): (String,) =
+        sqlx::query_as("SELECT map FROM player_match_history WHERE discovered_match_id = $1")
+            .bind(id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(map, "de_dust2", "the demo's map name must be backfilled");
+
+    // At-least-once delivery: a re-sent result must not double-count.
+    report_demo(&app, id, &key, &success).await;
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM player_rating_history \
+         WHERE player_id = $1 AND source = 'demo_rank_update'",
+    )
+    .bind(user.id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 1, "re-delivery must not duplicate the rating");
+}
+
 /// The operator view separates the two stages, so a stall in demo fetching is
 /// distinguishable from a stall in enrichment.
 #[tokio::test]

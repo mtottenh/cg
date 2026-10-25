@@ -526,14 +526,28 @@ impl S3EvidenceClient for S3Storage {
         {
             Ok(_) => Ok(true),
             Err(e) => {
+                // A HEAD response carries no body, so the SDK often cannot
+                // classify the error and `to_string()` renders the useless
+                // "unhandled error". Capture the raw status before consuming
+                // the error so the message is actually diagnosable.
+                let status = e.raw_response().map(|r| r.status().as_u16());
                 let service_error = e.into_service_error();
-                if service_error.is_not_found() {
-                    Ok(false)
-                } else {
-                    Err(StorageError::S3 {
-                        message: service_error.to_string(),
-                    })
+                if service_error.is_not_found() || status == Some(404) {
+                    return Ok(false);
                 }
+                let message = match status {
+                    Some(403) => format!(
+                        "HEAD s3://{bucket}/{key} returned 403 Forbidden. The configured \
+                         credentials can reach the bucket but not read this object — on \
+                         Linode Object Storage an object is readable only by the access \
+                         key that uploaded it, or via an explicit bucket policy."
+                    ),
+                    Some(code) => {
+                        format!("HEAD s3://{bucket}/{key} returned HTTP {code}: {service_error}")
+                    }
+                    None => format!("HEAD s3://{bucket}/{key} failed: {service_error}"),
+                };
+                Err(StorageError::S3 { message })
             }
         }
     }

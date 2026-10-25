@@ -10,10 +10,13 @@ use axum::http::{HeaderMap, StatusCode};
 use chrono::{DateTime, Utc};
 use portal_core::ids::{GameId, GameServerId, ServerBookingId, TournamentId};
 use portal_core::permissions;
-use portal_core::types::GameServerStatus;
-use portal_domain::entities::{GameServer, ServerBooking};
-use portal_domain::repositories::{CreateGameServer, CreateServerBooking, UpdateGameServer};
+use portal_core::types::{DemoUploadOutcome, GameServerStatus};
+use portal_domain::entities::{GameServer, LatestServerUpload, ServerBooking};
+use portal_domain::repositories::{
+    CreateGameServer, CreateServerBooking, DemoUploadAttemptRepository, UpdateGameServer,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -68,8 +71,8 @@ pub struct UpdateGameServerRequest {
 }
 
 /// A registered game server.
-// Four bools mirror four independent server facts (enabled, allow_pugs,
-// agent_connected, enrollment_open); packing them into an enum would invent
+// Five bools mirror five independent server facts (enabled, allow_pugs,
+// agent_connected, enrollment_open, has_demo_token); packing them into an enum would invent
 // states the DB doesn't have.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize, ToSchema)]
@@ -102,12 +105,24 @@ pub struct GameServerResponse {
     pub last_status_at: Option<String>,
     /// Whether an unexpired enrollment token is outstanding.
     pub enrollment_open: bool,
+    /// Whether a demo-upload token has been minted (at enrollment). Without
+    /// one MatchZy's uploads are refused as `rejected_auth`.
+    pub has_demo_token: bool,
+    /// When this server's most recent demo upload attempt arrived, whatever
+    /// its outcome; null when it has never attempted one.
+    pub last_demo_upload_at: Option<DateTime<Utc>>,
+    /// That attempt's outcome.
+    pub last_demo_upload_outcome: Option<DemoUploadOutcome>,
     pub created_at: String,
     pub updated_at: String,
 }
 
 impl GameServerResponse {
-    fn from_entity(s: &GameServer, agent_connected: bool) -> Self {
+    fn from_entity(
+        s: &GameServer,
+        agent_connected: bool,
+        last_upload: Option<&LatestServerUpload>,
+    ) -> Self {
         Self {
             id: s.id.to_string(),
             name: s.name.clone(),
@@ -129,6 +144,9 @@ impl GameServerResponse {
             last_player_count: s.last_player_count,
             last_status_at: s.last_status_at.map(|dt| dt.to_rfc3339()),
             enrollment_open: s.enrollment_open(Utc::now()),
+            has_demo_token: s.has_demo_token,
+            last_demo_upload_at: last_upload.map(|u| u.received_at),
+            last_demo_upload_outcome: last_upload.map(|u| u.outcome),
             created_at: s.created_at.to_rfc3339(),
             updated_at: s.updated_at.to_rfc3339(),
         }
@@ -189,6 +207,21 @@ impl ServerBookingResponse {
     }
 }
 
+/// Each server's latest demo upload attempt, in one query for the lot.
+async fn latest_uploads(
+    state: &GameServerState,
+    ids: &[GameServerId],
+) -> Result<HashMap<GameServerId, LatestServerUpload>, ApiError> {
+    Ok(state
+        .demo_upload_attempt_repo
+        .latest_per_server(ids)
+        .await
+        .map_err(ApiError::from)?
+        .into_iter()
+        .map(|u| (u.server_id, u))
+        .collect())
+}
+
 fn parse_server_id(id: &str) -> Result<GameServerId, ApiError> {
     id.parse()
         .map_err(|_| ApiError::bad_request(format!("invalid game server id: {id}")))
@@ -226,9 +259,17 @@ pub async fn list_game_servers(
     let request_id = get_request_id(&headers);
 
     let servers = state.registry.list().await.map_err(ApiError::from)?;
+    let ids: Vec<GameServerId> = servers.iter().map(|s| s.id).collect();
+    let uploads = latest_uploads(&state, &ids).await?;
     let response = servers
         .iter()
-        .map(|s| GameServerResponse::from_entity(s, state.agent_manager.is_connected(s.id)))
+        .map(|s| {
+            GameServerResponse::from_entity(
+                s,
+                state.agent_manager.is_connected(s.id),
+                uploads.get(&s.id),
+            )
+        })
         .collect();
     Ok(Json(DataResponse::new(response, request_id)))
 }
@@ -282,7 +323,7 @@ pub async fn create_game_server(
     Ok((
         StatusCode::CREATED,
         Json(DataResponse::new(
-            GameServerResponse::from_entity(&server, false),
+            GameServerResponse::from_entity(&server, false, None),
             request_id,
         )),
     ))
@@ -314,8 +355,13 @@ pub async fn get_game_server(
     let id = parse_server_id(&server_id)?;
 
     let server = state.registry.get(id).await.map_err(ApiError::from)?;
+    let uploads = latest_uploads(&state, &[id]).await?;
     Ok(Json(DataResponse::new(
-        GameServerResponse::from_entity(&server, state.agent_manager.is_connected(id)),
+        GameServerResponse::from_entity(
+            &server,
+            state.agent_manager.is_connected(id),
+            uploads.get(&id),
+        ),
         request_id,
     )))
 }
@@ -367,9 +413,14 @@ pub async fn update_game_server(
         )
         .await
         .map_err(ApiError::from)?;
+    let uploads = latest_uploads(&state, &[id]).await?;
 
     Ok(Json(DataResponse::new(
-        GameServerResponse::from_entity(&server, state.agent_manager.is_connected(id)),
+        GameServerResponse::from_entity(
+            &server,
+            state.agent_manager.is_connected(id),
+            uploads.get(&id),
+        ),
         request_id,
     )))
 }

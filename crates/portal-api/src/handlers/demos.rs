@@ -3,10 +3,10 @@
 use crate::dto::common::DataResponse;
 use crate::dto::requests::{
     AssociateDemoRequest, BatchCatalogDemosRequest, BrowseBucketQuery, BucketObjectQuery,
-    CatalogDemoRequest, CategorizeDemoRequest, DemoStatusCountsQuery, GetDemosForMatchQuery,
-    LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest, PipelineQuery,
-    ProcessUnlinkedDemosQuery, RequeueDiscoveredMatchesRequest, ResumeTrackingQuery,
-    SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
+    CatalogDemoRequest, CategorizeDemoRequest, DemoStatusCountsQuery, DemoUploadAttemptsQuery,
+    GetDemosForMatchQuery, LinkDemoToMatchRequest, ListDemosQuery, MarkDemoFailedRequest,
+    MissingDemosQuery, PipelineQuery, ProcessUnlinkedDemosQuery, RequeueDiscoveredMatchesRequest,
+    ResumeTrackingQuery, SetDemoNotesRequest, SetDemoVisibilityRequest, SubmitDemoStatsRequest,
     UpdateAutoLinkSettingRequest,
 };
 use crate::dto::responses::{
@@ -14,9 +14,10 @@ use crate::dto::responses::{
     BucketListingResponse, BucketObjectDownloadResponse, BucketObjectResponse, DemoBucketResponse,
     DemoDownloadResponse, DemoExtractionQueueResponse, DemoListResponse, DemoMatchLinkResponse,
     DemoMatchLinkWithDemoResponse, DemoPlayerResponse, DemoResponse, DemoStatusCountsResponse,
-    DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, PipelineOverviewResponse,
-    ProcessUnlinkedDemosResponse, RequeueDiscoveredMatchesResponse, TRACKING_STALE_AFTER_HOURS,
-    TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
+    DemoUploadAttemptListResponse, DemoUploadAttemptResponse, DiscoveredMatchAdminResponse,
+    DiscoveredMatchQueueResponse, MissingDemoResponse, PipelineOverviewResponse,
+    ProcessUnlinkedDemosResponse, RequeueDiscoveredMatchesResponse, ServerUploadsSummaryResponse,
+    TRACKING_STALE_AFTER_HOURS, TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
@@ -30,6 +31,7 @@ use portal_core::{
     LeagueId, ScopeType, TournamentId, TournamentMatchId,
 };
 use portal_domain::entities::demo::{Demo, DemoFilter, DemoPlayerStats, ParsedDemoMetadata};
+use portal_domain::repositories::DemoUploadAttemptRepository;
 use portal_domain::services::DemoPlayerInput;
 use portal_domain::services::system_settings;
 use portal_domain::services::tournament::RegistrationActor;
@@ -1672,6 +1674,12 @@ pub async fn get_pipeline_overview(
         .get_bool(system_settings::DEMO_AUTO_LINK_ENABLED, true)
         .await?;
 
+    // Server route: deliberately unscoped by `game` (see the DTO).
+    let server_uploads = state
+        .demo_upload_attempt_repo
+        .summary(chrono::Utc::now())
+        .await?;
+
     let response = PipelineOverviewResponse {
         game_slug,
         tracking: TrackingHealthSummaryResponse::from_summary(tracking, TRACKING_STALE_AFTER_HOURS),
@@ -1712,10 +1720,110 @@ pub async fn get_pipeline_overview(
                 .find(|(s, _)| *s == DemoStatus::Archived)
                 .map_or(0, |(_, c)| *c),
         },
+        server_uploads: ServerUploadsSummaryResponse::from(server_uploads),
         auto_link_enabled,
     };
 
     Ok(Json(DataResponse::new(response, request_id)))
+}
+
+/// MatchZy demo upload attempts, newest first (admin).
+///
+/// Every request to `POST /v1/gameserver/demos` leaves one row, refusals
+/// included — MatchZy never retries and reports nothing, so this is the only
+/// place a refused or failed upload shows up outside the logs. Keyset-paged
+/// on `received_at`: pass `next_before` back as `before`.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pipeline/uploads",
+    params(DemoUploadAttemptsQuery),
+    responses(
+        (status = 200, description = "Upload attempts", body = DataResponse<DemoUploadAttemptListResponse>),
+        (status = 400, description = "Invalid filter", body = ApiError),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn list_pipeline_uploads(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Query(query): Query<DemoUploadAttemptsQuery>,
+) -> ApiResult<Json<DataResponse<DemoUploadAttemptListResponse>>> {
+    let request_id = get_request_id(&headers);
+
+    require_pipeline_view(&state, &auth).await?;
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let rows = state
+        .demo_upload_attempt_repo
+        .list(portal_domain::repositories::DemoUploadAttemptFilter {
+            server_id: query.server_id.map(portal_core::ids::GameServerId::from),
+            outcome: query.outcome,
+            demo_id: query.demo_id.map(DemoId::from),
+            before: query.before,
+            limit,
+        })
+        .await?;
+
+    // A full page may have more behind it; a short one is the end.
+    let next_before = if i64::try_from(rows.len()).unwrap_or(i64::MAX) >= limit {
+        rows.last().map(|r| r.attempt.received_at)
+    } else {
+        None
+    };
+    let response = DemoUploadAttemptListResponse {
+        attempts: rows
+            .into_iter()
+            .map(DemoUploadAttemptResponse::from)
+            .collect(),
+        next_before,
+    };
+
+    Ok(Json(DataResponse::new(response, request_id)))
+}
+
+/// Finished server matches whose demo never arrived (admin).
+///
+/// The failure that matters most and that nothing else reports: a
+/// reservation completed more than 30 minutes ago (within the last 14 days)
+/// with neither a demo linked to its match nor a stored upload carrying its
+/// MatchZy id. Newest completed first; the same predicate as the overview's
+/// `server_uploads.missing`.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/pipeline/uploads/missing",
+    params(MissingDemosQuery),
+    responses(
+        (status = 200, description = "Matches missing a demo", body = DataResponse<Vec<MissingDemoResponse>>),
+        (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Admin access required", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin"
+)]
+pub async fn list_pipeline_missing_uploads(
+    State(state): State<DemoState>,
+    auth: AuthenticatedUser,
+    headers: HeaderMap,
+    Query(query): Query<MissingDemosQuery>,
+) -> ApiResult<Json<DataResponse<Vec<MissingDemoResponse>>>> {
+    let request_id = get_request_id(&headers);
+
+    require_pipeline_view(&state, &auth).await?;
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let missing = state
+        .demo_upload_attempt_repo
+        .list_missing(chrono::Utc::now(), limit)
+        .await?;
+
+    Ok(Json(DataResponse::new(
+        missing.into_iter().map(MissingDemoResponse::from).collect(),
+        request_id,
+    )))
 }
 
 /// Steam tracking-token health, worst first (admin).

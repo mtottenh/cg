@@ -313,6 +313,8 @@ pub struct GameServerState {
     pub server_reservation_repo: Arc<portal_db::PgServerReservationRepository>,
     /// Event rows (MatchZy ingest).
     pub server_event_repo: Arc<portal_db::PgServerEventRepository>,
+    /// Upload attempts (each server's last demo upload, admin list).
+    pub demo_upload_attempt_repo: Arc<portal_db::PgDemoUploadAttemptRepository>,
 }
 
 impl FromRef<AppState> for GameServerState {
@@ -325,6 +327,7 @@ impl FromRef<AppState> for GameServerState {
             public_base_url: s.public_base_url.clone(),
             server_reservation_repo: Arc::clone(&s.server_reservation_repo),
             server_event_repo: Arc::clone(&s.server_event_repo),
+            demo_upload_attempt_repo: Arc::clone(&s.demo_upload_attempt_repo),
         }
     }
 }
@@ -764,6 +767,8 @@ pub struct DemoState {
     /// is the only mutation here, and every other evidence write stays on
     /// `EvidenceState`.
     pub evidence_service: AppEvidenceService,
+    /// MatchZy upload attempts — the pipeline's server-upload stage.
+    pub demo_upload_attempt_repo: Arc<portal_db::PgDemoUploadAttemptRepository>,
 }
 
 impl FromRef<AppState> for DemoState {
@@ -782,6 +787,7 @@ impl FromRef<AppState> for DemoState {
             system_settings_service: s.system_settings_service.clone(),
             steam_tracking_service: s.steam_tracking_service.clone(),
             discovered_match_service: s.discovered_match_service.clone(),
+            demo_upload_attempt_repo: Arc::clone(&s.demo_upload_attempt_repo),
         }
     }
 }

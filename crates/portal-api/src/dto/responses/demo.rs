@@ -1,7 +1,7 @@
 //! Demo catalog response DTOs.
 
 use chrono::{DateTime, Utc};
-use portal_core::types::{DemoCategory, DemoStatus};
+use portal_core::types::{DemoCategory, DemoSource, DemoStatus};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -24,6 +24,9 @@ pub struct DemoResponse {
     pub s3_bucket: String,
     /// S3 object key.
     pub s3_key: String,
+    /// Uploaded by a game server or found by the bucket scan — derived from
+    /// the key (`matchzy/` prefix), not stored.
+    pub source: DemoSource,
     /// File size in bytes.
     pub file_size_bytes: Option<i64>,
 
@@ -77,6 +80,7 @@ impl From<Demo> for DemoResponse {
             game_id: demo.game_id.as_uuid(),
             file_name: demo.file_name,
             s3_bucket: demo.s3_bucket,
+            source: DemoSource::from_s3_key(&demo.s3_key),
             s3_key: demo.s3_key,
             file_size_bytes: demo.file_size_bytes,
             category: demo.category,

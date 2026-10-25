@@ -7,6 +7,7 @@ mod auth;
 mod awards;
 mod bans;
 mod demo_evidence;
+mod demo_upload_attempts;
 mod demos;
 mod dispute;
 mod enrichment_idempotency;

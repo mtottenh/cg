@@ -8,6 +8,7 @@ pub mod availability;
 pub mod award;
 pub mod ban;
 pub mod demo;
+pub mod demo_upload;
 pub mod demo_validation;
 pub mod discovered_match;
 pub mod dispute;
@@ -54,6 +55,10 @@ pub use demo::{
     DemoFilter, DemoListResult, DemoMatchLink, DemoPlayer, DemoPlayerStats, LinkDemoToMatchCommand,
     ParsedDemoMetadata, SetDemoVisibilityCommand, UnlinkDemoFromMatchCommand,
     UpdateDemoStatsCommand,
+};
+pub use demo_upload::{
+    DemoUploadAttempt, DemoUploadAttemptDetail, LatestServerUpload, MissingDemo,
+    ServerUploadsSummary,
 };
 pub use demo_validation::{
     DemoValidationEntry, DemoValidationResult, MatchDemoValidation, TeamSide, UnrecognizedPlayer,

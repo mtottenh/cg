@@ -1,5 +1,13 @@
 //! `OpenAPI` documentation.
 
+// The `#[derive(OpenApi)]` expansion builds the whole spec in one function,
+// whose frame grows with every registered path and schema; it crossed
+// clippy's 512 KB default with the demo-upload endpoints. It runs once at
+// startup (and in tests), never on a request path, so the frame is harmless.
+// Module-level because a lint attribute on the struct does not reach the
+// derived impl.
+#![allow(clippy::large_stack_frames)]
+
 use crate::dto::common::{Meta, PaginationMeta, PaginationParams};
 use crate::dto::requests::{
     AcceptScheduleProposalRequest, AddDisputeMessageRequest, AddLeagueTeamMemberRequest,
@@ -43,9 +51,10 @@ use crate::dto::responses::demo::{
     DemoStatusCountsResponse, DemoValidationResultResponse, ProcessUnlinkedDemosResponse,
 };
 use crate::dto::responses::pipeline::{
-    DemoExtractionQueueResponse, DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse,
-    PipelineOverviewResponse, RequeueDiscoveredMatchesResponse, TrackingHealthEntryResponse,
-    TrackingHealthSummaryResponse,
+    DemoExtractionQueueResponse, DemoUploadAttemptListResponse, DemoUploadAttemptResponse,
+    DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, MissingDemoResponse,
+    PipelineOverviewResponse, RequeueDiscoveredMatchesResponse, ServerUploadsSummaryResponse,
+    TrackingHealthEntryResponse, TrackingHealthSummaryResponse,
 };
 use crate::dto::responses::{
     AccessUrlResponse, AdvancementResponse, AvailabilityOverrideResponse,
@@ -470,6 +479,9 @@ use utoipa_swagger_ui::SwaggerUi;
         demos::list_pipeline_discovered_matches,
         demos::requeue_pipeline_discovered_matches,
         demos::requeue_pipeline_discovered_match,
+        // MatchZy server-upload route (demo-ingestion-admin-design §4.2)
+        demos::list_pipeline_uploads,
+        demos::list_pipeline_missing_uploads,
         // Result reviews
         result_reviews::get_result_review,
         result_reviews::acknowledge_result_review,
@@ -694,6 +706,9 @@ use utoipa_swagger_ui::SwaggerUi;
             portal_core::types::LeagueTeamInvitationStatus,
             portal_core::types::DemoStatus,
             portal_core::types::DemoCategory,
+            portal_core::types::DemoUploadOutcome,
+            portal_core::types::DemoUploadLinkNote,
+            portal_core::types::DemoSource,
             portal_domain::entities::result_claim::ClaimStatus,
             portal_domain::entities::result_review::ResultReviewStatus,
             portal_domain::entities::evidence::EvidenceStatus,
@@ -852,6 +867,10 @@ use utoipa_swagger_ui::SwaggerUi;
             DiscoveredMatchAdminResponse,
             RequeueDiscoveredMatchesRequest,
             RequeueDiscoveredMatchesResponse,
+            ServerUploadsSummaryResponse,
+            DemoUploadAttemptResponse,
+            DemoUploadAttemptListResponse,
+            MissingDemoResponse,
             // Game servers
             crate::handlers::game_servers::admin::CreateGameServerRequest,
             crate::handlers::game_servers::admin::UpdateGameServerRequest,
@@ -1052,6 +1071,18 @@ mod enum_fields_are_not_stringified {
         ("DisputeResponse", "priority", "DisputePriority"),
         ("DisputeResponse", "reason", "DisputeReason"),
         ("DemoResponse", "category", "DemoCategory"),
+        ("DemoResponse", "source", "DemoSource"),
+        ("DemoUploadAttemptResponse", "outcome", "DemoUploadOutcome"),
+        (
+            "DemoUploadAttemptResponse",
+            "link_note",
+            "DemoUploadLinkNote",
+        ),
+        (
+            "GameServerResponse",
+            "last_demo_upload_outcome",
+            "DemoUploadOutcome",
+        ),
         ("BanResponse", "ban_type", "BanType"),
         ("TournamentStageResponse", "format", "StageFormat"),
         ("LeagueTeamMemberResponse", "role", "LeagueTeamRole"),
@@ -1107,10 +1138,17 @@ mod enum_fields_are_not_stringified {
                 continue;
             }
             // utoipa emits either a bare `$ref` or `allOf: [{$ref}]` for a
-            // referenced schema; both become a union in the generated client.
+            // referenced schema, and `oneOf: [{type: null}, {$ref}]` for an
+            // `Option` of one; all become a union in the generated client.
             let reference = prop["$ref"]
                 .as_str()
-                .or_else(|| prop["allOf"][0]["$ref"].as_str());
+                .or_else(|| prop["allOf"][0]["$ref"].as_str())
+                .or_else(|| {
+                    prop["oneOf"]
+                        .as_array()?
+                        .iter()
+                        .find_map(|v| v["$ref"].as_str())
+                });
             match reference {
                 Some(r) if r.ends_with(&format!("/{want}")) => {}
                 Some(r) => problems.push(format!("{schema}.{field} references {r}, want {want}")),

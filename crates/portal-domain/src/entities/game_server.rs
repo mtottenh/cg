@@ -57,6 +57,10 @@ pub struct GameServer {
     pub enrollment_token_hash: Option<String>,
     pub enrollment_token_expires_at: Option<DateTime<Utc>>,
 
+    /// Whether a server-scoped demo-upload token has been minted. The hash
+    /// itself never leaves the database layer.
+    pub has_demo_token: bool,
+
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

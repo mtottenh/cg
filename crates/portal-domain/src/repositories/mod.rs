@@ -10,6 +10,7 @@ pub mod award;
 pub mod ban;
 pub mod demo;
 pub mod demo_stats;
+pub mod demo_upload;
 pub mod discovered_match;
 pub mod dispute;
 pub mod evidence;
@@ -51,6 +52,9 @@ pub use demo::{
 pub use demo_stats::{
     CURRENT_EXTRACTOR_VERSION, DemoPlayerStatsRepository, DemoStatFact, LeaderboardEntry,
     LeaderboardQuery, LeaderboardScope, PlayerStatsEntry, PlayerStatsQuery, PlayerStatsSort,
+};
+pub use demo_upload::{
+    CreateDemoUploadAttempt, DemoUploadAttemptFilter, DemoUploadAttemptRepository,
 };
 pub use discovered_match::{CreateDiscoveredMatch, DiscoveredMatchRepository};
 pub use dispute::{

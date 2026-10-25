@@ -453,6 +453,11 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for one recorded MatchZy demo upload attempt.
+    DemoUploadAttemptId
+);
+
+define_id!(
     /// Unique identifier for a raw game-server webhook event.
     ServerEventId
 );

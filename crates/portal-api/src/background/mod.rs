@@ -152,6 +152,8 @@ pub struct LifecyclePassSummary {
     pub reservations_allocated: u32,
     /// Stuck/silent reservations re-driven or reconciled.
     pub reservations_reconciled: u32,
+    /// Demo upload attempts deleted past the retention window.
+    pub demo_upload_attempts_pruned: u64,
     /// Errors encountered (each already logged; the pass continues).
     pub errors: u32,
 }
@@ -340,6 +342,28 @@ pub async fn run_lifecycle_pass(
         Err(e) => {
             error!(error = %e, "lifecycle: game-server staleness sweep failed");
             summary.errors += 1;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 9: demo upload attempt retention (demo-ingestion-admin-design §4.1).
+    //    An index-backed DELETE that is a no-op on almost every pass.
+    // ------------------------------------------------------------------
+    {
+        use portal_domain::entities::demo_upload::DEMO_UPLOAD_RETENTION_DAYS;
+        use portal_domain::repositories::DemoUploadAttemptRepository as _;
+        let cutoff = now - ChronoDuration::days(DEMO_UPLOAD_RETENTION_DAYS);
+        match state.demo_upload_attempt_repo.prune(cutoff).await {
+            Ok(pruned) => {
+                if pruned > 0 {
+                    info!(pruned, "lifecycle: old demo upload attempts pruned");
+                }
+                summary.demo_upload_attempts_pruned = pruned;
+            }
+            Err(e) => {
+                error!(error = %e, "lifecycle: demo upload attempt prune failed");
+                summary.errors += 1;
+            }
         }
     }
 

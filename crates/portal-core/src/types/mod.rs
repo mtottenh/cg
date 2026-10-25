@@ -15,7 +15,9 @@ pub mod veto;
 #[cfg(test)]
 mod wire_compat_tests;
 
-pub use demo::{DemoCategory, DemoLinkType, DemoStatus};
+pub use demo::{
+    DemoCategory, DemoLinkType, DemoSource, DemoStatus, DemoUploadLinkNote, DemoUploadOutcome,
+};
 pub use evidence::{
     DemoFileMetadata, DiscoveredEvidenceData, EvidenceStorage, EvidenceType,
     EvidenceValidationResult, ExtractedMatchResult, GameMatchResult, MatchEvidenceContext,

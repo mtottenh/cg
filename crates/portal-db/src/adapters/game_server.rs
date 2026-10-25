@@ -32,7 +32,8 @@ const SERVER_COLS: &str = "id, name, game_id, host(ip_address) AS ip_address, po
      region, enabled, allow_pugs, status, current_match_id, agent_cert_serial, \
      agent_cert_expires_at, agent_version, last_heartbeat_at, last_gamestate, \
      last_map, last_player_count, last_status_output, last_status_at, \
-     enrollment_token_hash, enrollment_token_expires_at, created_at, updated_at";
+     enrollment_token_hash, enrollment_token_expires_at, \
+     (demo_token_hash IS NOT NULL) AS has_demo_token, created_at, updated_at";
 
 // =============================================================================
 // Type Conversions
@@ -72,6 +73,7 @@ impl From<GameServerRow> for GameServer {
             last_status_at: row.last_status_at,
             enrollment_token_hash: row.enrollment_token_hash,
             enrollment_token_expires_at: row.enrollment_token_expires_at,
+            has_demo_token: row.has_demo_token,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }

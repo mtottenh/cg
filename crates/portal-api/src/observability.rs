@@ -114,6 +114,12 @@ pub fn record_auth_failure(reason: &'static str) {
     metrics::counter!("portal_api_auth_failures_total", "reason" => reason).increment(1);
 }
 
+/// Record one MatchZy demo upload by outcome (the `demo_upload_attempts`
+/// vocabulary). The alert rule on it belongs in the observability role.
+pub fn record_demo_upload(outcome: portal_core::types::DemoUploadOutcome) {
+    metrics::counter!("portal_api_demo_uploads_total", "outcome" => outcome.as_str()).increment(1);
+}
+
 /// Record a WebSocket message on the given channel kind and direction.
 pub fn record_ws_message(kind: &'static str, direction: &'static str) {
     metrics::counter!(

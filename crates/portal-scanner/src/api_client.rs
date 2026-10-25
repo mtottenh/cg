@@ -83,6 +83,13 @@ pub struct PendingDemoResponse {
     pub file_name: String,
     /// Processing status of the demo.
     pub status: String,
+    /// Object key in the bucket. demo-stats names its output after this
+    /// key's basename, so it must agree with `file_name`.
+    #[serde(default)]
+    pub s3_key: Option<String>,
+    /// When the demo was first cataloged.
+    #[serde(default)]
+    pub discovered_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Wrapper for data responses.

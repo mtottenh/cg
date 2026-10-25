@@ -101,6 +101,7 @@ pub async fn upload_player_avatar(
             content_type: processed.content_type,
             prefix: ImageType::PlayerAvatar.prefix().to_string(),
             owner_id: Some(auth.player_id.to_string()),
+            keep_filename: false,
         })
         .await
         .map_err(|e| ApiError::internal(format!("Failed to store image: {e}")))?;
@@ -161,6 +162,7 @@ pub async fn upload_player_banner(
             content_type: processed.content_type,
             prefix: ImageType::PlayerBanner.prefix().to_string(),
             owner_id: Some(auth.player_id.to_string()),
+            keep_filename: false,
         })
         .await
         .map_err(|e| ApiError::internal(format!("Failed to store image: {e}")))?;
@@ -215,6 +217,7 @@ async fn upload_team_image(
             content_type: processed.content_type,
             prefix: image_type.prefix().to_string(),
             owner_id: Some(team_id.to_string()),
+            keep_filename: false,
         })
         .await
         .map_err(|e| ApiError::internal(format!("Failed to store image: {e}")))?;

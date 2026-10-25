@@ -576,6 +576,76 @@ async fn test_demo_upload_auth_catalog_and_link() {
     .await
     .unwrap();
     assert_eq!(count, 1, "demo cataloged and auto-linked");
+
+    // The object is named after MatchZy's file name. demo-stats publishes
+    // stats under the object's basename and the scanner looks them up by
+    // `file_name`; with a UUID key the two never met and the demo sat at
+    // `pending` forever.
+    let mid = reservation.matchzy_id;
+    let keys: Vec<(String,)> =
+        sqlx::query_as("SELECT s3_key FROM demos WHERE file_name = 'series_map1.dem'")
+            .fetch_all(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        keys,
+        vec![(format!("matchzy/{mid}/{server_id}/series_map1.dem"),)],
+        "object key ends in the cataloged file name"
+    );
+
+    // A replayed upload (same file) lands on the same object and the same
+    // demo row — no duplicate for the scanner to chase.
+    let status = app
+        .post_bytes_with_headers(
+            "/v1/gameserver/demos",
+            b"DEMOBYTES".to_vec(),
+            &[
+                ("authorization", &format!("Bearer {demo_token}")),
+                ("matchzy-filename", "series_map1.dem"),
+                ("matchzy-matchid", &mid.to_string()),
+                ("matchzy-mapnumber", "0"),
+            ],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (rows,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM demos WHERE file_name = 'series_map1.dem'")
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows, 1, "replay reuses the demo row");
+
+    // A path in the header cannot escape the prefix.
+    let status = app
+        .post_bytes_with_headers(
+            "/v1/gameserver/demos",
+            b"DEMOBYTES".to_vec(),
+            &[
+                ("authorization", &format!("Bearer {demo_token}")),
+                ("matchzy-filename", "../../etc/evil name.dem"),
+            ],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (key,): (String,) =
+        sqlx::query_as("SELECT s3_key FROM demos WHERE file_name = 'evilname.dem'")
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(key, format!("matchzy/unmatched/{server_id}/evilname.dem"));
+
+    // Empty body → 400.
+    let status = app
+        .post_bytes_with_headers(
+            "/v1/gameserver/demos",
+            Vec::new(),
+            &[
+                ("authorization", &format!("Bearer {demo_token}")),
+                ("matchzy-filename", "empty.dem"),
+            ],
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

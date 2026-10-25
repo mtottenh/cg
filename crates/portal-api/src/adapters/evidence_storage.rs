@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use portal_core::DomainError;
 use portal_domain::services::tournament::{EvidenceS3Client, ObjectPage, StoredObject};
 use portal_storage::{S3Config, S3EvidenceClient, S3Storage};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 
@@ -369,5 +371,174 @@ impl EvidenceS3Client for EvidenceStorageBackend {
             Self::Local(local) => local.delete_object(bucket, key).await,
             Self::S3(s3) => s3.delete_object(bucket, key).await,
         }
+    }
+}
+
+// =============================================================================
+// PER-BUCKET CREDENTIALS
+// =============================================================================
+
+/// Routes each call to the client configured for its bucket.
+///
+/// One access key serves every bucket by default, but Linode Object Storage
+/// lets only the uploading key read an object (absent a bucket policy). The
+/// legacy demo bucket's objects were uploaded with a different key, so the
+/// portal's key can list them and nothing more — HEAD, GET and presigned
+/// URLs all 403. A bucket listed in `overrides` is served by its own client.
+pub struct BucketRoutedObjectStorage {
+    default: Arc<dyn EvidenceS3Client>,
+    overrides: HashMap<String, Arc<dyn EvidenceS3Client>>,
+}
+
+impl BucketRoutedObjectStorage {
+    #[must_use]
+    pub fn new(
+        default: Arc<dyn EvidenceS3Client>,
+        overrides: HashMap<String, Arc<dyn EvidenceS3Client>>,
+    ) -> Self {
+        Self { default, overrides }
+    }
+
+    fn client(&self, bucket: &str) -> &dyn EvidenceS3Client {
+        self.overrides
+            .get(bucket)
+            .map_or_else(|| self.default.as_ref(), AsRef::as_ref)
+    }
+}
+
+#[async_trait]
+impl EvidenceS3Client for BucketRoutedObjectStorage {
+    async fn presign_put(
+        &self,
+        bucket: &str,
+        key: &str,
+        content_type: &str,
+        ttl: Duration,
+    ) -> Result<String, DomainError> {
+        self.client(bucket)
+            .presign_put(bucket, key, content_type, ttl)
+            .await
+    }
+
+    async fn presign_get(
+        &self,
+        bucket: &str,
+        key: &str,
+        ttl: Duration,
+    ) -> Result<String, DomainError> {
+        self.client(bucket).presign_get(bucket, key, ttl).await
+    }
+
+    async fn list_objects_page(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        delimiter: Option<&str>,
+        cursor: Option<&str>,
+        max_keys: i32,
+    ) -> Result<ObjectPage, DomainError> {
+        self.client(bucket)
+            .list_objects_page(bucket, prefix, delimiter, cursor, max_keys)
+            .await
+    }
+
+    async fn object_exists(&self, bucket: &str, key: &str) -> Result<bool, DomainError> {
+        self.client(bucket).object_exists(bucket, key).await
+    }
+
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), DomainError> {
+        self.client(bucket).delete_object(bucket, key).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Answers every call with which client it is.
+    struct Tagged(&'static str);
+
+    #[async_trait]
+    impl EvidenceS3Client for Tagged {
+        async fn list_objects_page(
+            &self,
+            _bucket: &str,
+            _prefix: &str,
+            _delimiter: Option<&str>,
+            _cursor: Option<&str>,
+            _max_keys: i32,
+        ) -> Result<ObjectPage, DomainError> {
+            Ok(ObjectPage {
+                objects: vec![StoredObject {
+                    key: self.0.to_string(),
+                    size: 0,
+                    last_modified: None,
+                }],
+                common_prefixes: vec![],
+                next_cursor: None,
+            })
+        }
+        async fn presign_put(
+            &self,
+            bucket: &str,
+            key: &str,
+            _content_type: &str,
+            _ttl: Duration,
+        ) -> Result<String, DomainError> {
+            Ok(format!("{}:{bucket}/{key}", self.0))
+        }
+        async fn presign_get(
+            &self,
+            bucket: &str,
+            key: &str,
+            _ttl: Duration,
+        ) -> Result<String, DomainError> {
+            Ok(format!("{}:{bucket}/{key}", self.0))
+        }
+        async fn object_exists(&self, _bucket: &str, _key: &str) -> Result<bool, DomainError> {
+            Ok(self.0 == "legacy")
+        }
+        async fn delete_object(&self, _bucket: &str, _key: &str) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    fn routed() -> BucketRoutedObjectStorage {
+        let mut overrides: HashMap<String, Arc<dyn EvidenceS3Client>> = HashMap::new();
+        overrides.insert("old-bucket".to_string(), Arc::new(Tagged("legacy")));
+        BucketRoutedObjectStorage::new(Arc::new(Tagged("shared")), overrides)
+    }
+
+    #[tokio::test]
+    async fn a_bucket_with_its_own_key_is_served_by_that_client() {
+        let s = routed();
+        let ttl = Duration::from_secs(60);
+        assert_eq!(
+            s.presign_get("old-bucket", "a.dem", ttl).await.unwrap(),
+            "legacy:old-bucket/a.dem"
+        );
+        assert!(s.object_exists("old-bucket", "a.dem").await.unwrap());
+        let page = s
+            .list_objects_page("old-bucket", "", Some("/"), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(page.objects[0].key, "legacy");
+    }
+
+    #[tokio::test]
+    async fn every_other_bucket_uses_the_shared_client() {
+        let s = routed();
+        let ttl = Duration::from_secs(60);
+        assert_eq!(
+            s.presign_get("portal-demos", "a.dem", ttl).await.unwrap(),
+            "shared:portal-demos/a.dem"
+        );
+        assert_eq!(
+            s.presign_put("portal-evidence", "e", "image/png", ttl)
+                .await
+                .unwrap(),
+            "shared:portal-evidence/e"
+        );
+        assert!(!s.object_exists("portal-demos", "a.dem").await.unwrap());
     }
 }

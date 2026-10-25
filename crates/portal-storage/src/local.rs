@@ -56,13 +56,7 @@ impl LocalStorage {
 
     /// Generate a unique storage key.
     fn generate_key(&self, request: &StoreRequest) -> String {
-        let id = uuid::Uuid::now_v7();
-        let extension = request.filename.rsplit('.').next().unwrap_or("bin");
-
-        match &request.owner_id {
-            Some(owner) => format!("{}/{}/{}.{}", request.prefix, owner, id, extension),
-            None => format!("{}/{}.{}", request.prefix, id, extension),
-        }
+        crate::object_key(request)
     }
 
     /// Get the full filesystem path for a key.
@@ -159,6 +153,7 @@ mod tests {
             content_type: "text/plain".to_string(),
             prefix: "files".to_string(),
             owner_id: None,
+            keep_filename: false,
         };
 
         let result = storage.store(request).await.unwrap();
@@ -197,6 +192,7 @@ mod tests {
             content_type: "image/png".to_string(),
             prefix: "players/avatars".to_string(),
             owner_id: Some("player-123".to_string()),
+            keep_filename: false,
         };
 
         let result = storage.store(request).await.unwrap();
@@ -220,6 +216,7 @@ mod tests {
             content_type: "text/plain".to_string(),
             prefix: "temp".to_string(),
             owner_id: None,
+            keep_filename: false,
         };
 
         let result = storage.store(request).await.unwrap();

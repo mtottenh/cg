@@ -19,6 +19,30 @@ pub struct S3Config {
     pub public_url: String,
     /// Optional custom endpoint (for MinIO, LocalStack, etc.).
     pub endpoint: Option<String>,
+    /// Static credentials for this client. `None` uses the default AWS
+    /// chain (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`), which is what
+    /// every client shares unless a bucket needs its own key — on Linode
+    /// Object Storage an object is readable only by the key that uploaded
+    /// it, absent a bucket policy.
+    pub credentials: Option<S3Credentials>,
+}
+
+/// A static access key pair. `Debug` redacts the secret.
+#[derive(Clone)]
+pub struct S3Credentials {
+    /// Access key id (not secret; safe to log).
+    pub access_key_id: String,
+    /// Secret access key.
+    pub secret_access_key: String,
+}
+
+impl std::fmt::Debug for S3Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Credentials")
+            .field("access_key_id", &self.access_key_id)
+            .field("secret_access_key", &"<redacted>")
+            .finish()
+    }
 }
 
 /// S3-compatible storage backend.
@@ -48,6 +72,7 @@ impl S3Storage {
     ///     region: "us-east-1".to_string(),
     ///     public_url: "https://my-bucket.s3.amazonaws.com".to_string(),
     ///     endpoint: None,
+    ///     credentials: None,
     /// };
     ///
     /// let storage = S3Storage::new(config).await;
@@ -58,6 +83,15 @@ impl S3Storage {
 
         if let Some(endpoint) = &config.endpoint {
             aws_config = aws_config.endpoint_url(endpoint);
+        }
+        if let Some(creds) = config.credentials {
+            aws_config = aws_config.credentials_provider(aws_sdk_s3::config::Credentials::new(
+                creds.access_key_id,
+                creds.secret_access_key,
+                None,
+                None,
+                "portal-static",
+            ));
         }
 
         let sdk_config = aws_config.load().await;
@@ -115,13 +149,7 @@ impl S3Storage {
 
     /// Generate a unique storage key.
     fn generate_key(&self, request: &StoreRequest) -> String {
-        let id = uuid::Uuid::now_v7();
-        let extension = request.filename.rsplit('.').next().unwrap_or("bin");
-
-        match &request.owner_id {
-            Some(owner) => format!("{}/{}/{}.{}", request.prefix, owner, id, extension),
-            None => format!("{}/{}.{}", request.prefix, id, extension),
-        }
+        crate::object_key(request)
     }
 }
 

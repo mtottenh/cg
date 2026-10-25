@@ -138,26 +138,47 @@ pub async fn post_demo(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> ApiResult<axum::http::StatusCode> {
-    let token =
-        bearer_token(&headers).ok_or_else(|| ApiError::unauthorized("missing bearer token"))?;
-    let server = state
+    // MatchZy never retries and logs nothing useful on its side, so every
+    // refusal here is logged at warn with what the request carried — the
+    // only trace a failed upload leaves.
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let raw_file_name = header("matchzy-filename").unwrap_or("");
+    let bytes = body.len();
+
+    let Some(token) = bearer_token(&headers) else {
+        tracing::warn!(
+            file = raw_file_name,
+            bytes,
+            "demo upload refused: missing bearer token"
+        );
+        return Err(ApiError::unauthorized("missing bearer token"));
+    };
+    let Some(server) = state
         .game_server_registry
         .find_by_demo_token(&hash_token(token))
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::unauthorized("invalid demo token"))?;
+    else {
+        tracing::warn!(
+            file = raw_file_name,
+            bytes,
+            "demo upload refused: unknown demo token (server re-enrolled since MatchZy's config was written?)"
+        );
+        return Err(ApiError::unauthorized("invalid demo token"));
+    };
 
-    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    let file_name = header("matchzy-filename")
-        .map(sanitize_demo_filename)
-        .ok_or_else(|| ApiError::bad_request("missing MatchZy-FileName header"))?;
+    let Some(file_name) = header("matchzy-filename").map(sanitize_demo_filename) else {
+        tracing::warn!(server = %server.name, bytes, "demo upload refused: missing MatchZy-FileName header");
+        return Err(ApiError::bad_request("missing MatchZy-FileName header"));
+    };
     let matchzy_id: Option<i64> = header("matchzy-matchid").and_then(|v| v.parse().ok());
     let map_number: Option<i32> = header("matchzy-mapnumber").and_then(|v| v.parse().ok());
 
     if body.is_empty() {
+        tracing::warn!(server = %server.name, file = %file_name, "demo upload refused: empty body");
         return Err(ApiError::bad_request("empty demo upload"));
     }
-    let size = i64::try_from(body.len()).unwrap_or(i64::MAX);
+    let size = i64::try_from(bytes).unwrap_or(i64::MAX);
 
     let stored = crate::observability::track_s3(
         "demos",
@@ -173,10 +194,17 @@ pub async fn post_demo(
                     None => "matchzy/unmatched".to_string(),
                 },
                 owner_id: Some(server.id.to_string()),
+                keep_filename: true,
             }),
     )
     .await
-    .map_err(|e| ApiError::internal(format!("demo store failed: {e}")))?;
+    .map_err(|e| {
+        tracing::error!(
+            server = %server.name, file = %file_name, ?matchzy_id, size, error = %e,
+            "demo upload failed: could not store the file"
+        );
+        ApiError::internal(format!("demo store failed: {e}"))
+    })?;
 
     // Catalog + auto-link into the existing demo pipeline (§6.5).
     let demo = match state
@@ -189,18 +217,39 @@ pub async fn post_demo(
             Some(size),
         )
         .await
-        .map_err(ApiError::from)?
+        .map_err(|e| {
+            tracing::error!(
+                server = %server.name, file = %file_name, key = %stored.key, error = %e,
+                "demo upload stored but cataloging failed; the scanner's bucket sweep will pick it up"
+            );
+            ApiError::from(e)
+        })?
     {
         portal_domain::services::CatalogResult::Created(demo)
         | portal_domain::services::CatalogResult::AlreadyExists(demo) => demo,
     };
 
-    if let Some(matchzy_id) = matchzy_id
-        && let Some(reservation) = state
+    let mut linked_match = None;
+    let reservation = match matchzy_id {
+        Some(id) => state
             .server_reservation_repo
-            .find_by_matchzy_id(matchzy_id)
+            .find_by_matchzy_id(id)
             .await
-            .map_err(ApiError::from)?
+            .map_err(ApiError::from)?,
+        None => None,
+    };
+    match (&reservation, matchzy_id) {
+        (None, Some(id)) => tracing::warn!(
+            server = %server.name, demo_id = %demo.id, matchzy_id = id,
+            "demo not linked: no reservation carries this MatchZy match id"
+        ),
+        (Some(r), Some(id)) if r.server_id != Some(server.id) => tracing::warn!(
+            server = %server.name, demo_id = %demo.id, matchzy_id = id,
+            "demo not linked: the reservation for this match id belongs to another server"
+        ),
+        _ => {}
+    }
+    if let Some(reservation) = reservation
         // §9 blast-radius: a server may only attach demos to ITS OWN
         // match (M4) — the MatchZy-MatchId header is attacker-settable.
         && reservation.server_id == Some(server.id)
@@ -215,17 +264,31 @@ pub async fn post_demo(
                 None,
             )
             .await;
-        if let Err(e) = link {
+        match link {
+            Ok(_) => linked_match = Some(reservation.match_id),
             // Already linked (replayed upload) is fine; anything else is
             // logged but never bounced to MatchZy (no retries anyway).
-            tracing::debug!(demo_id = %demo.id, error = %e, "demo link skipped");
+            Err(e) => tracing::warn!(
+                demo_id = %demo.id, match_id = %reservation.match_id, error = %e,
+                "demo link skipped (expected for a replayed upload)"
+            ),
         }
         // PUG demos are categorized 'pug' so the tournament stats surfaces
         // never see them (stats separation).
         crate::pug_flow::tag_demo_if_pug(&state, demo.id, reservation.match_id).await;
     }
 
-    tracing::info!(server = %server.name, file = %file_name, size, "demo uploaded");
+    tracing::info!(
+        server = %server.name,
+        file = %file_name,
+        key = %stored.key,
+        demo_id = %demo.id,
+        ?matchzy_id,
+        ?map_number,
+        match_id = ?linked_match,
+        size,
+        "demo uploaded"
+    );
     Ok(axum::http::StatusCode::OK)
 }
 
@@ -287,6 +350,7 @@ pub async fn post_backup(
                 content_type: "application/json".to_string(),
                 prefix: format!("matchzy-backups/{matchzy_id}"),
                 owner_id: None,
+                keep_filename: false,
             }),
     )
     .await

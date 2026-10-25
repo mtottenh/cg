@@ -9,7 +9,8 @@ pub mod veto_plugin;
 pub use demo_validator::{DemoValidatorAdapter, LineupEnforcer};
 pub use evidence_plugin::{EvidencePluginAdapter, MapValidationInfo};
 pub use evidence_storage::{
-    EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceStorageAdapter,
+    BucketRoutedObjectStorage, EvidenceStorageBackend, LocalEvidenceStorage,
+    S3EvidenceStorageAdapter,
 };
 pub use map_pool::DbMapPoolProvider;
 pub use review_creator::ReviewCreatorAdapter;

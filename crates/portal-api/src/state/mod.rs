@@ -17,10 +17,13 @@ pub use substates::{
 };
 
 use crate::adapters::{
+    BucketRoutedObjectStorage, EvidenceStorageBackend, LocalEvidenceStorage,
+    S3EvidenceStorageAdapter,
+};
+use crate::adapters::{
     DemoValidatorAdapter, PluginSideSelectionProvider, PluginVetoFormatProvider,
     ReviewCreatorAdapter, StatsUpdaterAdapter,
 };
-use crate::adapters::{EvidenceStorageBackend, LocalEvidenceStorage, S3EvidenceStorageAdapter};
 use crate::steam_openid::{HttpSteamOpenIdVerifier, SteamAuthConfig, SteamOpenIdVerifier};
 use crate::steam_workshop::{HttpWorkshopClient, WorkshopMetadataProvider};
 use crate::websocket::VetoLobbyManager;
@@ -801,6 +804,7 @@ impl AppState {
                 region,
                 public_url,
                 endpoint,
+                credentials: None,
             };
             let adapter = S3EvidenceStorageAdapter::new(s3_config).await;
             tracing::info!(bucket = %bucket, "Evidence storage: S3");
@@ -821,6 +825,7 @@ impl AppState {
         // client, so it keeps the concrete type while we erase ours to
         // `dyn` — both are cheap clones of the same config.
         let object_storage: Arc<dyn EvidenceS3Client> = Arc::new(evidence_storage.clone());
+        let object_storage = with_bucket_credential_overrides(object_storage).await;
         let evidence_service = EvidenceService::new(
             Arc::clone(&evidence_repo),
             Arc::clone(&tournament_match_repo),
@@ -952,6 +957,7 @@ impl AppState {
                     region,
                     public_url,
                     endpoint,
+                    credentials: None,
                 })
                 .await;
                 tracing::info!(bucket = %bucket, "Demo upload storage: S3");
@@ -1199,4 +1205,62 @@ impl AppState {
         self.demo_bucket_allowlist = buckets;
         self
     }
+}
+
+/// Give the legacy demo bucket its own key, when one is configured.
+///
+/// `S3_LEGACY_DEMOS_BUCKET` + `S3_LEGACY_DEMOS_ACCESS_KEY_ID` +
+/// `S3_LEGACY_DEMOS_SECRET_ACCESS_KEY` route every explorer / download call
+/// for that bucket through a client signed with that key. Region and
+/// endpoint default to the evidence bucket's (`S3_LEGACY_DEMOS_REGION` /
+/// `_ENDPOINT` override them for a bucket in another cluster). Unset, the
+/// shared client serves it, as before.
+async fn with_bucket_credential_overrides(
+    default: Arc<dyn EvidenceS3Client>,
+) -> Arc<dyn EvidenceS3Client> {
+    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    let (Some(bucket), Some(access_key_id), Some(secret_access_key)) = (
+        env("S3_LEGACY_DEMOS_BUCKET"),
+        env("S3_LEGACY_DEMOS_ACCESS_KEY_ID"),
+        env("S3_LEGACY_DEMOS_SECRET_ACCESS_KEY"),
+    ) else {
+        if env("S3_LEGACY_DEMOS_BUCKET").is_some() {
+            tracing::warn!(
+                "S3_LEGACY_DEMOS_BUCKET is set without both S3_LEGACY_DEMOS_ACCESS_KEY_ID and \
+                 S3_LEGACY_DEMOS_SECRET_ACCESS_KEY; the shared key will serve it"
+            );
+        }
+        return default;
+    };
+    let Some(region) = env("S3_LEGACY_DEMOS_REGION")
+        .or_else(|| env("S3_EVIDENCE_REGION"))
+        .or_else(|| env("S3_DEMOS_REGION"))
+    else {
+        tracing::error!(
+            bucket = %bucket,
+            "legacy bucket credentials configured but no region (S3_LEGACY_DEMOS_REGION / \
+             S3_EVIDENCE_REGION); the shared key will serve it"
+        );
+        return default;
+    };
+    let endpoint = env("S3_LEGACY_DEMOS_ENDPOINT").or_else(|| env("S3_EVIDENCE_ENDPOINT"));
+
+    let client = S3EvidenceStorageAdapter::new(portal_storage::S3Config {
+        bucket: bucket.clone(),
+        region,
+        public_url: String::new(),
+        endpoint,
+        credentials: Some(portal_storage::S3Credentials {
+            access_key_id: access_key_id.clone(),
+            secret_access_key,
+        }),
+    })
+    .await;
+    // The key id is not secret and is the one thing an operator needs to
+    // tell which key is in play; the secret never reaches a log.
+    tracing::info!(bucket = %bucket, access_key_id = %access_key_id, "Object storage: bucket uses its own credentials");
+    let mut overrides: std::collections::HashMap<String, Arc<dyn EvidenceS3Client>> =
+        std::collections::HashMap::new();
+    overrides.insert(bucket, Arc::new(client));
+    Arc::new(BucketRoutedObjectStorage::new(default, overrides))
 }

@@ -113,19 +113,67 @@ pub async fn process_pending(
     info!(count = pending.len(), "Processing pending demos");
 
     for demo in &pending {
-        if let Err(e) =
-            fetch_and_submit_stats(api_client, demo_client, &demo.id, &demo.file_name).await
-        {
-            warn!(
+        // demo-stats names its output after the object's basename and we look
+        // it up by file name: if they differ the lookup 404s forever. That is
+        // how MatchZy uploads used to be stored (UUID keys), so say it loudly.
+        if let Some(key) = &demo.s3_key {
+            let key_name = key.rsplit('/').next().unwrap_or(key);
+            if key_name != demo.file_name {
+                warn!(
+                    demo_id = %demo.id,
+                    file_name = %demo.file_name,
+                    s3_key = %key,
+                    "Demo file name differs from its object name; demo-stats will never \
+                     publish stats under the name we look up"
+                );
+            }
+        }
+        match fetch_and_submit_stats(api_client, demo_client, &demo.id, &demo.file_name).await {
+            Ok(StatsOutcome::NotYetParsed) => {
+                let age = demo
+                    .discovered_at
+                    .map(|at| chrono::Utc::now().signed_duration_since(at));
+                if age.is_some_and(|age| age > chrono::Duration::minutes(STALE_PENDING_MINUTES)) {
+                    warn!(
+                        demo_id = %demo.id,
+                        file_name = %demo.file_name,
+                        s3_key = ?demo.s3_key,
+                        pending_minutes = age.map(|a| a.num_minutes()),
+                        url = %demo_client.get_stats_url(stats_name(&demo.file_name)),
+                        "Demo still has no stats; check demo-stats parsed it under this name"
+                    );
+                    metrics::counter!("portal_scanner_stale_pending_demos_total").increment(1);
+                }
+            }
+            Ok(StatsOutcome::Submitted) => {}
+            Err(e) => warn!(
                 demo_id = %demo.id,
                 file_name = %demo.file_name,
                 error = %e,
                 "Failed to fetch stats for pending demo"
-            );
+            ),
         }
     }
 
     Ok(())
+}
+
+/// A demo pending longer than this with no stats is logged at warn: parsing
+/// takes a minute or two, so an hour means something is wrong.
+const STALE_PENDING_MINUTES: i64 = 60;
+
+/// What a stats fetch that did not error came to.
+enum StatsOutcome {
+    /// Stats were submitted, or the failure was recorded on the demo.
+    Submitted,
+    /// demo-stats has nothing under this name yet.
+    NotYetParsed,
+}
+
+/// The name demo-stats publishes stats under: the file name without
+/// `.dem.bz2` / `.dem`.
+fn stats_name(file_name: &str) -> &str {
+    file_name.trim_end_matches(".bz2").trim_end_matches(".dem")
 }
 
 /// Fetch demo stats from the external service and submit to the portal API.
@@ -134,9 +182,8 @@ async fn fetch_and_submit_stats(
     demo_client: &portal_plugins::Cs2DemoClient,
     demo_id: &str,
     file_name: &str,
-) -> Result<()> {
-    // Strip .dem.bz2 or .dem extension for the stats lookup
-    let stats_name = file_name.trim_end_matches(".bz2").trim_end_matches(".dem");
+) -> Result<StatsOutcome> {
+    let stats_name = stats_name(file_name);
 
     let stats_url = demo_client.get_stats_url(stats_name);
     debug!(demo_id, file_name, url = %stats_url, "Fetching demo stats");
@@ -146,20 +193,21 @@ async fn fetch_and_submit_stats(
             let request = stats_converter::convert_stats(&stats);
             api_client.submit_stats(demo_id, &request).await?;
             info!(demo_id, file_name, map = %stats.map, "Stats submitted");
+            Ok(StatsOutcome::Submitted)
         }
         Err(portal_plugins::PluginError::NotFound(_)) => {
             info!(
                 demo_id,
-                file_name, "Demo stats not yet available (not parsed)"
+                file_name, url = %stats_url, "Demo stats not yet available (not parsed)"
             );
             // Don't mark as failed — stats service may not have parsed it yet
+            Ok(StatsOutcome::NotYetParsed)
         }
         Err(e) => {
             let err_msg = format!("Stats fetch failed: {e}");
             warn!(demo_id, file_name, error = %e, "Stats fetch failed");
             api_client.mark_stats_failed(demo_id, &err_msg).await?;
+            Ok(StatsOutcome::Submitted)
         }
     }
-
-    Ok(())
 }

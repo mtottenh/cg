@@ -170,6 +170,157 @@ impl FromStr for DemoLinkType {
     }
 }
 
+/// How one MatchZy demo upload (`POST /v1/gameserver/demos`) ended.
+///
+/// One `demo_upload_attempts` row per request. The refusals are split by who
+/// has to act: `rejected_auth` is a server-setup problem (re-enroll the agent),
+/// `rejected_request` is MatchZy sending something unusable, and the two
+/// `*_failed` outcomes are the portal's own fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DemoUploadOutcome {
+    /// Stored and cataloged (linked or not — see [`DemoUploadLinkNote`]).
+    Stored,
+    /// Missing or unknown demo token (401). Recorded without a server.
+    RejectedAuth,
+    /// Missing `MatchZy-FileName` header or an empty body (400).
+    RejectedRequest,
+    /// The object store refused the file (500).
+    StoreFailed,
+    /// Stored, but the catalog insert failed (500); the bucket scan will
+    /// pick the object up.
+    CatalogFailed,
+}
+
+impl DemoUploadOutcome {
+    /// Every variant, in declaration order.
+    pub const ALL: [Self; 5] = [
+        Self::Stored,
+        Self::RejectedAuth,
+        Self::RejectedRequest,
+        Self::StoreFailed,
+        Self::CatalogFailed,
+    ];
+
+    /// The stored (and serialized) string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stored => "stored",
+            Self::RejectedAuth => "rejected_auth",
+            Self::RejectedRequest => "rejected_request",
+            Self::StoreFailed => "store_failed",
+            Self::CatalogFailed => "catalog_failed",
+        }
+    }
+}
+
+impl fmt::Display for DemoUploadOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for DemoUploadOutcome {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|o| o.as_str() == s)
+            .ok_or_else(|| format!("invalid demo upload outcome: {s}"))
+    }
+}
+
+/// Why a `stored` upload did, or did not, get linked to a match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DemoUploadLinkNote {
+    /// Linked to the reservation's match (also for a replay whose link
+    /// already existed).
+    Linked,
+    /// MatchZy sent no `MatchZy-MatchId` header.
+    NoMatchId,
+    /// No reservation carries that MatchZy match id.
+    NoReservation,
+    /// The reservation belongs to a different server (never linked, §9).
+    OtherServer,
+    /// The link write failed for another reason.
+    LinkFailed,
+}
+
+impl DemoUploadLinkNote {
+    /// Every variant, in declaration order.
+    pub const ALL: [Self; 5] = [
+        Self::Linked,
+        Self::NoMatchId,
+        Self::NoReservation,
+        Self::OtherServer,
+        Self::LinkFailed,
+    ];
+
+    /// The stored (and serialized) string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Linked => "linked",
+            Self::NoMatchId => "no_match_id",
+            Self::NoReservation => "no_reservation",
+            Self::OtherServer => "other_server",
+            Self::LinkFailed => "link_failed",
+        }
+    }
+}
+
+impl fmt::Display for DemoUploadLinkNote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for DemoUploadLinkNote {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|n| n.as_str() == s)
+            .ok_or_else(|| format!("invalid demo upload link note: {s}"))
+    }
+}
+
+/// Where a cataloged demo came from. Derived from the object key, not
+/// stored: the upload handler is the only writer of `matchzy/` keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DemoSource {
+    /// POSTed by MatchZy on one of our game servers.
+    MatchzyUpload,
+    /// Found by the scanner's bucket sweep.
+    BucketScan,
+}
+
+impl DemoSource {
+    /// Classify a demo by its object key (`matchzy/` prefix = upload).
+    #[must_use]
+    pub fn from_s3_key(key: &str) -> Self {
+        if key.starts_with("matchzy/") {
+            Self::MatchzyUpload
+        } else {
+            Self::BucketScan
+        }
+    }
+}
+
+impl fmt::Display for DemoSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MatchzyUpload => write!(f, "matchzy_upload"),
+            Self::BucketScan => write!(f, "bucket_scan"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,5 +381,44 @@ mod tests {
             let parsed: DemoLinkType = s.parse().unwrap();
             assert_eq!(link_type, parsed);
         }
+    }
+
+    #[test]
+    fn test_demo_upload_enums_roundtrip() {
+        for outcome in DemoUploadOutcome::ALL {
+            assert_eq!(
+                outcome.to_string().parse::<DemoUploadOutcome>(),
+                Ok(outcome)
+            );
+        }
+        for note in DemoUploadLinkNote::ALL {
+            assert_eq!(note.to_string().parse::<DemoUploadLinkNote>(), Ok(note));
+        }
+        assert!("bogus".parse::<DemoUploadOutcome>().is_err());
+    }
+
+    #[test]
+    fn test_demo_source_from_key() {
+        assert_eq!(
+            DemoSource::from_s3_key("matchzy/123/2026-10-25_de_dust2.dem"),
+            DemoSource::MatchzyUpload
+        );
+        assert_eq!(
+            DemoSource::from_s3_key("matchzy/unmatched/x.dem"),
+            DemoSource::MatchzyUpload
+        );
+        assert_eq!(
+            DemoSource::from_s3_key("demos/x.dem"),
+            DemoSource::BucketScan
+        );
+        // A prefix match, not a substring one.
+        assert_eq!(
+            DemoSource::from_s3_key("archive/matchzy/x.dem"),
+            DemoSource::BucketScan
+        );
+        assert_eq!(
+            DemoSource::from_s3_key("matchzy-backups/1/r.json"),
+            DemoSource::BucketScan
+        );
     }
 }

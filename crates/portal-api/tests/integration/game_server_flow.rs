@@ -20,13 +20,17 @@ use portal_domain::repositories::{
 use portal_domain::services::game_server::hash_token;
 use serde_json::json;
 
-async fn state_for(app: &TestApp) -> AppState {
+pub(crate) async fn state_for(app: &TestApp) -> AppState {
     AppState::new(app.pool().clone(), "test-jwt-secret").await
 }
 
 /// Register a server and give it a fresh idle heartbeat so the §6.7
 /// allocation predicate accepts it.
-async fn seed_available_server(state: &AppState, game_id: &str, name: &str) -> GameServerId {
+pub(crate) async fn seed_available_server(
+    state: &AppState,
+    game_id: &str,
+    name: &str,
+) -> GameServerId {
     let server = state
         .game_server_registry
         .register(CreateGameServer {
@@ -61,7 +65,7 @@ async fn seed_available_server(state: &AppState, game_id: &str, name: &str) -> G
 }
 
 /// Create a pending reservation with a known event token, then allocate.
-async fn seed_allocated_reservation(
+pub(crate) async fn seed_allocated_reservation(
     state: &AppState,
     match_id: &str,
     tournament_id: &str,
@@ -509,7 +513,7 @@ async fn test_connect_info_gating() {
 }
 
 /// The `games` seed for TestApp registers cs2; resolve its UUID.
-async fn get_game_id_str(app: &TestApp) -> String {
+pub(crate) async fn get_game_id_str(app: &TestApp) -> String {
     portal_test::helpers::get_game_id(app.pool(), "cs2")
         .await
         .to_string()

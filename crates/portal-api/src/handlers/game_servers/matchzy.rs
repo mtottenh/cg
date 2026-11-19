@@ -12,8 +12,12 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use chrono::Utc;
-use portal_domain::entities::ServerReservation;
-use portal_domain::repositories::ServerReservationRepository;
+use portal_core::ids::{DemoId, TournamentMatchId};
+use portal_core::types::{DemoUploadLinkNote, DemoUploadOutcome};
+use portal_domain::entities::{GameServer, ServerReservation};
+use portal_domain::repositories::{
+    CreateDemoUploadAttempt, DemoUploadAttemptRepository, ServerReservationRepository,
+};
 use portal_domain::services::game_server::hash_token;
 
 /// Constant-time equality over the hex digests (§9). Digest comparison is
@@ -133,19 +137,76 @@ pub async fn post_event(
 /// The body is buffered (route-level 1 GiB cap): CS2 demos run
 /// 100–300 MB and this is a single-box deployment; revisit with S3
 /// multipart streaming if memory pressure ever shows.
+///
+/// Every exit records exactly one `demo_upload_attempts` row and bumps
+/// `portal_api_demo_uploads_total{outcome}` (docs/demo-ingestion-admin-design.md
+/// §4.1). Recording is best effort and never changes the response.
 pub async fn post_demo(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> ApiResult<axum::http::StatusCode> {
+    let started = std::time::Instant::now();
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let mut attempt = CreateDemoUploadAttempt {
+        server_id: None,
+        outcome: DemoUploadOutcome::Stored,
+        http_status: 200,
+        file_name: header("matchzy-filename").map(sanitize_demo_filename),
+        matchzy_id: header("matchzy-matchid").and_then(|v| v.parse().ok()),
+        map_number: header("matchzy-mapnumber").and_then(|v| v.parse().ok()),
+        bytes: i64::try_from(body.len()).unwrap_or(i64::MAX),
+        duration_ms: 0,
+        demo_id: None,
+        linked_match_id: None,
+        link_note: None,
+        error: None,
+    };
+
+    let result = receive_demo(&state, &headers, body, &mut attempt).await;
+
+    if let Err(e) = &result {
+        attempt.http_status = i32::from(e.status);
+        if attempt.error.is_none() {
+            attempt.error = Some(e.detail.clone());
+        }
+    }
+    attempt.duration_ms = i32::try_from(started.elapsed().as_millis()).unwrap_or(i32::MAX);
+    record_attempt(&state, attempt).await;
+    result
+}
+
+/// Persist one upload attempt. Best effort: a failure is logged at warn
+/// and never reaches MatchZy.
+async fn record_attempt(state: &AppState, attempt: CreateDemoUploadAttempt) {
+    let outcome = attempt.outcome;
+    crate::observability::record_demo_upload(outcome);
+    if let Err(e) = state.demo_upload_attempt_repo.record(attempt).await {
+        tracing::warn!(%outcome, error = %e, "could not record demo upload attempt");
+    }
+}
+
+/// The upload itself. Sets `attempt.outcome` (and the server/demo/link
+/// facts) before each exit; [`post_demo`] fills status and timing.
+async fn receive_demo(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: axum::body::Bytes,
+    attempt: &mut CreateDemoUploadAttempt,
+) -> ApiResult<axum::http::StatusCode> {
     // MatchZy never retries and logs nothing useful on its side, so every
     // refusal here is logged at warn with what the request carried — the
     // only trace a failed upload leaves.
-    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    let raw_file_name = header("matchzy-filename").unwrap_or("");
+    let raw_file_name = headers
+        .get("matchzy-filename")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     let bytes = body.len();
+    let matchzy_id = attempt.matchzy_id;
+    let map_number = attempt.map_number;
 
-    let Some(token) = bearer_token(&headers) else {
+    attempt.outcome = DemoUploadOutcome::RejectedAuth;
+    let Some(token) = bearer_token(headers) else {
         tracing::warn!(
             file = raw_file_name,
             bytes,
@@ -157,7 +218,10 @@ pub async fn post_demo(
         .game_server_registry
         .find_by_demo_token(&hash_token(token))
         .await
-        .map_err(ApiError::from)?
+        .map_err(|e| {
+            attempt.error = Some(format!("demo token lookup failed: {e}"));
+            ApiError::from(e)
+        })?
     else {
         tracing::warn!(
             file = raw_file_name,
@@ -166,13 +230,13 @@ pub async fn post_demo(
         );
         return Err(ApiError::unauthorized("invalid demo token"));
     };
+    attempt.server_id = Some(server.id);
 
-    let Some(file_name) = header("matchzy-filename").map(sanitize_demo_filename) else {
+    attempt.outcome = DemoUploadOutcome::RejectedRequest;
+    let Some(file_name) = attempt.file_name.clone() else {
         tracing::warn!(server = %server.name, bytes, "demo upload refused: missing MatchZy-FileName header");
         return Err(ApiError::bad_request("missing MatchZy-FileName header"));
     };
-    let matchzy_id: Option<i64> = header("matchzy-matchid").and_then(|v| v.parse().ok());
-    let map_number: Option<i32> = header("matchzy-mapnumber").and_then(|v| v.parse().ok());
 
     if body.is_empty() {
         tracing::warn!(server = %server.name, file = %file_name, "demo upload refused: empty body");
@@ -180,6 +244,7 @@ pub async fn post_demo(
     }
     let size = i64::try_from(bytes).unwrap_or(i64::MAX);
 
+    attempt.outcome = DemoUploadOutcome::StoreFailed;
     let stored = crate::observability::track_s3(
         "demos",
         "put",
@@ -207,6 +272,7 @@ pub async fn post_demo(
     })?;
 
     // Catalog + auto-link into the existing demo pipeline (§6.5).
+    attempt.outcome = DemoUploadOutcome::CatalogFailed;
     let demo = match state
         .demo_service
         .catalog_demo(
@@ -228,55 +294,15 @@ pub async fn post_demo(
         portal_domain::services::CatalogResult::Created(demo)
         | portal_domain::services::CatalogResult::AlreadyExists(demo) => demo,
     };
+    // From here on the upload is a success; linking problems are noted on
+    // the attempt, never bounced to MatchZy (no retries anyway).
+    attempt.outcome = DemoUploadOutcome::Stored;
+    attempt.demo_id = Some(demo.id);
 
-    let mut linked_match = None;
-    let reservation = match matchzy_id {
-        Some(id) => state
-            .server_reservation_repo
-            .find_by_matchzy_id(id)
-            .await
-            .map_err(ApiError::from)?,
-        None => None,
-    };
-    match (&reservation, matchzy_id) {
-        (None, Some(id)) => tracing::warn!(
-            server = %server.name, demo_id = %demo.id, matchzy_id = id,
-            "demo not linked: no reservation carries this MatchZy match id"
-        ),
-        (Some(r), Some(id)) if r.server_id != Some(server.id) => tracing::warn!(
-            server = %server.name, demo_id = %demo.id, matchzy_id = id,
-            "demo not linked: the reservation for this match id belongs to another server"
-        ),
-        _ => {}
-    }
-    if let Some(reservation) = reservation
-        // §9 blast-radius: a server may only attach demos to ITS OWN
-        // match (M4) — the MatchZy-MatchId header is attacker-settable.
-        && reservation.server_id == Some(server.id)
-    {
-        let link = state
-            .demo_service
-            .link_to_match(
-                demo.id,
-                reservation.match_id,
-                map_number.map(|n| n + 1),
-                portal_core::types::DemoLinkType::AutoMatched,
-                None,
-            )
-            .await;
-        match link {
-            Ok(_) => linked_match = Some(reservation.match_id),
-            // Already linked (replayed upload) is fine; anything else is
-            // logged but never bounced to MatchZy (no retries anyway).
-            Err(e) => tracing::warn!(
-                demo_id = %demo.id, match_id = %reservation.match_id, error = %e,
-                "demo link skipped (expected for a replayed upload)"
-            ),
-        }
-        // PUG demos are categorized 'pug' so the tournament stats surfaces
-        // never see them (stats separation).
-        crate::pug_flow::tag_demo_if_pug(&state, demo.id, reservation.match_id).await;
-    }
+    let (linked_match, link_note) =
+        link_uploaded_demo(state, &server, demo.id, matchzy_id, map_number).await;
+    attempt.linked_match_id = linked_match;
+    attempt.link_note = Some(link_note);
 
     tracing::info!(
         server = %server.name,
@@ -290,6 +316,83 @@ pub async fn post_demo(
         "demo uploaded"
     );
     Ok(axum::http::StatusCode::OK)
+}
+
+/// Attach a freshly cataloged upload to its reservation's match, if the
+/// MatchZy match id names one on this server. Returns the linked match and
+/// the note recorded on the attempt.
+async fn link_uploaded_demo(
+    state: &AppState,
+    server: &GameServer,
+    demo_id: DemoId,
+    matchzy_id: Option<i64>,
+    map_number: Option<i32>,
+) -> (Option<TournamentMatchId>, DemoUploadLinkNote) {
+    let Some(id) = matchzy_id else {
+        return (None, DemoUploadLinkNote::NoMatchId);
+    };
+    let reservation = match state.server_reservation_repo.find_by_matchzy_id(id).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(
+                server = %server.name, %demo_id, matchzy_id = id, error = %e,
+                "demo not linked: reservation lookup failed"
+            );
+            return (None, DemoUploadLinkNote::LinkFailed);
+        }
+    };
+    let Some(reservation) = reservation else {
+        tracing::warn!(
+            server = %server.name, %demo_id, matchzy_id = id,
+            "demo not linked: no reservation carries this MatchZy match id"
+        );
+        return (None, DemoUploadLinkNote::NoReservation);
+    };
+    // §9 blast-radius: a server may only attach demos to ITS OWN
+    // match (M4) — the MatchZy-MatchId header is attacker-settable.
+    if reservation.server_id != Some(server.id) {
+        tracing::warn!(
+            server = %server.name, %demo_id, matchzy_id = id,
+            "demo not linked: the reservation for this match id belongs to another server"
+        );
+        return (None, DemoUploadLinkNote::OtherServer);
+    }
+
+    let link = state
+        .demo_service
+        .link_to_match(
+            demo_id,
+            reservation.match_id,
+            map_number.map(|n| n + 1),
+            portal_core::types::DemoLinkType::AutoMatched,
+            None,
+        )
+        .await;
+    let outcome = match link {
+        Ok(_) => (Some(reservation.match_id), DemoUploadLinkNote::Linked),
+        Err(e) => {
+            // Already linked (replayed upload) is fine — it IS linked; any
+            // other failure is logged and noted.
+            tracing::warn!(
+                %demo_id, match_id = %reservation.match_id, error = %e,
+                "demo link skipped (expected for a replayed upload)"
+            );
+            let already_linked = state
+                .demo_service
+                .get_demo_links(demo_id)
+                .await
+                .is_ok_and(|links| links.iter().any(|l| l.match_id == reservation.match_id));
+            if already_linked {
+                (Some(reservation.match_id), DemoUploadLinkNote::Linked)
+            } else {
+                (None, DemoUploadLinkNote::LinkFailed)
+            }
+        }
+    };
+    // PUG demos are categorized 'pug' so the tournament stats surfaces
+    // never see them (stats separation).
+    crate::pug_flow::tag_demo_if_pug(state, demo_id, reservation.match_id).await;
+    outcome
 }
 
 /// Keep only the basename, restricted to a safe charset.

@@ -192,6 +192,12 @@ pub fn routes() -> Router<AppState> {
         // routes stay service-only and are never exposed to the browser.
         .route("/pipeline/overview", get(demos::get_pipeline_overview))
         .route("/pipeline/tracking", get(demos::list_pipeline_tracking))
+        // MatchZy server-upload route (docs/demo-ingestion-admin-design.md §4.2).
+        .route("/pipeline/uploads", get(demos::list_pipeline_uploads))
+        .route(
+            "/pipeline/uploads/missing",
+            get(demos::list_pipeline_missing_uploads),
+        )
         // The one write on this surface: bringing a paused or backed-off
         // tracking entry back into the poller's work list.
         .route(

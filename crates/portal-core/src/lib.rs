@@ -30,8 +30,8 @@ pub use ids::{
     VetoLobbyMessageId, VetoSessionId,
 };
 pub use types::{
-    DemoCategory, DemoLinkType, DemoStatus, EvidenceStorage, EvidenceType, MatchFormat,
-    MatchFormatPlan, ParseScopeTypeError, PermissionScope, PugMapSelectionMode, PugStatus,
-    ScopeType, SideSelectionMode, TournamentKind, VetoActionType, VetoFormatActionConfig,
-    VetoFormatConfig,
+    DemoCategory, DemoLinkType, DemoSource, DemoStatus, DemoUploadLinkNote, DemoUploadOutcome,
+    EvidenceStorage, EvidenceType, MatchFormat, MatchFormatPlan, ParseScopeTypeError,
+    PermissionScope, PugMapSelectionMode, PugStatus, ScopeType, SideSelectionMode, TournamentKind,
+    VetoActionType, VetoFormatActionConfig, VetoFormatConfig,
 };

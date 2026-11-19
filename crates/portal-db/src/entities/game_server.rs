@@ -33,6 +33,8 @@ pub struct GameServerRow {
     pub last_status_at: Option<DateTime<Utc>>,
     pub enrollment_token_hash: Option<String>,
     pub enrollment_token_expires_at: Option<DateTime<Utc>>,
+    /// `demo_token_hash IS NOT NULL` — the hash itself is never selected.
+    pub has_demo_token: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

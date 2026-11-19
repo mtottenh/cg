@@ -169,6 +169,29 @@ pub struct PipelineQuery {
     pub limit: Option<i64>,
 }
 
+/// Query parameters for the MatchZy upload-attempt list.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+pub struct DemoUploadAttemptsQuery {
+    /// Only attempts from this game server.
+    pub server_id: Option<Uuid>,
+    /// Only attempts with this outcome.
+    pub outcome: Option<portal_core::types::DemoUploadOutcome>,
+    /// Only attempts that stored this demo.
+    pub demo_id: Option<Uuid>,
+    /// Keyset cursor: attempts received strictly before this instant
+    /// (pass the previous page's `next_before`).
+    pub before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Maximum rows to return (default 50, max 200).
+    pub limit: Option<i64>,
+}
+
+/// Query parameters for the missing-demo list.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+pub struct MissingDemosQuery {
+    /// Maximum rows to return (default 50, max 200).
+    pub limit: Option<i64>,
+}
+
 /// Body for a bulk enrichment requeue.
 #[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 pub struct RequeueDiscoveredMatchesRequest {

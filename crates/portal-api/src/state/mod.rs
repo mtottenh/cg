@@ -33,11 +33,11 @@ use portal_db::{
     PgAdminServerCommandRepository, PgAgentCertRepository, PgApiKeyRepository,
     PgAvailabilityOverrideRepository, PgAvailabilityWindowRepository, PgAwardRepository,
     PgBanRepository, PgDemoMatchLinkRepository, PgDemoPlayerRepository,
-    PgDemoPlayerStatsRepository, PgDemoRepository, PgDiscoveredMatchRepository,
-    PgDisputeMessageRepository, PgDisputeRepository, PgEntityChangeRepository,
-    PgEvidenceRepository, PgForfeitRecordRepository, PgGameServerRepository,
-    PgLeagueInvitationRepository, PgLeagueMemberRepository, PgLeagueRepository,
-    PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
+    PgDemoPlayerStatsRepository, PgDemoRepository, PgDemoUploadAttemptRepository,
+    PgDiscoveredMatchRepository, PgDisputeMessageRepository, PgDisputeRepository,
+    PgEntityChangeRepository, PgEvidenceRepository, PgForfeitRecordRepository,
+    PgGameServerRepository, PgLeagueInvitationRepository, PgLeagueMemberRepository,
+    PgLeagueRepository, PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,
     PgLeagueTeamInvitationRepository, PgLeagueTeamMemberRepository, PgLeagueTeamRepository,
     PgLeagueTeamSeasonRepository, PgMatchLineupRepository, PgMatchStatusLogRepository,
     PgMatchSubstitutionRepository, PgPermissionRepository, PgPlayerGameProfileRepository,
@@ -309,6 +309,8 @@ pub struct AppState {
     pub server_event_repo: Arc<PgServerEventRepository>,
     /// Admin console commands sent to game servers (audit).
     pub admin_server_command_repo: Arc<PgAdminServerCommandRepository>,
+    /// Every MatchZy demo upload request and its outcome (Pipeline view).
+    pub demo_upload_attempt_repo: Arc<PgDemoUploadAttemptRepository>,
     /// Mid-series substitutions (§6.8).
     pub match_substitution_repo: Arc<PgMatchSubstitutionRepository>,
     /// Per-map game rows (populated by the server event pipeline).
@@ -931,6 +933,8 @@ impl AppState {
         let server_event_repo = Arc::new(PgServerEventRepository::new(db_pool.clone()));
         let admin_server_command_repo =
             Arc::new(PgAdminServerCommandRepository::new(db_pool.clone()));
+        let demo_upload_attempt_repo =
+            Arc::new(PgDemoUploadAttemptRepository::new(db_pool.clone()));
         let match_substitution_repo = Arc::new(PgMatchSubstitutionRepository::new(db_pool.clone()));
         let tournament_match_game_repo =
             Arc::new(PgTournamentMatchGameRepository::new(db_pool.clone()));
@@ -1066,6 +1070,7 @@ impl AppState {
             server_reservation_repo,
             server_event_repo,
             admin_server_command_repo,
+            demo_upload_attempt_repo,
             match_substitution_repo,
             tournament_match_game_repo,
             league_team_member_repo: Arc::clone(&league_team_member_repo),

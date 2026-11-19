@@ -13,6 +13,12 @@
 //! what the token is.
 
 use crate::dto::responses::demo::DemoStatusCountsResponse;
+use chrono::{DateTime, Utc};
+use portal_core::types::{DemoStatus, DemoUploadLinkNote, DemoUploadOutcome};
+use portal_domain::entities::demo_upload::{
+    DEMO_MISSING_AFTER_MINUTES, DEMO_STUCK_AFTER_MINUTES, DemoUploadAttemptDetail, MissingDemo,
+    ServerUploadsSummary,
+};
 use portal_domain::entities::discovered_match::DiscoveredMatch;
 use portal_domain::repositories::steam_tracking::{TrackingHealthEntry, TrackingHealthSummary};
 use serde::{Deserialize, Serialize};
@@ -241,7 +247,155 @@ pub struct PipelineOverviewResponse {
     pub demo_extraction: DemoExtractionQueueResponse,
     /// Stage 3 — the demo catalog (scanner → stats service).
     pub demos: DemoStatusCountsResponse,
+    /// The server route — MatchZy uploading demos straight from our game
+    /// servers. NOT scoped by `game`: only CS2 servers upload in practice.
+    pub server_uploads: ServerUploadsSummaryResponse,
     /// Whether the demo→match auto-linker is enabled. The backfill refuses to
     /// run while it is off, so the operator must see it next to the button.
     pub auto_link_enabled: bool,
+}
+
+/// The MatchZy server-upload route, as the Pipeline's "Server uploads" card
+/// reads it (docs/demo-ingestion-admin-design.md §3.1).
+///
+/// Not game-filtered: the game servers are CS2-only in practice, and the
+/// attempt table has no game column (an auth refusal has no server either).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ServerUploadsSummaryResponse {
+    /// `stored` attempts in the last 24 hours.
+    pub uploaded_24h: i64,
+    /// `rejected_auth` + `rejected_request` in the last 24 hours — server
+    /// setup or MatchZy sending something unusable.
+    pub refused_24h: i64,
+    /// `store_failed` + `catalog_failed` in the last 24 hours — the portal's
+    /// own failures.
+    pub failed_24h: i64,
+    /// Completed server matches (last 14 days) with no demo more than
+    /// `missing_after_minutes` after completion.
+    pub missing: i64,
+    /// Uploaded demos still pending/processing after `stuck_after_minutes`.
+    pub stuck_pending: i64,
+    /// Latest `stored` attempt, if any server has ever uploaded.
+    pub last_upload_at: Option<DateTime<Utc>>,
+    /// Minutes after completion before a demo counts as missing.
+    pub missing_after_minutes: i64,
+    /// Minutes pending before an uploaded demo counts as stuck.
+    pub stuck_after_minutes: i64,
+}
+
+impl From<ServerUploadsSummary> for ServerUploadsSummaryResponse {
+    fn from(s: ServerUploadsSummary) -> Self {
+        Self {
+            uploaded_24h: s.uploaded_24h,
+            refused_24h: s.refused_24h,
+            failed_24h: s.failed_24h,
+            missing: s.missing,
+            stuck_pending: s.stuck_pending,
+            last_upload_at: s.last_upload_at,
+            missing_after_minutes: DEMO_MISSING_AFTER_MINUTES,
+            stuck_after_minutes: DEMO_STUCK_AFTER_MINUTES,
+        }
+    }
+}
+
+/// One MatchZy demo upload request and how it ended.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DemoUploadAttemptResponse {
+    pub id: uuid::Uuid,
+    pub received_at: DateTime<Utc>,
+    /// Null when the demo token was missing or unknown.
+    pub server_id: Option<uuid::Uuid>,
+    pub server_name: Option<String>,
+    pub outcome: DemoUploadOutcome,
+    /// The HTTP status MatchZy was given.
+    pub http_status: i32,
+    /// Sanitised `MatchZy-FileName`; null when the header was missing.
+    pub file_name: Option<String>,
+    pub matchzy_id: Option<i64>,
+    /// 0-indexed, as MatchZy sends it.
+    pub map_number: Option<i32>,
+    /// Request body size.
+    pub bytes: i64,
+    pub duration_ms: i32,
+    /// The cataloged demo (stored outcomes only).
+    pub demo_id: Option<uuid::Uuid>,
+    /// That demo's current catalog status.
+    pub demo_status: Option<DemoStatus>,
+    pub linked_match_id: Option<uuid::Uuid>,
+    pub linked_tournament_id: Option<uuid::Uuid>,
+    /// For the public match page route.
+    pub linked_tournament_slug: Option<String>,
+    /// Stored outcomes only: why the demo was or wasn't linked.
+    pub link_note: Option<DemoUploadLinkNote>,
+    /// What went wrong, for refusals and failures.
+    pub error: Option<String>,
+}
+
+impl From<DemoUploadAttemptDetail> for DemoUploadAttemptResponse {
+    fn from(d: DemoUploadAttemptDetail) -> Self {
+        let a = d.attempt;
+        Self {
+            id: a.id.as_uuid(),
+            received_at: a.received_at,
+            server_id: a.server_id.map(|s| s.as_uuid()),
+            server_name: d.server_name,
+            outcome: a.outcome,
+            http_status: a.http_status,
+            file_name: a.file_name,
+            matchzy_id: a.matchzy_id,
+            map_number: a.map_number,
+            bytes: a.bytes,
+            duration_ms: a.duration_ms,
+            demo_id: a.demo_id.map(|x| x.as_uuid()),
+            demo_status: d.demo_status,
+            linked_match_id: a.linked_match_id.map(|m| m.as_uuid()),
+            linked_tournament_id: d.linked_tournament_id.map(|t| t.as_uuid()),
+            linked_tournament_slug: d.linked_tournament_slug,
+            link_note: a.link_note,
+            error: a.error,
+        }
+    }
+}
+
+/// A page of upload attempts, newest first.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DemoUploadAttemptListResponse {
+    pub attempts: Vec<DemoUploadAttemptResponse>,
+    /// Pass as `before` for the next page; null when this page was short
+    /// (no more rows).
+    pub next_before: Option<DateTime<Utc>>,
+}
+
+/// A finished server match whose demo never arrived.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MissingDemoResponse {
+    pub reservation_id: uuid::Uuid,
+    pub match_id: uuid::Uuid,
+    pub tournament_id: uuid::Uuid,
+    /// For the public match page route.
+    pub tournament_slug: Option<String>,
+    pub tournament_name: Option<String>,
+    pub matchzy_id: i64,
+    pub server_id: uuid::Uuid,
+    pub server_name: Option<String>,
+    pub completed_at: DateTime<Utc>,
+    /// `completed_at` + the missing threshold.
+    pub expected_by: DateTime<Utc>,
+}
+
+impl From<MissingDemo> for MissingDemoResponse {
+    fn from(m: MissingDemo) -> Self {
+        Self {
+            reservation_id: m.reservation_id.as_uuid(),
+            match_id: m.match_id.as_uuid(),
+            tournament_id: m.tournament_id.as_uuid(),
+            tournament_slug: m.tournament_slug,
+            tournament_name: m.tournament_name,
+            matchzy_id: m.matchzy_id,
+            server_id: m.server_id.as_uuid(),
+            server_name: m.server_name,
+            completed_at: m.completed_at,
+            expected_by: m.completed_at + chrono::Duration::minutes(DEMO_MISSING_AFTER_MINUTES),
+        }
+    }
 }

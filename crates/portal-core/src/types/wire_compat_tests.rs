@@ -36,6 +36,42 @@ fn demo_demo_status_display_matches_serde() {
 }
 
 #[test]
+fn demo_demo_upload_outcome_display_matches_serde() {
+    use crate::types::demo::DemoUploadOutcome;
+    for v in DemoUploadOutcome::ALL {
+        assert_eq!(
+            serde_json::Value::String(v.to_string()),
+            serde_json::to_value(v).unwrap(),
+            "Display and Serialize disagree for DemoUploadOutcome::{v:?}"
+        );
+    }
+}
+
+#[test]
+fn demo_demo_upload_link_note_display_matches_serde() {
+    use crate::types::demo::DemoUploadLinkNote;
+    for v in DemoUploadLinkNote::ALL {
+        assert_eq!(
+            serde_json::Value::String(v.to_string()),
+            serde_json::to_value(v).unwrap(),
+            "Display and Serialize disagree for DemoUploadLinkNote::{v:?}"
+        );
+    }
+}
+
+#[test]
+fn demo_demo_source_display_matches_serde() {
+    use crate::types::demo::DemoSource::*;
+    for v in [MatchzyUpload, BucketScan] {
+        assert_eq!(
+            serde_json::Value::String(v.to_string()),
+            serde_json::to_value(v).unwrap(),
+            "Display and Serialize disagree for DemoSource::{v:?}"
+        );
+    }
+}
+
+#[test]
 fn demo_demo_link_type_display_matches_serde() {
     use crate::types::demo::DemoLinkType::*;
     for v in [Manual, AutoMatched, Evidence] {

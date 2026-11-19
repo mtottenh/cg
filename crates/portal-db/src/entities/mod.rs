@@ -11,6 +11,7 @@ mod audit;
 mod availability;
 mod award;
 mod demo;
+mod demo_upload;
 mod discovered_match;
 mod dispute;
 mod evidence;
@@ -42,6 +43,7 @@ pub use demo::{
     DemoMatchLinkRow, DemoPlayerRow, DemoRow, NewDemo, NewDemoMatchLink, NewDemoPlayer,
     UpdateDemoStats,
 };
+pub use demo_upload::DemoUploadAttemptRow;
 pub use discovered_match::DiscoveredMatchRow;
 pub use dispute::{DisputeMessageRow, DisputeRow, NewDispute, NewDisputeMessage};
 pub use evidence::{

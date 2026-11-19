@@ -329,3 +329,89 @@ async fn test_update_tournament_after_start_rejected() {
     assert_eq!(body["data"]["max_participants"], 16);
     assert_eq!(body["data"]["status"], "in_progress");
 }
+
+/// Prod incident 2026-11-19: moving `registration_end` past the stored
+/// `starts_at` violated `tournaments_check_dates` and surfaced as a 500.
+/// It must be a field-scoped validation error, and moving both dates
+/// together (the actual fix for a late entrant) must succeed.
+#[tokio::test]
+async fn test_update_tournament_registration_end_after_start() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+
+    let create_response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": "Dates Test",
+                "slug": "dates-test",
+                "format": "round_robin",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
+                "participant_type": "team",
+                "min_participants": 4,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "live",
+                "default_match_format": "bo3",
+                "registration_start": "2030-01-01T00:00:00Z",
+                "registration_end": "2030-01-05T00:00:00Z",
+                "starts_at": "2030-01-05T00:00:00Z"
+            }),
+        )
+        .await;
+    create_response.assert_status(StatusCode::CREATED);
+    let created: serde_json::Value = create_response.json();
+    let tournament_id = created["data"]["id"].as_str().unwrap();
+
+    // Only registration_end moves, past the stored starts_at.
+    let response = app
+        .patch_json(
+            &format!("/v1/tournaments/{tournament_id}"),
+            &json!({ "registration_end": "2030-01-07T00:00:00Z" }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let body = response.text();
+    assert!(
+        body.contains("registration_end"),
+        "field-scoped error: {body}"
+    );
+
+    // Moving both together is allowed.
+    let response = app
+        .patch_json(
+            &format!("/v1/tournaments/{tournament_id}"),
+            &json!({
+                "registration_end": "2030-01-07T00:00:00Z",
+                "starts_at": "2030-01-08T00:00:00Z"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["registration_end"], "2030-01-07T00:00:00Z");
+
+    // Create is guarded the same way.
+    let response = app
+        .post_json(
+            "/v1/tournaments",
+            &json!({
+                "game_id": game_id,
+                "name": "Bad Dates",
+                "slug": "bad-dates",
+                "format": "round_robin",
+                "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
+                "participant_type": "team",
+                "min_participants": 4,
+                "max_participants": 16,
+                "registration_type": "open",
+                "scheduling_mode": "live",
+                "default_match_format": "bo3",
+                "registration_end": "2030-01-07T00:00:00Z",
+                "starts_at": "2030-01-05T00:00:00Z"
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+}

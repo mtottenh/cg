@@ -106,6 +106,8 @@ where
             )));
         }
 
+        validate_schedule(cmd.registration_start, cmd.registration_end, cmd.starts_at)?;
+
         // Check slug uniqueness
         if self.tournament_repo.slug_exists(&cmd.slug).await? {
             return Err(DomainError::Conflict(format!(
@@ -224,6 +226,16 @@ where
                 ),
             )));
         }
+
+        // Same date-ordering guard as `create_tournament`, against the merged
+        // row (the repo update COALESCEs, so an absent field keeps its stored
+        // value). Moving registration_end past a stored starts_at used to hit
+        // `tournaments_check_dates` and surface as an opaque 500.
+        validate_schedule(
+            cmd.registration_start.or(tournament.registration_start),
+            cmd.registration_end.or(tournament.registration_end),
+            cmd.starts_at.or(tournament.starts_at),
+        )?;
 
         // Check slug uniqueness if changing
         if let Some(ref new_slug) = cmd.slug
@@ -2081,4 +2093,37 @@ where
             invitation_repo: Arc::clone(&self.invitation_repo),
         }
     }
+}
+
+/// Mirror of the `tournaments_check_dates` DB constraint, checked up front so
+/// callers get a field-scoped 400 instead of a constraint-violation error:
+/// `registration_start < registration_end <= starts_at` (each bound optional).
+fn validate_schedule(
+    registration_start: Option<chrono::DateTime<chrono::Utc>>,
+    registration_end: Option<chrono::DateTime<chrono::Utc>>,
+    starts_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<(), DomainError> {
+    if let (Some(start), Some(end)) = (registration_start, registration_end)
+        && start >= end
+    {
+        return Err(DomainError::Validation(ValidationError::field(
+            FieldError::new(
+                "registration_end",
+                "registration_end must be after registration_start",
+                "invalid_range",
+            ),
+        )));
+    }
+    if let (Some(end), Some(starts)) = (registration_end, starts_at)
+        && end > starts
+    {
+        return Err(DomainError::Validation(ValidationError::field(
+            FieldError::new(
+                "registration_end",
+                "registration_end cannot be after the tournament start time (starts_at); move starts_at later as well",
+                "invalid_range",
+            ),
+        )));
+    }
+    Ok(())
 }

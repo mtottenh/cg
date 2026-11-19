@@ -471,6 +471,17 @@ where
         &self,
         bracket_id: TournamentBracketId,
     ) -> Result<bool, DomainError> {
+        // A Swiss bracket only holds the rounds generated so far, so "every
+        // match is done" is just "the current round is done" until the final
+        // round exists. Without this a Swiss group stage handed over to the
+        // playoffs after round 1.
+        let bracket = self.get_bracket(bracket_id).await?;
+        if bracket.bracket_type == BracketType::Swiss
+            && bracket.current_round < bracket.total_rounds
+        {
+            return Ok(false);
+        }
+
         let matches = self.match_repo.list_by_bracket(bracket_id).await?;
 
         // Bracket is complete if all matches are completed or cancelled

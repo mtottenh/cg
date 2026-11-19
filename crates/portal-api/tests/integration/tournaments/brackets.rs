@@ -1007,7 +1007,7 @@ async fn test_groups_with_de_playoffs() {
 
 /// Confirm a win for `winner` through the captain claim → opponent confirm
 /// flow, which runs the match-completion saga exactly as production does.
-async fn confirm_win_via_claims(
+pub(super) async fn confirm_win_via_claims(
     app: &TestApp,
     tournament_id: &str,
     match_id: &str,

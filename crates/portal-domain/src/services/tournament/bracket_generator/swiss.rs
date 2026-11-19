@@ -27,6 +27,38 @@ pub struct SwissParticipantStanding {
     pub had_bye: bool,
 }
 
+/// Read the optional `max_rounds` key from Swiss (or Swiss-group)
+/// `format_settings`. Absent/null → `None`; anything other than a positive
+/// integer is rejected rather than silently replaced by the default.
+pub fn parse_swiss_max_rounds(settings: &serde_json::Value) -> Result<Option<u32>, DomainError> {
+    match settings.get("max_rounds") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .filter(|n| (1..=u64::from(u32::MAX)).contains(n))
+            .map(|n| Some(n as u32))
+            .ok_or_else(|| {
+                DomainError::InvalidState("max_rounds must be a positive integer".to_string())
+            }),
+    }
+}
+
+/// Number of Swiss rounds a bracket of `participant_count` plays.
+///
+/// Defaults to `ceil(log2(n))` (at least 1). Whatever is requested is
+/// clamped to the number of rounds that can be paired without a rematch —
+/// a full round robin: `n - 1` rounds for an even field, `n` for an odd one
+/// (each player sits out one round). Past that every round would be forced
+/// rematches.
+#[must_use]
+pub fn swiss_total_rounds(participant_count: usize, requested: Option<u32>) -> i32 {
+    let n = participant_count.max(2);
+    let rematch_free_limit = if n.is_multiple_of(2) { n - 1 } else { n };
+    let default = (usize::BITS - (n - 1).leading_zeros()) as usize; // ceil(log2(n))
+    let rounds = requested.map_or(default, |r| r as usize);
+    rounds.clamp(1, rematch_free_limit) as i32
+}
+
 impl BracketGenerator {
     /// Generate the first Swiss round (seeded pairing: top half vs bottom half).
     ///
@@ -498,5 +530,53 @@ mod tests {
             &MatchFormatPlan::uniform(MatchFormat::Bo1),
         );
         assert!(matches!(result, Err(DomainError::InsufficientParticipants)));
+    }
+
+    #[test]
+    fn test_swiss_total_rounds_defaults_to_ceil_log2() {
+        assert_eq!(swiss_total_rounds(2, None), 1);
+        assert_eq!(swiss_total_rounds(3, None), 2);
+        assert_eq!(swiss_total_rounds(4, None), 2);
+        assert_eq!(swiss_total_rounds(5, None), 3);
+        assert_eq!(swiss_total_rounds(8, None), 3);
+        assert_eq!(swiss_total_rounds(9, None), 4);
+        assert_eq!(swiss_total_rounds(16, None), 4);
+    }
+
+    #[test]
+    fn test_swiss_total_rounds_clamps_to_rematch_free_limit() {
+        // Even field: n - 1 rounds is a full round robin.
+        assert_eq!(swiss_total_rounds(4, Some(3)), 3);
+        assert_eq!(swiss_total_rounds(4, Some(10)), 3);
+        // Group of two: one possible pairing.
+        assert_eq!(swiss_total_rounds(2, Some(5)), 1);
+        // Odd field: n rounds, each player sitting out once.
+        assert_eq!(swiss_total_rounds(3, Some(3)), 3);
+        assert_eq!(swiss_total_rounds(3, Some(7)), 3);
+        assert_eq!(swiss_total_rounds(5, Some(2)), 2);
+    }
+
+    #[test]
+    fn test_parse_swiss_max_rounds() {
+        assert_eq!(
+            parse_swiss_max_rounds(&serde_json::json!({})).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_swiss_max_rounds(&serde_json::json!({ "max_rounds": null })).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_swiss_max_rounds(&serde_json::json!({ "max_rounds": 5 })).unwrap(),
+            Some(5)
+        );
+        for bad in [
+            serde_json::json!({ "max_rounds": 0 }),
+            serde_json::json!({ "max_rounds": -1 }),
+            serde_json::json!({ "max_rounds": 2.5 }),
+            serde_json::json!({ "max_rounds": "3" }),
+        ] {
+            assert!(parse_swiss_max_rounds(&bad).is_err(), "{bad}");
+        }
     }
 }

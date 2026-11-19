@@ -27,6 +27,9 @@ pub struct GroupsConfig {
     pub playoff_final_format: Option<MatchFormat>,
     /// Best-of override for the playoff grand final (double elimination).
     pub playoff_grand_final_format: Option<MatchFormat>,
+    /// Rounds each Swiss group plays (`max_rounds`, same key as standalone
+    /// Swiss). `None` = `ceil(log2(group size))`. Ignored for round robin.
+    pub swiss_max_rounds: Option<u32>,
 }
 
 /// Format for the group stage brackets.
@@ -53,6 +56,7 @@ impl GroupsConfig {
     /// - `advance_per_group`: 2
     /// - `group_format`: `"round_robin"`
     /// - `playoff_format`: `"single_elimination"`
+    /// - `max_rounds` (Swiss groups only): `ceil(log2(group size))`
     pub fn from_format_settings(
         settings: &serde_json::Value,
         participant_count: usize,
@@ -123,6 +127,10 @@ impl GroupsConfig {
             playoff_match_format: parse_format("playoff_match_format")?,
             playoff_final_format: parse_format("playoff_final_format")?,
             playoff_grand_final_format: parse_format("playoff_grand_final_format")?,
+            swiss_max_rounds: match group_format {
+                GroupStageFormat::Swiss => super::swiss::parse_swiss_max_rounds(settings)?,
+                GroupStageFormat::RoundRobin => None,
+            },
         })
     }
 
@@ -438,6 +446,35 @@ mod tests {
         let config = GroupsConfig::from_format_settings(&settings, 12).unwrap();
         assert_eq!(config.group_format, GroupStageFormat::Swiss);
         assert_eq!(config.playoff_format, PlayoffFormat::DoubleElimination);
+        assert_eq!(config.swiss_max_rounds, None);
+    }
+
+    #[test]
+    fn test_groups_config_swiss_max_rounds() {
+        let swiss = |max_rounds: serde_json::Value| {
+            GroupsConfig::from_format_settings(
+                &serde_json::json!({
+                    "group_count": 2,
+                    "group_format": "swiss",
+                    "max_rounds": max_rounds
+                }),
+                8,
+            )
+        };
+        assert_eq!(
+            swiss(serde_json::json!(3)).unwrap().swiss_max_rounds,
+            Some(3)
+        );
+        assert!(swiss(serde_json::json!(0)).is_err());
+        assert!(swiss(serde_json::json!("three")).is_err());
+
+        // Round-robin groups ignore the key entirely.
+        let rr = GroupsConfig::from_format_settings(
+            &serde_json::json!({ "group_count": 2, "max_rounds": 0 }),
+            8,
+        )
+        .unwrap();
+        assert_eq!(rr.swiss_max_rounds, None);
     }
 
     #[test]

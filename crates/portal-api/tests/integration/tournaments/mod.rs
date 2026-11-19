@@ -10,6 +10,7 @@ mod matches;
 mod registration;
 mod scheduling;
 mod seeding;
+mod swiss_groups;
 
 use crate::common::TestApp;
 use axum::http::StatusCode;

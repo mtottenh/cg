@@ -1441,12 +1441,12 @@ where
     ) -> Result<(), DomainError> {
         let n = seeded_participants.len();
 
-        // Determine max rounds from format_settings or default to ceil(log2(N))
-        let max_rounds = tournament
-            .format_settings
-            .get("max_rounds")
-            .and_then(serde_json::Value::as_i64)
-            .map_or_else(|| (n as f64).log2().ceil() as i32, |v| v as i32);
+        // Rounds from format_settings `max_rounds` (default ceil(log2(N))),
+        // clamped to what can be paired without rematches.
+        let max_rounds = super::bracket_generator::swiss_total_rounds(
+            n,
+            super::bracket_generator::parse_swiss_max_rounds(&tournament.format_settings)?,
+        );
 
         // Create bracket entry
         let bracket = self
@@ -1679,9 +1679,13 @@ where
                     .await?;
                 }
                 GroupStageFormat::Swiss => {
-                    // Generate only R1 for Swiss groups
-                    let n = group.len();
-                    let max_rounds = (n as f64).log2().ceil() as i32;
+                    // Generate only R1 for Swiss groups. Later rounds come
+                    // from generate_next_swiss_round, up to `max_rounds`
+                    // (per group: groups may differ in size by one).
+                    let max_rounds = super::bracket_generator::swiss_total_rounds(
+                        group.len(),
+                        config.swiss_max_rounds,
+                    );
 
                     let (generated, bye_participant) = BracketGenerator::swiss_initial_round(
                         id,
@@ -1751,8 +1755,16 @@ where
 
     /// Generate the next Swiss round for a tournament.
     ///
-    /// Validates that all current-round matches are complete, then generates
-    /// the next round of Swiss pairings based on current standings.
+    /// Advances every Swiss bracket in an active stage whose current round
+    /// is fully played and which has rounds left — the single bracket of a
+    /// standalone Swiss tournament, or each Swiss group of a Groups +
+    /// Playoffs tournament (groups advance independently, so a group that
+    /// finished its round need not wait for the others). Returns the new
+    /// matches of every bracket that advanced.
+    ///
+    /// Errors only when no bracket could advance: with "Not all
+    /// current-round matches are complete" if any bracket is still mid-round,
+    /// else "Maximum number of rounds reached".
     pub async fn generate_next_swiss_round(
         &self,
         tournament_id: TournamentId,
@@ -1773,40 +1785,88 @@ where
             ));
         }
 
-        // Get brackets
-        let brackets = self.bracket_repo.list_by_tournament(tournament_id).await?;
-        let bracket = brackets
+        // Swiss brackets of the active stage(s). Once a Swiss group stage
+        // hands over to the playoffs it is Completed and nothing in it may
+        // grow another round.
+        let active_stages: std::collections::HashSet<_> = self
+            .stage_repo
+            .list_by_tournament(tournament_id)
+            .await?
             .into_iter()
-            .find(|b| b.bracket_type == BracketType::Swiss)
-            .ok_or_else(|| DomainError::InvalidState("No Swiss bracket found".to_string()))?;
-
-        // Verify all current-round matches are complete
-        let all_matches = self.match_repo.list_by_bracket(bracket.id).await?;
-        let current_round_matches: Vec<&TournamentMatch> = all_matches
-            .iter()
-            .filter(|m| m.round == bracket.current_round)
+            .filter(|s| s.status == StageStatus::Active)
+            .map(|s| s.id)
             .collect();
-
-        if current_round_matches.is_empty() {
+        let mut brackets: Vec<TournamentBracket> = self
+            .bracket_repo
+            .list_by_tournament(tournament_id)
+            .await?
+            .into_iter()
+            .filter(|b| b.bracket_type == BracketType::Swiss)
+            .collect();
+        if brackets.is_empty() {
             return Err(DomainError::InvalidState(
-                "No matches found for current round".to_string(),
+                "No Swiss bracket found".to_string(),
             ));
         }
-
-        let all_complete = current_round_matches.iter().all(|m| m.is_complete());
-        if !all_complete {
+        brackets.retain(|b| active_stages.contains(&b.stage_id));
+        if brackets.is_empty() {
             return Err(DomainError::InvalidState(
-                "Not all current-round matches are complete".to_string(),
+                "Swiss stage is already complete".to_string(),
             ));
         }
+        brackets.sort_by_key(|b| b.group_number.unwrap_or(0));
 
-        // Check max rounds
+        let mut new_matches = Vec::new();
+        let mut blocked: Option<DomainError> = None;
+        for bracket in brackets {
+            let all_matches = self.match_repo.list_by_bracket(bracket.id).await?;
+            let current_round_matches: Vec<&TournamentMatch> = all_matches
+                .iter()
+                .filter(|m| m.round == bracket.current_round)
+                .collect();
+
+            let skip = if current_round_matches.is_empty() {
+                Some("No matches found for current round")
+            } else if !current_round_matches.iter().all(|m| m.is_complete()) {
+                Some("Not all current-round matches are complete")
+            } else if bracket.current_round >= bracket.total_rounds {
+                Some("Maximum number of rounds reached")
+            } else {
+                None
+            };
+            if let Some(reason) = skip {
+                // A mid-round bracket is the more actionable reason to
+                // report than a finished one.
+                if blocked.is_none() || !reason.starts_with("Maximum") {
+                    blocked = Some(DomainError::InvalidState(reason.to_string()));
+                }
+                continue;
+            }
+
+            new_matches.extend(
+                self.generate_swiss_round_for_bracket(&tournament, &bracket, &all_matches)
+                    .await?,
+            );
+        }
+
+        if new_matches.is_empty() {
+            return Err(blocked.unwrap_or_else(|| {
+                DomainError::InvalidState("No Swiss round to generate".to_string())
+            }));
+        }
+        Ok(new_matches)
+    }
+
+    /// Pair and persist round `current_round + 1` of one Swiss bracket whose
+    /// current round is complete.
+    async fn generate_swiss_round_for_bracket(
+        &self,
+        tournament: &Tournament,
+        bracket: &TournamentBracket,
+        all_matches: &[TournamentMatch],
+    ) -> Result<Vec<TournamentMatch>, DomainError> {
+        let tournament_id = tournament.id;
         let next_round = bracket.current_round + 1;
-        if next_round > bracket.total_rounds {
-            return Err(DomainError::InvalidState(
-                "Maximum number of rounds reached".to_string(),
-            ));
-        }
 
         // Get current standings
         let standings = self.standings_repo.list_by_bracket(bracket.id).await?;
@@ -1882,7 +1942,7 @@ where
             .ok_or_else(|| {
                 DomainError::Internal(format!("Stage {} not found", bracket.stage_id))
             })?;
-        let format_plan = Self::stage_format_plan(&tournament, &stage)?;
+        let format_plan = Self::stage_format_plan(tournament, &stage)?;
 
         // Generate next round
         let (generated, bye_participant) = BracketGenerator::swiss_next_round(

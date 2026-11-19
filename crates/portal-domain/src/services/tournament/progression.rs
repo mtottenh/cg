@@ -484,15 +484,18 @@ where
 
         let matches = self.match_repo.list_by_bracket(bracket_id).await?;
 
-        // Bracket is complete if all matches are completed or cancelled
-        let all_done = matches.iter().all(|m| {
-            matches!(
-                m.status,
-                TournamentMatchStatus::Completed | TournamentMatchStatus::Cancelled
-            )
-        });
+        // Swiss round generation claims the round (bumps current_round)
+        // before inserting its matches; in that window the final round has
+        // no rows yet and must not read as "every match done".
+        if bracket.bracket_type == BracketType::Swiss
+            && !matches.iter().any(|m| m.round == bracket.current_round)
+        {
+            return Ok(false);
+        }
 
-        Ok(all_done)
+        // Bracket is complete once every match is settled (played or
+        // called off) — the same rule Swiss round generation uses.
+        Ok(matches.iter().all(TournamentMatch::is_settled))
     }
 
     /// Check if a tournament is complete.

@@ -713,6 +713,17 @@ impl TournamentMatch {
         matches!(self.status, TournamentMatchStatus::Completed)
     }
 
+    /// Whether the match no longer holds up its round or bracket: it was
+    /// played to a result ([`Self::is_complete`]) or called off
+    /// (`Cancelled` — a double forfeit / double DQ, which produces no
+    /// result and no standings points). Bracket completion and Swiss round
+    /// generation both use this, so they cannot disagree about when a round
+    /// is over.
+    #[must_use]
+    pub const fn is_settled(&self) -> bool {
+        self.is_complete() || matches!(self.status, TournamentMatchStatus::Cancelled)
+    }
+
     /// Check if the match is in a terminal state.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {

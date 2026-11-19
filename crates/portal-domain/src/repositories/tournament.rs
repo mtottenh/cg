@@ -365,6 +365,19 @@ pub trait TournamentBracketRepository: Send + Sync {
         id: TournamentBracketId,
     ) -> Result<TournamentBracket, DomainError>;
 
+    /// Compare-and-set `current_round` from `expected` to `next`.
+    ///
+    /// Returns `false` (and changes nothing) when the bracket's
+    /// `current_round` is no longer `expected` — another writer moved it
+    /// first. Used as the claim for generating a Swiss round, so two
+    /// concurrent requests cannot both pair the same round.
+    async fn compare_and_set_current_round(
+        &self,
+        id: TournamentBracketId,
+        expected: i32,
+        next: i32,
+    ) -> Result<bool, DomainError>;
+
     /// List all brackets for a stage.
     async fn list_by_stage(
         &self,

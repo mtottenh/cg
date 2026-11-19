@@ -126,7 +126,7 @@ async fn stage_statuses(app: &TestApp, tournament_id: &str) -> Vec<String> {
         .collect()
 }
 
-/// Play every not-yet-completed match in `bracket_ids` (participant 1 wins).
+/// Play every unsettled match in `bracket_ids` (participant 1 wins).
 async fn play_open_matches(
     app: &TestApp,
     tournament_id: &str,
@@ -135,7 +135,10 @@ async fn play_open_matches(
 ) -> usize {
     let mut played = 0;
     for m in list_matches(app, tournament_id).await {
-        if m["status"] == "completed" || !bracket_ids.contains(m["bracket_id"].as_str().unwrap()) {
+        if m["status"] == "completed"
+            || m["status"] == "cancelled"
+            || !bracket_ids.contains(m["bracket_id"].as_str().unwrap())
+        {
             continue;
         }
         let p1 = m["participant1_registration_id"].as_str().unwrap();
@@ -306,6 +309,226 @@ async fn test_swiss_groups_advance_independently() {
         .collect();
     assert_eq!(after[sorted[0]["id"].as_str().unwrap()], 1);
     assert_eq!(after[sorted[1]["id"].as_str().unwrap()], 2);
+
+    // Group A catches up: it finishes round 1 while B is mid round 2, so the
+    // next call advances A alone.
+    let group_a: HashSet<String> = [sorted[0]["id"].as_str().unwrap().to_string()].into();
+    assert_eq!(
+        play_open_matches(&app, &tournament_id, &group_a, &tokens).await,
+        2
+    );
+    let response = generate_next_round(&app, &tournament_id).await;
+    response.assert_status(StatusCode::OK);
+    let new_matches = response.json::<serde_json::Value>()["data"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(new_matches.len(), 2);
+    assert!(
+        new_matches
+            .iter()
+            .all(|m| m["bracket_id"] == sorted[0]["id"] && m["round"] == 2)
+    );
+    for b in list_brackets(&app, &tournament_id).await {
+        assert_eq!(b["current_round"], 2, "{} is on round 2", b["name"]);
+    }
+
+    // From here the groups are level: round 2 everywhere, then round 3 for
+    // both in one call, and the final round hands over to the playoffs.
+    let groups = swiss_bracket_ids(&brackets);
+    assert_eq!(
+        play_open_matches(&app, &tournament_id, &groups, &tokens).await,
+        4
+    );
+    let response = generate_next_round(&app, &tournament_id).await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(
+        response.json::<serde_json::Value>()["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        stage_statuses(&app, &tournament_id).await,
+        vec!["active", "pending"]
+    );
+    assert_eq!(
+        play_open_matches(&app, &tournament_id, &groups, &tokens).await,
+        4
+    );
+    assert_eq!(
+        stage_statuses(&app, &tournament_id).await,
+        vec!["completed", "active"]
+    );
+}
+
+/// A double-forfeited (Cancelled) match settles its round just like a
+/// played one. Requiring `Completed` stalled the group — and with it the
+/// whole group stage — forever.
+#[tokio::test]
+async fn test_swiss_group_with_double_forfeit_still_advances() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament(
+        &app,
+        "swg-double-forfeit",
+        "groups_and_playoffs",
+        json!({
+            "group_count": 2,
+            "advance_per_group": 2,
+            "group_format": "swiss",
+            "playoff_format": "single_elimination"
+        }),
+    )
+    .await;
+    let tokens = register_and_start(&app, &tournament_id, 8, "dfx").await;
+
+    let mut brackets = list_brackets(&app, &tournament_id).await;
+    brackets.sort_by_key(|b| b["group_number"].as_i64());
+    let group_b_id = brackets[1]["id"].as_str().unwrap().to_string();
+
+    // Double-forfeit one round-1 match in group B.
+    let cancelled = list_matches(&app, &tournament_id)
+        .await
+        .into_iter()
+        .find(|m| m["bracket_id"] == group_b_id.as_str())
+        .unwrap();
+    let cancelled_id = cancelled["id"].as_str().unwrap();
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{cancelled_id}/double-forfeit"),
+        &json!({ "reason": "Neither side showed up for the match" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let cancelled_pair: HashSet<String> = [
+        cancelled["participant1_registration_id"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+        cancelled["participant2_registration_id"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    ]
+    .into();
+
+    // Play the rest of round 1; both groups advance in one call.
+    let groups = swiss_bracket_ids(&brackets);
+    assert_eq!(
+        play_open_matches(&app, &tournament_id, &groups, &tokens).await,
+        3
+    );
+    let response = generate_next_round(&app, &tournament_id).await;
+    response.assert_status(StatusCode::OK);
+    let new_matches = response.json::<serde_json::Value>()["data"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(new_matches.len(), 4, "both groups get round 2");
+
+    // The cancelled pair carries no result and no points, and both are
+    // still paired in round 2 (just not with each other).
+    let standings: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/brackets/{group_b_id}/standings"
+        ))
+        .await
+        .json();
+    for row in standings["data"].as_array().unwrap() {
+        if cancelled_pair.contains(row["registration_id"].as_str().unwrap()) {
+            assert_eq!(row["points"], 0, "{row}");
+            assert_eq!(row["matches_played"], 0, "{row}");
+        }
+    }
+    let round2_b: Vec<&serde_json::Value> = new_matches
+        .iter()
+        .filter(|m| m["bracket_id"] == group_b_id.as_str())
+        .collect();
+    let paired: HashSet<&str> = round2_b
+        .iter()
+        .flat_map(|m| {
+            [
+                m["participant1_registration_id"].as_str().unwrap(),
+                m["participant2_registration_id"].as_str().unwrap(),
+            ]
+        })
+        .collect();
+    assert_eq!(paired.len(), 4, "all four of group B play round 2");
+    for m in &round2_b {
+        let pair: HashSet<String> = [
+            m["participant1_registration_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            m["participant2_registration_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        ]
+        .into();
+        assert_ne!(
+            pair, cancelled_pair,
+            "the cancelled pairing is not replayed"
+        );
+    }
+
+    // The final round completes the group stage.
+    assert_eq!(
+        play_open_matches(&app, &tournament_id, &groups, &tokens).await,
+        4
+    );
+    assert_eq!(
+        stage_statuses(&app, &tournament_id).await,
+        vec!["completed", "active"]
+    );
+}
+
+/// Two simultaneous generate calls pair the round once: the compare-and-set
+/// claim on `current_round` lets exactly one through, and the other gets a
+/// documented 409 (or 400 if it arrives after the round already exists).
+#[tokio::test]
+async fn test_concurrent_generate_next_round_pairs_once() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament(&app, "sw-concurrent", "swiss", json!({})).await;
+    let tokens = register_and_start(&app, &tournament_id, 8, "conc").await;
+    let ids = swiss_bracket_ids(&list_brackets(&app, &tournament_id).await);
+    assert_eq!(
+        play_open_matches(&app, &tournament_id, &ids, &tokens).await,
+        4
+    );
+
+    let (a, b) = tokio::join!(
+        generate_next_round(&app, &tournament_id),
+        generate_next_round(&app, &tournament_id)
+    );
+    let statuses = [a.status, b.status];
+    assert_eq!(
+        statuses.iter().filter(|s| **s == StatusCode::OK).count(),
+        1,
+        "exactly one call generates the round: {statuses:?}"
+    );
+    for s in statuses {
+        assert!(
+            [
+                StatusCode::OK,
+                StatusCode::CONFLICT,
+                StatusCode::BAD_REQUEST
+            ]
+            .contains(&s),
+            "{s}"
+        );
+    }
+
+    let round2 = list_matches(&app, &tournament_id)
+        .await
+        .into_iter()
+        .filter(|m| m["round"] == 2)
+        .count();
+    assert_eq!(round2, 4, "round 2 exists exactly once");
+    assert_eq!(
+        list_brackets(&app, &tournament_id).await[0]["current_round"],
+        2
+    );
 }
 
 /// `max_rounds` applies to Swiss groups, clamped to the rematch-free limit

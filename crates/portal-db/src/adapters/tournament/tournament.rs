@@ -5,6 +5,7 @@ use chrono::Utc;
 
 use crate::DbPool;
 use crate::entities::tournament::TournamentRow;
+use crate::error::RepositoryError;
 use portal_core::types::TournamentStatus;
 use portal_core::{DomainError, GameId, LeagueId, LeagueSeasonId, TournamentId, UserId};
 use portal_domain::entities::tournament::Tournament;
@@ -32,7 +33,7 @@ impl TournamentRepository for PgTournamentRepository {
             .bind(id.as_uuid())
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+            .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(row.map(Tournament::from))
     }
@@ -42,7 +43,7 @@ impl TournamentRepository for PgTournamentRepository {
             .bind(slug)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+            .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(row.map(Tournament::from))
     }
@@ -103,7 +104,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(now)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(Tournament::from(row))
     }
@@ -167,7 +168,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(now)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(Tournament::from(row))
     }
@@ -191,7 +192,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(now)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(Tournament::from(row))
     }
@@ -215,7 +216,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(now)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(Tournament::from(row))
     }
@@ -239,7 +240,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(now)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(Tournament::from(row))
     }
@@ -261,7 +262,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(now)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(row.map(Tournament::from))
     }
@@ -280,7 +281,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(now)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(Tournament::from(row))
     }
@@ -299,7 +300,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(now)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(Tournament::from(row))
     }
@@ -318,7 +319,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(now)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(Tournament::from(row))
     }
@@ -367,7 +368,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(offset)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         // Get count with same filters
         let count: (i64,) = sqlx::query_as(
@@ -399,7 +400,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(filters.include_archived)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok((rows.into_iter().map(Tournament::from).collect(), count.0))
     }
@@ -423,7 +424,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(offset)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         let count: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM tournaments WHERE game_id = $1 AND kind = 'standard'",
@@ -431,7 +432,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(game_id.as_uuid())
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok((rows.into_iter().map(Tournament::from).collect(), count.0))
     }
@@ -455,13 +456,13 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(offset)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tournaments WHERE league_id = $1")
             .bind(league_id.as_uuid())
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+            .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok((rows.into_iter().map(Tournament::from).collect(), count.0))
     }
@@ -485,14 +486,16 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(offset)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         let count: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM tournaments WHERE created_by = $1")
                 .bind(user_id.as_uuid())
                 .fetch_one(&self.pool)
                 .await
-                .map_err(|e| DomainError::Internal(e.to_string()))?;
+                .map_err(|e| {
+                    DomainError::from(RepositoryError::from_sqlx_error(e, "tournament"))
+                })?;
 
         Ok((rows.into_iter().map(Tournament::from).collect(), count.0))
     }
@@ -502,7 +505,7 @@ impl TournamentRepository for PgTournamentRepository {
             .bind(slug)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+            .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(count.0 > 0)
     }
@@ -517,7 +520,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(id.as_uuid())
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(count.0)
     }
@@ -527,7 +530,7 @@ impl TournamentRepository for PgTournamentRepository {
             .bind(id.as_uuid())
             .execute(&self.pool)
             .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+            .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
         Ok(())
     }
@@ -550,7 +553,7 @@ impl TournamentRepository for PgTournamentRepository {
             .bind(league.as_uuid())
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+            .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?;
 
             if !belongs {
                 return Err(DomainError::InvalidState(
@@ -574,7 +577,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(season_id.map(|s| s.as_uuid()))
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?
         .ok_or(DomainError::TournamentNotFound(id))?;
 
         Ok(Tournament::from(row))
@@ -599,7 +602,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(archived_by.map(|u| u.as_uuid()))
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .map_err(|e| DomainError::from(RepositoryError::from_sqlx_error(e, "tournament")))?
         .ok_or(DomainError::TournamentNotFound(id))?;
 
         Ok(Tournament::from(row))

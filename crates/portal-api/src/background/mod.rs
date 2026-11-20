@@ -998,7 +998,13 @@ async fn process_check_in_timeout(
     };
 
     match result {
-        Ok(()) => info!(%match_id, "lifecycle: check-in timeout processed"),
+        Ok(()) => {
+            info!(%match_id, "lifecycle: check-in timeout processed");
+            // The no-show is a decided result (a double no-show a cancelled
+            // match): settle it so the walkover winner advances / scores and
+            // a group whose last match this was moves on to the playoffs.
+            crate::result_settlement::settle(&state.match_completion_saga, match_id).await;
+        }
         Err(e) => {
             error!(%match_id, error = %e, "lifecycle: check-in timeout processing failed");
             summary.errors += 1;

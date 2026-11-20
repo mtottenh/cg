@@ -241,6 +241,9 @@ pub async fn forfeit_match(
         .match_lifecycle_service
         .forfeit(match_id, registration_id, auth.user_id)
         .await?;
+    // A forfeit is a decided result: advance the winner / recompute the
+    // standings / seed the next stage exactly as a confirmed result would.
+    crate::result_settlement::settle(&state.match_completion_saga, match_id).await;
 
     Ok(Json(DataResponse::new(
         TournamentMatchResponse::from(match_),

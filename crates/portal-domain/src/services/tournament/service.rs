@@ -978,6 +978,18 @@ where
             return Err(DomainError::InsufficientParticipants);
         }
 
+        // Validate the format settings against who is actually starting
+        // BEFORE claiming: an impossible group shape or an unparseable
+        // round-format override used to surface only inside generation,
+        // after the claim had committed `in_progress` — leaving a tournament
+        // with no brackets that every retry treated as already started.
+        super::format_validation::validate_for_start(
+            tournament.format,
+            &tournament.format_settings,
+            tournament.default_match_format,
+            participants.len(),
+        )?;
+
         // Atomically claim the start. Only one caller can win the transition
         // scheduled/registration -> in_progress; a concurrent second start (or
         // a retried one) gets None and must NOT build a second bracket set.
@@ -995,6 +1007,74 @@ where
             return Ok(claimed);
         }
 
+        // Generation failing after the claim must not strand the tournament:
+        // undo what this attempt built and release the claim, so the start
+        // can be retried (the recovery guard above would otherwise treat any
+        // half-built bracket as "already started").
+        let stages_before: Vec<_> = self
+            .stage_repo
+            .list_by_tournament(id)
+            .await?
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        match self.generate_start(id, &tournament, participants).await {
+            Ok(started) => Ok(started),
+            Err(e) => {
+                tracing::warn!(
+                    tournament_id = %id,
+                    error = %e,
+                    "Bracket generation failed after the start claim; rolling back"
+                );
+                self.rollback_failed_start(id, tournament.status, &stages_before)
+                    .await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Undo a start whose generation failed: drop the brackets (matches and
+    /// standings cascade), drop the stages this attempt created, and put the
+    /// tournament back in its pre-start status. Best-effort — a failure here
+    /// is logged; the original generation error is what the caller sees.
+    async fn rollback_failed_start(
+        &self,
+        id: TournamentId,
+        previous_status: TournamentStatus,
+        stages_before: &[portal_core::TournamentStageId],
+    ) {
+        let result: Result<(), DomainError> = async {
+            for bracket in self.bracket_repo.list_by_tournament(id).await? {
+                self.bracket_repo.delete(bracket.id).await?;
+            }
+            for stage in self.stage_repo.list_by_tournament(id).await? {
+                if stages_before.contains(&stage.id) {
+                    self.stage_repo
+                        .update_status(stage.id, StageStatus::Pending)
+                        .await?;
+                } else {
+                    self.stage_repo.delete(stage.id).await?;
+                }
+            }
+            self.tournament_repo
+                .update_status(id, previous_status)
+                .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            tracing::warn!(tournament_id = %id, error = %e, "Rolling back a failed start failed");
+        }
+    }
+
+    /// Build the brackets for a claimed start and mark it started.
+    async fn generate_start(
+        &self,
+        id: TournamentId,
+        tournament: &Tournament,
+        participants: Vec<crate::entities::tournament::TournamentRegistration>,
+    ) -> Result<Tournament, DomainError> {
+        let tournament = tournament.clone();
         let seeded_participants = BracketGenerator::prepare_participants(participants);
 
         // Groups + Playoffs creates its own stages, so handle separately

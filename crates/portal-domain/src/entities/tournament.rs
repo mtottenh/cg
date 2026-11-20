@@ -707,10 +707,14 @@ impl TournamentMatch {
         matches!(self.status, TournamentMatchStatus::InProgress)
     }
 
-    /// Check if the match is complete.
+    /// Check if the match is complete — i.e. carries a decided result.
+    ///
+    /// A forfeit is a decided result (the opponent takes the walkover), so it
+    /// counts: a round that ended in a no-show must not block the next Swiss
+    /// round or be skipped by a standings replay.
     #[must_use]
     pub const fn is_complete(&self) -> bool {
-        matches!(self.status, TournamentMatchStatus::Completed)
+        self.status.is_decided()
     }
 
     /// Whether the match no longer holds up its round or bracket: it was

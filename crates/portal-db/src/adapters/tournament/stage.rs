@@ -142,6 +142,53 @@ impl TournamentStageRepository for PgTournamentStageRepository {
         Ok(TournamentStage::from(row))
     }
 
+    async fn compare_and_set_status(
+        &self,
+        id: TournamentStageId,
+        from: Vec<StageStatus>,
+        to: StageStatus,
+    ) -> Result<Option<TournamentStage>, DomainError> {
+        let from: Vec<String> = from.iter().map(ToString::to_string).collect();
+        let row = sqlx::query_as::<_, TournamentStageRow>(
+            r"
+            UPDATE tournament_stages SET status = $3, updated_at = $4
+            WHERE id = $1 AND status = ANY($2)
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(&from)
+        .bind(to.to_string())
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(row.map(TournamentStage::from))
+    }
+
+    async fn reclaim_stale_completed(
+        &self,
+        id: TournamentStageId,
+        stale_before: chrono::DateTime<Utc>,
+    ) -> Result<Option<TournamentStage>, DomainError> {
+        let row = sqlx::query_as::<_, TournamentStageRow>(
+            r"
+            UPDATE tournament_stages SET updated_at = $3
+            WHERE id = $1 AND status = 'completed' AND updated_at < $2
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(stale_before)
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(row.map(TournamentStage::from))
+    }
+
     async fn transition_stages(
         &self,
         from_stage_id: TournamentStageId,

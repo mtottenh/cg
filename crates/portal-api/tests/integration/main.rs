@@ -36,6 +36,7 @@ mod result_review;
 mod results;
 mod roles;
 mod roster_release;
+mod round_robin_integrity;
 mod saga_lifecycle;
 mod server_console;
 mod standings_idempotency;

@@ -422,6 +422,28 @@ impl TournamentMatchStatus {
         matches!(self, Self::Completed | Self::Cancelled | Self::Forfeit)
     }
 
+    /// Check if the match carries a decided result — played to completion or
+    /// walked over by a forfeit. Both feed standings, bracket completion and
+    /// stage advancement; `Cancelled` (a bye / double forfeit) is terminal but
+    /// decides nothing.
+    #[must_use]
+    pub const fn is_decided(&self) -> bool {
+        matches!(self, Self::Completed | Self::Forfeit)
+    }
+
+    /// Check if an *administrative or system* forfeit (no-show, withdrawal,
+    /// disqualification, admin forfeit) may act on a match in this status.
+    ///
+    /// Wider than [`Self::can_forfeit`] by `Ready`: every round-robin match is
+    /// generated `Ready` and stays there until someone schedules it, so a
+    /// participant who withdraws from a self-scheduled event never has a match
+    /// in a `can_forfeit` status. `Pending` stays excluded — the opponent is not
+    /// known yet, so there is nobody to award the walkover to.
+    #[must_use]
+    pub const fn can_forfeit_administratively(&self) -> bool {
+        matches!(self, Self::Ready) || self.can_forfeit()
+    }
+
     /// Check if the match can be started.
     #[must_use]
     pub const fn can_start(&self) -> bool {

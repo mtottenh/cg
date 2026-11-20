@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use portal_core::types::{TournamentMatchStatus, TournamentRegistrationStatus};
+use portal_core::types::{TournamentMatchStatus, TournamentRegistrationStatus, WithdrawalPolicy};
 use portal_core::{DomainError, TournamentId, TournamentMatchId, TournamentRegistrationId, UserId};
 use tracing::{info, instrument, warn};
 
@@ -81,9 +81,18 @@ where
             })
             .await?;
 
-        // Update match with forfeit result
+        // Update match with forfeit result. The walkover is recorded with
+        // its series score (wins_required–0) so the derived standings credit
+        // it exactly like a played result.
+        let (winner_score, loser_score) = forfeit_type.default_score(match_.match_format);
         self.match_repo
-            .forfeit(match_id, winner_registration_id, forfeiting_registration_id)
+            .forfeit(
+                match_id,
+                winner_registration_id,
+                forfeiting_registration_id,
+                winner_score,
+                loser_score,
+            )
             .await?;
 
         info!(
@@ -98,7 +107,10 @@ where
             match_id,
             forfeit_record,
             winner_registration_id: Some(winner_registration_id),
-            progression_triggered: false, // Will be true when progression service is integrated
+            // The forfeit is recorded; bracket progression / standings /
+            // stage advancement are run by the caller through the
+            // match-completion saga (`settle_result`), which flips this.
+            progression_triggered: false,
         })
     }
 
@@ -198,7 +210,19 @@ where
         })
     }
 
-    /// Withdraw a team from the tournament (forfeits all remaining matches).
+    /// Withdraw a team from the tournament.
+    ///
+    /// The tournament's `withdrawal_policy` decides what happens to the
+    /// matches the team has not played:
+    ///
+    /// - `Forfeit` (default): every unplayed match it is seated in becomes a
+    ///   walkover for the opponent (see [`Self::forfeit_remaining_matches`]).
+    /// - `AdminDecision`: nothing is forfeited automatically — the
+    ///   registration is marked withdrawn and its matches are left for an
+    ///   admin to forfeit, cancel or reassign.
+    /// - `Reseeding` / `WaitlistPromotion`: there is no mid-event reseed or
+    ///   waitlist substitution, so once matches exist these fall back to
+    ///   `Forfeit` — the only policy that leaves the bracket decidable.
     #[instrument(skip(self))]
     pub async fn withdraw_from_tournament(
         &self,
@@ -206,6 +230,7 @@ where
         registration_id: TournamentRegistrationId,
         reason: Option<String>,
         withdrawn_by: UserId,
+        policy: WithdrawalPolicy,
     ) -> Result<Vec<ForfeitResult>, DomainError> {
         // Get the registration
         let registration = self
@@ -238,32 +263,17 @@ where
             .update_status(registration_id, TournamentRegistrationStatus::Withdrawn)
             .await?;
 
-        // Find all pending matches for this registration
-        let pending_matches = self.find_pending_matches(registration_id).await?;
-
-        // Forfeit each pending match
-        let mut results = Vec::new();
-        for match_ in pending_matches {
-            match self
-                .process_forfeit(
-                    match_.id,
-                    registration_id,
-                    ForfeitType::Withdrawal,
-                    reason.clone(),
-                    ForfeitTrigger::User(withdrawn_by),
-                )
-                .await
-            {
-                Ok(result) => results.push(result),
-                Err(e) => {
-                    warn!(
-                        match_id = %match_.id,
-                        error = %e,
-                        "Failed to process withdrawal forfeit for match"
-                    );
-                }
-            }
-        }
+        let results = if policy == WithdrawalPolicy::AdminDecision {
+            Vec::new()
+        } else {
+            self.forfeit_remaining_matches(
+                registration_id,
+                ForfeitType::Withdrawal,
+                reason.clone(),
+                ForfeitTrigger::User(withdrawn_by),
+            )
+            .await?
+        };
 
         info!(
             tournament_id = %tournament_id,
@@ -303,35 +313,17 @@ where
             .update_status(registration_id, TournamentRegistrationStatus::Disqualified)
             .await?;
 
-        // Find all pending matches for this registration
-        let pending_matches = self.find_pending_matches(registration_id).await?;
-
-        // Forfeit each pending match
-        let mut results = Vec::new();
-        for match_ in pending_matches {
-            match self
-                .process_forfeit(
-                    match_.id,
-                    registration_id,
-                    ForfeitType::Disqualification,
-                    Some(reason.clone()),
-                    ForfeitTrigger::Admin {
-                        user_id: disqualified_by,
-                        reason: reason.clone(),
-                    },
-                )
-                .await
-            {
-                Ok(result) => results.push(result),
-                Err(e) => {
-                    warn!(
-                        match_id = %match_.id,
-                        error = %e,
-                        "Failed to process disqualification forfeit for match"
-                    );
-                }
-            }
-        }
+        let results = self
+            .forfeit_remaining_matches(
+                registration_id,
+                ForfeitType::Disqualification,
+                Some(reason.clone()),
+                ForfeitTrigger::Admin {
+                    user_id: disqualified_by,
+                    reason: reason.clone(),
+                },
+            )
+            .await?;
 
         info!(
             tournament_id = %tournament_id,
@@ -340,6 +332,59 @@ where
             forfeited_matches = results.len(),
             "Processed disqualification"
         );
+
+        Ok(results)
+    }
+
+    /// Forfeit every match a registration still has to play.
+    ///
+    /// "Still has to play" is every match it is seated in whose status admits
+    /// an administrative forfeit — `Ready`, `Scheduled`, `CheckingIn`,
+    /// `PickBan`, `InProgress`, `AwaitingResult`. That includes `Ready`, the
+    /// status every round-robin match is generated in (the old filter picked
+    /// `Ready` and `Pending` and `process_forfeit` then refused both, so a
+    /// round-robin withdrawal forfeited nothing). Left alone:
+    ///
+    /// - `Pending` — the opponent is not known yet, there is nobody to award
+    ///   the walkover to;
+    /// - `Disputed` — a result is already on the table; the dispute decides it;
+    /// - anything terminal.
+    ///
+    /// Used by withdrawal and both disqualification endpoints. A failure on
+    /// one match is logged and does not stop the others.
+    #[instrument(skip(self, reason, triggered_by))]
+    pub async fn forfeit_remaining_matches(
+        &self,
+        registration_id: TournamentRegistrationId,
+        forfeit_type: ForfeitType,
+        reason: Option<String>,
+        triggered_by: ForfeitTrigger,
+    ) -> Result<Vec<ForfeitResult>, DomainError> {
+        let pending_matches = self.find_pending_matches(registration_id).await?;
+
+        let mut results = Vec::new();
+        for match_ in pending_matches {
+            match self
+                .process_forfeit(
+                    match_.id,
+                    registration_id,
+                    forfeit_type,
+                    reason.clone(),
+                    triggered_by.clone(),
+                )
+                .await
+            {
+                Ok(result) => results.push(result),
+                Err(e) => {
+                    warn!(
+                        match_id = %match_.id,
+                        error = %e,
+                        forfeit_type = %forfeit_type,
+                        "Failed to forfeit remaining match"
+                    );
+                }
+            }
+        }
 
         Ok(results)
     }
@@ -360,8 +405,10 @@ where
         match_: &TournamentMatch,
         forfeiting_registration_id: TournamentRegistrationId,
     ) -> Result<(), DomainError> {
-        // Check if match can be forfeited based on status
-        if !match_.status.can_forfeit() {
+        // Check if match can be forfeited based on status. Administrative /
+        // system forfeits also act on `Ready` matches (see
+        // `can_forfeit_administratively`).
+        if !match_.status.can_forfeit_administratively() {
             return Err(DomainError::InvalidState(format!(
                 "Match in {} status cannot be forfeited",
                 match_.status
@@ -406,18 +453,11 @@ where
     ) -> Result<Vec<TournamentMatch>, DomainError> {
         let matches = self.match_repo.list_by_participant(registration_id).await?;
 
-        // Filter to only pending/scheduled/ready matches
+        // Exactly the matches `validate_can_forfeit` will accept, so nothing
+        // selected here is then refused (and silently skipped).
         Ok(matches
             .into_iter()
-            .filter(|m| {
-                matches!(
-                    m.status,
-                    TournamentMatchStatus::Pending
-                        | TournamentMatchStatus::Scheduled
-                        | TournamentMatchStatus::Ready
-                        | TournamentMatchStatus::CheckingIn
-                )
-            })
+            .filter(|m| m.status.can_forfeit_administratively() && m.has_both_participants())
             .collect())
     }
 }

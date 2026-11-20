@@ -432,9 +432,12 @@ where
                 ));
             };
 
-        // Record the forfeit
+        // Record the forfeit, with the walkover series score every forfeit
+        // path uses (wins_required–0), so standings credit it like a result.
+        let (winner_score, loser_score) =
+            crate::entities::forfeit::ForfeitType::NoShow.default_score(match_.match_format);
         self.match_repo
-            .forfeit(match_id, winner_id, loser_id)
+            .forfeit(match_id, winner_id, loser_id, winner_score, loser_score)
             .await?;
 
         // This line is shown to both captains on the match timeline: name

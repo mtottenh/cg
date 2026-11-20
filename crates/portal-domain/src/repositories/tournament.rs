@@ -263,6 +263,33 @@ pub trait TournamentStageRepository: Send + Sync {
         status: StageStatus,
     ) -> Result<TournamentStage, DomainError>;
 
+    /// Compare-and-set a stage's status: move it to `to` only if it is
+    /// currently one of `from`. Returns the updated row, or `None` when the
+    /// stage was not in any of `from` (someone else got there first).
+    ///
+    /// This is the claim that makes stage advancement single-winner: of any
+    /// number of concurrent "the group stage just finished" callers, exactly
+    /// one sees `Some` and generates the next stage.
+    async fn compare_and_set_status(
+        &self,
+        id: TournamentStageId,
+        from: Vec<StageStatus>,
+        to: StageStatus,
+    ) -> Result<Option<TournamentStage>, DomainError>;
+
+    /// Take over a `Completed` stage whose last write is older than
+    /// `stale_before`, by bumping its `updated_at` — a compare-and-set on the
+    /// timestamp. Returns `None` when the stage is not completed or was
+    /// touched more recently (a live advancement still owns it).
+    ///
+    /// Used to re-drive a stage advancement whose claimer died between
+    /// claiming the group stage and opening the next one.
+    async fn reclaim_stale_completed(
+        &self,
+        id: TournamentStageId,
+        stale_before: DateTime<Utc>,
+    ) -> Result<Option<TournamentStage>, DomainError>;
+
     /// Flip two stages' statuses in a single transaction.
     ///
     /// Designed for the stage-advancement path in
@@ -872,6 +899,10 @@ pub trait TournamentMatchRepository: Send + Sync {
     /// winner, so "reverting" a result means removing it from that source —
     /// subtracting deltas is no longer meaningful (and was never idempotent).
     /// Calling this on a match with no recorded result is a no-op.
+    ///
+    /// A match whose result was decided (`completed` / `forfeit`) moves back
+    /// to `awaiting_result`, so it no longer counts as finished for bracket
+    /// completion and its captains can report it again.
     async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
 
     /// Schedule a match.
@@ -895,12 +926,16 @@ pub trait TournamentMatchRepository: Send + Sync {
     /// Complete a match.
     async fn complete(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
 
-    /// Forfeit a match.
+    /// Forfeit a match: record the walkover winner/loser and the walkover
+    /// series score (`winner_score` lands in the winner's participant slot),
+    /// and move the match to `forfeit`.
     async fn forfeit(
         &self,
         id: TournamentMatchId,
         winner_id: TournamentRegistrationId,
         loser_id: TournamentRegistrationId,
+        winner_score: i32,
+        loser_score: i32,
     ) -> Result<TournamentMatch, DomainError>;
 
     /// File a dispute.

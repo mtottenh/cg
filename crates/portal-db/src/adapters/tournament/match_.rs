@@ -558,12 +558,21 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         // loser, so nulling those two columns is what takes this match out
         // of the calculation. Running it on an already-cleared match is a
         // no-op — which is exactly what makes revert idempotent.
+        //
+        // A decided match (`completed` / `forfeit`) also leaves that status
+        // for `awaiting_result`. Left `completed`, a reverted match still
+        // counted as finished for bracket completion while carrying no
+        // result, captains could not re-report it (claims need
+        // in_progress/awaiting_result) and the admin override refused it —
+        // a dead match. Any other status is left alone.
         let row = sqlx::query_as::<_, TournamentMatchRow>(
             r"
             UPDATE tournament_matches SET
                 winner_registration_id = NULL,
                 loser_registration_id = NULL,
                 completed_at = NULL,
+                status = CASE WHEN status IN ('completed', 'forfeit')
+                              THEN 'awaiting_result' ELSE status END,
                 updated_at = $2
             WHERE id = $1
             RETURNING *
@@ -704,14 +713,21 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         id: TournamentMatchId,
         winner_id: TournamentRegistrationId,
         loser_id: TournamentRegistrationId,
+        winner_score: i32,
+        loser_score: i32,
     ) -> Result<TournamentMatch, DomainError> {
         let now = Utc::now();
 
+        // The walkover score goes into the slot the winner occupies, so the
+        // derived standings (which read the winner's games from that slot)
+        // credit a walkover exactly the way they credit a played result.
         let row = sqlx::query_as::<_, TournamentMatchRow>(
             r"
             UPDATE tournament_matches SET
                 winner_registration_id = $2,
                 loser_registration_id = $3,
+                participant1_score = CASE WHEN participant1_registration_id = $2 THEN $5 ELSE $6 END,
+                participant2_score = CASE WHEN participant1_registration_id = $2 THEN $6 ELSE $5 END,
                 completed_at = $4,
                 status = 'forfeit',
                 updated_at = $4
@@ -723,6 +739,8 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         .bind(winner_id.as_uuid())
         .bind(loser_id.as_uuid())
         .bind(now)
+        .bind(winner_score)
+        .bind(loser_score)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;

@@ -12,7 +12,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use portal_core::{TournamentId, TournamentMatchId, TournamentRegistrationId};
-use portal_domain::entities::forfeit::{ForfeitTrigger, ForfeitType};
+use portal_domain::entities::forfeit::{ForfeitResult, ForfeitTrigger, ForfeitType};
 use portal_domain::services::tournament::RegistrationActor;
 
 /// Extract request ID from headers.
@@ -21,6 +21,23 @@ fn get_request_id(headers: &HeaderMap) -> &str {
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
+}
+
+/// Settle every forfeited match (standings, winner advancement, stage
+/// advancement) through the completion saga, flagging the ones that settled.
+pub(crate) async fn settle_forfeits(
+    saga: &crate::state::AppMatchCompletionSaga,
+    results: &mut [ForfeitResult],
+) {
+    for result in results {
+        if result.winner_registration_id.is_some()
+            && crate::result_settlement::settle(saga, result.match_id)
+                .await
+                .is_some()
+        {
+            result.progression_triggered = true;
+        }
+    }
 }
 
 // =============================================================================
@@ -83,10 +100,23 @@ pub async fn withdraw_from_tournament(
             .await?;
     }
 
-    let results = state
+    let policy = state
+        .tournament_service
+        .get_tournament(tournament_id)
+        .await?
+        .withdrawal_policy;
+
+    let mut results = state
         .forfeit_service
-        .withdraw_from_tournament(tournament_id, registration_id, req.reason, auth.user_id)
+        .withdraw_from_tournament(
+            tournament_id,
+            registration_id,
+            req.reason,
+            auth.user_id,
+            policy,
+        )
         .await?;
+    settle_forfeits(&state.match_completion_saga, &mut results).await;
 
     let response = WithdrawalResponse {
         registration_id: registration_id.to_string(),
@@ -166,6 +196,9 @@ pub async fn admin_forfeit_match(
             },
         )
         .await?;
+    let mut results = [result];
+    settle_forfeits(&state.match_completion_saga, &mut results).await;
+    let [result] = results;
 
     Ok(Json(DataResponse::new(
         ForfeitResponse::from(result),
@@ -211,7 +244,7 @@ pub async fn admin_disqualify(
         )
         .await?;
 
-    let results = state
+    let mut results = state
         .forfeit_service
         .disqualify(
             tournament_id,
@@ -220,6 +253,7 @@ pub async fn admin_disqualify(
             auth.user_id,
         )
         .await?;
+    settle_forfeits(&state.match_completion_saga, &mut results).await;
 
     let response = DisqualificationResponse {
         registration_id: registration_id.to_string(),
@@ -284,6 +318,9 @@ pub async fn admin_double_forfeit(
             },
         )
         .await?;
+    // No winner, but a cancelled match can be the last one a group was
+    // waiting on — settle so the stage-advancement check runs.
+    crate::result_settlement::settle(&state.match_completion_saga, match_id).await;
 
     Ok(Json(DataResponse::new(
         ForfeitResponse::from(result),

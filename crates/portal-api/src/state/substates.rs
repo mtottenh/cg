@@ -493,6 +493,12 @@ pub struct TournamentState {
     /// Veto-completion / check-in server-assignment trigger (§6.6).
     pub server_assignment_tx:
         tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
+    /// Forfeit service — disqualifying a registration forfeits the matches
+    /// it still had to play.
+    pub forfeit_service: super::AppForfeitService,
+    /// Match completion saga — settles a forfeit (standings, winner
+    /// advancement, stage advancement) after it is recorded.
+    pub match_completion_saga: super::AppMatchCompletionSaga,
 }
 
 impl FromRef<AppState> for TournamentState {
@@ -518,6 +524,8 @@ impl FromRef<AppState> for TournamentState {
             role_repo: s.role_repo.clone(),
             award_service: s.award_service.clone(),
             server_assignment_tx: s.server_assignment_tx.clone(),
+            forfeit_service: s.forfeit_service.clone(),
+            match_completion_saga: s.match_completion_saga.clone(),
         }
     }
 }
@@ -666,6 +674,12 @@ pub struct ForfeitState {
     pub registration_service: AppRegistrationService,
     /// League-team service (team-season membership checks for withdrawal).
     pub league_team_service: AppLeagueTeamService,
+    /// Tournament service (withdrawal reads the tournament's
+    /// `withdrawal_policy`).
+    pub tournament_service: AppTournamentService,
+    /// Match completion saga — settles each forfeit (standings, winner
+    /// advancement, stage advancement) after it is recorded.
+    pub match_completion_saga: super::AppMatchCompletionSaga,
 }
 
 impl FromRef<AppState> for ForfeitState {
@@ -674,6 +688,8 @@ impl FromRef<AppState> for ForfeitState {
             forfeit_service: s.forfeit_service.clone(),
             registration_service: s.registration_service.clone(),
             league_team_service: s.league_team_service.clone(),
+            tournament_service: s.tournament_service.clone(),
+            match_completion_saga: s.match_completion_saga.clone(),
         }
     }
 }
@@ -701,6 +717,9 @@ pub struct DisputeState {
     pub tournament_match_repo: Arc<PgTournamentMatchRepository>,
     /// Tournament service (names the tournament a dispute belongs to).
     pub tournament_service: AppTournamentService,
+    /// Match completion saga — a resolution that writes or clears a result
+    /// settles the bracket (standings, progression, stage advancement).
+    pub match_completion_saga: super::AppMatchCompletionSaga,
 }
 
 impl FromRef<AppState> for DisputeState {
@@ -711,6 +730,7 @@ impl FromRef<AppState> for DisputeState {
             league_team_service: s.league_team_service.clone(),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             tournament_service: s.tournament_service.clone(),
+            match_completion_saga: s.match_completion_saga.clone(),
         }
     }
 }

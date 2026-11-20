@@ -170,6 +170,15 @@ pub struct MatchCompletionOutput {
     pub summary: String,
 }
 
+/// What [`MatchCompletionSaga::settle_result`] did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SettleOutcome {
+    /// The full completion saga ran (winner advancement, standings, stage).
+    pub progression_ran: bool,
+    /// The result finished a group stage and seeded the next one.
+    pub stage_advanced: bool,
+}
+
 // =============================================================================
 // MATCH COMPLETION SAGA
 // =============================================================================
@@ -403,6 +412,114 @@ where
         }
     }
 
+    /// Bring the bracket in line with a result that was written outside the
+    /// claim → confirm flow: a forfeit (admin, captain, no-show, withdrawal,
+    /// disqualification), an admin score override, a dispute resolution, a
+    /// double forfeit.
+    ///
+    /// Those paths write the match row and used to stop there — no standings
+    /// recompute, no winner advancement, no groups → playoffs transition — so
+    /// a group whose last match was forfeited or disputed never finished.
+    /// This is the one entry point they share, and it reuses the normal
+    /// completion machinery rather than re-implementing it:
+    ///
+    /// - **Decided match whose progression never ran** (no completed
+    ///   `match_completion` saga for it — forfeits, and dispute resolutions on
+    ///   the claim path): run the full saga with the result read off the row.
+    ///   Demo validation is skipped (no claim id / forfeit), every progression
+    ///   step is idempotent, and it records a saga row like any completion, so
+    ///   the lifecycle re-drive covers a crash half-way.
+    /// - **Anything else** — the result changed under a match that was already
+    ///   progressed (override, overturn of a confirmed result), or the match
+    ///   lost its result (rematch, double forfeit): recompute the derived
+    ///   standings and re-run the stage-advancement check. Participants an
+    ///   elimination result already seated are *not* moved — that remains the
+    ///   explicit revert/reapply controls' job.
+    #[instrument(skip(self))]
+    pub async fn settle_result(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<SettleOutcome, DomainError> {
+        let match_ = self
+            .match_repo
+            .find_by_id(match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
+
+        if match_.status.is_decided()
+            && let (Some(winner), Some(loser)) =
+                (match_.winner_registration_id, match_.loser_registration_id)
+        {
+            let progressed = self
+                .saga_repo
+                .find_by_match(match_id)
+                .await?
+                .iter()
+                .any(|s| s.saga_type == "match_completion" && s.is_completed());
+            if !progressed {
+                let (winner_score, loser_score) =
+                    if match_.participant1_registration_id == Some(winner) {
+                        (match_.participant1_score, match_.participant2_score)
+                    } else {
+                        (match_.participant2_score, match_.participant1_score)
+                    };
+                let result = self
+                    .execute_completion(MatchCompletionInput {
+                        match_id,
+                        winner_registration_id: winner,
+                        loser_registration_id: loser,
+                        winner_score,
+                        loser_score,
+                        is_forfeit: match_.status == TournamentMatchStatus::Forfeit,
+                        saga_id: None,
+                        result_claim_id: None,
+                    })
+                    .await?;
+                return Ok(SettleOutcome {
+                    progression_ran: result.success,
+                    stage_advanced: result.output.is_some_and(|o| o.stage_advanced),
+                });
+            }
+        }
+
+        self.rederive_bracket(match_.bracket_id).await
+    }
+
+    /// Re-derive what a bracket computes from its match rows — the round-robin
+    /// / Swiss standings and the stage-advancement check — without moving any
+    /// participant.
+    ///
+    /// The settle step for a *correction* of a result that was already
+    /// recorded (the admin score override): the corrected row must reach the
+    /// standings, but a changed elimination winner is moved only by the
+    /// explicit revert/reapply controls, never as a side effect.
+    #[instrument(skip(self))]
+    pub async fn rederive_bracket(
+        &self,
+        bracket_id: TournamentBracketId,
+    ) -> Result<SettleOutcome, DomainError> {
+        let bracket = self
+            .bracket_repo
+            .find_by_id(bracket_id)
+            .await?
+            .ok_or(DomainError::TournamentBracketNotFound(bracket_id))?;
+        if matches!(
+            bracket.bracket_type,
+            BracketType::RoundRobin | BracketType::Swiss
+        ) {
+            self.standings_repo.recompute_bracket(bracket.id).await?;
+        }
+        let opened = self
+            .stage_advancer
+            .advance_if_stage_complete(bracket.id)
+            .await?;
+
+        Ok(SettleOutcome {
+            progression_ran: false,
+            stage_advanced: opened.is_some(),
+        })
+    }
+
     /// Run the saga steps in sequence.
     async fn run_steps(
         &self,
@@ -541,9 +658,10 @@ where
             .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
 
         // Validate match is in valid state for completion.
-        // The match may already be completed (by confirm_claim) — that's OK,
-        // the saga handles progression from that point.
-        if match_.status != TournamentMatchStatus::Completed
+        // The match may already be decided — completed (by confirm_claim) or
+        // forfeited (by a forfeit path) — that's OK, the saga handles
+        // progression from that point.
+        if !match_.status.is_decided()
             && !match_
                 .status
                 .can_transition_to(TournamentMatchStatus::Completed)
@@ -727,14 +845,17 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
 
-        // If the match is already completed (e.g., by confirm_claim), skip
-        if match_.status == TournamentMatchStatus::Completed {
+        // If the match is already decided (completed by confirm_claim, or
+        // forfeited — a walkover keeps its `forfeit` status and the score the
+        // forfeit path recorded), skip.
+        if match_.status.is_decided() {
             saga_coordinator
                 .complete_step(
                     execution,
                     STEP_NAME,
                     Some(serde_json::json!({
                         "action": "already_completed",
+                        "status": match_.status.to_string(),
                         "winner_id": input.winner_registration_id.to_string()
                     })),
                 )

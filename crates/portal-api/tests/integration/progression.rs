@@ -588,7 +588,7 @@ async fn test_revert_withdraws_the_advanced_participant_after_a_score_correction
     );
 
     // P-72 correction: the semi was scored the wrong way round. 1-0 becomes
-    // 0-2, so the recorded winner flips to participant 2 — and the bracket is
+    // 0-1 (a Bo1), so the recorded winner flips to participant 2 — and the bracket is
     // deliberately untouched, which is the state revert exists to repair.
     app.post_json(
         &format!(
@@ -597,7 +597,7 @@ async fn test_revert_withdraws_the_advanced_participant_after_a_score_correction
         ),
         &json!({
             "participant1_score": 0,
-            "participant2_score": 2,
+            "participant2_score": 1,
             "reason": "Demo review: participant 2 won this map."
         }),
     )

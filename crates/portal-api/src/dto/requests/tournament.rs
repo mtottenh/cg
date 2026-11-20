@@ -250,6 +250,19 @@ impl CreateTournamentRequest {
             .parse()
             .map_err(|_| crate::error::ApiError::bad_request("Invalid withdrawal policy"))?;
 
+        // Reject settings the start could never honour (bad round formats,
+        // an impossible groups shape, an oversized round robin) now, rather
+        // than at start time.
+        portal_domain::services::tournament::format_validation::validate_format_settings(
+            format,
+            self.format_settings
+                .as_ref()
+                .unwrap_or(&serde_json::Value::Null),
+            default_match_format,
+            self.max_participants,
+        )
+        .map_err(crate::error::ApiError::from)?;
+
         Ok(CreateTournamentCommand {
             game_id,
             league_id,

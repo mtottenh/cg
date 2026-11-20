@@ -162,3 +162,54 @@ pub fn derive_result_outcome(
         ))),
     }
 }
+
+/// Check that a series score is a finished best-of result for `format`: the
+/// winner has exactly `wins_required` games and the loser fewer, neither
+/// negative, no tie.
+///
+/// Every `MatchFormat` is a best-of (`Bo1`/`Bo3`/`Bo5`/`Bo7`), so this is the
+/// whole rule. The old check only bounded the *total* number of games, which
+/// let a 3–0 through in a Bo3 (3 games, within 2..=3) and a 2–1 in a Bo5 —
+/// series that cannot happen. Captain claims, admin overrides and dispute
+/// score adjustments all go through this: an admin correcting a score has no
+/// more licence to record an impossible series than a captain does.
+pub fn validate_series_score(
+    format: portal_core::types::MatchFormat,
+    participant1_score: i32,
+    participant2_score: i32,
+) -> Result<(), DomainError> {
+    let wins_required = format.wins_required();
+    let (high, low) = if participant1_score >= participant2_score {
+        (participant1_score, participant2_score)
+    } else {
+        (participant2_score, participant1_score)
+    };
+    if low < 0 || high != wins_required || low >= wins_required {
+        return Err(DomainError::InvalidMatchResult(format!(
+            "{participant1_score}-{participant2_score} is not a finished {format} series \
+             (the winner must have exactly {wins_required} games and the loser fewer)"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod series_score_tests {
+    use super::validate_series_score;
+    use portal_core::types::MatchFormat;
+
+    #[test]
+    fn accepts_only_finished_best_of_series() {
+        assert!(validate_series_score(MatchFormat::Bo1, 1, 0).is_ok());
+        assert!(validate_series_score(MatchFormat::Bo3, 2, 1).is_ok());
+        assert!(validate_series_score(MatchFormat::Bo3, 0, 2).is_ok());
+        assert!(validate_series_score(MatchFormat::Bo5, 3, 2).is_ok());
+
+        assert!(validate_series_score(MatchFormat::Bo3, 3, 0).is_err());
+        assert!(validate_series_score(MatchFormat::Bo5, 2, 1).is_err());
+        assert!(validate_series_score(MatchFormat::Bo3, 2, 2).is_err());
+        assert!(validate_series_score(MatchFormat::Bo3, 1, 1).is_err());
+        assert!(validate_series_score(MatchFormat::Bo1, 2, 0).is_err());
+        assert!(validate_series_score(MatchFormat::Bo3, 2, -1).is_err());
+    }
+}

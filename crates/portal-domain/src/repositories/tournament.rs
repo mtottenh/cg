@@ -923,7 +923,9 @@ pub trait TournamentMatchRepository: Send + Sync {
     ///
     /// A match whose result was decided (`completed` / `forfeit`) moves back
     /// to `awaiting_result`, so it no longer counts as finished for bracket
-    /// completion and its captains can report it again.
+    /// completion and its captains can report it again. A played result's
+    /// scores stay on the row (the reapply path re-records a winner over
+    /// them); a forfeit's synthetic walkover score is reset to 0–0.
     async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
 
     /// Schedule a match.

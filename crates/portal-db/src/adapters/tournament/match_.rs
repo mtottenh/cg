@@ -584,12 +584,17 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
     async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError> {
         let now = Utc::now();
 
-        // Scores are deliberately kept: they are audit data, and the admin
-        // reapply path rewrites the winner over the same scores. Standings
-        // are derived from completed rows carrying BOTH a winner and a
-        // loser, so nulling those two columns is what takes this match out
+        // Standings are derived from decided rows carrying BOTH a winner and
+        // a loser, so nulling those two columns is what takes this match out
         // of the calculation. Running it on an already-cleared match is a
         // no-op — which is exactly what makes revert idempotent.
+        //
+        // A *played* result's scores are deliberately kept: they are audit
+        // data, and the admin reapply path (revert, then re-record the winner)
+        // rewrites the winner over the same series score. A *forfeit's* score
+        // is not a score anyone played — it is the synthetic walkover the
+        // forfeit wrote — so it goes with the forfeit: a reverted forfeit used
+        // to sit there open for play still showing 2–0.
         //
         // A decided match (`completed` / `forfeit`) also leaves that status
         // for `awaiting_result`. Left `completed`, a reverted match still
@@ -602,6 +607,8 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
             UPDATE tournament_matches SET
                 winner_registration_id = NULL,
                 loser_registration_id = NULL,
+                participant1_score = CASE WHEN status = 'forfeit' THEN 0 ELSE participant1_score END,
+                participant2_score = CASE WHEN status = 'forfeit' THEN 0 ELSE participant2_score END,
                 completed_at = NULL,
                 status = CASE WHEN status IN ('completed', 'forfeit')
                               THEN 'awaiting_result' ELSE status END,

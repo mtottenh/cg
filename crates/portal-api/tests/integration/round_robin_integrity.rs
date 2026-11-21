@@ -1810,3 +1810,61 @@ async fn rematch_ruling_reopens_a_finished_round_robin() {
         "completed"
     );
 }
+
+/// Reverting a forfeit clears its walkover score with it: the match is open
+/// for play again and used to sit there still showing 2–0. A *played*
+/// result's score is kept across a revert, because revert → reapply ("same
+/// series, other winner") re-records the winner over it.
+#[tokio::test]
+async fn reverted_forfeit_does_not_keep_its_walkover_score() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-revert-score", 3).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let score = |m: &Value| {
+        (
+            m["participant1_score"].as_i64().unwrap(),
+            m["participant2_score"].as_i64().unwrap(),
+        )
+    };
+    let revert = |id: String| {
+        let app = &app;
+        async move {
+            app.post_auth(&format!("/v1/admin/matches/{id}/progression/revert"))
+                .await
+                .assert_status(StatusCode::OK);
+        }
+    };
+
+    let forfeited = &all[0];
+    let forfeited_id = str_of(forfeited, "id");
+    admin_forfeit(&app, &cup, &forfeited_id, &p2(forfeited)).await;
+    assert_eq!(
+        score(&get_match(&app, &cup.tournament_id, &forfeited_id).await),
+        (2, 0)
+    );
+    revert(forfeited_id.clone()).await;
+    let reverted = get_match(&app, &cup.tournament_id, &forfeited_id).await;
+    assert_eq!(reverted["status"], "awaiting_result");
+    assert!(reverted["winner_registration_id"].is_null());
+    assert_eq!(score(&reverted), (0, 0), "{reverted:?}");
+
+    // A played result: reverted, then reapplied for the other side.
+    let played = &all[1];
+    let played_id = str_of(played, "id");
+    confirm_win(&app, &cup, played, &p1(played), (2, 1)).await;
+    revert(played_id.clone()).await;
+    let reverted = get_match(&app, &cup.tournament_id, &played_id).await;
+    assert_eq!(reverted["status"], "awaiting_result");
+    assert_eq!(score(&reverted), (2, 1));
+    confirm_win(&app, &cup, played, &p1(played), (2, 1)).await;
+    app.post_json(
+        &format!("/v1/admin/matches/{played_id}/progression/reapply"),
+        &json!({ "new_winner_registration_id": p2(played) }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let reapplied = get_match(&app, &cup.tournament_id, &played_id).await;
+    assert_eq!(reapplied["status"], "completed");
+    assert_eq!(reapplied["winner_registration_id"], p2(played).as_str());
+    assert_eq!(score(&reapplied), (2, 1));
+}

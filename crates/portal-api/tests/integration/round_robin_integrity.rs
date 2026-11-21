@@ -2014,3 +2014,74 @@ async fn lifecycle_sweep_does_not_advance_past_a_result_under_review() {
     assert_eq!(st[0]["status"], "active", "{st:?}");
     assert_eq!(st[1]["status"], "pending", "{st:?}");
 }
+
+// ============================================================================
+// 16. A FORFEIT IS NOT RE-RECORDED AS A PLAYED RESULT
+// ============================================================================
+
+/// Reapplying a forfeit for the other side used to revert it (clearing the
+/// walkover score) and record a `completed` 0–0 with a winner: three points
+/// and no game wins. Like the admin score override, reapply now refuses a
+/// forfeit; the supported route is revert, then forfeit the other side.
+#[tokio::test]
+async fn reapply_refuses_a_forfeit() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-reapply-forfeit", 3).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let m = &all[0];
+    let match_id = str_of(m, "id");
+    admin_forfeit(&app, &cup, &match_id, &p2(m)).await;
+
+    let refused = app
+        .post_json(
+            &format!("/v1/admin/matches/{match_id}/progression/reapply"),
+            &json!({ "new_winner_registration_id": p2(m) }),
+        )
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        refused.text()
+    );
+    assert!(refused.text().contains("forfeit"), "{}", refused.text());
+    let refused = app
+        .post_json(
+            &format!("/v1/admin/matches/{match_id}/progression/process"),
+            &json!({
+                "winner_registration_id": p2(m),
+                "loser_registration_id": p1(m)
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        refused.text()
+    );
+
+    // Untouched: still the walkover for participant 1.
+    let after = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(after["status"], "forfeit");
+    assert_eq!(after["winner_registration_id"], p1(m).as_str());
+    assert_eq!(after["participant1_score"], 2);
+    assert_eq!(after["participant2_score"], 0);
+    let rows = standings(&app, &cup.tournament_id, &str_of(m, "bracket_id")).await;
+    assert_eq!(row_for(&rows, &p1(m))["points"], 3, "{rows:?}");
+    assert_eq!(row_for(&rows, &p2(m))["points"], 0, "{rows:?}");
+
+    // The supported correction: revert, then forfeit the other side.
+    app.post_auth(&format!("/v1/admin/matches/{match_id}/progression/revert"))
+        .await
+        .assert_status(StatusCode::OK);
+    admin_forfeit(&app, &cup, &match_id, &p1(m)).await;
+    let corrected = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(corrected["status"], "forfeit");
+    assert_eq!(corrected["winner_registration_id"], p2(m).as_str());
+    assert_eq!(corrected["participant1_score"], 0);
+    assert_eq!(corrected["participant2_score"], 2);
+    let rows = standings(&app, &cup.tournament_id, &str_of(m, "bracket_id")).await;
+    assert_eq!(row_for(&rows, &p2(m))["points"], 3, "{rows:?}");
+    assert_eq!(row_for(&rows, &p1(m))["points"], 0, "{rows:?}");
+}

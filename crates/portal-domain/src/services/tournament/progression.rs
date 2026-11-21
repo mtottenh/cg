@@ -814,6 +814,15 @@ where
         Ok(())
     }
 
+    fn forfeit_is_not_reapplied() -> DomainError {
+        DomainError::InvalidState(
+            "This match was decided by forfeit and cannot be re-recorded for the other side. \
+             Revert it (progression/revert) and forfeit the match for the other participant \
+             instead"
+                .to_string(),
+        )
+    }
+
     /// Refuse a manual result that is not "one of this match's participants
     /// beat the other" on a match whose result may be (re)recorded.
     fn ensure_reportable(
@@ -829,6 +838,14 @@ where
             return Err(DomainError::InvalidMatchResult(
                 "Winner and loser must be the match's two participants".to_string(),
             ));
+        }
+        // Re-processing a forfeit as recorded is fine (idempotent); turning
+        // it into a result for the other side is not — see
+        // `reapply_progression`.
+        if match_.status == TournamentMatchStatus::Forfeit
+            && match_.winner_registration_id != Some(winner)
+        {
+            return Err(Self::forfeit_is_not_reapplied());
         }
         if !matches!(
             match_.status,
@@ -1569,6 +1586,16 @@ where
         new_winner_registration_id: TournamentRegistrationId,
     ) -> Result<ProgressionResult, DomainError> {
         let match_ = self.get_match(match_id).await?;
+
+        // A forfeit is not a played series whose winner can be swapped. The
+        // revert below clears its walkover score, so re-recording a winner
+        // would leave a `completed` 0–0 "result" — a win with no games —
+        // where there had been a walkover. Same rule as the admin score
+        // override, which also refuses a forfeit: undo the forfeit and
+        // forfeit the other side instead.
+        if match_.status == TournamentMatchStatus::Forfeit {
+            return Err(Self::forfeit_is_not_reapplied());
+        }
 
         // Determine new loser
         let new_loser_registration_id =

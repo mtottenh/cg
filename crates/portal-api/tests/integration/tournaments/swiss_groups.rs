@@ -668,3 +668,289 @@ async fn test_standalone_swiss_runs_all_rounds() {
         "{body}"
     );
 }
+
+// ============================================================================
+// Format-settings validation and start rollback
+// ============================================================================
+
+async fn tournament_status(app: &TestApp, tournament_id: &str) -> String {
+    let body: serde_json::Value = app
+        .get(&format!("/v1/tournaments/{tournament_id}"))
+        .await
+        .json();
+    body["data"]["status"].as_str().unwrap().to_string()
+}
+
+async fn set_format_settings(app: &TestApp, tournament_id: &str, settings: serde_json::Value) {
+    sqlx::query("UPDATE tournaments SET format_settings = $2 WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(tournament_id).unwrap())
+        .bind(settings)
+        .execute(app.pool())
+        .await
+        .unwrap();
+}
+
+/// Register `n` players and seed, without starting.
+async fn register_and_seed(app: &TestApp, tournament_id: &str, n: usize, slug: &str) {
+    for i in 1..=n {
+        let username = format!("sw_{slug}_{i}");
+        let (user_id, player_id) = create_test_player(app, &username).await;
+        insert_test_registration(app, tournament_id, player_id, user_id, &username).await;
+    }
+    assign_role_to_user(
+        app.pool(),
+        get_dev_user_id(app.pool()).await,
+        "platform_admin",
+    )
+    .await;
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/seeding/auto"),
+        &json!({ "algorithm": "random" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
+/// `max_rounds` that is not a positive whole number is refused when the
+/// tournament is created or updated — for standalone Swiss and for Swiss
+/// groups — instead of surfacing at start. A whole number sent as a float
+/// (`3.0`) is fine.
+#[tokio::test]
+async fn test_invalid_swiss_max_rounds_is_rejected_at_create_and_update() {
+    let app = TestApp::new().await;
+    let game_id = get_game_id(app.pool(), "cs2").await.to_string();
+    let create = |slug: String, format: &'static str, settings: serde_json::Value| {
+        let game_id = game_id.clone();
+        let app = &app;
+        async move {
+            app.post_json(
+                "/v1/tournaments",
+                &json!({
+                    "game_id": game_id,
+                    "name": format!("Swiss validation {slug}"),
+                    "slug": slug,
+                    "format": format,
+                    "map_pool": portal_test::builders::DEFAULT_CS2_MAP_POOL,
+                    "format_settings": settings,
+                    "participant_type": "individual",
+                    "min_participants": 2,
+                    "max_participants": 32,
+                    "registration_type": "open",
+                    "scheduling_mode": "self_scheduled",
+                    "default_match_format": "bo3"
+                }),
+            )
+            .await
+        }
+    };
+
+    for (i, bad) in [json!(0), json!(-1), json!("3"), json!(2.5)]
+        .into_iter()
+        .enumerate()
+    {
+        let standalone = create(
+            format!("sw-bad-rounds-{i}"),
+            "swiss",
+            json!({ "max_rounds": bad }),
+        )
+        .await;
+        assert_eq!(
+            standalone.status,
+            StatusCode::BAD_REQUEST,
+            "swiss max_rounds={bad}: {}",
+            standalone.text()
+        );
+        let grouped = create(
+            format!("swg-bad-rounds-{i}"),
+            "groups_and_playoffs",
+            json!({ "group_count": 2, "group_format": "swiss", "max_rounds": bad }),
+        )
+        .await;
+        assert_eq!(
+            grouped.status,
+            StatusCode::BAD_REQUEST,
+            "swiss groups max_rounds={bad}: {}",
+            grouped.text()
+        );
+    }
+
+    // An integral float is a whole number.
+    let ok = create(
+        "sw-float-rounds".to_string(),
+        "swiss",
+        json!({ "max_rounds": 3.0 }),
+    )
+    .await;
+    ok.assert_status(StatusCode::CREATED);
+    let tournament_id = ok.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // ... and an update cannot smuggle a bad value in either.
+    let response = app
+        .patch_json(
+            &format!("/v1/tournaments/{tournament_id}"),
+            &json!({ "format_settings": { "max_rounds": 0 } }),
+        )
+        .await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text()
+    );
+    app.patch_json(
+        &format!("/v1/tournaments/{tournament_id}"),
+        &json!({ "format_settings": { "max_rounds": 4.0 } }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
+/// A stored `max_rounds` that is invalid (a row that predates the create-time
+/// check) must fail the start *before* the tournament is claimed: it used to
+/// fail inside generation, leaving the tournament `in_progress` with no
+/// brackets — and a standalone Swiss with an orphaned stage — so every retry
+/// answered "already started".
+#[tokio::test]
+async fn test_invalid_stored_max_rounds_does_not_strand_the_start() {
+    let app = TestApp::new().await;
+    // Count every time a tournament is claimed (moved to `in_progress`): a
+    // start that is refused up front never claims, whereas one that fails in
+    // generation claims and then has to be rolled back.
+    sqlx::raw_sql(
+        r"
+        CREATE TABLE test_start_claims (tournament_id UUID NOT NULL);
+        CREATE FUNCTION test_record_start_claim() RETURNS trigger AS $$
+        BEGIN
+            INSERT INTO test_start_claims VALUES (NEW.id);
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER test_record_start_claim AFTER UPDATE ON tournaments
+            FOR EACH ROW
+            WHEN (NEW.status = 'in_progress' AND OLD.status <> 'in_progress')
+            EXECUTE FUNCTION test_record_start_claim();
+        ",
+    )
+    .execute(app.pool())
+    .await
+    .unwrap();
+    let claims = |tournament_id: String| {
+        let app = &app;
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM test_start_claims WHERE tournament_id = $1",
+            )
+            .bind(uuid::Uuid::parse_str(&tournament_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap()
+        }
+    };
+    for (slug, format, good, bad) in [
+        (
+            "sw-stored-bad",
+            "swiss",
+            json!({}),
+            json!({ "max_rounds": 0 }),
+        ),
+        (
+            "swg-stored-bad",
+            "groups_and_playoffs",
+            json!({ "group_count": 2, "group_format": "swiss" }),
+            json!({ "group_count": 2, "group_format": "swiss", "max_rounds": "3" }),
+        ),
+    ] {
+        let tournament_id = create_tournament(&app, slug, format, good.clone()).await;
+        register_and_seed(&app, &tournament_id, 8, &slug.replace('-', "_")).await;
+        set_format_settings(&app, &tournament_id, bad).await;
+
+        let response = app
+            .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{slug}: {}",
+            response.text()
+        );
+        assert_eq!(
+            claims(tournament_id.clone()).await,
+            0,
+            "{slug}: invalid settings must be refused before the start is claimed"
+        );
+        assert_eq!(
+            tournament_status(&app, &tournament_id).await,
+            "registration",
+            "{slug}: a refused start must leave the tournament startable"
+        );
+        assert!(list_brackets(&app, &tournament_id).await.is_empty());
+        assert!(
+            stage_statuses(&app, &tournament_id).await.is_empty(),
+            "{slug}: no stage may be left behind"
+        );
+
+        // Fix the settings; the same tournament starts.
+        set_format_settings(&app, &tournament_id, good).await;
+        app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
+            .await
+            .assert_status(StatusCode::OK);
+        assert_eq!(tournament_status(&app, &tournament_id).await, "in_progress");
+        assert_eq!(claims(tournament_id.clone()).await, 1);
+        assert!(!list_brackets(&app, &tournament_id).await.is_empty());
+    }
+}
+
+/// If generation fails *after* the start was claimed, for whatever reason,
+/// the start is undone — status restored, the stage and brackets this
+/// attempt created removed — so a retry starts from clean.
+#[tokio::test]
+async fn test_generation_failure_after_the_claim_rolls_the_start_back() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament(&app, "sw-start-rollback", "swiss", json!({})).await;
+    register_and_seed(&app, &tournament_id, 4, "rollback").await;
+
+    // Make the round-1 match insert fail: the stage and the bracket already
+    // exist by then.
+    sqlx::raw_sql(
+        r"
+        CREATE FUNCTION test_reject_match_insert() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'injected match insert failure'; END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER test_reject_match_insert BEFORE INSERT ON tournament_matches
+            FOR EACH ROW EXECUTE FUNCTION test_reject_match_insert();
+        ",
+    )
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    let response = app
+        .post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
+        .await;
+    assert!(
+        response.status.is_server_error() || response.status.is_client_error(),
+        "start must fail: {}",
+        response.text()
+    );
+    assert_eq!(
+        tournament_status(&app, &tournament_id).await,
+        "registration",
+        "a failed start must be rolled back"
+    );
+    assert!(list_brackets(&app, &tournament_id).await.is_empty());
+    assert!(stage_statuses(&app, &tournament_id).await.is_empty());
+
+    sqlx::raw_sql("DROP TRIGGER test_reject_match_insert ON tournament_matches")
+        .execute(app.pool())
+        .await
+        .unwrap();
+    app.post_auth(&format!("/v1/tournaments/{tournament_id}/start"))
+        .await
+        .assert_status(StatusCode::OK);
+    assert_eq!(tournament_status(&app, &tournament_id).await, "in_progress");
+    assert_eq!(list_brackets(&app, &tournament_id).await.len(), 1);
+    assert_eq!(list_matches(&app, &tournament_id).await.len(), 2);
+}

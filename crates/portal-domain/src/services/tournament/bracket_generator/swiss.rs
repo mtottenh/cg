@@ -31,17 +31,27 @@ pub struct SwissParticipantStanding {
 /// Read the optional `max_rounds` key from Swiss (or Swiss-group)
 /// `format_settings`. Absent/null → `None`; anything other than a positive
 /// integer is rejected rather than silently replaced by the default.
+///
+/// A whole number written as a float (`3.0`) is accepted: JSON has one
+/// number type and several clients serialise every number that way.
 pub fn parse_swiss_max_rounds(settings: &serde_json::Value) -> Result<Option<u32>, DomainError> {
-    match settings.get("max_rounds") {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(v) => v
-            .as_u64()
-            .filter(|n| (1..=u64::from(u32::MAX)).contains(n))
-            .map(|n| Some(n as u32))
-            .ok_or_else(|| {
-                DomainError::InvalidState("max_rounds must be a positive integer".to_string())
-            }),
-    }
+    let Some(value) = settings.get("max_rounds").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let whole = value.as_u64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|f| f.fract() == 0.0 && (1.0..=f64::from(u32::MAX)).contains(f))
+            // Exact: the filter above pinned it to a whole number in range.
+            .map(|f| f as u64)
+    });
+    whole
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n >= 1)
+        .map(Some)
+        .ok_or_else(|| {
+            DomainError::InvalidState("max_rounds must be a positive integer".to_string())
+        })
 }
 
 /// Number of Swiss rounds a bracket of `participant_count` plays.
@@ -690,6 +700,10 @@ mod tests {
         assert_eq!(
             parse_swiss_max_rounds(&serde_json::json!({ "max_rounds": null })).unwrap(),
             None
+        );
+        assert_eq!(
+            parse_swiss_max_rounds(&serde_json::json!({ "max_rounds": 3.0 })).unwrap(),
+            Some(3)
         );
         assert_eq!(
             parse_swiss_max_rounds(&serde_json::json!({ "max_rounds": 5 })).unwrap(),

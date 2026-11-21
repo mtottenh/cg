@@ -12,6 +12,7 @@ use portal_core::DomainError;
 use portal_core::types::{MatchFormat, MatchFormatPlan, TournamentFormat};
 
 use super::bracket_generator::groups::GroupsConfig;
+use super::bracket_generator::parse_swiss_max_rounds;
 
 /// Largest round-robin bracket (standalone, or one group) we generate.
 ///
@@ -35,6 +36,9 @@ pub fn validate_format_settings(
         TournamentFormat::RoundRobin if max > MAX_ROUND_ROBIN_BRACKET_SIZE => {
             Err(round_robin_too_large(max))
         }
+        // `max_rounds` must be a positive integer. (Swiss groups get the
+        // same check through `GroupsConfig` below.)
+        TournamentFormat::Swiss => parse_swiss_max_rounds(settings).map(|_| ()),
         TournamentFormat::GroupsAndPlayoffs => {
             let config = GroupsConfig::from_format_settings(settings, max)?;
             // At full capacity the smallest group holds max / group_count.
@@ -77,6 +81,7 @@ pub fn validate_for_start(
         TournamentFormat::RoundRobin if participant_count > MAX_ROUND_ROBIN_BRACKET_SIZE => {
             Err(round_robin_too_large(participant_count))
         }
+        TournamentFormat::Swiss => parse_swiss_max_rounds(settings).map(|_| ()),
         TournamentFormat::GroupsAndPlayoffs => {
             let config = GroupsConfig::from_format_settings(settings, participant_count)?;
             let min_per_group = participant_count / config.group_count;
@@ -164,6 +169,37 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_invalid_swiss_max_rounds_everywhere() {
+        for bad in [json!(0), json!(-1), json!("3"), json!(2.5)] {
+            let standalone = json!({ "max_rounds": bad });
+            let grouped = json!({ "group_count": 2, "group_format": "swiss", "max_rounds": bad });
+            for (format, settings) in [
+                (TournamentFormat::Swiss, &standalone),
+                (TournamentFormat::GroupsAndPlayoffs, &grouped),
+            ] {
+                assert!(
+                    validate_format_settings(format, settings, MatchFormat::Bo3, 8).is_err(),
+                    "create: {format:?} {settings}"
+                );
+                assert!(
+                    validate_for_start(format, settings, MatchFormat::Bo3, 8).is_err(),
+                    "start: {format:?} {settings}"
+                );
+            }
+        }
+        for good in [json!(3), json!(3.0)] {
+            let settings = json!({ "max_rounds": good });
+            assert!(
+                validate_format_settings(TournamentFormat::Swiss, &settings, MatchFormat::Bo3, 8)
+                    .is_ok()
+            );
+            assert!(
+                validate_for_start(TournamentFormat::Swiss, &settings, MatchFormat::Bo3, 8).is_ok()
+            );
+        }
     }
 
     #[test]

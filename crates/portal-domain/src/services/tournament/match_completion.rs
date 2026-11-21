@@ -552,16 +552,33 @@ where
             // review's own resolution, which resumes it from the match row
             // (so it picks up whatever this ruling just wrote). Forfeits are
             // never under review, so only a `completed` match is held.
+            //
+            // "Pending review" means a review on the match's *current*
+            // result (its latest claim) — a review left over from a result
+            // that was since replayed does not hold anything up.
             if !progressed
                 && match_.status == TournamentMatchStatus::Completed
-                && let Some(review) = self.review_creator.get_for_match(match_id).await?
-                && review.status.is_pending()
+                && self.match_repo.has_result_under_review(match_id).await?
             {
                 info!(
                     match_id = %match_id,
-                    review_id = %review.id,
                     "Settlement deferred: result review still pending"
                 );
+                // The ruling may have changed the winner or score on the row;
+                // standings are derived from rows, so bring them in line now.
+                // Only progression and stage advancement wait for the review
+                // (the stage gate holds the latter on its own).
+                let bracket = self
+                    .bracket_repo
+                    .find_by_id(match_.bracket_id)
+                    .await?
+                    .ok_or(DomainError::TournamentBracketNotFound(match_.bracket_id))?;
+                if matches!(
+                    bracket.bracket_type,
+                    BracketType::RoundRobin | BracketType::Swiss
+                ) {
+                    self.standings_repo.recompute_bracket(bracket.id).await?;
+                }
                 return Ok(SettleOutcome {
                     progression_ran: false,
                     stage_advanced: false,

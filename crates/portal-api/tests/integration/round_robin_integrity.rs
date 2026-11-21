@@ -2299,3 +2299,122 @@ async fn unadvanceable_stage_is_not_thrashed_or_retried_forever() {
     assert_eq!(st[0]["status"], "completed", "{st:?}");
     assert_eq!(st[1]["status"], "active", "{st:?}");
 }
+
+// ============================================================================
+// 19. RULINGS ON A MATCH UNDER REVIEW
+// ============================================================================
+
+async fn insert_pending_review(app: &TestApp, m: &Value, claim_id: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO result_reviews
+             (result_claim_id, match_id, score_mismatch, status,
+              captain1_registration_id, captain2_registration_id)
+         VALUES ($1, $2, true, 'pending_admin_review', $3, $4)
+         RETURNING id",
+    )
+    .bind(Uuid::parse_str(claim_id).unwrap())
+    .bind(Uuid::parse_str(&str_of(m, "id")).unwrap())
+    .bind(Uuid::parse_str(&p1(m)).unwrap())
+    .bind(Uuid::parse_str(&p2(m)).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap()
+}
+
+async fn dispute_and_adjust_to_p2_win(app: &TestApp, cup: &Cup, m: &Value, claim_id: &str) {
+    let match_id = str_of(m, "id");
+    app.post_json_with_token(
+        &format!("/v1/matches/{match_id}/result/{claim_id}/dispute"),
+        &json!({
+            "reason": "wrong_score",
+            "description": "We won that series, the claim is backwards.",
+            "evidence_ids": []
+        }),
+        &cup.tokens[&p2(m)],
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let dispute_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM disputes WHERE match_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    app.post_json(
+        &format!("/v1/admin/disputes/{dispute_id}/resolve/adjusted"),
+        &json!({
+            "new_participant1_score": 1,
+            "new_participant2_score": 2,
+            "notes": "Demo shows participant two won the series."
+        }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
+/// A ruling on a round-robin match that is under review defers progression,
+/// but the standings are derived from the match rows and must follow the
+/// ruling straight away.
+#[tokio::test]
+async fn ruling_on_a_match_under_review_still_recomputes_standings() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-review-standings", 3).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let m = &all[0];
+    let claim_id = submit_claim(&app, &cup, m, &p1(m)).await;
+    insert_pending_review(&app, m, &claim_id).await;
+    dispute_and_adjust_to_p2_win(&app, &cup, m, &claim_id).await;
+
+    let rows = standings(&app, &cup.tournament_id, &str_of(m, "bracket_id")).await;
+    assert_eq!(row_for(&rows, &p2(m))["points"], 3, "{rows:?}");
+    assert_eq!(row_for(&rows, &p2(m))["matches_won"], 1, "{rows:?}");
+    assert_eq!(row_for(&rows, &p1(m))["points"], 0, "{rows:?}");
+}
+
+/// Only a review of the match's current result holds progression back. A
+/// review still pending on an earlier, superseded claim must not.
+#[tokio::test]
+async fn stale_review_on_an_earlier_claim_does_not_defer_a_ruling() {
+    let app = TestApp::new().await;
+    let cup = create_cup(&app, "se-stale-review", "single_elimination", 4, json!({})).await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let m = all.iter().find(|m| m["round"] == 1).unwrap().clone();
+    let match_id = str_of(&m, "id");
+
+    // First claim, with a review left pending on it ...
+    let first_claim = submit_claim(&app, &cup, &m, &p1(&m)).await;
+    insert_pending_review(&app, &m, &first_claim).await;
+    // ... then replaced by a fresh claim, which is the one that gets ruled on.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1(&m),
+                "participant1_score": 2,
+                "participant2_score": 0,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+            &cup.tokens[&p1(&m)],
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let second_claim = response.json::<Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(first_claim, second_claim);
+    dispute_and_adjust_to_p2_win(&app, &cup, &m, &second_claim).await;
+
+    let final_match = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|x| x["round"] == 2)
+        .unwrap();
+    assert!(
+        seats(&final_match, &p2(&m)),
+        "a stale review held the ruling's winner back: {final_match:?}"
+    );
+}

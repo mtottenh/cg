@@ -2159,3 +2159,143 @@ async fn interrupted_forfeit_is_completed_by_a_retry() {
         assert_eq!(again.status, StatusCode::BAD_REQUEST, "{}", again.text());
     }
 }
+
+// ============================================================================
+// 18. A STAGE THAT CANNOT ADVANCE IS NOT RETRIED FOREVER
+// ============================================================================
+
+/// Every group match is settled but the playoffs cannot be seeded (one whole
+/// group has been disqualified, leaving a single finisher). The sweep must
+/// not flip the stage `active → completed → active` on each attempt, and it
+/// must stop after three attempts — until something about the stage's
+/// matches changes, at which point it tries again.
+#[tokio::test]
+async fn unadvanceable_stage_is_not_thrashed_or_retried_forever() {
+    let app = TestApp::new().await;
+    let cup = groups(&app, "rr-stalled-stage", 4, 2, 1).await;
+    let tournament = Uuid::parse_str(&cup.tournament_id).unwrap();
+    let all = matches(&app, &cup.tournament_id).await;
+    let gb = group_brackets(&brackets(&app, &cup.tournament_id).await);
+    let a = bracket_matches(&all, gb[0]["id"].as_str().unwrap());
+    let b = bracket_matches(&all, gb[1]["id"].as_str().unwrap());
+    confirm_win(&app, &cup, &b[0], &p1(&b[0]), (2, 0)).await;
+
+    // Group A: decided, never settled, and both of its players are out.
+    let m = &a[0];
+    sqlx::query(
+        "UPDATE tournament_matches
+         SET status = 'forfeit', winner_registration_id = $2, loser_registration_id = $3,
+             participant1_score = 2, participant2_score = 0, completed_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(Uuid::parse_str(&str_of(m, "id")).unwrap())
+    .bind(Uuid::parse_str(&p1(m)).unwrap())
+    .bind(Uuid::parse_str(&p2(m)).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    sqlx::query("UPDATE tournament_registrations SET status = 'disqualified' WHERE id = ANY($1)")
+        .bind(vec![
+            Uuid::parse_str(&p1(m)).unwrap(),
+            Uuid::parse_str(&p2(m)).unwrap(),
+        ])
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    // Log every stage status change.
+    sqlx::raw_sql(
+        r"
+        CREATE TABLE test_stage_flips (stage_id UUID, old_status TEXT, new_status TEXT);
+        CREATE FUNCTION test_record_stage_flip() RETURNS trigger AS $$
+        BEGIN
+            INSERT INTO test_stage_flips VALUES (NEW.id, OLD.status, NEW.status);
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER test_record_stage_flip AFTER UPDATE ON tournament_stages
+            FOR EACH ROW WHEN (NEW.status <> OLD.status)
+            EXECUTE FUNCTION test_record_stage_flip();
+        ",
+    )
+    .execute(app.pool())
+    .await
+    .unwrap();
+    // Age the last attempt past the idle threshold, keeping it newer than
+    // the (hour-old) matches.
+    let age_attempt = |minutes: i32| {
+        let app = &app;
+        async move {
+            sqlx::query(
+                "UPDATE tournament_stages
+                 SET settlement_attempted_at = NOW() - ($2 * INTERVAL '1 minute')
+                 WHERE tournament_id = $1 AND settlement_attempted_at IS NOT NULL",
+            )
+            .bind(tournament)
+            .bind(f64::from(minutes))
+            .execute(app.pool())
+            .await
+            .unwrap();
+        }
+    };
+    let attempts = || {
+        let app = &app;
+        async move {
+            sqlx::query_scalar::<_, i32>(
+                "SELECT settlement_attempts FROM tournament_stages
+                 WHERE tournament_id = $1 AND stage_order = 1",
+            )
+            .bind(tournament)
+            .fetch_one(app.pool())
+            .await
+            .unwrap()
+        }
+    };
+
+    make_stage_idle(&app, &cup).await;
+    for attempt in 1..=3 {
+        let summary = run_lifecycle(&app).await;
+        assert_eq!(summary.stages_advanced, 0, "{summary:?}");
+        assert_eq!(attempts().await, attempt, "{summary:?}");
+        assert_eq!(
+            summary.stages_stalled,
+            u32::from(attempt == 3),
+            "attempt {attempt}: {summary:?}"
+        );
+        // Straight away: not retried inside the idle period.
+        let summary = run_lifecycle(&app).await;
+        assert_eq!(attempts().await, attempt, "{summary:?}");
+        age_attempt(30).await;
+    }
+
+    // Given up: no fourth attempt however long it waits.
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(attempts().await, 3, "{summary:?}");
+    assert_eq!(summary.stages_stalled, 0, "{summary:?}");
+    assert_eq!(summary.errors, 0, "{summary:?}");
+
+    let flips: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_stage_flips")
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        flips, 0,
+        "a failed advancement must not flip the stage status"
+    );
+    let st = stages(&app, &cup.tournament_id).await;
+    assert_eq!(st[0]["status"], "active");
+    assert_eq!(st[1]["status"], "pending");
+
+    // An admin reinstates a player; the match change re-arms the sweep.
+    sqlx::query("UPDATE tournament_registrations SET status = 'approved' WHERE id = $1")
+        .bind(Uuid::parse_str(&p1(m)).unwrap())
+        .execute(app.pool())
+        .await
+        .unwrap();
+    age_attempt(120).await;
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(summary.stages_advanced, 1, "{summary:?}");
+    let st = stages(&app, &cup.tournament_id).await;
+    assert_eq!(st[0]["status"], "completed", "{st:?}");
+    assert_eq!(st[1]["status"], "active", "{st:?}");
+}

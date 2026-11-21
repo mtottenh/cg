@@ -285,19 +285,28 @@ pub trait TournamentStageRepository: Send + Sync {
     /// round — and none of whose matches (or their result reviews) has been
     /// written since `idle_before`.
     ///
+    /// Only stages that *can* be settled this way are listed: a round robin
+    /// with nothing after it, a group stage whose next stage is still
+    /// pending, or round-robin groups with nothing after them. And a stage
+    /// the sweep already tried `max_attempts` times is left out until one of
+    /// its matches changes (see [`Self::record_settlement_attempt`]); between
+    /// attempts it waits for `idle_before` to pass the last one.
+    ///
     /// Normally empty: the result that finishes a stage advances it. A row
     /// here means that settlement failed (or its process died) after the
     /// result was written; the lifecycle pass re-runs it.
     async fn list_settled_unfinished(
         &self,
         idle_before: DateTime<Utc>,
+        max_attempts: i32,
         limit: i64,
     ) -> Result<Vec<TournamentStageId>, DomainError>;
 
-    /// Bump a stage's `updated_at` without changing anything else — resets
-    /// the idle clock [`Self::list_settled_unfinished`] reads, so a stage
-    /// whose settlement just failed is not retried on the very next pass.
-    async fn touch(&self, id: TournamentStageId) -> Result<(), DomainError>;
+    /// Record that the lifecycle sweep tried to settle this stage and it is
+    /// still open. Returns the number of attempts made since the stage's
+    /// matches last changed (the count restarts at 1 when a match was
+    /// written after the previous attempt).
+    async fn record_settlement_attempt(&self, id: TournamentStageId) -> Result<i32, DomainError>;
 
     /// Take over a `Completed` stage whose last write is older than
     /// `stale_before`, by bumping its `updated_at` — a compare-and-set on the

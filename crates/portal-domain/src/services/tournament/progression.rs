@@ -159,6 +159,14 @@ const fn target_is_still_untouched(status: TournamentMatchStatus) -> bool {
 /// claimed it is gone.
 const STALE_ADVANCEMENT_CLAIM: chrono::Duration = chrono::Duration::minutes(5);
 
+/// What a finished group stage hands to the stage after it (see
+/// `ProgressionService::plan_next_stage`).
+struct NextStagePlan {
+    next_stage: crate::entities::tournament::TournamentStage,
+    participants: Vec<SeededParticipant>,
+    format_plan: MatchFormatPlan,
+}
+
 /// Service for handling bracket progression.
 #[derive(Clone)]
 pub struct ProgressionService<TMR, TBR, TSR, TRR, TSTR> {
@@ -640,11 +648,26 @@ where
             return Ok(None);
         }
 
-        if stage.status == StageStatus::Completed {
+        let stale_takeover = stage.status == StageStatus::Completed;
+        if stale_takeover {
             // Already advanced — or claimed by a caller that never finished.
             if next_stage.status != StageStatus::Pending {
                 return Ok(None);
             }
+        } else if !self.check_stage_completion(stage.id).await? {
+            return Ok(None);
+        }
+
+        // Work out what the next stage would be seeded with *before*
+        // claiming anything. A stage that cannot be advanced (too few
+        // eligible finishers, an unusable playoff format) fails here, with
+        // the stage untouched. It used to be claimed first, fail in
+        // generation and be released again — an `active → completed →
+        // active` flip on every attempt, visible to anything watching the
+        // stage and repeated on every retry.
+        let plan = self.plan_next_stage(&stage, next_stage.clone()).await?;
+
+        if stale_takeover {
             let stale_before = chrono::Utc::now() - STALE_ADVANCEMENT_CLAIM;
             if self
                 .stage_repo
@@ -660,28 +683,23 @@ where
                 "Taking over an abandoned stage advancement"
             );
             self.clear_stage_brackets(next_stage.id).await?;
-        } else {
-            if !self.check_stage_completion(stage.id).await? {
-                return Ok(None);
-            }
+        } else if self
+            .stage_repo
+            .compare_and_set_status(
+                stage.id,
+                vec![StageStatus::Pending, StageStatus::Active],
+                StageStatus::Completed,
+            )
+            .await?
+            .is_none()
+        {
             // The claim. Losing it means another caller is advancing (or
             // has advanced) this stage.
-            if self
-                .stage_repo
-                .compare_and_set_status(
-                    stage.id,
-                    vec![StageStatus::Pending, StageStatus::Active],
-                    StageStatus::Completed,
-                )
-                .await?
-                .is_none()
-            {
-                return Ok(None);
-            }
+            return Ok(None);
         }
 
         match self
-            .advance_to_next_stage(bracket.tournament_id, &stage)
+            .advance_to_next_stage(bracket.tournament_id, &stage, plan)
             .await
         {
             Ok(next_stage_id) => {
@@ -862,23 +880,24 @@ where
         Ok(())
     }
 
-    /// Advance from a completed group stage to the playoff stage.
-    ///
-    /// Reads standings from each group, cross-seeds for playoffs, and generates
-    /// the playoff bracket (SE or DE).
-    async fn advance_to_next_stage(
+    /// Decide what the stage after `completed_stage` will be seeded with:
+    /// the eligible finishers of each group, cross-seeded, and the format
+    /// plan for the playoff matches. Read-only — everything that can make an
+    /// advancement impossible is checked here, before the stage is claimed.
+    async fn plan_next_stage(
         &self,
-        tournament_id: TournamentId,
         completed_stage: &crate::entities::tournament::TournamentStage,
-    ) -> Result<TournamentStageId, DomainError> {
-        // Find the next stage
-        let next_stage = self
-            .stage_repo
-            .find_next_stage(tournament_id, completed_stage.stage_order)
-            .await?
-            .ok_or_else(|| {
-                DomainError::InvalidState("No next stage found for advancement".to_string())
-            })?;
+        next_stage: crate::entities::tournament::TournamentStage,
+    ) -> Result<NextStagePlan, DomainError> {
+        if !matches!(
+            next_stage.format,
+            StageFormat::SingleElimination | StageFormat::DoubleElimination
+        ) {
+            return Err(DomainError::InvalidState(format!(
+                "Unsupported playoff format: {}",
+                next_stage.format
+            )));
+        }
 
         // Get all group brackets ordered by group_number
         let mut group_brackets = self.bracket_repo.list_by_stage(completed_stage.id).await?;
@@ -928,12 +947,9 @@ where
         }
 
         // Cross-seed for playoffs
-        let playoff_participants =
-            groups::cross_seed_for_playoffs(group_standings, advance_per_group);
+        let participants = groups::cross_seed_for_playoffs(group_standings, advance_per_group);
 
-        let num_playoff_participants = playoff_participants.len();
-
-        if num_playoff_participants < 2 {
+        if participants.len() < 2 {
             return Err(DomainError::InvalidState(
                 "Not enough participants advanced to playoffs".to_string(),
             ));
@@ -950,6 +966,29 @@ where
             Some(&next_stage.format_settings),
         )
         .map_err(|e| DomainError::InvalidState(format!("invalid stage format settings: {e}")))?;
+
+        Ok(NextStagePlan {
+            next_stage,
+            participants,
+            format_plan,
+        })
+    }
+
+    /// Advance from a completed (and claimed) group stage to the playoff
+    /// stage: generate the playoff bracket (SE or DE) from `plan` and flip
+    /// the two stage statuses.
+    async fn advance_to_next_stage(
+        &self,
+        tournament_id: TournamentId,
+        completed_stage: &crate::entities::tournament::TournamentStage,
+        plan: NextStagePlan,
+    ) -> Result<TournamentStageId, DomainError> {
+        let NextStagePlan {
+            next_stage,
+            participants: playoff_participants,
+            format_plan,
+        } = plan;
+        let num_playoff_participants = playoff_participants.len();
 
         // Generate playoff brackets based on stage format
         match next_stage.format {

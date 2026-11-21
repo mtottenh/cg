@@ -170,6 +170,7 @@ impl TournamentStageRepository for PgTournamentStageRepository {
     async fn list_settled_unfinished(
         &self,
         idle_before: chrono::DateTime<Utc>,
+        max_attempts: i32,
         limit: i64,
     ) -> Result<Vec<TournamentStageId>, DomainError> {
         // "Idle" is measured on the stage's matches (and the reviews of
@@ -183,10 +184,39 @@ impl TournamentStageRepository for PgTournamentStageRepository {
             SELECT s.id
             FROM tournament_stages s
             JOIN tournaments t ON t.id = s.tournament_id
+            LEFT JOIN LATERAL (
+                SELECT n.status FROM tournament_stages n
+                WHERE n.tournament_id = s.tournament_id AND n.stage_order > s.stage_order
+                ORDER BY n.stage_order ASC
+                LIMIT 1
+            ) nxt ON TRUE
             WHERE t.status = 'in_progress'
               AND s.status IN ('pending', 'active')
-              AND s.format IN ('group_stage', 'round_robin')
               AND EXISTS (SELECT 1 FROM tournament_brackets b WHERE b.stage_id = s.id)
+              -- Shapes stage settlement can actually finish. Anything else
+              -- (a round robin feeding another stage, Swiss groups with no
+              -- playoff) would be listed forever and never change.
+              AND CASE s.format
+                  WHEN 'round_robin' THEN nxt.status IS NULL
+                  WHEN 'group_stage' THEN
+                      nxt.status = 'pending'
+                      OR (nxt.status IS NULL AND NOT EXISTS (
+                          SELECT 1 FROM tournament_brackets b
+                          WHERE b.stage_id = s.id AND b.bracket_type <> 'round_robin'
+                      ))
+                  ELSE FALSE
+              END
+              -- Retry budget: wait out the idle period after an attempt, and
+              -- stop after `max_attempts` until a match changes.
+              AND (
+                  s.settlement_attempted_at IS NULL
+                  OR EXISTS (
+                      SELECT 1 FROM tournament_matches m
+                      JOIN tournament_brackets b ON b.id = m.bracket_id
+                      WHERE b.stage_id = s.id AND m.updated_at > s.settlement_attempted_at
+                  )
+                  OR (s.settlement_attempts < $3 AND s.settlement_attempted_at < $1)
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM tournament_brackets b
                   WHERE b.stage_id = s.id
@@ -217,6 +247,7 @@ impl TournamentStageRepository for PgTournamentStageRepository {
         let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(&sql)
             .bind(idle_before)
             .bind(limit)
+            .bind(max_attempts)
             .fetch_all(&self.pool)
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?;
@@ -227,14 +258,27 @@ impl TournamentStageRepository for PgTournamentStageRepository {
             .collect())
     }
 
-    async fn touch(&self, id: TournamentStageId) -> Result<(), DomainError> {
-        sqlx::query("UPDATE tournament_stages SET updated_at = $2 WHERE id = $1")
-            .bind(id.as_uuid())
-            .bind(Utc::now())
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
-        Ok(())
+    async fn record_settlement_attempt(&self, id: TournamentStageId) -> Result<i32, DomainError> {
+        sqlx::query_scalar::<_, i32>(
+            r"
+            UPDATE tournament_stages s SET
+                settlement_attempts = CASE
+                    WHEN s.settlement_attempted_at IS NULL OR EXISTS (
+                        SELECT 1 FROM tournament_matches m
+                        JOIN tournament_brackets b ON b.id = m.bracket_id
+                        WHERE b.stage_id = s.id AND m.updated_at > s.settlement_attempted_at
+                    ) THEN 1
+                    ELSE s.settlement_attempts + 1
+                END,
+                settlement_attempted_at = NOW()
+            WHERE s.id = $1
+            RETURNING s.settlement_attempts
+            ",
+        )
+        .bind(id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))
     }
 
     async fn reclaim_stale_completed(

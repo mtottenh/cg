@@ -119,10 +119,11 @@ fn render_value(name: &str, value: &Value) -> Result<String, OverrideError> {
     Ok(text)
 }
 
-/// Validate an override set and return it normalised: the same entries,
-/// strings with their leading and trailing spaces dropped (as the agent
-/// drops them), numbers and booleans untouched. An empty map is valid and
-/// clears the overrides.
+/// Validate an override set and return it normalised.
+///
+/// Normalised means the same entries, strings with their leading and
+/// trailing spaces dropped (as the agent drops them), numbers and booleans
+/// untouched. An empty map is valid and clears the overrides.
 ///
 /// # Errors
 ///

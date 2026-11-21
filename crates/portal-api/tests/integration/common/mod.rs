@@ -92,6 +92,28 @@ impl TestApp {
         }
     }
 
+    /// Like [`TestApp::new_with_agent_dev_auth`], and also hands back the
+    /// application's own state — the one whose agent manager holds the
+    /// [`agent::FakeAgent`] connections — so a test can drive a lifecycle
+    /// pass that talks to a connected agent.
+    pub async fn new_with_agent_dev_auth_and_state() -> (Self, AppState) {
+        Self::init_tracing();
+
+        let db = TestDb::new().await;
+        let mut state = AppState::new(db.pool.clone(), "test-jwt-secret").await;
+        state.agent_insecure_dev_auth = true;
+        let app = Self::with_connect_info(create_app(state.clone()));
+
+        (
+            Self {
+                app,
+                db,
+                server_addr: None,
+            },
+            state,
+        )
+    }
+
     /// Create a test application with an injected Steam OpenID verifier
     /// double, so the Steam sign-in callback can be exercised without
     /// network access.

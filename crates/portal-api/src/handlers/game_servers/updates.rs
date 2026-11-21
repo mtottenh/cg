@@ -595,7 +595,7 @@ fn assess_safety(
     // The `players :` line when the server printed one, else the rows.
     let humans_connected = status.as_ref().map(|s| {
         s.humans
-            .unwrap_or(u32::try_from(players.len()).unwrap_or(u32::MAX))
+            .unwrap_or_else(|| u32::try_from(players.len()).unwrap_or(u32::MAX))
     });
 
     let horizon = now + Duration::minutes(IMMINENT_MINUTES);
@@ -863,10 +863,12 @@ pub async fn get_updates(
     let connected = state.agent_manager.is_connected(id);
 
     let installed = versions(update_state.installed_versions.as_ref());
+    let nothing_installed = UpdateVersions::default();
+    let installed_now = installed.as_ref().unwrap_or(&nothing_installed);
     let check = update_state.update_check.as_ref().map(|c| UpdateCheckInfo {
         checked_at: update_state.update_checked_at,
         latest: versions(c.get("latest")).unwrap_or_default(),
-        update_available: availability(c, installed.as_ref().unwrap_or(&UpdateVersions::default())),
+        update_available: availability(c, installed_now),
         demo_upload_block_present: flag(c.get("demo_upload_block_present")),
     });
 

@@ -229,7 +229,7 @@ where
         // Bookkeeping of the helper's record, not versions.
         installed.remove("recorded_at");
         installed.remove("job_id");
-        let installed = (!installed.is_empty()).then(|| Value::Object(installed));
+        let installed = (!installed.is_empty()).then_some(Value::Object(installed));
 
         self.repo
             .record_update_state(server_id, &check, checked_at, installed.as_ref())

@@ -20,6 +20,44 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 /// Maps a console line (or a non-`exec` frame's `cmd`) to `(ok, output)`.
 pub type Script = Arc<dyn Fn(&str) -> (bool, String) + Send + Sync>;
 
+/// Maps a whole command frame (`{id, cmd, args}`) to `(ok, output)` — for
+/// the agent 0.3.0 update commands, whose answers depend on `args`.
+pub type FrameScript = Arc<dyn Fn(&Value) -> (bool, String) + Send + Sync>;
+
+/// The job id [`update_script`] reports for jobs the "agent" starts itself
+/// (`update_check`, the `repair-config` behind `set_matchzy_overrides`).
+pub const AGENT_JOB_ID: &str = "0193a5b0-7c1e-7000-8000-00000000a6e7";
+
+/// A frame script that answers the agent 0.3.0 update commands the way
+/// the real agent does (portal-server-agent README, "Protocol") and
+/// everything else with a canned `ok`.
+pub fn update_script() -> FrameScript {
+    Arc::new(|frame: &Value| {
+        let args = &frame["args"];
+        match frame["cmd"].as_str().unwrap_or_default() {
+            "update_check" => (
+                true,
+                json!({"started": true, "job_id": AGENT_JOB_ID, "operation": "check"}).to_string(),
+            ),
+            "update_start" => (
+                true,
+                json!({"started": true, "job_id": args["job_id"],
+                       "operation": args["operation"]})
+                .to_string(),
+            ),
+            "update_status" => (true, "null".to_string()),
+            "update_ack" => (true, json!({"acked": args["job_id"]}).to_string()),
+            "set_matchzy_overrides" => (
+                true,
+                json!({"written": args["overrides"].as_object().map_or(0, serde_json::Map::len),
+                       "started": true, "job_id": AGENT_JOB_ID, "operation": "repair-config"})
+                .to_string(),
+            ),
+            other => (true, format!("ran: {other}")),
+        }
+    })
+}
+
 pub struct FakeAgent {
     outbox: mpsc::Sender<String>,
     received: Arc<Mutex<Vec<Value>>>,
@@ -29,6 +67,21 @@ pub struct FakeAgent {
 impl FakeAgent {
     /// Connect as `server_id` and start answering frames from `script`.
     pub async fn connect(addr: SocketAddr, server_id: &str, script: Script) -> Self {
+        let by_frame: FrameScript = Arc::new(move |frame: &Value| {
+            let cmd = frame["cmd"].as_str().unwrap_or_default();
+            let line = if cmd == "exec" {
+                frame["args"]["command"].as_str().unwrap_or_default()
+            } else {
+                cmd
+            };
+            script(line)
+        });
+        Self::connect_with(addr, server_id, by_frame).await
+    }
+
+    /// Connect as `server_id` and answer every command frame from `script`,
+    /// which sees the whole frame.
+    pub async fn connect_with(addr: SocketAddr, server_id: &str, script: FrameScript) -> Self {
         let mut request = format!("ws://{addr}/v1/gameserver/agent/ws")
             .into_client_request()
             .expect("agent ws url");
@@ -60,16 +113,7 @@ impl FakeAgent {
                             let frame: Value =
                                 serde_json::from_str(&text).expect("portal frame is JSON");
                             seen.lock().unwrap().push(frame.clone());
-                            let cmd = frame["cmd"].as_str().unwrap_or_default().to_string();
-                            let line = if cmd == "exec" {
-                                frame["args"]["command"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                                    .to_string()
-                            } else {
-                                cmd
-                            };
-                            let (ok, output) = script(&line);
+                            let (ok, output) = script(&frame);
                             let reply = if ok {
                                 json!({ "id": frame["id"], "ok": true, "output": output })
                             } else {
@@ -109,6 +153,54 @@ impl FakeAgent {
             .send(frame.to_string())
             .await
             .expect("agent task alive");
+    }
+
+    /// Send one agent 0.3.0 heartbeat: the 0.2.0 shape plus whatever
+    /// update fields `extra` carries (`capabilities`, `demo_upload_wired`,
+    /// `overrides_applied`, `reload_pending`, `update_job`).
+    pub async fn heartbeat_with(&self, gamestate: &str, status_output: Option<&str>, extra: Value) {
+        let mut frame = json!({
+            "type": "heartbeat",
+            "agent_version": "0.3.0-test",
+            "rcon_ok": true,
+            "get5_status": { "gamestate": gamestate },
+        });
+        if let Some(output) = status_output {
+            frame["status_output"] = json!(output);
+        }
+        if let Some(extra) = extra.as_object() {
+            for (k, v) in extra {
+                frame[k.as_str()] = v.clone();
+            }
+        }
+        self.send(frame).await;
+    }
+
+    /// Push one frame to the portal as-is (`update_progress`,
+    /// `update_result`, `update_state`, ...).
+    pub async fn send(&self, frame: Value) {
+        self.outbox
+            .send(frame.to_string())
+            .await
+            .expect("agent task alive");
+    }
+
+    /// The command frames the portal sent with this `cmd`, in order.
+    pub fn commands(&self, cmd: &str) -> Vec<Value> {
+        self.frames()
+            .into_iter()
+            .filter(|f| f["cmd"] == cmd)
+            .collect()
+    }
+
+    /// Wait (up to 10 s) until the portal has sent at least `n` frames
+    /// with this `cmd`, and return them.
+    pub async fn wait_for_commands(&self, cmd: &str, n: usize) -> Vec<Value> {
+        wait_for(10, || async {
+            let got = self.commands(cmd);
+            (got.len() >= n).then_some(got)
+        })
+        .await
     }
 
     /// Every frame the portal sent, in order.

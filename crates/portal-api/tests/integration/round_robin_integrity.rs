@@ -1644,3 +1644,91 @@ async fn lifecycle_settles_a_finished_stage_whose_settlement_was_lost() {
     let summary = run_lifecycle(&app).await;
     assert_eq!(summary.stages_advanced, 0, "{summary:?}");
 }
+
+// ============================================================================
+// 13. A PENDING RESULT REVIEW IS NOT BYPASSED
+// ============================================================================
+
+/// A match whose completion is waiting on a result review must not be
+/// progressed by a dispute ruling on the same match: "no completed saga"
+/// there means "paused for review", not "never ran". The ruling is recorded;
+/// the winner advances when the review is resolved.
+#[tokio::test]
+async fn dispute_ruling_does_not_bypass_a_pending_result_review() {
+    let app = TestApp::new().await;
+    let cup = create_cup(&app, "se-review-gate", "single_elimination", 4, json!({})).await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let m = all.iter().find(|m| m["round"] == 1).unwrap().clone();
+    let match_id = str_of(&m, "id");
+    let match_uuid = Uuid::parse_str(&match_id).unwrap();
+
+    // p1 claims, p2 disputes; meanwhile the claim is under result review.
+    let claim_id = submit_claim(&app, &cup, &m, &p1(&m)).await;
+    app.post_json_with_token(
+        &format!("/v1/matches/{match_id}/result/{claim_id}/dispute"),
+        &json!({
+            "reason": "wrong_score",
+            "description": "We won that series, the claim is backwards.",
+            "evidence_ids": []
+        }),
+        &cup.tokens[&p2(&m)],
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let review_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO result_reviews
+             (result_claim_id, match_id, score_mismatch, status,
+              captain1_registration_id, captain2_registration_id)
+         VALUES ($1, $2, true, 'pending_admin_review', $3, $4)
+         RETURNING id",
+    )
+    .bind(Uuid::parse_str(&claim_id).unwrap())
+    .bind(match_uuid)
+    .bind(Uuid::parse_str(&p1(&m)).unwrap())
+    .bind(Uuid::parse_str(&p2(&m)).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+
+    let dispute_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM disputes WHERE match_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(match_uuid)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    app.post_json(
+        &format!("/v1/admin/disputes/{dispute_id}/resolve/adjusted"),
+        &json!({
+            "new_participant1_score": 1,
+            "new_participant2_score": 2,
+            "notes": "Demo shows participant two won the series."
+        }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // The ruling is on the match ...
+    let ruled = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(ruled["status"], "completed");
+    assert_eq!(ruled["winner_registration_id"], p2(&m).as_str());
+    // ... but nobody has been advanced past the review.
+    let final_match = |all: Vec<Value>| all.into_iter().find(|x| x["round"] == 2).unwrap();
+    let before = final_match(matches(&app, &cup.tournament_id).await);
+    assert!(
+        !seats(&before, &p1(&m)) && !seats(&before, &p2(&m)),
+        "progression ran past a pending result review: {before:?}"
+    );
+
+    // Resolving the review resumes progression with the ruled result.
+    app.post_json(
+        &format!("/v1/admin/result-reviews/{review_id}/approve"),
+        &json!({ "notes": "Approved after review" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let after = final_match(matches(&app, &cup.tournament_id).await);
+    assert!(seats(&after, &p2(&m)), "{after:?}");
+    assert!(!seats(&after, &p1(&m)), "{after:?}");
+}

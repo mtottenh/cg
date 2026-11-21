@@ -543,6 +543,31 @@ where
                 .await?
                 .iter()
                 .any(|s| s.saga_type == "match_completion" && s.is_completed());
+
+            // "No completed saga" is not always "progression never ran": the
+            // match's completion may be *paused* on a result review (demo
+            // validation flagged it). Running the saga from here — with no
+            // claim id, so demo validation is skipped — would advance the
+            // bracket straight past that review. Leave progression to the
+            // review's own resolution, which resumes it from the match row
+            // (so it picks up whatever this ruling just wrote). Forfeits are
+            // never under review, so only a `completed` match is held.
+            if !progressed
+                && match_.status == TournamentMatchStatus::Completed
+                && let Some(review) = self.review_creator.get_for_match(match_id).await?
+                && review.status.is_pending()
+            {
+                info!(
+                    match_id = %match_id,
+                    review_id = %review.id,
+                    "Settlement deferred: result review still pending"
+                );
+                return Ok(SettleOutcome {
+                    progression_ran: false,
+                    stage_advanced: false,
+                });
+            }
+
             if !progressed {
                 let (winner_score, loser_score) =
                     if match_.participant1_registration_id == Some(winner) {

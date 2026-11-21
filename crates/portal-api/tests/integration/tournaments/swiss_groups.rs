@@ -1234,3 +1234,98 @@ async fn test_completed_swiss_group_stage_does_not_block_tournament_completion()
         "a finished group stage must not hold the tournament open: {body}"
     );
 }
+
+// ============================================================================
+// Partial failure of generate-next-round
+// ============================================================================
+
+/// When one group's round cannot be set up after its matches were written,
+/// the round is taken back, so the 409's "not for <group>" is true: that
+/// group is still on its old round with no half-made matches, and a retry
+/// generates it. (It used to be listed as not advanced while its round — with
+/// empty, unopened matches — existed and could never be regenerated.)
+#[tokio::test]
+async fn test_partial_generation_failure_leaves_the_failed_group_untouched() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament(
+        &app,
+        "swg-partial-failure",
+        "groups_and_playoffs",
+        json!({
+            "group_count": 2,
+            "advance_per_group": 2,
+            "group_format": "swiss",
+            "playoff_format": "single_elimination"
+        }),
+    )
+    .await;
+    let tokens = register_and_start(&app, &tournament_id, 8, "part").await;
+    let mut brackets = list_brackets(&app, &tournament_id).await;
+    brackets.sort_by_key(|b| b["group_number"].as_i64());
+    let group_a = brackets[0]["id"].as_str().unwrap().to_string();
+    let group_b = brackets[1]["id"].as_str().unwrap().to_string();
+    let groups = swiss_bracket_ids(&brackets);
+    play_open_matches(&app, &tournament_id, &groups, &tokens).await;
+
+    // Group B's round-2 matches can be inserted but not touched afterwards
+    // (seating participants and opening them are UPDATEs).
+    sqlx::raw_sql(&format!(
+        r"
+        CREATE FUNCTION test_reject_round2_update() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'injected round setup failure'; END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER test_reject_round2_update BEFORE UPDATE ON tournament_matches
+            FOR EACH ROW WHEN (NEW.bracket_id = '{group_b}' AND NEW.round = 2)
+            EXECUTE FUNCTION test_reject_round2_update();
+        "
+    ))
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    let response = generate_next_round(&app, &tournament_id).await;
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text());
+    let text = response.text();
+    assert!(
+        text.contains("Group A") && text.contains("not for Group B"),
+        "{text}"
+    );
+
+    let round_of = |brackets: &[serde_json::Value], id: &str| {
+        brackets.iter().find(|b| b["id"] == id).unwrap()["current_round"]
+            .as_i64()
+            .unwrap()
+    };
+    let after = list_brackets(&app, &tournament_id).await;
+    assert_eq!(round_of(&after, &group_a), 2, "group A advanced");
+    assert_eq!(
+        round_of(&after, &group_b),
+        1,
+        "group B was reported as not advanced, so it must not have been"
+    );
+    let b_round2 = list_matches(&app, &tournament_id)
+        .await
+        .into_iter()
+        .filter(|m| m["bracket_id"] == group_b.as_str() && m["round"] == 2)
+        .count();
+    assert_eq!(b_round2, 0, "no half-made round-2 matches left in group B");
+
+    // With the fault gone, a retry generates exactly group B's round.
+    sqlx::raw_sql("DROP TRIGGER test_reject_round2_update ON tournament_matches")
+        .execute(app.pool())
+        .await
+        .unwrap();
+    let retry = generate_next_round(&app, &tournament_id).await;
+    retry.assert_status(StatusCode::OK);
+    let new_matches = retry.json::<serde_json::Value>()["data"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(new_matches.len(), 2);
+    for m in &new_matches {
+        assert_eq!(m["bracket_id"], group_b.as_str());
+        assert_eq!(m["status"], "ready", "{m}");
+        assert!(m["participant1_registration_id"].is_string(), "{m}");
+        assert!(m["participant2_registration_id"].is_string(), "{m}");
+    }
+}

@@ -28,6 +28,22 @@ use crate::repositories::tournament::{
 use super::bracket_generator::{BracketGenerator, CrossLinkType};
 use super::registration::initial_registration_status;
 
+/// Why one bracket's next Swiss round was not generated.
+enum SwissRoundFailure {
+    /// Nothing was left behind: the bracket is on the round it was on and a
+    /// retry starts clean.
+    NotAdvanced(DomainError),
+    /// The round was created, finishing it failed, and so did undoing it.
+    Incomplete(DomainError),
+}
+
+impl From<DomainError> for SwissRoundFailure {
+    /// Everything that fails before the round is claimed.
+    fn from(e: DomainError) -> Self {
+        Self::NotAdvanced(e)
+    }
+}
+
 /// Service for tournament management.
 pub struct TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR, TIR>
 where
@@ -1906,6 +1922,7 @@ where
         let mut new_matches = Vec::new();
         let mut advanced: Vec<String> = Vec::new();
         let mut failed: Vec<(String, DomainError)> = Vec::new();
+        let mut incomplete: Vec<(String, DomainError)> = Vec::new();
         let mut lost_race = false;
         let mut blocked: Option<DomainError> = None;
         for bracket in brackets {
@@ -1949,7 +1966,7 @@ where
                     new_matches.extend(matches);
                 }
                 Ok(None) => lost_race = true,
-                Err(e) => {
+                Err(SwissRoundFailure::NotAdvanced(e)) => {
                     tracing::warn!(
                         bracket_id = %bracket.id,
                         error = %e,
@@ -1957,9 +1974,40 @@ where
                     );
                     failed.push((bracket.name.clone(), e));
                 }
+                Err(SwissRoundFailure::Incomplete(e)) => {
+                    tracing::error!(
+                        bracket_id = %bracket.id,
+                        error = %e,
+                        "Swiss round was created but could not be finished or rolled back"
+                    );
+                    incomplete.push((bracket.name.clone(), e));
+                }
             }
         }
 
+        if !incomplete.is_empty() {
+            // The round exists for these brackets — never report them as
+            // "not advanced", and do not invite a retry that cannot help.
+            let describe = |list: &[(String, DomainError)]| {
+                list.iter()
+                    .map(|(name, e)| format!("{name} ({e})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let mut parts = vec![format!(
+                "The next round was created for {} but setting it up failed part-way and \
+                 could not be undone; its matches need admin attention",
+                describe(&incomplete)
+            )];
+            if !advanced.is_empty() {
+                parts.push(format!("Generated normally for {}", advanced.join(", ")));
+            }
+            if !failed.is_empty() {
+                parts.push(format!("Not generated for {}", describe(&failed)));
+            }
+            let message = parts.join(". ");
+            return Err(DomainError::Conflict(message));
+        }
         if !failed.is_empty() {
             if advanced.is_empty() {
                 // Nothing changed: report the failure as it is.
@@ -1996,14 +2044,21 @@ where
     ///
     /// The round is claimed with a compare-and-set on `current_round` before
     /// any match is written, so of two concurrent requests exactly one pairs
-    /// it; the other gets `Ok(None)` and leaves the bracket alone. If writing
-    /// the matches fails the claim is released, so a retry can try again.
+    /// it; the other gets `Ok(None)` and leaves the bracket alone.
+    ///
+    /// A failure is all-or-nothing wherever that can be arranged: if writing
+    /// the matches, seating their participants, opening them or recording the
+    /// bye fails, the round's matches are deleted and the claim released, and
+    /// the error is [`SwissRoundFailure::NotAdvanced`] — the bracket really is
+    /// where it was and a retry starts clean. Only when that undo itself fails
+    /// is the error [`SwissRoundFailure::Incomplete`]: the round exists and
+    /// must not be reported as "not advanced".
     async fn generate_swiss_round_for_bracket(
         &self,
         tournament: &Tournament,
         bracket: &TournamentBracket,
         all_matches: &[TournamentMatch],
-    ) -> Result<Option<Vec<TournamentMatch>>, DomainError> {
+    ) -> Result<Option<Vec<TournamentMatch>>, SwissRoundFailure> {
         let tournament_id = tournament.id;
         let next_round = bracket.current_round + 1;
 
@@ -2110,8 +2165,7 @@ where
         }
 
         // Create matches (one statement). On failure nothing was written, so
-        // hand the round back; past this point the round exists and a later
-        // failure is reported without rolling the claim back.
+        // hand the round back.
         let new_matches = match self.match_repo.bulk_create(generated.matches).await {
             Ok(matches) => matches,
             Err(e) => {
@@ -2125,39 +2179,94 @@ where
                         error = %release_err,
                         "Failed to release Swiss round claim after match insert failed"
                     );
+                    return Err(SwissRoundFailure::Incomplete(e));
                 }
-                return Err(e);
+                return Err(SwissRoundFailure::NotAdvanced(e));
             }
         };
-        let position_to_match = Self::build_position_map(&new_matches);
-        self.apply_initial_assignments(&generated.initial_assignments, &position_to_match)
-            .await?;
 
-        // Record the round's bye, if any. Byes have no match row, so the
-        // derived standings recompute folds them in from this table
-        // instead. Recording is keyed on (bracket, registration, round),
-        // so re-running round generation cannot award it twice.
-        if let Some(bye_id) = bye_participant {
-            self.standings_repo
-                .record_bye(bracket.id, bye_id, next_round)
+        // Seat the participants, open the matches and record the bye. Any of
+        // these failing leaves a round nobody can play (empty or unopened
+        // matches, a bye with no points) that no retry would repair — the
+        // round is already claimed — so undo the round instead.
+        //
+        // The bye goes last: it is the one write the undo below cannot take
+        // back, so nothing that can fail-and-undo may follow it. Byes have no
+        // match row, so the derived standings recompute folds them in from
+        // this table; recording is keyed on (bracket, registration, round).
+        let finish: Result<(), DomainError> = async {
+            let position_to_match = Self::build_position_map(&new_matches);
+            self.apply_initial_assignments(&generated.initial_assignments, &position_to_match)
                 .await?;
+            self.mark_ready_matches(bracket.id).await?;
+            if let Some(bye_id) = bye_participant {
+                self.standings_repo
+                    .record_bye(bracket.id, bye_id, next_round)
+                    .await?;
+            }
+            Ok(())
         }
-        self.standings_repo.recompute_bracket(bracket.id).await?;
+        .await;
+        if let Err(e) = finish {
+            let undo: Result<(), DomainError> = async {
+                for m in &new_matches {
+                    self.match_repo.delete(m.id).await?;
+                }
+                if !self
+                    .bracket_repo
+                    .compare_and_set_current_round(bracket.id, next_round, bracket.current_round)
+                    .await?
+                {
+                    return Err(DomainError::Internal(
+                        "Swiss round claim was no longer held".to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            .await;
+            return Err(match undo {
+                Ok(()) => SwissRoundFailure::NotAdvanced(e),
+                Err(undo_err) => {
+                    tracing::error!(
+                        bracket_id = %bracket.id,
+                        error = %undo_err,
+                        "Failed to undo a half-created Swiss round"
+                    );
+                    SwissRoundFailure::Incomplete(e)
+                }
+            });
+        }
 
-        // Mark matches with both participants as Ready
-        self.mark_ready_matches(bracket.id).await?;
+        // The round is complete and playable from here on; what is left is
+        // derived data. A failed recompute only leaves the bye's points out
+        // of the standings until the next result in this bracket recomputes
+        // them, so it does not fail the round.
+        if let Err(e) = self.standings_repo.recompute_bracket(bracket.id).await {
+            tracing::warn!(
+                bracket_id = %bracket.id,
+                error = %e,
+                "Standings recompute failed after generating a Swiss round"
+            );
+        }
 
         // Return the rows as they now stand: `new_matches` predates the
         // participant assignment and the Ready flip above.
         let created: std::collections::HashSet<TournamentMatchId> =
             new_matches.iter().map(|m| m.id).collect();
-        let fresh = self
-            .match_repo
-            .list_by_bracket(bracket.id)
-            .await?
-            .into_iter()
-            .filter(|m| created.contains(&m.id))
-            .collect();
+        let fresh = match self.match_repo.list_by_bracket(bracket.id).await {
+            Ok(all) => all
+                .into_iter()
+                .filter(|m| created.contains(&m.id))
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    bracket_id = %bracket.id,
+                    error = %e,
+                    "Could not re-read a generated Swiss round; returning it as created"
+                );
+                new_matches
+            }
+        };
         Ok(Some(fresh))
     }
 

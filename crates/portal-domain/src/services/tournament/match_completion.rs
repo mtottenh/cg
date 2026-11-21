@@ -341,6 +341,56 @@ where
         Ok(Some(outcome))
     }
 
+    /// Do for the matches `source_match_id` feeds what the saga does after
+    /// seating participants in them: open each one that now has both
+    /// participants, and walk it over if one of them has left the
+    /// tournament ([`Self::settle_departed`]).
+    ///
+    /// For the manual progression endpoints, which seat participants through
+    /// `ProgressionService` rather than this saga. Their own "newly ready"
+    /// pass only looks at the processed match's bracket, so a loser dropped
+    /// into the losers bracket — or a winner sent to the grand final — sat
+    /// in a match that was never opened. The targets here are the same ones
+    /// the saga uses: the match's winner and loser links.
+    ///
+    /// Returns the matches it opened.
+    #[instrument(skip(self))]
+    pub async fn settle_fed_matches(
+        &self,
+        source_match_id: TournamentMatchId,
+    ) -> Result<Vec<TournamentMatchId>, DomainError> {
+        let source = self
+            .match_repo
+            .find_by_id(source_match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(source_match_id))?;
+        let mut opened = Vec::new();
+        for target_id in [source.winner_progresses_to, source.loser_progresses_to]
+            .into_iter()
+            .flatten()
+        {
+            if self.mark_ready_if_seated(target_id).await? {
+                opened.push(target_id);
+            }
+            self.settle_departed(target_id).await?;
+        }
+        Ok(opened)
+    }
+
+    /// Open `match_id` (`pending → ready`) if both participants are seated.
+    async fn mark_ready_if_seated(&self, match_id: TournamentMatchId) -> Result<bool, DomainError> {
+        if let Some(target) = self.match_repo.find_by_id(match_id).await?
+            && target.status == TournamentMatchStatus::Pending
+            && target.has_both_participants()
+        {
+            self.match_repo
+                .update_status(match_id, TournamentMatchStatus::Ready)
+                .await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// [`Self::settle_result`] behind a boxed future: settling a departure
     /// forfeit from inside a running saga re-enters the saga, and the
     /// recursion needs an indirection.
@@ -1312,13 +1362,7 @@ where
             .into_iter()
             .flatten()
         {
-            if let Some(target) = self.match_repo.find_by_id(target_id).await?
-                && target.status == TournamentMatchStatus::Pending
-                && target.has_both_participants()
-            {
-                self.match_repo
-                    .update_status(target_id, TournamentMatchStatus::Ready)
-                    .await?;
+            if self.mark_ready_if_seated(target_id).await? {
                 newly_ready.push(target_id.to_string());
             }
         }

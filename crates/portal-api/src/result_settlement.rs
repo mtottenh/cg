@@ -40,13 +40,27 @@ pub async fn rederive(
     log_outcome(match_id, result)
 }
 
-/// Walk over any of `match_ids` that is playable against a participant who
-/// has left the tournament (see `MatchCompletionSaga::settle_departed`).
+/// After a manual progression of `source_match_id`: open the matches it fed
+/// and walk over any of them — or of `newly_ready` — that is playable
+/// against a participant who has left the tournament.
 ///
-/// The saga does this itself for the matches a completion feeds; this is for
-/// the manual progression endpoints, which move participants without it.
-pub async fn settle_departed(saga: &AppMatchCompletionSaga, match_ids: &[TournamentMatchId]) {
-    for &match_id in match_ids {
+/// The saga does this itself for the matches a completion feeds; the manual
+/// progression endpoints move participants without it (see
+/// `MatchCompletionSaga::settle_fed_matches`). Best-effort: the progression
+/// itself has already been applied.
+pub async fn settle_after_manual_progression(
+    saga: &AppMatchCompletionSaga,
+    source_match_id: TournamentMatchId,
+    newly_ready: &[TournamentMatchId],
+) {
+    if let Err(e) = saga.settle_fed_matches(source_match_id).await {
+        warn!(
+            match_id = %source_match_id,
+            error = %e,
+            "Opening the matches fed by a manual progression failed"
+        );
+    }
+    for &match_id in newly_ready {
         if let Err(e) = saga.settle_departed(match_id).await {
             warn!(
                 %match_id,

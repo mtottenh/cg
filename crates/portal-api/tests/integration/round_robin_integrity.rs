@@ -2418,3 +2418,90 @@ async fn stale_review_on_an_earlier_claim_does_not_defer_a_ruling() {
         "a stale review held the ruling's winner back: {final_match:?}"
     );
 }
+
+// ============================================================================
+// 20. MANUAL PROGRESSION OPENS THE MATCHES IT FEEDS
+// ============================================================================
+
+/// `progression/process` on a winners-bracket match drops its loser into the
+/// losers bracket — a different bracket from the one the endpoint scanned
+/// for newly ready matches. That losers-bracket match must be opened once
+/// both its participants are seated, and walked over if one of them has
+/// left the tournament, exactly as the completion saga does.
+#[tokio::test]
+async fn manual_progression_opens_and_settles_cross_bracket_matches() {
+    let app = TestApp::new().await;
+    let cup = create_cup(
+        &app,
+        "de-manual-progress",
+        "double_elimination",
+        4,
+        json!({}),
+    )
+    .await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let openers: Vec<Value> = all
+        .iter()
+        .filter(|m| {
+            m["participant1_registration_id"].is_string()
+                && m["participant2_registration_id"].is_string()
+        })
+        .cloned()
+        .collect();
+    assert_eq!(openers.len(), 2, "{all:?}");
+
+    // Record both openers by hand (participant 1 wins), through the manual
+    // progression endpoint only.
+    let process = |m: Value| {
+        let app = &app;
+        let cup = &cup;
+        async move {
+            let match_id = str_of(&m, "id");
+            transition_match_to_in_progress(app, &cup.tournament_id, &match_id).await;
+            app.post_json(
+                &format!("/v1/admin/matches/{match_id}/progression/process"),
+                &json!({
+                    "winner_registration_id": p1(&m),
+                    "loser_registration_id": p2(&m)
+                }),
+            )
+            .await
+            .assert_status(StatusCode::OK);
+        }
+    };
+    process(openers[0].clone()).await;
+
+    // The first loser now waits in the losers bracket — and is disqualified.
+    let departed = p2(&openers[0]);
+    app.post_json(
+        &format!(
+            "/v1/admin/tournaments/{}/registrations/{departed}/disqualify",
+            cup.tournament_id
+        ),
+        &json!({ "reason": "Cheating confirmed by the admin team" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    process(openers[1].clone()).await;
+    let other_loser = p2(&openers[1]);
+
+    let all = matches(&app, &cup.tournament_id).await;
+    let losers_match = all
+        .iter()
+        .find(|m| m["id"] != openers[0]["id"] && seats(m, &departed))
+        .expect("the loser was dropped into the losers bracket");
+    assert!(seats(losers_match, &other_loser), "{losers_match:?}");
+    assert_eq!(
+        losers_match["status"], "forfeit",
+        "the losers-bracket match was opened and walked over: {losers_match:?}"
+    );
+    assert_eq!(losers_match["winner_registration_id"], other_loser.as_str());
+    // The winners' final was opened too.
+    let winners_final = all
+        .iter()
+        .find(|m| seats(m, &p1(&openers[0])) && seats(m, &p1(&openers[1])))
+        .expect("both winners meet");
+    assert_eq!(winners_final["status"], "ready", "{winners_final:?}");
+}

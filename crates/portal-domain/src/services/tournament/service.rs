@@ -35,7 +35,17 @@ enum SwissRoundFailure {
     NotAdvanced(DomainError),
     /// The round was created, finishing it failed, and so did undoing it.
     Incomplete(DomainError),
+    /// The round was claimed, none of its matches could be written, and the
+    /// claim could not be released. Nothing exists; a later
+    /// generate-next-round releases the stale claim and generates the round.
+    ClaimStuck(DomainError),
 }
+
+/// How long a claimed Swiss round may have no matches before a later
+/// generate-next-round treats the claim as abandoned. The claim and the
+/// match insert are consecutive statements, so a live generation holds an
+/// empty claim for milliseconds.
+const STALE_SWISS_ROUND_CLAIM: chrono::Duration = chrono::Duration::seconds(60);
 
 impl From<DomainError> for SwissRoundFailure {
     /// Everything that fails before the round is claimed.
@@ -1923,10 +1933,45 @@ where
         let mut advanced: Vec<String> = Vec::new();
         let mut failed: Vec<(String, DomainError)> = Vec::new();
         let mut incomplete: Vec<(String, DomainError)> = Vec::new();
+        let mut stuck: Vec<(String, DomainError)> = Vec::new();
         let mut lost_race = false;
         let mut blocked: Option<DomainError> = None;
-        for bracket in brackets {
+        for mut bracket in brackets {
             let all_matches = self.match_repo.list_by_bracket(bracket.id).await?;
+
+            // A round that was claimed but has no matches. Either a
+            // concurrent request holds the claim and is about to insert them
+            // (a recent claim: leave it alone), or a generation failed to
+            // insert its matches *and* to hand the claim back — which would
+            // otherwise block the bracket for good on "no matches found for
+            // the current round". An old empty claim is treated as what it
+            // is, a round that was never generated: release it and generate
+            // the round now.
+            if bracket.current_round > 1
+                && !all_matches.iter().any(|m| m.round == bracket.current_round)
+            {
+                let abandoned = bracket.updated_at < chrono::Utc::now() - STALE_SWISS_ROUND_CLAIM;
+                if !abandoned
+                    || !self
+                        .bracket_repo
+                        .compare_and_set_current_round(
+                            bracket.id,
+                            bracket.current_round,
+                            bracket.current_round - 1,
+                        )
+                        .await?
+                {
+                    lost_race = true;
+                    continue;
+                }
+                tracing::warn!(
+                    bracket_id = %bracket.id,
+                    round = bracket.current_round,
+                    "Released an abandoned Swiss round claim with no matches"
+                );
+                bracket.current_round -= 1;
+            }
+
             let current_round_matches: Vec<&TournamentMatch> = all_matches
                 .iter()
                 .filter(|m| m.round == bracket.current_round)
@@ -1974,6 +2019,14 @@ where
                     );
                     failed.push((bracket.name.clone(), e));
                 }
+                Err(SwissRoundFailure::ClaimStuck(e)) => {
+                    tracing::error!(
+                        bracket_id = %bracket.id,
+                        error = %e,
+                        "Swiss round claim could not be released after its match insert failed"
+                    );
+                    stuck.push((bracket.name.clone(), e));
+                }
                 Err(SwissRoundFailure::Incomplete(e)) => {
                     tracing::error!(
                         bracket_id = %bracket.id,
@@ -1985,7 +2038,7 @@ where
             }
         }
 
-        if !incomplete.is_empty() {
+        if !incomplete.is_empty() || !stuck.is_empty() {
             // The round exists for these brackets — never report them as
             // "not advanced", and do not invite a retry that cannot help.
             let describe = |list: &[(String, DomainError)]| {
@@ -1994,11 +2047,22 @@ where
                     .collect::<Vec<_>>()
                     .join(", ")
             };
-            let mut parts = vec![format!(
-                "The next round was created for {} but setting it up failed part-way and \
-                 could not be undone; its matches need admin attention",
-                describe(&incomplete)
-            )];
+            let mut parts = Vec::new();
+            if !incomplete.is_empty() {
+                parts.push(format!(
+                    "The next round was created for {} but setting it up failed part-way and \
+                     could not be undone; its matches need admin attention",
+                    describe(&incomplete)
+                ));
+            }
+            if !stuck.is_empty() {
+                parts.push(format!(
+                    "No round was generated for {}: its matches could not be written and the \
+                     round's claim could not be released. Nothing was created; call \
+                     generate-next-round again in a minute and it will be regenerated",
+                    describe(&stuck)
+                ));
+            }
             if !advanced.is_empty() {
                 parts.push(format!("Generated normally for {}", advanced.join(", ")));
             }
@@ -2179,7 +2243,7 @@ where
                         error = %release_err,
                         "Failed to release Swiss round claim after match insert failed"
                     );
-                    return Err(SwissRoundFailure::Incomplete(e));
+                    return Err(SwissRoundFailure::ClaimStuck(e));
                 }
                 return Err(SwissRoundFailure::NotAdvanced(e));
             }

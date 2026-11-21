@@ -1329,3 +1329,66 @@ async fn test_partial_generation_failure_leaves_the_failed_group_untouched() {
         assert!(m["participant2_registration_id"].is_string(), "{m}");
     }
 }
+
+/// A generation that failed to insert its matches *and* to release its claim
+/// leaves the bracket on a round that has no matches. That must not block
+/// the bracket: a later generate-next-round treats the old, empty claim as a
+/// round that was never generated, and generates it.
+#[tokio::test]
+async fn test_abandoned_round_claim_with_no_matches_is_regenerated() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament(&app, "sw-stuck-claim", "swiss", json!({})).await;
+    let tokens = register_and_start(&app, &tournament_id, 4, "stuck").await;
+    let ids = swiss_bracket_ids(&list_brackets(&app, &tournament_id).await);
+    play_open_matches(&app, &tournament_id, &ids, &tokens).await;
+    let bracket_id = ids.iter().next().unwrap().clone();
+
+    // The claim, with nothing behind it.
+    let claim = |age_minutes: i32| {
+        let app = &app;
+        let bracket_id = bracket_id.clone();
+        async move {
+            sqlx::raw_sql(&format!(
+                "ALTER TABLE tournament_brackets DISABLE TRIGGER tournament_brackets_updated_at;
+                 UPDATE tournament_brackets
+                 SET current_round = 2, updated_at = NOW() - INTERVAL '{age_minutes} minutes'
+                 WHERE id = '{bracket_id}';
+                 ALTER TABLE tournament_brackets ENABLE TRIGGER tournament_brackets_updated_at;"
+            ))
+            .execute(app.pool())
+            .await
+            .unwrap();
+        }
+    };
+
+    // A fresh empty claim is a generation in flight: hands off.
+    claim(0).await;
+    let response = generate_next_round(&app, &tournament_id).await;
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text());
+    assert_eq!(list_matches(&app, &tournament_id).await.len(), 2);
+
+    // An old one is abandoned: the round is generated.
+    claim(5).await;
+    let response = generate_next_round(&app, &tournament_id).await;
+    assert_eq!(
+        response.status,
+        StatusCode::OK,
+        "an abandoned empty claim must not block the bracket: {}",
+        response.text()
+    );
+    let new_matches = response.json::<serde_json::Value>()["data"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(new_matches.len(), 2);
+    for m in &new_matches {
+        assert_eq!(m["round"], 2, "{m}");
+        assert_eq!(m["status"], "ready", "{m}");
+    }
+    let bracket = list_brackets(&app, &tournament_id)
+        .await
+        .into_iter()
+        .find(|b| b["id"] == bracket_id.as_str())
+        .unwrap();
+    assert_eq!(bracket["current_round"], 2);
+}

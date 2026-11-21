@@ -1565,3 +1565,82 @@ async fn final_between_two_departed_teams_is_called_off() {
     assert_eq!(final_match["status"], "cancelled", "{final_match:?}");
     assert!(final_match["winner_registration_id"].is_null());
 }
+
+// ============================================================================
+// 12. SETTLEMENT THAT FAILED IS RETRIED
+// ============================================================================
+
+/// A forfeit lands on a group's last match but its settlement never runs
+/// (the request died, or the settle failed, after the forfeit committed).
+/// No saga row exists to re-drive and no further result will ever arrive,
+/// so the lifecycle pass must notice the finished-but-open stage itself.
+#[tokio::test]
+async fn lifecycle_settles_a_finished_stage_whose_settlement_was_lost() {
+    let app = TestApp::new().await;
+    let cup = groups(&app, "rr-lost-settle", 4, 2, 1).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let gb = group_brackets(&brackets(&app, &cup.tournament_id).await);
+    let a = bracket_matches(&all, gb[0]["id"].as_str().unwrap());
+    let b = bracket_matches(&all, gb[1]["id"].as_str().unwrap());
+    confirm_win(&app, &cup, &b[0], &p1(&b[0]), (2, 0)).await;
+
+    // The forfeit write, with nothing after it.
+    let m = &a[0];
+    sqlx::query(
+        "UPDATE tournament_matches
+         SET status = 'forfeit', winner_registration_id = $2, loser_registration_id = $3,
+             participant1_score = 0, participant2_score = 2, completed_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(Uuid::parse_str(&str_of(m, "id")).unwrap())
+    .bind(Uuid::parse_str(&p2(m)).unwrap())
+    .bind(Uuid::parse_str(&p1(m)).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    let st = stages(&app, &cup.tournament_id).await;
+    assert_eq!(st[0]["status"], "active");
+    assert_eq!(st[1]["status"], "pending");
+
+    // A stage that was touched moments ago is left to its live settlement.
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(summary.stages_advanced, 0, "{summary:?}");
+    assert_eq!(
+        stages(&app, &cup.tournament_id).await[1]["status"],
+        "pending"
+    );
+
+    // Once it has sat idle past the threshold, the pass settles it.
+    // (`updated_at` is maintained by a trigger, so backdating needs it off.)
+    sqlx::raw_sql(&format!(
+        "ALTER TABLE tournament_stages DISABLE TRIGGER tournament_stages_updated_at;
+         UPDATE tournament_stages SET updated_at = NOW() - INTERVAL '1 hour'
+         WHERE tournament_id = '{}';
+         ALTER TABLE tournament_stages ENABLE TRIGGER tournament_stages_updated_at;",
+        cup.tournament_id
+    ))
+    .execute(app.pool())
+    .await
+    .unwrap();
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(summary.stages_advanced, 1, "{summary:?}");
+
+    let st = stages(&app, &cup.tournament_id).await;
+    assert_eq!(st[0]["status"], "completed", "{st:?}");
+    assert_eq!(st[1]["status"], "active", "{st:?}");
+    let rows = standings(&app, &cup.tournament_id, gb[0]["id"].as_str().unwrap()).await;
+    assert_eq!(row_for(&rows, &p2(m))["points"], 3, "{rows:?}");
+    let mut expected = vec![p2(m), p1(&b[0])];
+    expected.sort();
+    assert_eq!(
+        playoff_participants(
+            &matches(&app, &cup.tournament_id).await,
+            &brackets(&app, &cup.tournament_id).await
+        ),
+        expected
+    );
+
+    // Nothing left to do on the next pass.
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(summary.stages_advanced, 0, "{summary:?}");
+}

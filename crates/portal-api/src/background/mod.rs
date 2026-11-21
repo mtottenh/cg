@@ -44,6 +44,7 @@ use portal_domain::entities::saga::StepStatus;
 use portal_domain::entities::tournament::TournamentMatch;
 use portal_domain::repositories::tournament::{
     TournamentMapPoolRepository as _, TournamentMatchRepository as _,
+    TournamentStageRepository as _,
 };
 use portal_domain::services::tournament::{MatchCompletionInput, SagaCoordinator};
 use rand::Rng;
@@ -142,6 +143,9 @@ pub struct LifecyclePassSummary {
     pub proposals_expired: u32,
     /// Failed/stuck `match_completion` sagas successfully re-driven.
     pub sagas_redriven: u32,
+    /// Stages whose results were all in but had never been settled, and
+    /// which this pass advanced (next stage seeded).
+    pub stages_advanced: u32,
     /// Evidence records expired.
     pub evidence_expired: u32,
     /// Stale pending evidence records cleaned.
@@ -263,6 +267,11 @@ pub async fn run_lifecycle_pass(
     // 5: re-drive failed / stuck match-completion sagas
     // ------------------------------------------------------------------
     redrive_stuck_completion_sagas(state, cfg, now, &mut summary).await;
+
+    // ------------------------------------------------------------------
+    // 5b: settle stages whose results are all in but were never settled
+    // ------------------------------------------------------------------
+    settle_finished_stages(state, cfg, now, &mut summary).await;
 
     // ------------------------------------------------------------------
     // 6: evidence hygiene (slower cadence)
@@ -845,6 +854,71 @@ async fn redrive_stuck_completion_sagas(
                     raise_progression_stall(state, &input, saga_id).await;
                 }
             }
+        }
+    }
+}
+
+/// Re-run settlement for stages that are finished on paper — every match
+/// settled — but still open.
+///
+/// Why this is needed: only a full completion saga leaves a row for
+/// [`redrive_stuck_completion_sagas`] to retry. The other ways a result
+/// lands — a forfeit / no-show / withdrawal, a double forfeit, an admin
+/// override, a dispute ruling — write the match and then settle
+/// best-effort (`result_settlement`); if that settle failed, or the process
+/// died before reaching it, nothing recorded that it was owed. When it was
+/// the stage's last result, the groups never handed over to the playoffs
+/// and no later result would ever come along to trigger it.
+///
+/// The work list is derived from the data rather than from a marker, so it
+/// also covers the failure that could not have written one (the database
+/// being the thing that failed). `saga_stuck_after` doubles as the idle
+/// threshold: a stage whose advancement keeps failing is retried at that
+/// cadence, not on every tick. Safe against a live settlement — stage
+/// advancement is claimed with a compare-and-set, so only one of them
+/// seeds the next stage.
+async fn settle_finished_stages(
+    state: &AppState,
+    cfg: &LifecycleConfig,
+    now: chrono::DateTime<Utc>,
+    summary: &mut LifecyclePassSummary,
+) {
+    let stages = match state
+        .tournament_stage_repo
+        .list_settled_unfinished(now - cfg.saga_stuck_after, cfg.batch_limit)
+        .await
+    {
+        Ok(stages) => stages,
+        Err(e) => {
+            error!(error = %e, "lifecycle: listing settled-but-unfinished stages failed");
+            summary.errors += 1;
+            return;
+        }
+    };
+
+    for stage_id in stages {
+        let result = state.match_completion_saga.rederive_stage(stage_id).await;
+        crate::observability::record_saga("stage-settlement", &result);
+        let advanced = match result {
+            Ok(outcome) => {
+                if outcome.stage_advanced {
+                    summary.stages_advanced += 1;
+                    info!(%stage_id, "lifecycle: advanced a finished stage");
+                }
+                outcome.stage_advanced
+            }
+            Err(e) => {
+                warn!(%stage_id, error = %e, "lifecycle: settling a finished stage failed");
+                summary.errors += 1;
+                false
+            }
+        };
+        // Anything that did not advance (a failure, or a terminal stage that
+        // was simply marked finished) restarts the stage's idle clock, so a
+        // stage that keeps failing is retried every `saga_stuck_after`
+        // rather than on every tick.
+        if !advanced && let Err(e) = state.tournament_stage_repo.touch(stage_id).await {
+            error!(%stage_id, error = %e, "lifecycle: failed to defer stage retry");
         }
     }
 }

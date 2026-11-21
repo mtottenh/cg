@@ -277,6 +277,27 @@ pub trait TournamentStageRepository: Send + Sync {
         to: StageStatus,
     ) -> Result<Option<TournamentStage>, DomainError>;
 
+    /// Stages whose results are all in but which were never settled: an
+    /// unfinished (`pending` / `active`) group or round-robin stage of an
+    /// in-progress tournament in which every bracket has matches, every
+    /// match is settled (completed, forfeit or cancelled) and every Swiss
+    /// bracket has generated its last round — and which nothing has touched
+    /// since `idle_before`.
+    ///
+    /// Normally empty: the result that finishes a stage advances it. A row
+    /// here means that settlement failed (or its process died) after the
+    /// result was written; the lifecycle pass re-runs it.
+    async fn list_settled_unfinished(
+        &self,
+        idle_before: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<TournamentStageId>, DomainError>;
+
+    /// Bump a stage's `updated_at` without changing anything else — resets
+    /// the idle clock [`Self::list_settled_unfinished`] reads, so a stage
+    /// whose settlement just failed is not retried on the very next pass.
+    async fn touch(&self, id: TournamentStageId) -> Result<(), DomainError>;
+
     /// Take over a `Completed` stage whose last write is older than
     /// `stale_before`, by bumping its `updated_at` — a compare-and-set on the
     /// timestamp. Returns `None` when the stage is not completed or was

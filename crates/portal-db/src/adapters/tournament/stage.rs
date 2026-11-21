@@ -167,6 +167,62 @@ impl TournamentStageRepository for PgTournamentStageRepository {
         Ok(row.map(TournamentStage::from))
     }
 
+    async fn list_settled_unfinished(
+        &self,
+        idle_before: chrono::DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<TournamentStageId>, DomainError> {
+        let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
+            r"
+            SELECT s.id
+            FROM tournament_stages s
+            JOIN tournaments t ON t.id = s.tournament_id
+            WHERE t.status = 'in_progress'
+              AND s.status IN ('pending', 'active')
+              AND s.format IN ('group_stage', 'round_robin')
+              AND s.updated_at < $1
+              AND EXISTS (SELECT 1 FROM tournament_brackets b WHERE b.stage_id = s.id)
+              AND NOT EXISTS (
+                  SELECT 1 FROM tournament_brackets b
+                  WHERE b.stage_id = s.id
+                    AND (
+                        (b.bracket_type = 'swiss' AND b.current_round < b.total_rounds)
+                        OR NOT EXISTS (
+                            SELECT 1 FROM tournament_matches m WHERE m.bracket_id = b.id
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM tournament_matches m
+                            WHERE m.bracket_id = b.id
+                              AND m.status NOT IN ('completed', 'forfeit', 'cancelled')
+                        )
+                    )
+              )
+            ORDER BY s.updated_at ASC
+            LIMIT $2
+            ",
+        )
+        .bind(idle_before)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id,)| TournamentStageId::from_uuid(id))
+            .collect())
+    }
+
+    async fn touch(&self, id: TournamentStageId) -> Result<(), DomainError> {
+        sqlx::query("UPDATE tournament_stages SET updated_at = $2 WHERE id = $1")
+            .bind(id.as_uuid())
+            .bind(Utc::now())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
     async fn reclaim_stale_completed(
         &self,
         id: TournamentStageId,

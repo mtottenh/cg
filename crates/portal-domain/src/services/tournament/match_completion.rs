@@ -607,6 +607,45 @@ where
         })
     }
 
+    /// Re-run settlement for a whole stage: recompute every standings
+    /// bracket in it, then run the stage-advancement check.
+    ///
+    /// This is the retry for settlement that failed *after* its result was
+    /// written. A full completion leaves a saga row the lifecycle pass
+    /// re-drives, but the re-derive path ([`Self::rederive_bracket`] — admin
+    /// overrides, double forfeits, rulings on an already-progressed match)
+    /// writes none, and neither does a forfeit whose handler died before it
+    /// got to settle. The lifecycle pass calls this for every stage whose
+    /// matches are all settled but which is still open; like everything it
+    /// calls, it is idempotent and single-winner.
+    #[instrument(skip(self))]
+    pub async fn rederive_stage(
+        &self,
+        stage_id: TournamentStageId,
+    ) -> Result<SettleOutcome, DomainError> {
+        let brackets = self.bracket_repo.list_by_stage(stage_id).await?;
+        for bracket in &brackets {
+            if matches!(
+                bracket.bracket_type,
+                BracketType::RoundRobin | BracketType::Swiss
+            ) {
+                self.standings_repo.recompute_bracket(bracket.id).await?;
+            }
+        }
+        let opened = match brackets.first() {
+            Some(bracket) => {
+                self.stage_advancer
+                    .advance_if_stage_complete(bracket.id)
+                    .await?
+            }
+            None => None,
+        };
+        Ok(SettleOutcome {
+            progression_ran: false,
+            stage_advanced: opened.is_some(),
+        })
+    }
+
     /// Run the saga steps in sequence.
     async fn run_steps(
         &self,

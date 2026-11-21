@@ -25,6 +25,7 @@ pub use evidence::{
 };
 pub use game_server::{
     AgentGamestate, GameServerStatus, ReservationKind, ReservationStatus, SubstitutionStatus,
+    UpdateJobStatus, UpdateJobTrigger, UpdateOperation,
 };
 pub use league_team::{
     LeagueTeamInvitationStatus, LeagueTeamInvitationType, LeagueTeamMemberStatus, LeagueTeamRole,

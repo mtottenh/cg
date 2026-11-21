@@ -458,6 +458,12 @@ define_id!(
 );
 
 define_id!(
+    /// Unique identifier for a game-server update job. Portal-started jobs
+    /// get a fresh UUID v7; jobs the agent started keep the agent's id.
+    GameServerUpdateJobId
+);
+
+define_id!(
     /// Unique identifier for a raw game-server webhook event.
     ServerEventId
 );

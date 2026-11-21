@@ -369,3 +369,189 @@ mod tests {
         }
     }
 }
+
+// =============================================================================
+// Game-server updates (docs/gameserver-lgsm-updates-design.md)
+// =============================================================================
+
+/// An operation of the game host's update helper, as the agent names it on
+/// the wire (`repair-config` has a hyphen there and here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+pub enum UpdateOperation {
+    /// Update LinuxGSM itself. Does not restart CS2.
+    #[serde(rename = "lgsm")]
+    Lgsm,
+    /// Update the CS2 build; restarts CS2 if anything changed.
+    #[serde(rename = "game")]
+    Game,
+    /// Update Metamod / CounterStrikeSharp / MatchZy, with rollback.
+    #[serde(rename = "mods")]
+    Mods,
+    /// `lgsm`, then `game` and `mods` with one restart.
+    #[serde(rename = "all")]
+    All,
+    /// Re-assert the managed MatchZy config blocks. Restarts nothing.
+    #[serde(rename = "repair-config")]
+    RepairConfig,
+    /// Installed-vs-latest check. Only ever stored for a FAILED check,
+    /// which the agent reports as a job result.
+    #[serde(rename = "check")]
+    Check,
+}
+
+impl UpdateOperation {
+    /// The wire / database spelling.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Lgsm => "lgsm",
+            Self::Game => "game",
+            Self::Mods => "mods",
+            Self::All => "all",
+            Self::RepairConfig => "repair-config",
+            Self::Check => "check",
+        }
+    }
+
+    /// Whether the operation can restart CS2 — these are gated on players
+    /// and reservations, and keep the server out of allocation while they
+    /// run. Must match the allocation predicate in `allocate`.
+    #[must_use]
+    pub const fn restarts_server(&self) -> bool {
+        matches!(self, Self::Game | Self::Mods | Self::All)
+    }
+}
+
+impl fmt::Display for UpdateOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for UpdateOperation {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "lgsm" => Ok(Self::Lgsm),
+            "game" => Ok(Self::Game),
+            "mods" => Ok(Self::Mods),
+            "all" => Ok(Self::All),
+            "repair-config" => Ok(Self::RepairConfig),
+            "check" => Ok(Self::Check),
+            _ => Err(format!("invalid update operation: {s}")),
+        }
+    }
+}
+
+/// Status of a game-server update job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateJobStatus {
+    /// Created by the portal; the agent has not reported on it yet.
+    Queued,
+    /// The helper is working.
+    Running,
+    /// The helper finished the operation.
+    Succeeded,
+    /// The operation failed (or the agent refused to start it).
+    Failed,
+    /// The update failed and the previous plugin set was restored.
+    RolledBack,
+    /// No word from the agent for too long; the outcome is unknown.
+    Lost,
+}
+
+impl UpdateJobStatus {
+    /// The wire / database spelling.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::RolledBack => "rolled_back",
+            Self::Lost => "lost",
+        }
+    }
+
+    /// Whether the job is over. Must match the partial unique index
+    /// `uq_game_server_update_jobs_active` (migration 0100).
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        !matches!(self, Self::Queued | Self::Running)
+    }
+}
+
+impl fmt::Display for UpdateJobStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for UpdateJobStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "queued" => Ok(Self::Queued),
+            "running" => Ok(Self::Running),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            "rolled_back" => Ok(Self::RolledBack),
+            "lost" => Ok(Self::Lost),
+            _ => Err(format!("invalid update job status: {s}")),
+        }
+    }
+}
+
+/// What started a game-server update job.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateJobTrigger {
+    /// An admin, through the portal.
+    #[default]
+    Portal,
+    /// The agent, applying overrides the portal pushed.
+    Overrides,
+    /// The agent, finding the managed config blocks missing.
+    AutoRepair,
+    /// Cron or someone over SSH on the host.
+    Local,
+}
+
+impl UpdateJobTrigger {
+    /// The wire / database spelling.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Portal => "portal",
+            Self::Overrides => "overrides",
+            Self::AutoRepair => "auto_repair",
+            Self::Local => "local",
+        }
+    }
+}
+
+impl fmt::Display for UpdateJobTrigger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for UpdateJobTrigger {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "portal" => Ok(Self::Portal),
+            "overrides" => Ok(Self::Overrides),
+            "auto_repair" => Ok(Self::AutoRepair),
+            "local" => Ok(Self::Local),
+            _ => Err(format!("invalid update job trigger: {s}")),
+        }
+    }
+}

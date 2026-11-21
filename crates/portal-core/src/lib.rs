@@ -10,6 +10,7 @@
 
 pub mod errors;
 pub mod ids;
+pub mod matchzy_overrides;
 pub mod permissions;
 pub mod types;
 pub mod validation;

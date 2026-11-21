@@ -681,6 +681,9 @@ impl ServerReservationRepository for PgServerReservationRepository {
 
         // §6.7 allocation predicate. FOR UPDATE SKIP LOCKED settles the race
         // between two matches finishing veto simultaneously at the database.
+        // A server with a restart-capable update job in flight is skipped
+        // (`UpdateOperation::restarts_server`); it is eligible again the
+        // moment the job reaches any terminal status — nothing to release.
         let pick_sql = format!(
             "SELECT {SERVER_COLS} FROM game_servers gs \
              WHERE gs.enabled AND gs.status = 'available' AND gs.game_id = $1 \
@@ -688,6 +691,12 @@ impl ServerReservationRepository for PgServerReservationRepository {
                AND gs.last_heartbeat_at > $3 \
                AND gs.last_gamestate = 'none' \
                AND (NOT $7 OR gs.allow_pugs) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM game_server_update_jobs uj \
+                   WHERE uj.server_id = gs.id \
+                     AND uj.status IN ('queued', 'running') \
+                     AND uj.operation IN ('game', 'mods', 'all') \
+               ) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM server_bookings b \
                    WHERE b.server_id = gs.id \

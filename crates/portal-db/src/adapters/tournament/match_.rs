@@ -63,6 +63,23 @@ async fn supersede_pending_claims_in_tx(
     Ok(())
 }
 
+/// SQL predicate over a `tournament_matches` row aliased `m`: it is
+/// `completed` and a result review attached to its latest result claim is
+/// still pending. Shared with the stage adapter's settled-stage listing so
+/// the two cannot disagree about what "under review" means.
+pub(crate) const RESULT_UNDER_REVIEW_SQL: &str = r"
+    (m.status = 'completed' AND EXISTS (
+        SELECT 1 FROM result_reviews r
+        WHERE r.match_id = m.id
+          AND r.status::text IN ('pending_acknowledgment', 'pending_admin_review')
+          AND r.result_claim_id = (
+              SELECT c.id FROM result_claims c
+              WHERE c.match_id = m.id
+              ORDER BY c.created_at DESC, c.id DESC
+              LIMIT 1
+          )
+    ))";
+
 #[async_trait]
 impl TournamentMatchRepository for PgTournamentMatchRepository {
     async fn find_by_id(
@@ -810,6 +827,33 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(TournamentMatch::from(row))
+    }
+
+    async fn any_result_under_review_in_bracket(
+        &self,
+        bracket_id: TournamentBracketId,
+    ) -> Result<bool, DomainError> {
+        let sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM tournament_matches m \
+             WHERE m.bracket_id = $1 AND {RESULT_UNDER_REVIEW_SQL})"
+        );
+        sqlx::query_scalar::<_, bool>(&sql)
+            .bind(bracket_id.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))
+    }
+
+    async fn has_result_under_review(&self, id: TournamentMatchId) -> Result<bool, DomainError> {
+        let sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM tournament_matches m \
+             WHERE m.id = $1 AND {RESULT_UNDER_REVIEW_SQL})"
+        );
+        sqlx::query_scalar::<_, bool>(&sql)
+            .bind(id.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))
     }
 
     async fn cancel_without_result(

@@ -1570,6 +1570,26 @@ async fn final_between_two_departed_teams_is_called_off() {
 // 12. SETTLEMENT THAT FAILED IS RETRIED
 // ============================================================================
 
+/// Make the tournament's matches (and their result reviews) look untouched
+/// for an hour — what the lifecycle's stage sweep means by "idle".
+/// (`updated_at` is maintained by triggers, so backdating needs them off.)
+async fn make_stage_idle(app: &TestApp, cup: &Cup) {
+    sqlx::raw_sql(&format!(
+        "ALTER TABLE tournament_matches DISABLE TRIGGER tournament_matches_updated_at;
+         UPDATE tournament_matches SET updated_at = NOW() - INTERVAL '1 hour'
+         WHERE tournament_id = '{0}';
+         ALTER TABLE tournament_matches ENABLE TRIGGER tournament_matches_updated_at;
+         ALTER TABLE result_reviews DISABLE TRIGGER set_result_reviews_updated_at;
+         UPDATE result_reviews SET updated_at = NOW() - INTERVAL '1 hour'
+         WHERE match_id IN (SELECT id FROM tournament_matches WHERE tournament_id = '{0}');
+         ALTER TABLE result_reviews ENABLE TRIGGER set_result_reviews_updated_at;",
+        cup.tournament_id
+    ))
+    .execute(app.pool())
+    .await
+    .unwrap();
+}
+
 /// A forfeit lands on a group's last match but its settlement never runs
 /// (the request died, or the settle failed, after the forfeit committed).
 /// No saga row exists to re-drive and no further result will ever arrive,
@@ -1611,17 +1631,7 @@ async fn lifecycle_settles_a_finished_stage_whose_settlement_was_lost() {
     );
 
     // Once it has sat idle past the threshold, the pass settles it.
-    // (`updated_at` is maintained by a trigger, so backdating needs it off.)
-    sqlx::raw_sql(&format!(
-        "ALTER TABLE tournament_stages DISABLE TRIGGER tournament_stages_updated_at;
-         UPDATE tournament_stages SET updated_at = NOW() - INTERVAL '1 hour'
-         WHERE tournament_id = '{}';
-         ALTER TABLE tournament_stages ENABLE TRIGGER tournament_stages_updated_at;",
-        cup.tournament_id
-    ))
-    .execute(app.pool())
-    .await
-    .unwrap();
+    make_stage_idle(&app, &cup).await;
     let summary = run_lifecycle(&app).await;
     assert_eq!(summary.stages_advanced, 1, "{summary:?}");
 
@@ -1867,4 +1877,140 @@ async fn reverted_forfeit_does_not_keep_its_walkover_score() {
     assert_eq!(reapplied["status"], "completed");
     assert_eq!(reapplied["winner_registration_id"], p2(played).as_str());
     assert_eq!(score(&reapplied), (2, 1));
+}
+
+// ============================================================================
+// 15. A STAGE DOES NOT ADVANCE PAST A RESULT UNDER REVIEW
+// ============================================================================
+
+/// Put `m` in the state the confirm flow leaves when demo validation flags
+/// the result: claim confirmed, match `completed` for participant 1, a
+/// pending admin review on the claim, and no progression run. Returns the
+/// review id.
+async fn complete_under_review(app: &TestApp, cup: &Cup, m: &Value) -> Uuid {
+    let match_uuid = Uuid::parse_str(&str_of(m, "id")).unwrap();
+    let claim_id = submit_claim(app, cup, m, &p1(m)).await;
+    let claim_uuid = Uuid::parse_str(&claim_id).unwrap();
+    sqlx::query(
+        "UPDATE result_claims
+         SET status = 'confirmed', confirmed_at = NOW(), confirmed_by_registration_id = $2
+         WHERE id = $1",
+    )
+    .bind(claim_uuid)
+    .bind(Uuid::parse_str(&p2(m)).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE tournament_matches
+         SET status = 'completed', winner_registration_id = $2, loser_registration_id = $3,
+             participant1_score = 2, participant2_score = 1, completed_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(match_uuid)
+    .bind(Uuid::parse_str(&p1(m)).unwrap())
+    .bind(Uuid::parse_str(&p2(m)).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    sqlx::query_scalar(
+        "INSERT INTO result_reviews
+             (result_claim_id, match_id, score_mismatch, status,
+              captain1_registration_id, captain2_registration_id)
+         VALUES ($1, $2, true, 'pending_admin_review', $3, $4)
+         RETURNING id",
+    )
+    .bind(claim_uuid)
+    .bind(match_uuid)
+    .bind(Uuid::parse_str(&p1(m)).unwrap())
+    .bind(Uuid::parse_str(&p2(m)).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap()
+}
+
+/// One group's last result is under review when the other group's last
+/// result is confirmed the normal way. Every match row is `completed`, but
+/// the playoffs must not be seeded from a result nobody has signed off.
+/// Approving the review then advances the stage.
+#[tokio::test]
+async fn stage_waits_for_a_result_under_review_then_advances_on_approval() {
+    let app = TestApp::new().await;
+    let cup = groups(&app, "rr-review-gate", 4, 2, 1).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let gb = group_brackets(&brackets(&app, &cup.tournament_id).await);
+    let a = bracket_matches(&all, gb[0]["id"].as_str().unwrap());
+    let b = bracket_matches(&all, gb[1]["id"].as_str().unwrap());
+
+    let review_id = complete_under_review(&app, &cup, &a[0]).await;
+    confirm_win(&app, &cup, &b[0], &p1(&b[0]), (2, 0)).await;
+
+    let st = stages(&app, &cup.tournament_id).await;
+    assert_eq!(
+        (st[0]["status"].as_str(), st[1]["status"].as_str()),
+        (Some("active"), Some("pending")),
+        "playoffs were seeded past a pending result review"
+    );
+    assert_eq!(brackets(&app, &cup.tournament_id).await.len(), 2);
+
+    app.post_json(
+        &format!("/v1/admin/result-reviews/{review_id}/approve"),
+        &json!({ "notes": "Approved after review" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let st = stages(&app, &cup.tournament_id).await;
+    assert_eq!(
+        (st[0]["status"].as_str(), st[1]["status"].as_str()),
+        (Some("completed"), Some("active")),
+        "approving the review releases the stage: {st:?}"
+    );
+    let mut expected = vec![p1(&a[0]), p1(&b[0])];
+    expected.sort();
+    assert_eq!(
+        playoff_participants(
+            &matches(&app, &cup.tournament_id).await,
+            &brackets(&app, &cup.tournament_id).await
+        ),
+        expected
+    );
+}
+
+/// The lifecycle's finished-stage sweep applies the same rule: a stage whose
+/// last result is under review is not "settled", however long it sits. If
+/// the review is then rejected the match reopens and the stage stays open.
+#[tokio::test]
+async fn lifecycle_sweep_does_not_advance_past_a_result_under_review() {
+    let app = TestApp::new().await;
+    let cup = groups(&app, "rr-review-sweep", 4, 2, 1).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let gb = group_brackets(&brackets(&app, &cup.tournament_id).await);
+    let a = bracket_matches(&all, gb[0]["id"].as_str().unwrap());
+    let b = bracket_matches(&all, gb[1]["id"].as_str().unwrap());
+
+    confirm_win(&app, &cup, &b[0], &p1(&b[0]), (2, 0)).await;
+    let review_id = complete_under_review(&app, &cup, &a[0]).await;
+    make_stage_idle(&app, &cup).await;
+
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(summary.stages_advanced, 0, "{summary:?}");
+    let st = stages(&app, &cup.tournament_id).await;
+    assert_eq!(st[0]["status"], "active", "{st:?}");
+    assert_eq!(st[1]["status"], "pending", "{st:?}");
+    assert_eq!(brackets(&app, &cup.tournament_id).await.len(), 2);
+
+    app.post_json(
+        &format!("/v1/admin/result-reviews/{review_id}/reject"),
+        &json!({ "notes": "Demo does not match the claimed result" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let reopened = get_match(&app, &cup.tournament_id, &str_of(&a[0], "id")).await;
+    assert_eq!(reopened["status"], "in_progress");
+    make_stage_idle(&app, &cup).await;
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(summary.stages_advanced, 0, "{summary:?}");
+    let st = stages(&app, &cup.tournament_id).await;
+    assert_eq!(st[0]["status"], "active", "{st:?}");
+    assert_eq!(st[1]["status"], "pending", "{st:?}");
 }

@@ -172,7 +172,13 @@ impl TournamentStageRepository for PgTournamentStageRepository {
         idle_before: chrono::DateTime<Utc>,
         limit: i64,
     ) -> Result<Vec<TournamentStageId>, DomainError> {
-        let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
+        // "Idle" is measured on the stage's matches (and the reviews of
+        // their results), not on the stage row: that row is only written
+        // when the stage changes status, so its `updated_at` is the
+        // tournament's start time and says nothing about whether a live
+        // settlement is in flight.
+        let under_review = super::match_::RESULT_UNDER_REVIEW_SQL;
+        let sql = format!(
             r"
             SELECT s.id
             FROM tournament_stages s
@@ -180,7 +186,6 @@ impl TournamentStageRepository for PgTournamentStageRepository {
             WHERE t.status = 'in_progress'
               AND s.status IN ('pending', 'active')
               AND s.format IN ('group_stage', 'round_robin')
-              AND s.updated_at < $1
               AND EXISTS (SELECT 1 FROM tournament_brackets b WHERE b.stage_id = s.id)
               AND NOT EXISTS (
                   SELECT 1 FROM tournament_brackets b
@@ -193,19 +198,28 @@ impl TournamentStageRepository for PgTournamentStageRepository {
                         OR EXISTS (
                             SELECT 1 FROM tournament_matches m
                             WHERE m.bracket_id = b.id
-                              AND m.status NOT IN ('completed', 'forfeit', 'cancelled')
+                              AND (
+                                  m.status NOT IN ('completed', 'forfeit', 'cancelled')
+                                  OR {under_review}
+                                  OR m.updated_at >= $1
+                                  OR EXISTS (
+                                      SELECT 1 FROM result_reviews rr
+                                      WHERE rr.match_id = m.id AND rr.updated_at >= $1
+                                  )
+                              )
                         )
                     )
               )
             ORDER BY s.updated_at ASC
             LIMIT $2
-            ",
-        )
-        .bind(idle_before)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+            "
+        );
+        let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(&sql)
+            .bind(idle_before)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(rows
             .into_iter()

@@ -508,7 +508,20 @@ where
 
         // Bracket is complete once every match is settled (played or
         // called off) — the same rule Swiss round generation uses.
-        Ok(matches.iter().all(TournamentMatch::is_settled))
+        if !matches.iter().all(TournamentMatch::is_settled) {
+            return Ok(false);
+        }
+
+        // ... and none of those results is still under review. `is_settled`
+        // is the row-level rule; a `completed` row whose result review is
+        // pending can still be rejected (which reopens the match), so a
+        // bracket holding one has not finished. Without this, another
+        // group's last result — or the lifecycle's stage sweep — seeded the
+        // playoffs from a result nobody had signed off.
+        Ok(!self
+            .match_repo
+            .any_result_under_review_in_bracket(bracket_id)
+            .await?)
     }
 
     /// Check if a tournament is complete.

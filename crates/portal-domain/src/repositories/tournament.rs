@@ -280,9 +280,10 @@ pub trait TournamentStageRepository: Send + Sync {
     /// Stages whose results are all in but which were never settled: an
     /// unfinished (`pending` / `active`) group or round-robin stage of an
     /// in-progress tournament in which every bracket has matches, every
-    /// match is settled (completed, forfeit or cancelled) and every Swiss
-    /// bracket has generated its last round — and which nothing has touched
-    /// since `idle_before`.
+    /// match is settled (completed, forfeit or cancelled), no result is
+    /// still under review and every Swiss bracket has generated its last
+    /// round — and none of whose matches (or their result reviews) has been
+    /// written since `idle_before`.
     ///
     /// Normally empty: the result that finishes a stage advances it. A row
     /// here means that settlement failed (or its process died) after the
@@ -967,6 +968,25 @@ pub trait TournamentMatchRepository: Send + Sync {
         winner_score: i32,
         loser_score: i32,
     ) -> Result<TournamentMatch, DomainError>;
+
+    /// Whether any `completed` match in the bracket has its result under
+    /// review: a result review in a pending status (awaiting captain
+    /// acknowledgment or an admin decision) attached to the match's latest
+    /// result claim.
+    ///
+    /// Such a match is settled as far as its row goes, but its result is not
+    /// final — the review may still be rejected, which reopens the match — so
+    /// nothing that is decided from "the whole bracket is in" (seeding the
+    /// next stage, declaring the bracket finished) may count it yet. A review
+    /// left behind by an earlier claim (one that predates a rematch and the
+    /// replayed result's own claim) does not count.
+    async fn any_result_under_review_in_bracket(
+        &self,
+        bracket_id: TournamentBracketId,
+    ) -> Result<bool, DomainError>;
+
+    /// [`Self::any_result_under_review_in_bracket`] for a single match.
+    async fn has_result_under_review(&self, id: TournamentMatchId) -> Result<bool, DomainError>;
 
     /// Call a match off with no winner (double forfeit): move it to
     /// `cancelled` and supersede its pending result claims, in one

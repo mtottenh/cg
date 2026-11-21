@@ -315,6 +315,8 @@ pub struct GameServerState {
     pub server_event_repo: Arc<portal_db::PgServerEventRepository>,
     /// Upload attempts (each server's last demo upload, admin list).
     pub demo_upload_attempt_repo: Arc<portal_db::PgDemoUploadAttemptRepository>,
+    /// Game-server updates (the agent's update frames land here).
+    pub updates: crate::game_server_updates::UpdateChannel,
 }
 
 impl FromRef<AppState> for GameServerState {
@@ -328,6 +330,7 @@ impl FromRef<AppState> for GameServerState {
             server_reservation_repo: Arc::clone(&s.server_reservation_repo),
             server_event_repo: Arc::clone(&s.server_event_repo),
             demo_upload_attempt_repo: Arc::clone(&s.demo_upload_attempt_repo),
+            updates: s.game_server_updates.clone(),
         }
     }
 }

@@ -152,6 +152,10 @@ pub struct LifecyclePassSummary {
     pub reservations_allocated: u32,
     /// Stuck/silent reservations re-driven or reconciled.
     pub reservations_reconciled: u32,
+    /// Stalled game-server update jobs the agent accounted for.
+    pub update_jobs_reconciled: u32,
+    /// Stalled game-server update jobs declared lost.
+    pub update_jobs_lost: u32,
     /// Demo upload attempts deleted past the retention window.
     pub demo_upload_attempts_pruned: u64,
     /// Errors encountered (each already logged; the pass continues).
@@ -300,6 +304,16 @@ pub async fn run_lifecycle_pass(
     summary.reservations_reconciled =
         reservation_summary.load_retried + reservation_summary.reconciled;
     summary.errors += reservation_summary.errors;
+
+    // ------------------------------------------------------------------
+    // 7a: game-server update jobs gone silent for 20 minutes — ask the
+    //     agent, else declare them lost (which also returns the server
+    //     to allocation)
+    // ------------------------------------------------------------------
+    let update_summary = state.game_server_updates.run_lost_job_pass().await;
+    summary.update_jobs_reconciled = update_summary.reconciled;
+    summary.update_jobs_lost = update_summary.lost;
+    summary.errors += update_summary.errors;
 
     // ------------------------------------------------------------------
     // 7b: veto turn timeouts — auto-act for absent players. Warnings have

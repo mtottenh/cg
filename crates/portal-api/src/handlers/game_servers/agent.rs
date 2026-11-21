@@ -13,6 +13,7 @@
 //! `PORTAL_AGENT_INSECURE=true` accepts `X-Dev-Server-Id` instead.
 
 use crate::error::{ApiError, ApiResult};
+use crate::game_server_updates::ConnectionUpdateState;
 use crate::state::GameServerState;
 use crate::websocket::agent_manager::{AgentMessage, AgentSession};
 use axum::Json;
@@ -23,7 +24,7 @@ use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use portal_core::ids::GameServerId;
 use portal_core::types::AgentGamestate;
-use portal_domain::entities::{GameServer, HeartbeatUpdate};
+use portal_domain::entities::{AgentUpdateReport, GameServer, HeartbeatUpdate};
 use portal_domain::repositories::ServerReservationRepository;
 use portal_plugins::games::cs2::console;
 use serde::{Deserialize, Serialize};
@@ -180,6 +181,7 @@ async fn handle_socket(state: GameServerState, server: GameServer, socket: WebSo
     let mut session: AgentSession = state.agent_manager.register(server_id);
     let connection_id = session.connection_id;
     let (mut sink, mut stream) = socket.split();
+    let mut update_state = ConnectionUpdateState::default();
 
     loop {
         tokio::select! {
@@ -201,7 +203,14 @@ async fn handle_socket(state: GameServerState, server: GameServer, socket: WebSo
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         crate::observability::record_ws_message("gameserver-agent", "in");
-                        handle_agent_message(&state, server_id, &session, text.as_str()).await;
+                        handle_agent_message(
+                            &state,
+                            server_id,
+                            &session,
+                            &mut update_state,
+                            text.as_str(),
+                        )
+                        .await;
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Binary(_))) => {}
                     Some(Ok(Message::Close(_)) | Err(_)) | None => break,
@@ -225,15 +234,21 @@ async fn handle_agent_message(
     state: &GameServerState,
     server_id: GameServerId,
     session: &AgentSession,
+    update_state: &mut ConnectionUpdateState,
     text: &str,
 ) {
-    match serde_json::from_str::<AgentMessage>(text) {
+    match AgentMessage::parse(text) {
         Ok(AgentMessage::Heartbeat(hb)) => {
-            if hb.frame_type != "heartbeat" {
-                tracing::debug!(server_id = %server_id, frame_type = %hb.frame_type,
-                    "ignoring unknown agent frame type");
-                return;
-            }
+            let hb = *hb;
+            // Agent 0.3.0+; an older agent sends none of these, which
+            // reads as "no capabilities, nothing known".
+            let update_report = AgentUpdateReport {
+                capabilities: hb.capabilities,
+                demo_upload_wired: hb.demo_upload_wired,
+                overrides_applied: hb.overrides_applied,
+                reload_pending: hb.reload_pending.unwrap_or(false),
+                update_job: hb.update_job.filter(|j| !j.is_null()),
+            };
             // Portal-side agent aggregation (observability-design.md §4.6):
             // alerts about agents come from here, never from scraping them.
             crate::observability::record_agent_heartbeat(&server_id.to_string());
@@ -289,8 +304,25 @@ async fn handle_agent_message(
             {
                 tracing::warn!(server_id = %server_id, error = %e, "heartbeat processing failed");
             }
+            state
+                .updates
+                .on_heartbeat(server_id, &update_report, update_state)
+                .await;
         }
         Ok(AgentMessage::CommandResult(frame)) => session.resolve(frame),
+        Ok(AgentMessage::UpdateProgress(frame)) => {
+            state.updates.on_progress(server_id, &frame).await;
+        }
+        Ok(AgentMessage::UpdateResult(frame)) => {
+            state.updates.on_result(server_id, &frame).await;
+        }
+        Ok(AgentMessage::UpdateState(frame)) => {
+            state.updates.on_state(server_id, &frame).await;
+        }
+        Ok(AgentMessage::Unknown(frame_type)) => {
+            tracing::debug!(server_id = %server_id, frame_type = %frame_type,
+                "ignoring unknown agent frame type");
+        }
         Err(e) => {
             tracing::debug!(server_id = %server_id, error = %e, "unparseable agent frame");
         }

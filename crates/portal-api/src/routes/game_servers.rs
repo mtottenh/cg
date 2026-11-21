@@ -5,7 +5,9 @@
 //! machine-facing endpoints authenticated by enrollment tokens / client
 //! certificates, excluded from the public OpenAPI spec.
 
-use crate::handlers::game_servers::{admin, agent, console, match_server, matchzy, substitutions};
+use crate::handlers::game_servers::{
+    admin, agent, console, match_server, matchzy, substitutions, updates,
+};
 use crate::state::AppState;
 use axum::Router;
 use axum::routing::{get, post};
@@ -78,6 +80,23 @@ pub fn admin_routes() -> Router<AppState> {
         )
         .route("/{server_id}/console/map", post(console::change_map))
         .route("/{server_id}/console/action", post(console::run_action))
+        .route(
+            "/{server_id}/updates",
+            get(updates::get_updates).post(updates::start_update),
+        )
+        .route("/{server_id}/updates/check", post(updates::check_updates))
+        .route(
+            "/{server_id}/updates/repair-config",
+            post(updates::repair_config),
+        )
+        .route(
+            "/{server_id}/updates/{job_id}",
+            get(updates::get_update_job),
+        )
+        .route(
+            "/{server_id}/matchzy-overrides",
+            get(updates::get_matchzy_overrides).put(updates::set_matchzy_overrides),
+        )
         .route(
             "/{server_id}/bookings",
             get(admin::list_bookings).post(admin::create_booking),

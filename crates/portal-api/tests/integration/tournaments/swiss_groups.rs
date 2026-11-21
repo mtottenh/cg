@@ -1148,3 +1148,89 @@ async fn test_double_forfeit_on_last_group_match_opens_playoffs() {
         "the playoff bracket was seeded"
     );
 }
+
+// ============================================================================
+// Deploy safety: group stages advanced under the old round rule
+// ============================================================================
+
+/// Tournaments in flight when Swiss brackets started having to play every
+/// round have group brackets with `current_round < total_rounds` in a group
+/// stage that already handed over to the playoffs. Those brackets must not
+/// keep the tournament from ever reading as complete.
+#[tokio::test]
+async fn test_completed_swiss_group_stage_does_not_block_tournament_completion() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament(
+        &app,
+        "swg-legacy-complete",
+        "groups_and_playoffs",
+        json!({
+            "group_count": 2,
+            "advance_per_group": 1,
+            "group_format": "swiss",
+            "playoff_format": "single_elimination",
+            "max_rounds": 1
+        }),
+    )
+    .await;
+    let tokens = register_and_start(&app, &tournament_id, 4, "legacy").await;
+    let groups = swiss_bracket_ids(&list_brackets(&app, &tournament_id).await);
+    play_open_matches(&app, &tournament_id, &groups, &tokens).await;
+    assert_eq!(
+        stage_statuses(&app, &tournament_id).await,
+        vec!["completed", "active"]
+    );
+
+    // What the old code left behind: the playoffs were seeded after round 1
+    // of a group that was configured for more rounds.
+    sqlx::query(
+        "UPDATE tournament_brackets SET total_rounds = 3
+         WHERE tournament_id = $1 AND bracket_type = 'swiss'",
+    )
+    .bind(uuid::Uuid::parse_str(&tournament_id).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    // Play the final (two advancing teams → one playoff match).
+    let final_match = list_matches(&app, &tournament_id)
+        .await
+        .into_iter()
+        .find(|m| !groups.contains(m["bracket_id"].as_str().unwrap()))
+        .expect("playoff final");
+    let winner = final_match["participant1_registration_id"]
+        .as_str()
+        .unwrap();
+    let loser = final_match["participant2_registration_id"]
+        .as_str()
+        .unwrap();
+    let final_id = final_match["id"].as_str().unwrap();
+    confirm_win_via_claims(
+        &app,
+        &tournament_id,
+        final_id,
+        winner,
+        &tokens[winner],
+        &tokens[loser],
+        true,
+    )
+    .await;
+
+    // The progression read-out for the final says the tournament is done.
+    let response = app
+        .post_json(
+            &format!("/v1/admin/matches/{final_id}/progression/process"),
+            &json!({
+                "winner_registration_id": winner,
+                "loser_registration_id": loser
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["bracket_complete"], true, "{body}");
+    assert_eq!(
+        body["data"]["tournament_complete"], true,
+        "a finished group stage must not hold the tournament open: {body}"
+    );
+}

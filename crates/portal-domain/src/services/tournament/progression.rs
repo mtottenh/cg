@@ -519,8 +519,19 @@ where
     ) -> Result<bool, DomainError> {
         let stages = self.stage_repo.list_by_tournament(tournament_id).await?;
 
-        // Tournament is complete if all stages are complete
+        // Tournament is complete if all stages are complete.
+        //
+        // A stage already marked `Completed` has handed over (or finished)
+        // and is not re-examined bracket by bracket. That matters for Swiss
+        // group stages advanced before Swiss brackets were required to play
+        // every round: their groups still read `current_round <
+        // total_rounds`, which `check_bracket_completion` now calls
+        // unfinished — and would hold a tournament whose playoffs are over
+        // "incomplete" for good.
         for stage in stages {
+            if stage.status == StageStatus::Completed {
+                continue;
+            }
             let brackets = self.bracket_repo.list_by_stage(stage.id).await?;
             for bracket in brackets {
                 if !self.check_bracket_completion(bracket.id).await? {

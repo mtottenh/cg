@@ -2085,3 +2085,77 @@ async fn reapply_refuses_a_forfeit() {
     assert_eq!(row_for(&rows, &p2(m))["points"], 3, "{rows:?}");
     assert_eq!(row_for(&rows, &p1(m))["points"], 0, "{rows:?}");
 }
+
+// ============================================================================
+// 17. AN INTERRUPTED FORFEIT CAN BE FINISHED
+// ============================================================================
+
+/// The forfeit's match write landed but nothing after it did (the record
+/// insert failed, or the process died): the match is `forfeit`, there is no
+/// forfeit record and the winner was never advanced. Retrying the same
+/// forfeit must finish the job instead of being refused because the match
+/// is already terminal.
+#[tokio::test]
+async fn interrupted_forfeit_is_completed_by_a_retry() {
+    let app = TestApp::new().await;
+    let cup = create_cup(&app, "se-forfeit-retry", "single_elimination", 4, json!({})).await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let m = all.iter().find(|m| m["round"] == 1).unwrap().clone();
+    let match_id = str_of(&m, "id");
+    let match_uuid = Uuid::parse_str(&match_id).unwrap();
+
+    sqlx::query(
+        "UPDATE tournament_matches
+         SET status = 'forfeit', winner_registration_id = $2, loser_registration_id = $3,
+             participant1_score = 2, participant2_score = 0, completed_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(match_uuid)
+    .bind(Uuid::parse_str(&p1(&m)).unwrap())
+    .bind(Uuid::parse_str(&p2(&m)).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    let final_match = |all: Vec<Value>| all.into_iter().find(|x| x["round"] == 2).unwrap();
+    assert!(!seats(
+        &final_match(matches(&app, &cup.tournament_id).await),
+        &p1(&m)
+    ));
+
+    // The retry (same side) completes it.
+    let body = admin_forfeit(&app, &cup, &match_id, &p2(&m)).await;
+    assert_eq!(body["data"]["progression_triggered"], true, "{body}");
+    let records: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM forfeit_records WHERE match_id = $1")
+            .bind(match_uuid)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(records, 1);
+    assert!(
+        seats(
+            &final_match(matches(&app, &cup.tournament_id).await),
+            &p1(&m)
+        ),
+        "the walkover winner was advanced by the retry"
+    );
+
+    // A forfeit that is fully recorded is still refused, as is the other side.
+    for reg in [p2(&m), p1(&m)] {
+        let again = app
+            .post_json(
+                &format!(
+                    "/v1/admin/tournaments/{}/matches/{match_id}/forfeit",
+                    cup.tournament_id
+                ),
+                &json!({
+                    "forfeiting_registration_id": reg,
+                    "forfeit_type": "no_show",
+                    "reason": "Did not turn up to the match"
+                }),
+            )
+            .await;
+        assert_eq!(again.status, StatusCode::BAD_REQUEST, "{}", again.text());
+    }
+}

@@ -54,6 +54,44 @@ where
         // Get the match
         let match_ = self.get_match(match_id).await?;
 
+        // Finish an interrupted forfeit. The match write comes first (below);
+        // if the process died — or the record insert failed — right after
+        // it, the match is `forfeit` with no forfeit record and, because the
+        // error surfaced before the caller could settle it, with no
+        // progression either. `validate_can_forfeit` would refuse every
+        // retry (the match is terminal), and in an elimination bracket
+        // nothing else would ever advance the walkover winner. So a retry
+        // for the same side on such a match completes the record and reports
+        // the forfeit as processed, which lets the caller settle it — the
+        // one-sided counterpart of the double-forfeit retry below.
+        if match_.status == TournamentMatchStatus::Forfeit
+            && match_.loser_registration_id == Some(forfeiting_registration_id)
+            && !self.forfeit_repo.exists_for_match(match_id).await?
+        {
+            let forfeit_record = self
+                .forfeit_repo
+                .create(CreateForfeitRecord {
+                    match_id,
+                    forfeiting_registration_id,
+                    forfeit_type,
+                    reason,
+                    triggered_by_user_id: triggered_by.user_id(),
+                    triggered_by_system: triggered_by.is_system(),
+                })
+                .await?;
+            info!(
+                match_id = %match_id,
+                forfeiting = %forfeiting_registration_id,
+                "Completed an interrupted forfeit"
+            );
+            return Ok(ForfeitResult {
+                match_id,
+                forfeit_record,
+                winner_registration_id: match_.winner_registration_id,
+                progression_triggered: false,
+            });
+        }
+
         // Validate the match can be forfeited
         self.validate_can_forfeit(&match_, forfeiting_registration_id)?;
 

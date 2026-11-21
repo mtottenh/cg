@@ -100,8 +100,10 @@ pub trait GameServerUpdateRepository: Send + Sync + 'static {
     /// log tail, bump `updated_at`. A job the portal has never heard of is
     /// created (after marking any other `running` job of the server `lost`:
     /// the helper runs one at a time). Never touches a job whose outcome
-    /// the agent has reported, nor a job of another server; a `lost` job
-    /// is revived. Returns the job when something was written.
+    /// the agent has reported, nor a job of another server. A `lost` job
+    /// is revived: `lost` is the portal's guess, and the agent saying the
+    /// job is running is better evidence. Returns the job when something
+    /// was written.
     async fn apply_progress(
         &self,
         server_id: GameServerId,

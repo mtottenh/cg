@@ -52,16 +52,6 @@ pub struct GameServerUpdateJob {
 }
 
 impl GameServerUpdateJob {
-    /// Whether live word from the agent (a progress frame, a heartbeat
-    /// naming the job) may move this job to `running`: it is in flight, or
-    /// the portal had given up on it (`lost` is the portal's guess, and the
-    /// agent saying otherwise is better evidence). An outcome the agent
-    /// reported is never regressed.
-    #[must_use]
-    pub fn accepts_progress(&self) -> bool {
-        !self.status.is_terminal() || self.status == UpdateJobStatus::Lost
-    }
-
     /// Whether an incoming result may replace what is stored.
     ///
     /// Delivery is at-least-once, so a repeat of a stored result is dropped.

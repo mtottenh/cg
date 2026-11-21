@@ -1732,3 +1732,81 @@ async fn dispute_ruling_does_not_bypass_a_pending_result_review() {
     assert!(seats(&after, &p2(&m)), "{after:?}");
     assert!(!seats(&after, &p1(&m)), "{after:?}");
 }
+
+// ============================================================================
+// 14. TAKING A RESULT BACK
+// ============================================================================
+
+/// A rematch ordered on a match of a finished standalone round robin opens
+/// the event again: the stage and bracket go back to `active`, exactly as
+/// they do when the result is reverted.
+#[tokio::test]
+async fn rematch_ruling_reopens_a_finished_round_robin() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-rematch-reopens", 3).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    for m in &all {
+        confirm_win(&app, &cup, m, &p1(m), (2, 0)).await;
+    }
+    assert_eq!(
+        stages(&app, &cup.tournament_id).await[0]["status"],
+        "completed"
+    );
+    assert_eq!(
+        brackets(&app, &cup.tournament_id).await[0]["status"],
+        "completed"
+    );
+
+    let last = all.last().unwrap();
+    let match_id = str_of(last, "id");
+    app.post_json_with_token(
+        &format!(
+            "/v1/tournaments/{}/matches/{match_id}/dispute",
+            cup.tournament_id
+        ),
+        &json!({
+            "registration_id": p2(last),
+            "reason": "technical_issue",
+            "description": "The server crashed twice during the deciding map.",
+            "evidence_ids": []
+        }),
+        &cup.tokens[&p2(last)],
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+    let dispute_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM disputes WHERE match_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    app.post_json(
+        &format!("/v1/admin/disputes/{dispute_id}/resolve/rematch"),
+        &json!({ "notes": "Server fault confirmed, the match is to be replayed." }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let reopened = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(reopened["status"], "ready");
+    assert!(reopened["winner_registration_id"].is_null());
+    assert_eq!(
+        stages(&app, &cup.tournament_id).await[0]["status"],
+        "active",
+        "a round robin with a match to replay is not finished"
+    );
+    assert_eq!(
+        brackets(&app, &cup.tournament_id).await[0]["status"],
+        "active"
+    );
+    let rows = standings(&app, &cup.tournament_id, &str_of(last, "bracket_id")).await;
+    assert_eq!(row_for(&rows, &p1(last))["matches_played"], 1, "{rows:?}");
+
+    // Replaying it finishes the event again.
+    confirm_win(&app, &cup, last, &p2(last), (2, 1)).await;
+    assert_eq!(
+        stages(&app, &cup.tournament_id).await[0]["status"],
+        "completed"
+    );
+}

@@ -597,6 +597,12 @@ where
         bracket_id: TournamentBracketId,
     ) -> Result<Option<TournamentStageId>, DomainError> {
         if !self.check_bracket_completion(bracket_id).await? {
+            // An unfinished bracket in a terminal round-robin stage that was
+            // marked finished means a result was taken back without going
+            // through `revert_progression` (a dispute's rematch ruling):
+            // reopen the stage the same way a revert does.
+            let bracket = self.get_bracket(bracket_id).await?;
+            self.reopen_terminal_round_robin(&bracket).await?;
             return Ok(None);
         }
         let bracket = self.get_bracket(bracket_id).await?;

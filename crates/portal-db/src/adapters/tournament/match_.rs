@@ -31,6 +31,38 @@ impl PgTournamentMatchRepository {
     }
 }
 
+/// The textual statuses satisfying `pred`, for a `status = ANY($n)` guard
+/// that must agree with a domain predicate.
+fn statuses_where(pred: impl Fn(&TournamentMatchStatus) -> bool) -> Vec<String> {
+    TournamentMatchStatus::ALL
+        .iter()
+        .filter(|s| pred(s))
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// Supersede every pending result claim on a match that has just been
+/// decided some other way (forfeit, double forfeit). Left pending, such a
+/// claim was later auto-confirmed — or confirmed by the opponent — and
+/// rewrote the forfeit with the claimed result.
+async fn supersede_pending_claims_in_tx(
+    tx: &mut DbTransaction<'_>,
+    match_id: TournamentMatchId,
+) -> Result<(), DomainError> {
+    sqlx::query(
+        r"
+        UPDATE result_claims
+        SET status = 'superseded', updated_at = NOW()
+        WHERE match_id = $1 AND status = 'pending'
+        ",
+    )
+    .bind(match_id.as_uuid())
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| DomainError::Internal(format!("Failed to supersede pending claims: {e}")))?;
+    Ok(())
+}
+
 #[async_trait]
 impl TournamentMatchRepository for PgTournamentMatchRepository {
     async fn find_by_id(
@@ -717,10 +749,23 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         loser_score: i32,
     ) -> Result<TournamentMatch, DomainError> {
         let now = Utc::now();
+        let forfeitable = statuses_where(TournamentMatchStatus::can_forfeit_administratively);
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         // The walkover score goes into the slot the winner occupies, so the
         // derived standings (which read the winner's games from that slot)
         // credit a walkover exactly the way they credit a played result.
+        //
+        // Status guard: the service checked the status on a row it read
+        // earlier, so two concurrent forfeits (one per side, say) both passed
+        // that check. Without the guard both writes landed — the row named
+        // the second caller's winner while the first caller had already
+        // advanced theirs. Now the loser of the race updates nothing.
         let row = sqlx::query_as::<_, TournamentMatchRow>(
             r"
             UPDATE tournament_matches SET
@@ -731,7 +776,7 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
                 completed_at = $4,
                 status = 'forfeit',
                 updated_at = $4
-            WHERE id = $1
+            WHERE id = $1 AND status = ANY($7)
             RETURNING *
             ",
         )
@@ -741,9 +786,60 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         .bind(now)
         .bind(winner_score)
         .bind(loser_score)
-        .fetch_one(&self.pool)
+        .bind(&forfeitable)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or_else(|| {
+            DomainError::Conflict(
+                "Match can no longer be forfeited — it was decided by another request".to_string(),
+            )
+        })?;
+
+        supersede_pending_claims_in_tx(&mut tx, id).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentMatch::from(row))
+    }
+
+    async fn cancel_without_result(
+        &self,
+        id: TournamentMatchId,
+    ) -> Result<TournamentMatch, DomainError> {
+        let open = statuses_where(|s| !s.is_terminal());
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let row = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            UPDATE tournament_matches SET status = 'cancelled', updated_at = NOW()
+            WHERE id = $1 AND status = ANY($2)
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(&open)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or_else(|| {
+            DomainError::Conflict(
+                "Match can no longer be called off — it was decided by another request".to_string(),
+            )
+        })?;
+
+        supersede_pending_claims_in_tx(&mut tx, id).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(TournamentMatch::from(row))
     }

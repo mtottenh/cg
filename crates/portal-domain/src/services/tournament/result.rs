@@ -977,6 +977,25 @@ where
         // Get the match
         let match_ = self.get_match(claim.match_id).await?;
 
+        // The match was decided some other way while this claim sat pending
+        // (forfeit, disqualification, double forfeit). The forfeit paths
+        // supersede pending claims themselves; this retires any that predate
+        // that (or slipped past it), so the sweep does not retry — and get
+        // refused by the confirm's match-status guard — on every pass.
+        if match_.status.is_terminal() {
+            if let Err(e) = self
+                .claim_repo
+                .update_status(claim.id, ClaimStatus::Superseded)
+                .await
+            {
+                warn!(claim_id = %claim.id, error = %e, "Failed to retire a stale result claim");
+            }
+            return Err(DomainError::Conflict(format!(
+                "Match is already {}; the pending claim was superseded",
+                match_.status
+            )));
+        }
+
         // Find the registration recorded as the (auto-)confirmer: the
         // submitter's opponent — or, for server-sourced claims with no
         // submitter, the losing side (they held the dispute window).

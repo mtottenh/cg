@@ -55,20 +55,35 @@ where
         // Validate the match can be forfeited
         self.validate_can_forfeit(&match_, forfeiting_registration_id)?;
 
-        // NOTE: there is deliberately no `exists_for_match` refusal here.
-        // The forfeit record insert and the match update are two separate
-        // writes; if the process died between them the record existed while
-        // the match was still un-forfeited, and the old guard refused every
-        // retry, stranding the match forever. Re-forfeiting an *already
-        // terminal* match is still rejected by `validate_can_forfeit` above
-        // (a match in `forfeit`/`completed`/`cancelled` fails `can_forfeit`),
-        // and the record insert is idempotent (migration 0072), so a retry
-        // simply finishes the interrupted work.
-
         // Determine the winner (opponent)
         let winner_registration_id = self.determine_winner(&match_, forfeiting_registration_id)?;
 
-        // Create the forfeit record
+        // Write the match first. The update is guarded on the match still
+        // being forfeitable, so of two concurrent forfeits (one per side, or
+        // the same one twice) exactly one gets past this line; the other
+        // returns `Conflict` having written nothing — in particular no
+        // second forfeit record. The same statement supersedes any pending
+        // result claim on the match, so a claim filed before the forfeit
+        // (e.g. by a team that was then disqualified) cannot be confirmed
+        // over it later.
+        //
+        // The walkover is recorded with its series score (wins_required–0)
+        // so the derived standings credit it exactly like a played result.
+        let (winner_score, loser_score) = forfeit_type.default_score(match_.match_format);
+        self.match_repo
+            .forfeit(
+                match_id,
+                winner_registration_id,
+                forfeiting_registration_id,
+                winner_score,
+                loser_score,
+            )
+            .await?;
+
+        // Then the audit record. The insert is idempotent (migration 0072).
+        // There is deliberately no `exists_for_match` refusal anywhere on
+        // this path: a record left behind by an attempt that died before the
+        // match write (the old order) must not strand the match.
         let forfeit_record = self
             .forfeit_repo
             .create(CreateForfeitRecord {
@@ -79,20 +94,6 @@ where
                 triggered_by_user_id: triggered_by.user_id(),
                 triggered_by_system: triggered_by.is_system(),
             })
-            .await?;
-
-        // Update match with forfeit result. The walkover is recorded with
-        // its series score (wins_required–0) so the derived standings credit
-        // it exactly like a played result.
-        let (winner_score, loser_score) = forfeit_type.default_score(match_.match_format);
-        self.match_repo
-            .forfeit(
-                match_id,
-                winner_registration_id,
-                forfeiting_registration_id,
-                winner_score,
-                loser_score,
-            )
             .await?;
 
         info!(
@@ -151,20 +152,14 @@ where
             .participant2_registration_id
             .ok_or_else(|| DomainError::InvalidState("No participant 2 in match".to_string()))?;
 
-        // Already fully processed? Return the existing outcome as a no-op
-        // instead of refusing. A *partially* processed double forfeit (one
-        // record written, the match never cancelled) falls through and is
-        // completed by the writes below — the record inserts are idempotent
-        // (migration 0072) and the status update is naturally idempotent.
-        if match_.status == TournamentMatchStatus::Cancelled
-            && let Some(existing) = self.forfeit_repo.find_by_match(match_id).await?
-        {
-            return Ok(ForfeitResult {
-                match_id,
-                forfeit_record: existing,
-                winner_registration_id: None,
-                progression_triggered: false,
-            });
+        // Call the match off first (guarded: a match that was decided in
+        // the meantime — a result, a one-sided forfeit — is a `Conflict`,
+        // and nothing else is written). Pending result claims are superseded
+        // in the same statement. A match that is *already* cancelled is a
+        // retry of a double forfeit that died before both records were
+        // written: skip the status write and finish the (idempotent) records.
+        if match_.status != TournamentMatchStatus::Cancelled {
+            self.match_repo.cancel_without_result(match_id).await?;
         }
 
         // Create forfeit records for both teams
@@ -190,11 +185,6 @@ where
                 triggered_by_user_id: triggered_by.user_id(),
                 triggered_by_system: triggered_by.is_system(),
             })
-            .await?;
-
-        // Update match status to cancelled (no winner)
-        self.match_repo
-            .update_status(match_id, TournamentMatchStatus::Cancelled)
             .await?;
 
         info!(

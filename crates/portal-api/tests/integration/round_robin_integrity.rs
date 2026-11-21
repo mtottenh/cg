@@ -1115,3 +1115,251 @@ async fn standalone_round_robin_marks_bracket_and_stage_completed() {
         .json::<Value>();
     assert_eq!(t["data"]["status"], "in_progress");
 }
+
+// ============================================================================
+// 10. A FORFEIT IS FINAL: STALE CLAIMS AND RACING FORFEITS
+// ============================================================================
+
+fn lifecycle_config() -> portal_api::background::LifecycleConfig {
+    portal_api::background::LifecycleConfig {
+        tick_interval: std::time::Duration::from_secs(30),
+        check_in_lead: chrono::Duration::minutes(15),
+        check_in_grace: chrono::Duration::minutes(10),
+        evidence_stale_max_age: chrono::Duration::hours(24),
+        evidence_sweep_every: 20,
+        saga_stuck_after: chrono::Duration::minutes(10),
+        batch_limit: 100,
+        veto_coin_flip_grace: chrono::Duration::seconds(15),
+    }
+}
+
+async fn run_lifecycle(app: &TestApp) -> portal_api::background::LifecyclePassSummary {
+    let state = portal_api::state::AppState::new(app.pool().clone(), "test-jwt-secret").await;
+    portal_api::background::run_lifecycle_pass(&state, &lifecycle_config(), false).await
+}
+
+/// File a result claim for `winner` (2–1) and return its id.
+async fn submit_claim(app: &TestApp, cup: &Cup, m: &Value, winner: &str) -> String {
+    let match_id = str_of(m, "id");
+    transition_match_to_in_progress(app, &cup.tournament_id, &match_id).await;
+    let (s1, s2) = if p1(m) == winner { (2, 1) } else { (1, 2) };
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": winner,
+                "participant1_score": s1,
+                "participant2_score": s2,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+            &cup.tokens[winner],
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    response.json::<Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn claim_status(app: &TestApp, claim_id: &str) -> String {
+    sqlx::query_scalar("SELECT status FROM result_claims WHERE id = $1")
+        .bind(Uuid::parse_str(claim_id).unwrap())
+        .fetch_one(app.pool())
+        .await
+        .unwrap()
+}
+
+/// A team files a result claim and is then disqualified: the match is
+/// forfeited to the opponent. The claim it left behind must die with it —
+/// it used to stay pending, get auto-confirmed at its deadline, and rewrite
+/// the forfeit as a win for the disqualified team.
+#[tokio::test]
+async fn pending_claim_cannot_overwrite_a_forfeit() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-claim-vs-forfeit", 3).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let m = &all[0];
+    let match_id = str_of(m, "id");
+    let (cheater, victim) = (p1(m), p2(m));
+    let claim_id = submit_claim(&app, &cup, m, &cheater).await;
+
+    app.post_json(
+        &format!(
+            "/v1/admin/tournaments/{}/registrations/{cheater}/disqualify",
+            cup.tournament_id
+        ),
+        &json!({ "reason": "Cheating confirmed by the admin team" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let forfeited = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(forfeited["status"], "forfeit");
+    assert_eq!(forfeited["winner_registration_id"], victim.as_str());
+    assert_eq!(
+        claim_status(&app, &claim_id).await,
+        "superseded",
+        "the forfeit supersedes the pending claim"
+    );
+
+    // Even a claim that is somehow still pending past its deadline (one that
+    // predates the supersede) must not be applied over the forfeit — neither
+    // by the auto-confirm sweep nor by the opponent confirming it.
+    sqlx::query(
+        "UPDATE result_claims
+         SET status = 'pending', auto_confirm_at = NOW() - INTERVAL '1 minute'
+         WHERE id = $1",
+    )
+    .bind(Uuid::parse_str(&claim_id).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    let confirm = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/result/{claim_id}/confirm"),
+            &cup.tokens[&victim],
+        )
+        .await;
+    assert_eq!(confirm.status, StatusCode::CONFLICT, "{}", confirm.text());
+    assert_eq!(claim_status(&app, &claim_id).await, "pending");
+
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(summary.claims_auto_confirmed, 0, "{summary:?}");
+    assert_eq!(
+        claim_status(&app, &claim_id).await,
+        "superseded",
+        "the sweep retires a claim on a match that is already decided"
+    );
+
+    let after = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(after["status"], "forfeit");
+    assert_eq!(after["winner_registration_id"], victim.as_str());
+    let rows = standings(&app, &cup.tournament_id, &str_of(m, "bracket_id")).await;
+    assert_eq!(row_for(&rows, &victim)["points"], 3, "{rows:?}");
+    assert_eq!(row_for(&rows, &cheater)["points"], 0, "{rows:?}");
+}
+
+/// Two admins forfeit the same match at the same moment, one per side.
+/// Exactly one forfeit may land; the other is a 409 that writes nothing.
+/// Both used to succeed: two forfeit records, and the match row naming one
+/// winner while the other had been advanced into the final.
+#[tokio::test]
+async fn concurrent_opposite_forfeits_only_one_wins() {
+    let app = TestApp::new().await;
+    for i in 0..6 {
+        let cup = create_cup(
+            &app,
+            &format!("se-race-forfeit-{i}"),
+            "single_elimination",
+            4,
+            json!({}),
+        )
+        .await;
+        start(&app, &cup).await;
+        let all = matches(&app, &cup.tournament_id).await;
+        let m = all.iter().find(|m| m["round"] == 1).unwrap().clone();
+        let match_id = str_of(&m, "id");
+        let url = format!(
+            "/v1/admin/tournaments/{}/matches/{match_id}/forfeit",
+            cup.tournament_id
+        );
+        let body = |reg: String| {
+            json!({
+                "forfeiting_registration_id": reg,
+                "forfeit_type": "no_show",
+                "reason": "Did not turn up to the match"
+            })
+        };
+        let (b1, b2) = (body(p1(&m)), body(p2(&m)));
+        let (r1, r2) = tokio::join!(app.post_json(&url, &b1), app.post_json(&url, &b2));
+
+        let mut statuses = [r1.status, r2.status];
+        statuses.sort();
+        assert!(
+            statuses[0] == StatusCode::OK
+                && (statuses[1] == StatusCode::CONFLICT || statuses[1] == StatusCode::BAD_REQUEST),
+            "run {i}: exactly one forfeit may succeed, got {:?} / {:?}: {} | {}",
+            r1.status,
+            r2.status,
+            r1.text(),
+            r2.text()
+        );
+        let expected_winner = if r1.status == StatusCode::OK {
+            p2(&m)
+        } else {
+            p1(&m)
+        };
+
+        let records: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM forfeit_records WHERE match_id = $1")
+                .bind(Uuid::parse_str(&match_id).unwrap())
+                .fetch_one(app.pool())
+                .await
+                .unwrap();
+        assert_eq!(records, 1, "run {i}: one forfeit, one record");
+
+        let decided = get_match(&app, &cup.tournament_id, &match_id).await;
+        assert_eq!(decided["status"], "forfeit");
+        assert_eq!(
+            decided["winner_registration_id"],
+            expected_winner.as_str(),
+            "run {i}"
+        );
+        let final_match = matches(&app, &cup.tournament_id)
+            .await
+            .into_iter()
+            .find(|x| x["round"] == 2)
+            .unwrap();
+        let seated = [
+            final_match["participant1_registration_id"].as_str(),
+            final_match["participant2_registration_id"].as_str(),
+        ];
+        assert!(
+            seated.contains(&Some(expected_winner.as_str())),
+            "run {i}: the recorded winner is the one advanced: {final_match:?}"
+        );
+        let loser = if expected_winner == p1(&m) {
+            p2(&m)
+        } else {
+            p1(&m)
+        };
+        assert!(
+            !seated.contains(&Some(loser.as_str())),
+            "run {i}: the forfeiting side was advanced too: {final_match:?}"
+        );
+    }
+}
+
+/// The guard itself, without the race: a forfeit against a match that has
+/// been decided since the caller looked is a 409, not a silent overwrite.
+#[tokio::test]
+async fn forfeit_write_is_guarded_on_match_status() {
+    use portal_domain::repositories::tournament::TournamentMatchRepository as _;
+
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-forfeit-guard", 3).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let m = &all[0];
+    let match_id = str_of(m, "id");
+    confirm_win(&app, &cup, m, &p1(m), (2, 0)).await;
+
+    let repo = portal_db::PgTournamentMatchRepository::new(app.pool().clone());
+    let err = repo
+        .forfeit(
+            match_id.parse().unwrap(),
+            p2(m).parse().unwrap(),
+            p1(m).parse().unwrap(),
+            2,
+            0,
+        )
+        .await
+        .expect_err("a completed match cannot be forfeited");
+    assert!(
+        matches!(err, portal_core::DomainError::Conflict(_)),
+        "expected Conflict, got {err:?}"
+    );
+    let after = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(after["status"], "completed");
+    assert_eq!(after["winner_registration_id"], p1(m).as_str());
+}

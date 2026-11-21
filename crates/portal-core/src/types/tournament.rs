@@ -414,6 +414,22 @@ impl FromStr for TournamentMatchStatus {
 }
 
 impl TournamentMatchStatus {
+    /// Every status, for callers that need to turn one of the predicates
+    /// below into a set (e.g. a SQL status guard that must agree with it).
+    pub const ALL: [Self; 11] = [
+        Self::Pending,
+        Self::Ready,
+        Self::Scheduled,
+        Self::CheckingIn,
+        Self::PickBan,
+        Self::InProgress,
+        Self::AwaitingResult,
+        Self::Completed,
+        Self::Cancelled,
+        Self::Forfeit,
+        Self::Disputed,
+    ];
+
     /// Check if the match is in a terminal state.
     ///
     /// Terminal states are final - no further transitions are possible.

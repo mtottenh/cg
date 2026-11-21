@@ -929,6 +929,13 @@ pub trait TournamentMatchRepository: Send + Sync {
     /// Forfeit a match: record the walkover winner/loser and the walkover
     /// series score (`winner_score` lands in the winner's participant slot),
     /// and move the match to `forfeit`.
+    ///
+    /// The write is guarded on the match still being forfeitable
+    /// (`TournamentMatchStatus::can_forfeit_administratively`): of two
+    /// concurrent forfeits exactly one wins and the other gets
+    /// `DomainError::Conflict`. In the same transaction every pending result
+    /// claim on the match is superseded, so a claim filed before the forfeit
+    /// can never be confirmed over it.
     async fn forfeit(
         &self,
         id: TournamentMatchId,
@@ -936,6 +943,16 @@ pub trait TournamentMatchRepository: Send + Sync {
         loser_id: TournamentRegistrationId,
         winner_score: i32,
         loser_score: i32,
+    ) -> Result<TournamentMatch, DomainError>;
+
+    /// Call a match off with no winner (double forfeit): move it to
+    /// `cancelled` and supersede its pending result claims, in one
+    /// transaction. Guarded on the match not being terminal already —
+    /// `DomainError::Conflict` if a result (or another forfeit) got there
+    /// first.
+    async fn cancel_without_result(
+        &self,
+        id: TournamentMatchId,
     ) -> Result<TournamentMatch, DomainError>;
 
     /// File a dispute.
@@ -1551,6 +1568,11 @@ pub trait ResultClaimRepository: Send + Sync {
     /// the whole transaction rolls back). This is what prevents the
     /// completion saga from running twice and double-counting
     /// round-robin/swiss standings.
+    ///
+    /// The match UPDATE is guarded too, on the match still accepting a
+    /// result (`in_progress` / `awaiting_result`): a claim left pending on
+    /// a match that was since forfeited, cancelled or ruled on gets
+    /// `Conflict` instead of overwriting that decision.
     async fn confirm_and_apply_to_match(
         &self,
         id: ResultClaimId,

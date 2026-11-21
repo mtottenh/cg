@@ -954,3 +954,197 @@ async fn test_generation_failure_after_the_claim_rolls_the_start_back() {
     assert_eq!(list_brackets(&app, &tournament_id).await.len(), 1);
     assert_eq!(list_matches(&app, &tournament_id).await.len(), 2);
 }
+
+// ============================================================================
+// Forfeits settle Swiss rounds
+// ============================================================================
+
+async fn admin_forfeit(app: &TestApp, tournament_id: &str, match_id: &str, forfeiter: &str) {
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/forfeit"),
+        &json!({
+            "forfeiting_registration_id": forfeiter,
+            "forfeit_type": "no_show",
+            "reason": "Did not turn up to the match"
+        }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
+async fn bracket_standings(
+    app: &TestApp,
+    tournament_id: &str,
+    bracket_id: &str,
+) -> Vec<serde_json::Value> {
+    let body: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/brackets/{bracket_id}/standings"
+        ))
+        .await
+        .json();
+    body["data"].as_array().unwrap().clone()
+}
+
+/// A one-sided forfeit is a decided result: it settles its Swiss round (the
+/// next round can be generated) and the walkover winner gets the win's
+/// points — in a standalone Swiss and in a Swiss group alike.
+#[tokio::test]
+async fn test_one_sided_forfeit_settles_a_swiss_round_and_scores() {
+    let app = TestApp::new().await;
+    for (slug, format, settings, players) in [
+        ("sw-forfeit-round", "swiss", json!({}), 4),
+        (
+            "swg-forfeit-round",
+            "groups_and_playoffs",
+            json!({
+                "group_count": 2,
+                "advance_per_group": 2,
+                "group_format": "swiss",
+                "playoff_format": "single_elimination"
+            }),
+            8,
+        ),
+    ] {
+        let tournament_id = create_tournament(&app, slug, format, settings).await;
+        let tokens =
+            register_and_start(&app, &tournament_id, players, &slug.replace('-', "_")).await;
+        let groups = swiss_bracket_ids(&list_brackets(&app, &tournament_id).await);
+
+        // Forfeit one round-1 match (participant 2 does not show).
+        let forfeited = list_matches(&app, &tournament_id)
+            .await
+            .into_iter()
+            .next()
+            .unwrap();
+        let bracket_id = forfeited["bracket_id"].as_str().unwrap().to_string();
+        let winner = forfeited["participant1_registration_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let loser = forfeited["participant2_registration_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        admin_forfeit(
+            &app,
+            &tournament_id,
+            forfeited["id"].as_str().unwrap(),
+            &loser,
+        )
+        .await;
+
+        let rows = bracket_standings(&app, &tournament_id, &bracket_id).await;
+        let row = |reg: &str| {
+            rows.iter()
+                .find(|r| r["registration_id"] == reg)
+                .unwrap_or_else(|| panic!("{slug}: no standings row for {reg}"))
+                .clone()
+        };
+        assert_eq!(row(&winner)["points"], 3, "{slug}: {rows:?}");
+        assert_eq!(row(&winner)["matches_won"], 1, "{slug}: {rows:?}");
+        assert_eq!(row(&loser)["points"], 0, "{slug}: {rows:?}");
+
+        // Play the rest of round 1 — the forfeit is not "open".
+        for m in list_matches(&app, &tournament_id).await {
+            if m["status"] == "forfeit" {
+                continue;
+            }
+            let p1 = m["participant1_registration_id"].as_str().unwrap();
+            let p2 = m["participant2_registration_id"].as_str().unwrap();
+            confirm_win_via_claims(
+                &app,
+                &tournament_id,
+                m["id"].as_str().unwrap(),
+                p1,
+                &tokens[p1],
+                &tokens[p2],
+                true,
+            )
+            .await;
+        }
+
+        let response = generate_next_round(&app, &tournament_id).await;
+        assert_eq!(
+            response.status,
+            StatusCode::OK,
+            "{slug}: a forfeit must settle the round: {}",
+            response.text()
+        );
+        let new_matches = response.json::<serde_json::Value>()["data"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(new_matches, players / 2, "{slug}");
+        for b in list_brackets(&app, &tournament_id).await {
+            if groups.contains(b["id"].as_str().unwrap()) {
+                assert_eq!(b["current_round"], 2, "{slug}: {}", b["name"]);
+            }
+        }
+    }
+}
+
+/// A double forfeit (the match is cancelled, nobody wins) on the last
+/// unfinished match of the group stage finishes the stage and opens the
+/// playoffs.
+#[tokio::test]
+async fn test_double_forfeit_on_last_group_match_opens_playoffs() {
+    let app = TestApp::new().await;
+    let tournament_id = create_tournament(
+        &app,
+        "swg-double-forfeit-last",
+        "groups_and_playoffs",
+        json!({
+            "group_count": 2,
+            "advance_per_group": 2,
+            "group_format": "swiss",
+            "playoff_format": "single_elimination",
+            "max_rounds": 1
+        }),
+    )
+    .await;
+    let tokens = register_and_start(&app, &tournament_id, 8, "dfl").await;
+
+    // Play everything except one match.
+    let all = list_matches(&app, &tournament_id).await;
+    let (last, rest) = all.split_last().unwrap();
+    for m in rest {
+        let p1 = m["participant1_registration_id"].as_str().unwrap();
+        let p2 = m["participant2_registration_id"].as_str().unwrap();
+        confirm_win_via_claims(
+            &app,
+            &tournament_id,
+            m["id"].as_str().unwrap(),
+            p1,
+            &tokens[p1],
+            &tokens[p2],
+            true,
+        )
+        .await;
+    }
+    assert_eq!(
+        stage_statuses(&app, &tournament_id).await,
+        vec!["active", "pending"]
+    );
+
+    app.post_json(
+        &format!(
+            "/v1/admin/tournaments/{tournament_id}/matches/{}/double-forfeit",
+            last["id"].as_str().unwrap()
+        ),
+        &json!({ "reason": "Neither side showed up for the match" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    assert_eq!(
+        stage_statuses(&app, &tournament_id).await,
+        vec!["completed", "active"],
+        "the cancelled match was the last one the group stage waited on"
+    );
+    assert_eq!(
+        list_brackets(&app, &tournament_id).await.len(),
+        3,
+        "the playoff bracket was seeded"
+    );
+}

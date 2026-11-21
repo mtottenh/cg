@@ -1363,3 +1363,205 @@ async fn forfeit_write_is_guarded_on_match_status() {
     assert_eq!(after["status"], "completed");
     assert_eq!(after["winner_registration_id"], p1(m).as_str());
 }
+
+// ============================================================================
+// 11. A DEPARTED TEAM PLAYS NO FURTHER MATCH
+// ============================================================================
+
+async fn withdraw(app: &TestApp, cup: &Cup, reg: &str) {
+    app.post_json_with_token(
+        &format!(
+            "/v1/tournaments/{}/registrations/{reg}/withdraw",
+            cup.tournament_id
+        ),
+        &json!({ "reason": "Cannot make the rest of the event" }),
+        &cup.tokens[reg],
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
+fn seats(m: &Value, reg: &str) -> bool {
+    m["participant1_registration_id"] == reg || m["participant2_registration_id"] == reg
+}
+
+fn is_settled(m: &Value) -> bool {
+    matches!(
+        m["status"].as_str(),
+        Some("completed" | "forfeit" | "cancelled")
+    )
+}
+
+/// Single elimination: a team wins its semi-final, is seated in the final
+/// (still waiting for the other semi) and then withdraws. Nothing could be
+/// forfeited at that moment — the final had no opponent. When the other
+/// semi finishes, the final must be a walkover, not a playable match
+/// against a team that has left.
+#[tokio::test]
+async fn withdrawn_team_seated_in_pending_final_forfeits_it() {
+    let app = TestApp::new().await;
+    let cup = create_cup(
+        &app,
+        "se-wd-pending-final",
+        "single_elimination",
+        4,
+        json!({}),
+    )
+    .await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let semis: Vec<Value> = all.iter().filter(|m| m["round"] == 1).cloned().collect();
+    assert_eq!(semis.len(), 2);
+
+    let leaver = p1(&semis[0]);
+    confirm_win(&app, &cup, &semis[0], &leaver, (2, 0)).await;
+    withdraw(&app, &cup, &leaver).await;
+    let pending_final = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|m| m["round"] == 2)
+        .unwrap();
+    assert_eq!(pending_final["status"], "pending");
+    assert!(seats(&pending_final, &leaver));
+
+    let finalist = p1(&semis[1]);
+    confirm_win(&app, &cup, &semis[1], &finalist, (2, 0)).await;
+
+    let final_match = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|m| m["round"] == 2)
+        .unwrap();
+    assert_eq!(
+        final_match["status"], "forfeit",
+        "the final against a withdrawn team is a walkover: {final_match:?}"
+    );
+    assert_eq!(final_match["winner_registration_id"], finalist.as_str());
+    let record: (String, bool) = sqlx::query_as(
+        "SELECT forfeit_type, triggered_by_system FROM forfeit_records WHERE match_id = $1",
+    )
+    .bind(Uuid::parse_str(&str_of(&final_match, "id")).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(record, ("withdrawal".to_string(), true));
+}
+
+/// Double elimination: forfeiting a withdrawn team's winners-bracket match
+/// drops it into the losers bracket like any loser. It must not stay
+/// playable there — every match it is seated in ends up settled, and its
+/// losers-bracket opponent gets the walkover.
+#[tokio::test]
+async fn withdrawn_team_routed_into_losers_bracket_forfeits_there() {
+    let app = TestApp::new().await;
+    let cup = create_cup(&app, "de-wd-losers", "double_elimination", 4, json!({})).await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let openers: Vec<Value> = all
+        .iter()
+        .filter(|m| {
+            m["participant1_registration_id"].is_string()
+                && m["participant2_registration_id"].is_string()
+        })
+        .cloned()
+        .collect();
+    assert_eq!(openers.len(), 2, "{all:?}");
+
+    let leaver = p1(&openers[0]);
+    withdraw(&app, &cup, &leaver).await;
+    // The other opener's loser is who meets the leaver in the losers bracket.
+    let other_winner = p1(&openers[1]);
+    let other_loser = p2(&openers[1]);
+    confirm_win(&app, &cup, &openers[1], &other_winner, (2, 0)).await;
+
+    let all = matches(&app, &cup.tournament_id).await;
+    let with_leaver: Vec<&Value> = all.iter().filter(|m| seats(m, &leaver)).collect();
+    assert_eq!(
+        with_leaver.len(),
+        2,
+        "the opener and one losers-bracket match: {with_leaver:?}"
+    );
+    for m in &with_leaver {
+        assert!(
+            is_settled(m),
+            "a withdrawn team still has a playable match: {m:?}"
+        );
+        assert_ne!(m["winner_registration_id"], leaver.as_str(), "{m:?}");
+    }
+    let losers_match = with_leaver
+        .iter()
+        .find(|m| m["id"] != openers[0]["id"])
+        .unwrap();
+    assert_eq!(losers_match["status"], "forfeit", "{losers_match:?}");
+    assert_eq!(
+        losers_match["winner_registration_id"],
+        other_loser.as_str(),
+        "the walkover goes to the team it would have played"
+    );
+    // ... and that walkover was settled too: its winner moved on.
+    let advanced = all.iter().any(|m| {
+        m["id"] != losers_match["id"] && m["id"] != openers[1]["id"] && seats(m, &other_loser)
+    });
+    assert!(advanced, "the walkover winner was not advanced: {all:?}");
+}
+
+/// Both finalists have left by the time the final becomes playable: it is
+/// called off (the double-forfeit path), not left open.
+#[tokio::test]
+async fn final_between_two_departed_teams_is_called_off() {
+    let app = TestApp::new().await;
+    let cup = create_cup(&app, "se-both-departed", "single_elimination", 4, json!({})).await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let semis: Vec<Value> = all.iter().filter(|m| m["round"] == 1).cloned().collect();
+
+    let first = p1(&semis[0]);
+    confirm_win(&app, &cup, &semis[0], &first, (2, 0)).await;
+    withdraw(&app, &cup, &first).await;
+
+    // The second finalist is disqualified between winning the semi and the
+    // result being processed: stage the result without progression, then
+    // disqualify, then let the saga run.
+    let second = p1(&semis[1]);
+    let semi2_id = str_of(&semis[1], "id");
+    transition_match_to_in_progress(&app, &cup.tournament_id, &semi2_id).await;
+    sqlx::query(
+        "UPDATE tournament_matches
+         SET status = 'completed', winner_registration_id = $2, loser_registration_id = $3,
+             participant1_score = 2, participant2_score = 0, completed_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(Uuid::parse_str(&semi2_id).unwrap())
+    .bind(Uuid::parse_str(&second).unwrap())
+    .bind(Uuid::parse_str(&p2(&semis[1])).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    app.post_json(
+        &format!(
+            "/v1/admin/tournaments/{}/registrations/{second}/disqualify",
+            cup.tournament_id
+        ),
+        &json!({ "reason": "Cheating confirmed by the admin team" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    app.post_json(
+        &format!("/v1/admin/matches/{semi2_id}/progression/process"),
+        &json!({
+            "winner_registration_id": second,
+            "loser_registration_id": p2(&semis[1])
+        }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let final_match = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|m| m["round"] == 2)
+        .unwrap();
+    assert!(seats(&final_match, &first) && seats(&final_match, &second));
+    assert_eq!(final_match["status"], "cancelled", "{final_match:?}");
+    assert!(final_match["winner_registration_id"].is_null());
+}

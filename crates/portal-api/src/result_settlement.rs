@@ -40,6 +40,23 @@ pub async fn rederive(
     log_outcome(match_id, result)
 }
 
+/// Walk over any of `match_ids` that is playable against a participant who
+/// has left the tournament (see `MatchCompletionSaga::settle_departed`).
+///
+/// The saga does this itself for the matches a completion feeds; this is for
+/// the manual progression endpoints, which move participants without it.
+pub async fn settle_departed(saga: &AppMatchCompletionSaga, match_ids: &[TournamentMatchId]) {
+    for &match_id in match_ids {
+        if let Err(e) = saga.settle_departed(match_id).await {
+            warn!(
+                %match_id,
+                error = %e,
+                "Forfeiting a match for a departed participant failed"
+            );
+        }
+    }
+}
+
 fn log_outcome(
     match_id: TournamentMatchId,
     result: Result<SettleOutcome, portal_core::DomainError>,

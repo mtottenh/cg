@@ -119,6 +119,11 @@ pub async fn reapply_progression(
         .progression_service
         .reapply_progression(match_id, new_winner)
         .await?;
+    crate::result_settlement::settle_departed(
+        &state.match_completion_saga,
+        &result.newly_ready_matches,
+    )
+    .await;
 
     Ok(Json(DataResponse::new(
         ProgressionResponse::from(result),
@@ -180,6 +185,11 @@ pub async fn process_progression(
         .progression_service
         .process_match_completion(match_id, winner_registration_id, loser_registration_id)
         .await?;
+    crate::result_settlement::settle_departed(
+        &state.match_completion_saga,
+        &result.newly_ready_matches,
+    )
+    .await;
 
     Ok(Json(DataResponse::new(
         ProgressionResponse::from(result),

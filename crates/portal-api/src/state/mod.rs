@@ -60,8 +60,8 @@ use portal_domain::services::{
     SystemSettingsService, TournamentService, UserService,
     game_server::{CertificateAuthority, GameServerRegistryService},
     tournament::{
-        AvailabilityService, CheckInService, DisputeService, EvidenceS3Client, EvidenceService,
-        EvidenceServiceConfig, ForfeitService, LineupService, MatchCompletionSaga,
+        AvailabilityService, CheckInService, DepartedForfeiter, DisputeService, EvidenceS3Client,
+        EvidenceService, EvidenceServiceConfig, ForfeitService, LineupService, MatchCompletionSaga,
         MatchLifecycleService, ProgressionService, RegistrationService, ResultReviewService,
         ResultService, SchedulingService, SeedingService, StandingsService,
         VetoAuthorizationService, VetoLobbyChatService, VetoService,
@@ -1040,7 +1040,11 @@ impl AppState {
             review_creator_adapter,
             stats_updater_adapter,
             Arc::new(progression_service.clone()),
-        );
+        )
+        .with_departed_forfeiter(Arc::new(DepartedForfeiter::new(
+            forfeit_service.clone(),
+            Arc::clone(&tournament_repo),
+        )));
 
         Self {
             db_pool,

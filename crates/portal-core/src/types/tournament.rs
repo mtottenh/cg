@@ -651,6 +651,18 @@ impl TournamentRegistrationStatus {
         )
     }
 
+    /// Check if the participant has left the event of their own accord or
+    /// been removed from it — withdrawn, disqualified or a no-show — as
+    /// opposed to merely knocked out (`Eliminated`, which a double-elimination
+    /// entry can be while still owing losers-bracket matches).
+    ///
+    /// A departed participant plays no further match: any it is still seated
+    /// in is a walkover for the opponent.
+    #[must_use]
+    pub const fn has_departed(&self) -> bool {
+        matches!(self, Self::Disqualified | Self::Withdrawn | Self::NoShow)
+    }
+
     /// Check if the participant can compete.
     #[must_use]
     pub const fn can_compete(&self) -> bool {

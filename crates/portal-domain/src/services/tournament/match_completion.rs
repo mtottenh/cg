@@ -123,6 +123,35 @@ pub trait StageAdvancer: Send + Sync + 'static {
     ) -> Result<Option<TournamentStageId>, DomainError>;
 }
 
+/// What was done with a match found seating a departed participant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepartureOutcome {
+    /// One side had left: the match was forfeited to the other.
+    Walkover,
+    /// Both sides had left: the match was called off with no winner.
+    CalledOff,
+}
+
+/// Trait for forfeiting a match on behalf of a participant who has left the
+/// tournament (withdrawn, disqualified, no-show).
+///
+/// Used by the saga when progression seats such a participant in a match
+/// that then becomes playable, without depending on the forfeit service.
+#[async_trait]
+pub trait DepartedParticipantForfeiter: Send + Sync + 'static {
+    /// If `match_id` is playable and one (or both) of its participants has
+    /// left the tournament, record the forfeit (or double forfeit) and
+    /// return what was done. `None` when the match is not playable yet, is
+    /// already decided, or both participants are still in the event.
+    ///
+    /// Only records the result; settling it (advancing the walkover winner,
+    /// standings, stage advancement) is the caller's job.
+    async fn forfeit_if_departed(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<DepartureOutcome>, DomainError>;
+}
+
 // =============================================================================
 // INPUT/OUTPUT TYPES
 // =============================================================================
@@ -203,6 +232,9 @@ pub struct MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA> {
     review_creator: Arc<RC>,
     stats_updater: Arc<MSU>,
     stage_advancer: Arc<SA>,
+    /// Optional: without it, matches seating a departed participant are
+    /// left for an admin (the pre-existing behaviour).
+    departed_forfeiter: Option<Arc<dyn DepartedParticipantForfeiter>>,
 }
 
 impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA> Clone
@@ -220,6 +252,7 @@ impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA> Clone
             review_creator: Arc::clone(&self.review_creator),
             stats_updater: Arc::clone(&self.stats_updater),
             stage_advancer: Arc::clone(&self.stage_advancer),
+            departed_forfeiter: self.departed_forfeiter.clone(),
         }
     }
 }
@@ -263,7 +296,61 @@ where
             review_creator,
             stats_updater,
             stage_advancer,
+            departed_forfeiter: None,
         }
+    }
+
+    /// Forfeit matches that progression seats a departed participant in
+    /// (see [`Self::settle_departed`]).
+    #[must_use]
+    pub fn with_departed_forfeiter(
+        mut self,
+        forfeiter: Arc<dyn DepartedParticipantForfeiter>,
+    ) -> Self {
+        self.departed_forfeiter = Some(forfeiter);
+        self
+    }
+
+    /// Forfeit and settle `match_id` if it is playable and seats a
+    /// participant who has left the tournament.
+    ///
+    /// Withdrawal and disqualification forfeit the matches the participant
+    /// is in *at that moment*. A match they only reach afterwards — the
+    /// final they were already seated in while it waited for the other
+    /// semi-final, the losers-bracket match their forfeited winners-bracket
+    /// match drops them into — used to become playable with nobody to play
+    /// it. Everything that makes a match playable calls this for it; the
+    /// forfeit is then settled like any other, so it chains: the walkover
+    /// winner moves on, and if *that* seats a departed participant the next
+    /// match is forfeited in turn.
+    ///
+    /// Returns what was done, `None` if the match needed nothing.
+    #[instrument(skip(self))]
+    pub async fn settle_departed(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<DepartureOutcome>, DomainError> {
+        let Some(forfeiter) = &self.departed_forfeiter else {
+            return Ok(None);
+        };
+        let Some(outcome) = forfeiter.forfeit_if_departed(match_id).await? else {
+            return Ok(None);
+        };
+        info!(match_id = %match_id, ?outcome, "Forfeited a match seating a departed participant");
+        self.settle_result_boxed(match_id).await?;
+        Ok(Some(outcome))
+    }
+
+    /// [`Self::settle_result`] behind a boxed future: settling a departure
+    /// forfeit from inside a running saga re-enters the saga, and the
+    /// recursion needs an indirection.
+    fn settle_result_boxed(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SettleOutcome, DomainError>> + Send + '_>,
+    > {
+        Box::pin(self.settle_result(match_id))
     }
 
     /// Execute the match completion saga.
@@ -618,6 +705,15 @@ where
         let stage_advanced = self
             .step_advance_stage(saga_coordinator, execution, match_)
             .await?;
+
+        // Step 7.7: Walk over any next match that just seated a departed
+        // participant
+        self.step_settle_departed(
+            saga_coordinator,
+            execution,
+            [winner_next_match_id, loser_next_match_id],
+        )
+        .await?;
 
         // Step 8: Update player stats (best-effort, non-blocking)
         self.step_update_player_stats(saga_coordinator, execution, &input)
@@ -1260,6 +1356,64 @@ where
         }
 
         Ok(opened.is_some())
+    }
+
+    /// Step 7.7: forfeit the matches this result fed if they are now
+    /// playable against a participant who has left the tournament.
+    ///
+    /// Recording the forfeit is part of this saga (a failure fails the step
+    /// and the re-drive retries it). *Settling* it is a completion of its
+    /// own, with its own saga row and its own re-drive, so a failure there
+    /// is logged rather than failing this match's completion.
+    async fn step_settle_departed(
+        &self,
+        saga_coordinator: &SagaCoordinator<SR>,
+        execution: &mut SagaExecution,
+        targets: [Option<TournamentMatchId>; 2],
+    ) -> Result<(), DomainError> {
+        const STEP_NAME: &str = "settle_departed";
+        let mut walked_over = Vec::new();
+
+        if let Some(forfeiter) = &self.departed_forfeiter {
+            for target_id in targets.into_iter().flatten() {
+                let outcome = match forfeiter.forfeit_if_departed(target_id).await {
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        saga_coordinator
+                            .fail_step(execution, STEP_NAME, &e.to_string())
+                            .await?;
+                        return Err(e);
+                    }
+                };
+                let Some(outcome) = outcome else { continue };
+                walked_over.push(serde_json::json!({
+                    "match_id": target_id.to_string(),
+                    "outcome": format!("{outcome:?}"),
+                }));
+                info!(
+                    match_id = %target_id,
+                    ?outcome,
+                    "Forfeited a match seating a departed participant"
+                );
+                if let Err(e) = self.settle_result_boxed(target_id).await {
+                    warn!(
+                        match_id = %target_id,
+                        error = %e,
+                        "Settling a departure forfeit failed; left for the lifecycle re-drive"
+                    );
+                }
+            }
+        }
+
+        saga_coordinator
+            .complete_step(
+                execution,
+                STEP_NAME,
+                Some(serde_json::json!({ "walked_over": walked_over })),
+            )
+            .await?;
+
+        Ok(())
     }
 
     /// Step 8: Update player stats (best-effort).

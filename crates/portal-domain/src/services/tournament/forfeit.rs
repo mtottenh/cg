@@ -13,8 +13,10 @@ use crate::entities::forfeit::{ForfeitResult, ForfeitTrigger, ForfeitType};
 use crate::entities::tournament::TournamentMatch;
 use crate::repositories::forfeit::{CreateForfeitRecord, ForfeitRecordRepository};
 use crate::repositories::tournament::{
-    TournamentMatchRepository, TournamentRegistrationRepository,
+    TournamentMatchRepository, TournamentRegistrationRepository, TournamentRepository,
 };
+
+use super::match_completion::{DepartedParticipantForfeiter, DepartureOutcome};
 
 /// Service for handling forfeits.
 #[derive(Clone)]
@@ -449,6 +451,136 @@ where
             .into_iter()
             .filter(|m| m.status.can_forfeit_administratively() && m.has_both_participants())
             .collect())
+    }
+}
+
+// =============================================================================
+// DEPARTED PARTICIPANTS
+// =============================================================================
+
+/// Forfeits matches on behalf of participants who have left the tournament.
+///
+/// [`ForfeitService::forfeit_remaining_matches`] deals with the matches a
+/// participant is in when it withdraws or is disqualified. This deals with
+/// the ones it only reaches *afterwards* — see
+/// [`MatchCompletionSaga::settle_departed`](super::MatchCompletionSaga::settle_departed),
+/// which calls it for every match progression makes playable.
+#[derive(Clone)]
+pub struct DepartedForfeiter<FRR, TMR, TRR, TR> {
+    forfeits: ForfeitService<FRR, TMR, TRR>,
+    tournament_repo: Arc<TR>,
+}
+
+impl<FRR, TMR, TRR, TR> DepartedForfeiter<FRR, TMR, TRR, TR>
+where
+    FRR: ForfeitRecordRepository,
+    TMR: TournamentMatchRepository,
+    TRR: TournamentRegistrationRepository,
+    TR: TournamentRepository,
+{
+    /// Create a new departed-participant forfeiter.
+    pub const fn new(forfeits: ForfeitService<FRR, TMR, TRR>, tournament_repo: Arc<TR>) -> Self {
+        Self {
+            forfeits,
+            tournament_repo,
+        }
+    }
+
+    /// The forfeit type owed by a registration that has left, or `None` if
+    /// it is still in the event (or its matches are an admin's call).
+    async fn departure(
+        &self,
+        tournament_id: TournamentId,
+        registration_id: TournamentRegistrationId,
+    ) -> Result<Option<ForfeitType>, DomainError> {
+        let registration = self
+            .forfeits
+            .registration_repo
+            .find_by_id(registration_id)
+            .await?
+            .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
+        Ok(match registration.status {
+            TournamentRegistrationStatus::Disqualified => Some(ForfeitType::Disqualification),
+            TournamentRegistrationStatus::NoShow => Some(ForfeitType::NoShow),
+            TournamentRegistrationStatus::Withdrawn => {
+                // Same policy the withdrawal itself applied to the matches
+                // the team was in: under `AdminDecision` nothing is forfeited
+                // automatically.
+                let policy = self
+                    .tournament_repo
+                    .find_by_id(tournament_id)
+                    .await?
+                    .ok_or(DomainError::TournamentNotFound(tournament_id))?
+                    .withdrawal_policy;
+                (policy != WithdrawalPolicy::AdminDecision).then_some(ForfeitType::Withdrawal)
+            }
+            _ => None,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl<FRR, TMR, TRR, TR> DepartedParticipantForfeiter for DepartedForfeiter<FRR, TMR, TRR, TR>
+where
+    FRR: ForfeitRecordRepository + 'static,
+    TMR: TournamentMatchRepository + 'static,
+    TRR: TournamentRegistrationRepository + 'static,
+    TR: TournamentRepository + 'static,
+{
+    #[instrument(skip(self))]
+    async fn forfeit_if_departed(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<DepartureOutcome>, DomainError> {
+        let match_ = self.forfeits.get_match(match_id).await?;
+        let (Some(p1), Some(p2)) = (
+            match_.participant1_registration_id,
+            match_.participant2_registration_id,
+        ) else {
+            return Ok(None);
+        };
+        if !match_.status.can_forfeit_administratively() {
+            return Ok(None);
+        }
+
+        let d1 = self.departure(match_.tournament_id, p1).await?;
+        let d2 = self.departure(match_.tournament_id, p2).await?;
+        let trigger = ForfeitTrigger::System {
+            reason: "participant_departed".to_string(),
+        };
+
+        let result = match (d1, d2) {
+            (None, None) => return Ok(None),
+            (Some(_), Some(_)) => self
+                .forfeits
+                .process_double_forfeit(
+                    match_id,
+                    Some("Both participants have left the tournament".to_string()),
+                    trigger,
+                )
+                .await
+                .map(|_| DepartureOutcome::CalledOff),
+            (Some(forfeit_type), None) | (None, Some(forfeit_type)) => {
+                let departed = if d1.is_some() { p1 } else { p2 };
+                self.forfeits
+                    .process_forfeit(
+                        match_id,
+                        departed,
+                        forfeit_type,
+                        Some("Participant has left the tournament".to_string()),
+                        trigger,
+                    )
+                    .await
+                    .map(|_| DepartureOutcome::Walkover)
+            }
+        };
+
+        match result {
+            Ok(outcome) => Ok(Some(outcome)),
+            // Decided by someone else between the read above and the write.
+            Err(DomainError::Conflict(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 

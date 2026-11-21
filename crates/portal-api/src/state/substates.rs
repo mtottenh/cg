@@ -575,12 +575,16 @@ impl FromRef<AppState> for AwardsState {
 pub struct ProgressionState {
     /// Progression service.
     pub progression_service: AppProgressionService,
+    /// Completion saga — walks over matches the manual progression made
+    /// playable against a participant who has left the tournament.
+    pub match_completion_saga: super::AppMatchCompletionSaga,
 }
 
 impl FromRef<AppState> for ProgressionState {
     fn from_ref(s: &AppState) -> Self {
         Self {
             progression_service: s.progression_service.clone(),
+            match_completion_saga: s.match_completion_saga.clone(),
         }
     }
 }

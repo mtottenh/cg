@@ -155,7 +155,6 @@ async fn start(app: &TestApp, server_id: &str, body: &Value) -> (StatusCode, Val
         .post_json(&format!("/v1/admin/game-servers/{server_id}/updates"), body)
         .await;
     let status = response.status;
-    // A body the extractor rejected is plain text, not a problem document.
     let body = serde_json::from_str(&response.text()).unwrap_or(Value::Null);
     (status, body)
 }
@@ -430,12 +429,34 @@ async fn test_an_unknown_operation_or_job_is_rejected() {
 
     // `repair-config` and `check` have their own endpoints; anything else
     // is not an operation.
-    for operation in ["repair-config", "check", "verify-config", "MODS", ""] {
-        let (status, body) = start(&app, &server_id, &json!({"operation": operation})).await;
-        assert!(
-            status == StatusCode::UNPROCESSABLE_ENTITY || status == StatusCode::BAD_REQUEST,
-            "{operation}: {status} {body}"
-        );
+    // Rejected as a problem document (RFC 7807), not plain text.
+    let bodies = ["repair-config", "check", "verify-config", "MODS", ""]
+        .iter()
+        .map(|op| json!({"operation": op}))
+        .chain([
+            json!({}),
+            json!({"operation": 3}),
+            json!("mods"),
+            json!({"operation": "mods", "force": "yes"}),
+        ]);
+    for request in bodies {
+        let (status, body) = start(&app, &server_id, &request).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{request}: {body}");
+        assert_eq!(body["status"], 400, "{request}: {body}");
+        assert!(body["detail"].is_string(), "{request}: {body}");
+    }
+    // Overrides that are not an object of cvars likewise.
+    let uri = format!("/v1/admin/game-servers/{server_id}/matchzy-overrides");
+    for request in [
+        json!({"overrides": ["matchzy_x"]}),
+        json!({"overrides": "x"}),
+        json!({}),
+        json!(null),
+    ] {
+        let response = app.put_json(&uri, &request).await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{request}");
+        let body: Value = response.json();
+        assert_eq!(body["status"], 400, "{request}: {body}");
     }
     assert!(agent.frames().is_empty());
 

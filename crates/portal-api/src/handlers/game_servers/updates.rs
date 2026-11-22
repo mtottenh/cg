@@ -9,7 +9,7 @@
 
 use crate::dto::common::DataResponse;
 use crate::error::{ApiError, ApiResult};
-use crate::extractors::{AuthenticatedUser, PermissionChecker};
+use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::game_server_updates::{OverridesPush, parse_output};
 use crate::state::AppState;
 use crate::websocket::agent_manager::{AgentCommand, SendError};
@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use utoipa::ToSchema;
+use validator::Validate;
 
 /// Jobs listed by the overview.
 const RECENT_JOBS: i64 = 10;
@@ -290,7 +291,7 @@ impl From<StartUpdateOperation> for UpdateOperation {
 }
 
 /// Start an update.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, Validate)]
 pub struct StartUpdateRequest {
     pub operation: StartUpdateOperation,
     /// Go ahead although players are connected or a reservation is live
@@ -322,7 +323,7 @@ pub struct MatchzyOverridesResponse {
 }
 
 /// Replace the overrides. An empty map clears them.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, Validate)]
 pub struct SetMatchzyOverridesRequest {
     /// At most 64 entries. Names match `^matchzy_[a-z0-9_]+$` (at most 128
     /// bytes) and are not `matchzy_demo_upload_*`, `matchzy_remote_*`,
@@ -1092,6 +1093,7 @@ pub async fn check_updates(
     request_body = StartUpdateRequest,
     responses(
         (status = 202, description = "Update started", body = DataResponse<UpdateJobResponse>),
+        (status = 400, description = "Malformed body or unknown `operation` (problem document)", body = ApiError),
         (status = 403, description = "Missing admin.servers.manage", body = ApiError),
         (status = 404, description = "Server not found", body = ApiError),
         (status = 409, description = "No agent connected; no lgsm_update capability; another job is running; players connected or a reservation/booking is live or imminent (without force); or the agent refused. `detail` names the reason", body = ApiError),
@@ -1106,7 +1108,7 @@ pub async fn start_update(
     perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(server_id): Path<String>,
-    Json(body): Json<StartUpdateRequest>,
+    ValidatedJson(body): ValidatedJson<StartUpdateRequest>,
 ) -> ApiResult<(StatusCode, Json<DataResponse<UpdateJobResponse>>)> {
     perm_checker
         .require_permission(&auth, permissions::admin::SERVERS_MANAGE)
@@ -1343,7 +1345,7 @@ pub async fn get_matchzy_overrides(
     request_body = SetMatchzyOverridesRequest,
     responses(
         (status = 200, description = "Stored; `delivery` says whether the host has them", body = DataResponse<SetMatchzyOverridesResponse>),
-        (status = 400, description = "An override breaks the rules; `detail` names it. Nothing was stored", body = ApiError),
+        (status = 400, description = "Malformed body (e.g. `overrides` not an object), or an override breaks the rules; `detail` names it. Nothing was stored", body = ApiError),
         (status = 403, description = "Missing admin.servers.manage", body = ApiError),
         (status = 404, description = "Server not found", body = ApiError),
     ),
@@ -1356,7 +1358,7 @@ pub async fn set_matchzy_overrides(
     perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(server_id): Path<String>,
-    Json(body): Json<SetMatchzyOverridesRequest>,
+    ValidatedJson(body): ValidatedJson<SetMatchzyOverridesRequest>,
 ) -> ApiResult<Json<DataResponse<SetMatchzyOverridesResponse>>> {
     perm_checker
         .require_permission(&auth, permissions::admin::SERVERS_MANAGE)

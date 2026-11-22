@@ -137,6 +137,17 @@ impl ProgressionRole {
     }
 }
 
+/// A checked withdrawal of one of a match's outputs from the downstream slot
+/// it filled (see `ProgressionService::plan_withdrawal`).
+#[derive(Debug, Clone, Copy)]
+struct PlannedWithdrawal {
+    target_match_id: TournamentMatchId,
+    slot: ParticipantSlot,
+    occupant: TournamentRegistrationId,
+    target_status: TournamentMatchStatus,
+    role: ProgressionRole,
+}
+
 /// Statuses a downstream match may be in and still have a participant pulled
 /// back out of it: nothing has happened there yet beyond the pairing itself.
 ///
@@ -1374,20 +1385,26 @@ where
                 self.reopen_terminal_round_robin(&bracket).await?;
             }
             RevertEffect::WithdrawFromDownstream => {
-                let winner_withdrawn = self
-                    .withdraw_from_target(
+                // Check both outputs before touching either. Withdrawing the
+                // winner and only then finding the losers-bracket match
+                // already played used to refuse the revert half-done: the
+                // walkover winner gone from the next round, the match still
+                // decided.
+                let winner_plan = self
+                    .plan_withdrawal(
                         &match_,
                         match_.winner_progresses_to,
                         ProgressionRole::Winner,
                     )
                     .await?;
-                let loser_withdrawn = self
-                    .withdraw_from_target(
-                        &match_,
-                        match_.loser_progresses_to,
-                        ProgressionRole::Loser,
-                    )
+                let loser_plan = self
+                    .plan_withdrawal(&match_, match_.loser_progresses_to, ProgressionRole::Loser)
                     .await?;
+                let winner_withdrawn = winner_plan.is_some();
+                let loser_withdrawn = loser_plan.is_some();
+                for planned in [winner_plan, loser_plan].into_iter().flatten() {
+                    self.apply_withdrawal(&match_, planned).await?;
+                }
 
                 info!(
                     match_id = %match_id,
@@ -1420,8 +1437,11 @@ where
         Ok(())
     }
 
-    /// Take whoever this match sent into `target_match_id` back out of the slot
-    /// it put them in. Returns whether a slot was actually cleared.
+    /// Work out — without changing anything — how to take whoever this match
+    /// sent into `target_match_id` back out of the slot it put them in.
+    /// `None` when there is nothing to withdraw. Every check that can refuse
+    /// a revert lives here, so `revert_progression` can run all of them, for
+    /// both outputs, before it mutates anything.
     ///
     /// The slot is resolved from the bracket *wiring* rather than from the
     /// occupant's identity: a slot whose `participantN_source` is
@@ -1435,16 +1455,16 @@ where
     /// than repair: when the occupant did not come from this match at all, and
     /// when the downstream round has already moved on (see
     /// `ensure_target_has_not_moved_on`).
-    async fn withdraw_from_target(
+    async fn plan_withdrawal(
         &self,
         source_match: &TournamentMatch,
         target_match_id: Option<TournamentMatchId>,
         role: ProgressionRole,
-    ) -> Result<bool, DomainError> {
+    ) -> Result<Option<PlannedWithdrawal>, DomainError> {
         // No link: this was a final, or the loser is eliminated. Nothing was
         // ever seated downstream, so there is nothing to take back.
         let Some(target_match_id) = target_match_id else {
-            return Ok(false);
+            return Ok(None);
         };
 
         // Whoever this match advanced must be one of its own participants.
@@ -1464,7 +1484,7 @@ where
                 target_match = %target_match_id,
                 "Revert: source match has no participants, so it advanced nobody"
             );
-            return Ok(false);
+            return Ok(None);
         }
 
         let target = self.get_match(target_match_id).await?;
@@ -1502,7 +1522,7 @@ where
                 role = role.label(),
                 "Revert: no downstream slot is fed by this match; nothing to withdraw"
             );
-            return Ok(false);
+            return Ok(None);
         };
 
         // Already empty — a repeat revert, or progression never ran. Converges
@@ -1514,7 +1534,7 @@ where
                 role = role.label(),
                 "Revert: downstream slot is already empty"
             );
-            return Ok(false);
+            return Ok(None);
         };
 
         // The wired slot is held by someone who cannot have come from here.
@@ -1536,6 +1556,29 @@ where
         self.ensure_target_has_not_moved_on(source_match, &target)
             .await?;
 
+        Ok(Some(PlannedWithdrawal {
+            target_match_id,
+            slot,
+            occupant,
+            target_status: target.status,
+            role,
+        }))
+    }
+
+    /// Carry out a withdrawal checked by [`Self::plan_withdrawal`].
+    async fn apply_withdrawal(
+        &self,
+        source_match: &TournamentMatch,
+        planned: PlannedWithdrawal,
+    ) -> Result<(), DomainError> {
+        let PlannedWithdrawal {
+            target_match_id,
+            slot,
+            occupant,
+            target_status,
+            role,
+        } = planned;
+
         self.match_repo
             .clear_participant(target_match_id, slot)
             .await?;
@@ -1546,8 +1589,8 @@ where
         // pairing as playable — and `find_newly_ready_matches` only ever
         // promotes Pending, so it would never be re-marked when the slot is
         // legitimately refilled.
-        if target_is_still_untouched(target.status)
-            && target.status != TournamentMatchStatus::Pending
+        if target_is_still_untouched(target_status)
+            && target_status != TournamentMatchStatus::Pending
         {
             self.match_repo
                 .update_status(target_match_id, TournamentMatchStatus::Pending)
@@ -1562,7 +1605,7 @@ where
             "Reverted advancement out of the downstream match"
         );
 
-        Ok(true)
+        Ok(())
     }
 
     /// Refuse to reach into a downstream match that has already moved on.

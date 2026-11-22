@@ -2891,3 +2891,123 @@ async fn interrupted_captain_forfeit_is_finished_by_its_retry() {
     let (st, text) = captain_forfeit(&app, &cup, &match_id, &p1(&m)).await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{text}");
 }
+
+// ============================================================================
+// 22. A REFUSED REVERT CHANGES NOTHING
+// ============================================================================
+
+/// `(status, winner, participant1, participant2)` of a match, for comparing
+/// before and after a refused revert.
+fn shape(m: &Value) -> (Value, Value, Value, Value) {
+    (
+        m["status"].clone(),
+        m["winner_registration_id"].clone(),
+        m["participant1_registration_id"].clone(),
+        m["participant2_registration_id"].clone(),
+    )
+}
+
+async fn shapes(app: &TestApp, cup: &Cup) -> Vec<(String, (Value, Value, Value, Value))> {
+    let mut out: Vec<_> = matches(app, &cup.tournament_id)
+        .await
+        .iter()
+        .map(|m| (str_of(m, "id"), shape(m)))
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+async fn refused_revert(app: &TestApp, match_id: &str) {
+    let r = app
+        .post_auth(&format!("/v1/admin/matches/{match_id}/progression/revert"))
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.text());
+}
+
+/// Single elimination: the forfeit's walkover winner has already played the
+/// final. The revert is refused and nothing moves.
+#[tokio::test]
+async fn refused_forfeit_revert_changes_nothing_in_single_elimination() {
+    let app = TestApp::new().await;
+    let cup = create_cup(
+        &app,
+        "se-revert-refused",
+        "single_elimination",
+        4,
+        json!({}),
+    )
+    .await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let semis: Vec<Value> = all.iter().filter(|m| m["round"] == 1).cloned().collect();
+    let (m, other) = (&semis[0], &semis[1]);
+    let match_id = str_of(m, "id");
+    transition_match_to_in_progress(&app, &cup.tournament_id, &match_id).await;
+    admin_forfeit(&app, &cup, &match_id, &p2(m)).await;
+    confirm_win(&app, &cup, other, &p1(other), (2, 0)).await;
+    let fin = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|x| x["round"] == 2)
+        .unwrap();
+    confirm_win(&app, &cup, &fin, &p1(m), (2, 1)).await;
+
+    let before = shapes(&app, &cup).await;
+    refused_revert(&app, &match_id).await;
+    assert_eq!(shapes(&app, &cup).await, before);
+    assert_eq!(
+        forfeit_records_of(&app, &match_id).await,
+        vec![(p2(m), false)]
+    );
+}
+
+/// Double elimination: the winners-bracket target is untouched but the
+/// losers-bracket match the loser was routed into has been played. The
+/// revert used to withdraw the winner first and only then refuse, leaving the
+/// next round short a participant while the match stayed decided.
+#[tokio::test]
+async fn refused_forfeit_revert_changes_nothing_in_double_elimination() {
+    let app = TestApp::new().await;
+    let cup = create_cup(
+        &app,
+        "de-revert-refused",
+        "double_elimination",
+        4,
+        json!({}),
+    )
+    .await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let openers: Vec<Value> = all
+        .iter()
+        .filter(|m| {
+            m["participant1_registration_id"].is_string()
+                && m["participant2_registration_id"].is_string()
+        })
+        .cloned()
+        .collect();
+    let (m, other) = (&openers[0], &openers[1]);
+    let match_id = str_of(m, "id");
+    transition_match_to_in_progress(&app, &cup.tournament_id, &match_id).await;
+    admin_forfeit(&app, &cup, &match_id, &p2(m)).await;
+    confirm_win(&app, &cup, other, &p1(other), (2, 0)).await;
+
+    // Play the losers-bracket match m's loser was routed into.
+    let loser_target: Uuid =
+        sqlx::query_scalar("SELECT loser_progresses_to FROM tournament_matches WHERE id = $1")
+            .bind(Uuid::parse_str(&match_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    let lb = get_match(&app, &cup.tournament_id, &loser_target.to_string()).await;
+    assert!(seats(&lb, &p2(m)), "{lb:?}");
+    confirm_win(&app, &cup, &lb, &p2(m), (2, 0)).await;
+
+    let before = shapes(&app, &cup).await;
+    refused_revert(&app, &match_id).await;
+    assert_eq!(shapes(&app, &cup).await, before);
+    assert_eq!(
+        forfeit_records_of(&app, &match_id).await,
+        vec![(p2(m), false)]
+    );
+}

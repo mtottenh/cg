@@ -166,21 +166,62 @@ pub struct AgentHeartbeatFrame {
     pub status_output: Option<String>,
     /// What the agent can do (agent 0.3.0+), e.g. `lgsm_update`. Absent
     /// from older agents, which reads as none.
-    #[serde(default)]
+    ///
+    /// The update fields below are read leniently: `null` or a value of
+    /// the wrong type reads as absent rather than dropping the whole
+    /// heartbeat (which carries the status and gamestate the allocator and
+    /// the restart gate depend on).
+    #[serde(default, deserialize_with = "lenient_strings")]
     pub capabilities: Vec<String>,
     /// Whether the demo-upload block is intact in the MatchZy config file
     /// (0.3.0+); `null`/absent = unknown.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub demo_upload_wired: Option<bool>,
     /// Whether the portal-managed overrides are in that file (0.3.0+).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub overrides_applied: Option<bool>,
     /// A repair changed the config and the server has not re-read it yet.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub reload_pending: Option<bool>,
     /// The update operation in flight: `{job_id, operation, phase, status}`.
-    #[serde(default)]
+    /// Anything but an object reads as none.
+    #[serde(default, deserialize_with = "lenient_object")]
     pub update_job: Option<serde_json::Value>,
+}
+
+/// Any JSON value; one that does not fit `T` reads as `T::default()`.
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// The strings of an array; anything else reads as empty.
+fn lenient_strings<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// A JSON object; anything else reads as `None`.
+fn lenient_object<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.is_object().then_some(value))
 }
 
 /// Inbound frames. Everything the agent pushes carries `type`; a command
@@ -434,6 +475,51 @@ impl AgentConnectionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_heartbeat_with_malformed_update_fields_still_parses() {
+        let frame = serde_json::json!({
+            "type": "heartbeat", "agent_version": "0.3.0", "rcon_ok": true,
+            "get5_status": {"gamestate": "none"}, "status_output": "players : 0 humans",
+            "capabilities": null, "demo_upload_wired": "yes", "overrides_applied": 1,
+            "reload_pending": null, "update_job": "mods",
+        });
+        let AgentMessage::Heartbeat(hb) = AgentMessage::parse(&frame.to_string()).unwrap() else {
+            panic!("not a heartbeat");
+        };
+        assert!(hb.capabilities.is_empty());
+        assert_eq!(hb.demo_upload_wired, None);
+        assert_eq!(hb.overrides_applied, None);
+        assert_eq!(hb.reload_pending, None);
+        assert!(hb.update_job.is_none());
+        // What matters for allocation and the gate survives.
+        assert_eq!(hb.status_output.as_deref(), Some("players : 0 humans"));
+        assert!(hb.get5_status.is_some());
+
+        let frame = serde_json::json!({
+            "type": "heartbeat", "agent_version": "0.3.0", "rcon_ok": true,
+            "capabilities": ["lgsm_update", 7, null], "demo_upload_wired": true,
+            "reload_pending": true,
+            "update_job": {"job_id": "x", "operation": "mods"},
+        });
+        let AgentMessage::Heartbeat(hb) = AgentMessage::parse(&frame.to_string()).unwrap() else {
+            panic!("not a heartbeat");
+        };
+        assert_eq!(hb.capabilities, vec!["lgsm_update"]);
+        assert_eq!(hb.demo_upload_wired, Some(true));
+        assert_eq!(hb.reload_pending, Some(true));
+        assert_eq!(hb.update_job.unwrap()["operation"], "mods");
+
+        // Absent fields (an older agent) read as before.
+        let frame = serde_json::json!({
+            "type": "heartbeat", "agent_version": "0.2.0", "rcon_ok": true,
+        });
+        let AgentMessage::Heartbeat(hb) = AgentMessage::parse(&frame.to_string()).unwrap() else {
+            panic!("not a heartbeat");
+        };
+        assert!(hb.capabilities.is_empty());
+        assert_eq!(hb.overrides_applied, None);
+    }
 
     #[tokio::test]
     async fn command_to_disconnected_server_fails_fast() {

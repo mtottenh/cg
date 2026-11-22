@@ -3381,3 +3381,52 @@ async fn reverting_a_forfeit_keeps_an_earlier_played_results_saga() {
     );
 }
 
+// ============================================================================
+// 26. THE SAGA NEVER WRITES A RESULT ITSELF
+// ============================================================================
+
+/// A revert lands while a completion saga is between validating the match
+/// (step 1) and its complete-match step (step 4) — staged with a trigger that
+/// reopens the match as soon as step 3 is recorded. The complete-match step
+/// used to see an undecided match and submit the saga's result over the
+/// revert; it now refuses.
+#[tokio::test]
+async fn completion_saga_does_not_undo_a_revert_made_while_it_runs() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-saga-window", 3).await;
+    let m = matches(&app, &cup.tournament_id).await[0].clone();
+    let match_id = str_of(&m, "id");
+    for stmt in [
+        r"CREATE FUNCTION test_reopen_mid_saga() RETURNS trigger AS $$
+           BEGIN
+             UPDATE tournament_matches
+             SET status = 'awaiting_result', winner_registration_id = NULL,
+                 loser_registration_id = NULL, completed_at = NULL
+             WHERE id = NEW.match_id;
+             RETURN NEW;
+           END $$ LANGUAGE plpgsql",
+        r#"CREATE TRIGGER test_reopen_mid_saga AFTER UPDATE ON saga_executions
+           FOR EACH ROW WHEN (
+             NEW.step_history @> '[{"name": "get_bracket"}]'::jsonb
+             AND NOT OLD.step_history @> '[{"name": "get_bracket"}]'::jsonb
+           ) EXECUTE FUNCTION test_reopen_mid_saga()"#,
+    ] {
+        sqlx::query(stmt).execute(app.pool()).await.unwrap();
+    }
+
+    // The confirm itself records the result; the saga that follows hits the
+    // staged revert.
+    let claim_id = submit_claim(&app, &cup, &m, &p1(&m)).await;
+    let _ = app
+        .post_with_token(
+            &format!("/v1/matches/{match_id}/result/{claim_id}/confirm"),
+            &cup.tokens[&p2(&m)],
+        )
+        .await;
+
+    let after = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(after["status"], "awaiting_result", "{after:?}");
+    assert!(after["winner_registration_id"].is_null(), "{after:?}");
+    assert_eq!(saga_statuses(&app, &match_id).await, vec!["failed"]);
+}
+

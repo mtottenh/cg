@@ -1130,70 +1130,32 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
 
-        // If the match is already decided (completed by confirm_claim, or
-        // forfeited — a walkover keeps its `forfeit` status and the score the
-        // forfeit path recorded), skip.
-        if match_.status.is_decided() {
+        // Every path that starts this saga records the result on the match
+        // first (claim confirmation in the same transaction, the forfeit
+        // paths, settlement reading a decided row), so there is nothing to
+        // write here — only to confirm the result is still there. It used to
+        // submit the input's result when the match was not decided, which
+        // undid a revert that landed after step 1 validated the match (demo
+        // validation in between makes that window real): the reopened match
+        // was completed again with the reverted result.
+        if let Err(e) = Self::ensure_result_stands(&match_, input) {
             saga_coordinator
-                .complete_step(
-                    execution,
-                    STEP_NAME,
-                    Some(serde_json::json!({
-                        "action": "already_completed",
-                        "status": match_.status.to_string(),
-                        "winner_id": input.winner_registration_id.to_string()
-                    })),
-                )
+                .fail_step(execution, STEP_NAME, &e.to_string())
                 .await?;
-
-            info!(
-                match_id = %input.match_id,
-                "Match already completed, skipping"
-            );
-            return Ok(());
+            return Err(e);
         }
-
-        let (p1_score, p2_score) =
-            if match_.participant1_registration_id == Some(input.winner_registration_id) {
-                (input.winner_score, input.loser_score)
-            } else {
-                (input.loser_score, input.winner_score)
-            };
-
-        // Submit the result. `submit_result` already sets
-        // `status = 'completed'` on the match row (see the adapter's
-        // UPDATE), so the prior separate `match_repo.complete(...)`
-        // call that used to follow this was redundant *and*
-        // non-atomic — if `complete()` failed after `submit_result()`,
-        // the saga step logged a partial success but the db reflected
-        // the correct end state anyway. Dropping it tightens the
-        // invariant: one write, one atomic transition. See audit I5.
-        self.match_repo
-            .submit_result(
-                input.match_id,
-                p1_score,
-                p2_score,
-                input.winner_registration_id,
-                input.loser_registration_id,
-            )
-            .await?;
 
         saga_coordinator
             .complete_step(
                 execution,
                 STEP_NAME,
                 Some(serde_json::json!({
-                    "winner_id": input.winner_registration_id.to_string(),
-                    "score": format!("{}-{}", p1_score, p2_score)
+                    "action": "already_completed",
+                    "status": match_.status.to_string(),
+                    "winner_id": input.winner_registration_id.to_string()
                 })),
             )
             .await?;
-
-        info!(
-            match_id = %input.match_id,
-            winner = %input.winner_registration_id,
-            "Match completed"
-        );
 
         Ok(())
     }

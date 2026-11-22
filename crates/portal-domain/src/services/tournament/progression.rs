@@ -649,9 +649,14 @@ where
         }
 
         let stale_takeover = stage.status == StageStatus::Completed;
+        let stale_before = chrono::Utc::now() - STALE_ADVANCEMENT_CLAIM;
         if stale_takeover {
             // Already advanced — or claimed by a caller that never finished.
-            if next_stage.status != StageStatus::Pending {
+            // A claim that is not stale yet belongs to a caller that is
+            // still advancing the stage (typically a concurrent request for
+            // the same result): a no-op, decided before planning anything,
+            // so a loser of that race never sees a half-built next stage.
+            if next_stage.status != StageStatus::Pending || stage.updated_at >= stale_before {
                 return Ok(None);
             }
         } else if !self.check_stage_completion(stage.id).await? {
@@ -668,7 +673,6 @@ where
         let plan = self.plan_next_stage(&stage, next_stage.clone()).await?;
 
         if stale_takeover {
-            let stale_before = chrono::Utc::now() - STALE_ADVANCEMENT_CLAIM;
             if self
                 .stage_repo
                 .reclaim_stale_completed(stage.id, stale_before)

@@ -2505,3 +2505,56 @@ async fn manual_progression_opens_and_settles_cross_bracket_matches() {
         .expect("both winners meet");
     assert_eq!(winners_final["status"], "ready", "{winners_final:?}");
 }
+
+// ============================================================================
+// 19. CONCURRENT STANDINGS RECOMPUTES DO NOT DEADLOCK
+// ============================================================================
+
+/// Every settlement re-derives its bracket's standings (`recompute_bracket`:
+/// derive, then re-rank, in one transaction). Two of them on the same bracket
+/// at once used to lock the standings rows in whatever order each plan
+/// visited them, so they could deadlock; Postgres aborted one after
+/// `deadlock_timeout` and the request behind it returned a 500 — the
+/// intermittent failure of `concurrent_stage_advancement_seeds_playoffs_once`.
+/// Many concurrent recomputes of one bracket must all succeed.
+#[tokio::test]
+async fn concurrent_standings_recomputes_do_not_deadlock() {
+    use portal_domain::repositories::TournamentStandingsRepository;
+
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-recompute-race", 8).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let bracket_id: portal_core::TournamentBracketId =
+        str_of(&all[0], "bracket_id").parse().unwrap();
+    // Decide half the matches so the derive and the re-rank both move rows.
+    for m in all.iter().step_by(2) {
+        sqlx::query(
+            "UPDATE tournament_matches SET participant1_score = 2, participant2_score = 1,
+                    winner_registration_id = participant1_registration_id,
+                    loser_registration_id = participant2_registration_id,
+                    status = 'completed', completed_at = NOW()
+             WHERE id = $1",
+        )
+        .bind(Uuid::parse_str(&str_of(m, "id")).unwrap())
+        .execute(app.pool())
+        .await
+        .unwrap();
+    }
+
+    let repo = portal_db::PgTournamentStandingsRepository::new(app.pool().clone());
+    for round in 0..15 {
+        let handles: Vec<_> = (0..12)
+            .map(|_| {
+                let repo = repo.clone();
+                tokio::spawn(async move { repo.recompute_bracket(bracket_id).await })
+            })
+            .collect();
+        for h in handles {
+            let result = h.await.unwrap();
+            assert!(
+                result.is_ok(),
+                "round {round}: a concurrent recompute failed: {result:?}"
+            );
+        }
+    }
+}

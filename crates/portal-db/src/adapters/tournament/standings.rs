@@ -291,12 +291,13 @@ impl TournamentStandingsRepository for PgTournamentStandingsRepository {
         &self,
         bracket_id: TournamentBracketId,
     ) -> Result<Vec<TournamentStanding>, DomainError> {
-        let now = Utc::now();
-
-        sqlx::query(RANK_STANDINGS_SQL)
-            .bind(bracket_id.as_uuid())
-            .bind(now)
-            .execute(&self.pool)
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        Self::recalculate_positions_in_tx(&mut tx, bracket_id).await?;
+        tx.commit()
             .await
             .map_err(|e| DomainError::Internal(e.to_string()))?;
 
@@ -388,6 +389,32 @@ impl TournamentStandingsRepository for PgTournamentStandingsRepository {
 // =============================================================================
 
 impl PgTournamentStandingsRepository {
+    /// Row-lock every standing of a bracket, in primary-key order, for the
+    /// rest of the transaction.
+    ///
+    /// The derive and re-rank statements each update all of a bracket's
+    /// standings, locking the rows in whatever order their plan visits them.
+    /// Two recomputes of the same bracket at once (two results settled
+    /// together, or racing admin progression calls) could therefore each hold
+    /// a row the other needed: Postgres broke the deadlock after
+    /// `deadlock_timeout` by aborting one, and the request behind it failed
+    /// with a 500. Taking the locks up front, in one fixed order, makes the
+    /// second recompute wait for the first instead. Re-locking rows this
+    /// transaction already holds is a no-op, so both statements call it.
+    async fn lock_bracket_standings_in_tx(
+        tx: &mut DbTransaction<'_>,
+        bracket_id: TournamentBracketId,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "SELECT id FROM tournament_standings WHERE bracket_id = $1 ORDER BY id FOR UPDATE",
+        )
+        .bind(bracket_id.as_uuid())
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
     /// Recompute every standing in a bracket from the decided match rows
     /// (and recorded byes) that are their source of truth, inside a caller-
     /// supplied transaction.
@@ -400,6 +427,8 @@ impl PgTournamentStandingsRepository {
         tx: &mut DbTransaction<'_>,
         bracket_id: TournamentBracketId,
     ) -> Result<(), DomainError> {
+        Self::lock_bracket_standings_in_tx(tx, bracket_id).await?;
+
         sqlx::query(DERIVE_STANDINGS_SQL)
             .bind(bracket_id.as_uuid())
             .bind(WIN_POINTS)
@@ -416,6 +445,8 @@ impl PgTournamentStandingsRepository {
         tx: &mut DbTransaction<'_>,
         bracket_id: TournamentBracketId,
     ) -> Result<(), DomainError> {
+        Self::lock_bracket_standings_in_tx(tx, bracket_id).await?;
+
         let now = Utc::now();
 
         sqlx::query(RANK_STANDINGS_SQL)

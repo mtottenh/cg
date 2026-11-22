@@ -313,7 +313,7 @@ pub struct UpdateCheckStartedResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MatchzyOverridesResponse {
     /// `cvar → value` (string, number or boolean).
-    #[schema(value_type = Object)]
+    #[schema(value_type = HashMap<String, serde_json::Value>)]
     pub overrides: Map<String, Value>,
     /// Whether the host's MatchZy config has them (agent heartbeat); null
     /// = none set on the host, or unknown.
@@ -330,7 +330,7 @@ pub struct SetMatchzyOverridesRequest {
     /// `matchzy_loadmatch*` or `matchzy_loadbackup_url`. Values are a
     /// string, number or boolean that renders to at most 256 bytes of
     /// printable ASCII without `"`, `;` or `\`.
-    #[schema(value_type = Object)]
+    #[schema(value_type = HashMap<String, serde_json::Value>)]
     pub overrides: Map<String, Value>,
 }
 
@@ -352,7 +352,7 @@ pub enum OverridesDelivery {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SetMatchzyOverridesResponse {
     /// The set as stored (strings trimmed).
-    #[schema(value_type = Object)]
+    #[schema(value_type = HashMap<String, serde_json::Value>)]
     pub overrides: Map<String, Value>,
     pub delivery: OverridesDelivery,
     /// The agent's `repair-config` job (trigger `overrides`) when

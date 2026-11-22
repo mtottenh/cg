@@ -727,21 +727,17 @@ fn send_error(e: SendError) -> ApiError {
     }
 }
 
-/// Create a job, hand it to the agent, and settle the row if the agent
-/// does not take it — a `queued` row is never left behind.
+/// Hand a freshly created job to the agent, and settle the row if the
+/// agent certainly did not take it.
 async fn start_job(
     state: &AppState,
     auth: &AuthenticatedUser,
     server: &GameServer,
-    operation: UpdateOperation,
-    force: bool,
+    job: GameServerUpdateJob,
 ) -> Result<GameServerUpdateJob, ApiError> {
     let updates = &state.game_server_updates;
-    let job = updates
-        .service
-        .create_job(server.id, operation, auth.user_id, force)
-        .await
-        .map_err(ApiError::from)?;
+    let operation = job.operation;
+    let force = job.forced;
 
     let command = AgentCommand::UpdateStart {
         operation: operation.as_str().to_string(),
@@ -1130,18 +1126,59 @@ async fn gated_start(
         )));
     }
 
+    // The job row goes in first, and the restart gate reads only after
+    // it is committed. Inserting it locks the server row against
+    // allocation (see `PgServerReservationRepository::allocate`), so a
+    // match is either already reserved on the server — and the gate sees
+    // it — or kept off it by the job. Gating first would leave a window in
+    // which a match lands on a server about to restart.
+    let job = updates
+        .create_job(id, operation, auth.user_id, force)
+        .await
+        .map_err(ApiError::from)?;
+
     if operation.restarts_server() && !force {
-        let safety = safety_for(state, &server, true).await;
+        // Re-read: status and gamestate as of now, not as of the request.
+        let server = match state.game_server_registry.get(id).await {
+            Ok(server) => server,
+            Err(e) => {
+                end_gated_job(state, &job, "the server could not be re-read").await;
+                return Err(ApiError::from(e));
+            }
+        };
+        let connected = state.agent_manager.is_connected(id);
+        let safety = safety_for(state, &server, connected).await;
         if safety.restart_needs_force {
+            let reasons = safety.reasons.join("; ");
+            end_gated_job(
+                state,
+                &job,
+                &format!("refused by the safety gate: {reasons}"),
+            )
+            .await;
             return Err(ApiError::conflict(format!(
-                "`{operation}` restarts CS2 and would interrupt: {}. Send force: true to go \
-                 ahead anyway",
-                safety.reasons.join("; ")
+                "`{operation}` restarts CS2 and would interrupt: {reasons}. Send force: true \
+                 to go ahead anyway"
             )));
         }
+        return start_job(state, auth, &server, job).await;
     }
 
-    start_job(state, auth, &server, operation, force).await
+    start_job(state, auth, &server, job).await
+}
+
+/// A job the gate turned down never reached the agent: it ends `failed`
+/// with the reason, so the server is back in allocation at once.
+async fn end_gated_job(state: &AppState, job: &GameServerUpdateJob, reason: &str) {
+    if let Err(e) = state
+        .game_server_updates
+        .service
+        .fail_job(job.id, reason)
+        .await
+    {
+        tracing::error!(server_id = %job.server_id, job_id = %job.id, error = %e,
+            "gated update job not closed; the lost-job pass will settle it");
+    }
 }
 
 /// One update job in full: progress while it runs, then versions before

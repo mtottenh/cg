@@ -274,6 +274,29 @@ async fn age_job(app: &TestApp, job_id: &str) {
     .unwrap();
 }
 
+/// The server has exactly `n` jobs, every one closed by the safety gate
+/// (`failed`, the gate's reasons as the error) — none left in flight.
+async fn assert_gated(app: &TestApp, server_id: &str, n: usize) {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT status, error FROM game_server_update_jobs WHERE server_id = $1::uuid",
+    )
+    .bind(server_id)
+    .fetch_all(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), n, "{rows:?}");
+    for (status, error) in &rows {
+        assert_eq!(status, "failed", "{rows:?}");
+        assert!(
+            error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("refused by the safety gate: "),
+            "{rows:?}"
+        );
+    }
+}
+
 async fn job_count(app: &TestApp, server_id: &str) -> i64 {
     let (n,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM game_server_update_jobs WHERE server_id = $1::uuid")
@@ -1049,7 +1072,8 @@ async fn test_connected_players_gate_restarting_updates_unless_forced() {
         assert_eq!(status, StatusCode::CONFLICT);
     }
     assert!(agent.commands("update_start").is_empty());
-    assert_eq!(job_count(&app, &server_id).await, 0);
+    // Each refusal is a job the gate closed before anything was sent.
+    assert_gated(&app, &server_id, 6).await;
 
     // `lgsm` and `repair-config` restart nothing: no gate.
     let lgsm = start_ok(&app, &server_id, &json!({"operation": "lgsm"})).await;
@@ -1194,7 +1218,8 @@ async fn test_a_live_reservation_or_an_imminent_booking_gates_restarting_updates
         assert!(detail.contains(&match_id), "{detail}");
     }
     assert!(agent.commands("update_start").is_empty());
-    assert_eq!(job_count(&app, &server_id).await, 0);
+    // Each refusal is a job the gate closed before anything was sent.
+    assert_gated(&app, &server_id, 4).await;
 
     // Forced through.
     let (status, body) = start(
@@ -1449,6 +1474,65 @@ async fn test_allocation_skips_a_server_with_a_restarting_job_in_flight() {
         reservation.server_id.map(|s| s.to_string()).as_deref(),
         Some(server_id.as_str())
     );
+    agent.close().await;
+}
+
+/// The restart gate and allocation race for the same idle server. The job
+/// row goes in before the gate reads, so whichever side gets there second
+/// sees the other: here the job insert is held back (the table lock) while
+/// allocation runs, so the gate must see the reservation and refuse.
+#[tokio::test]
+async fn test_a_match_allocated_while_an_update_starts_is_seen_by_the_gate() {
+    let mut app = TestApp::new_with_agent_dev_auth().await;
+    let state = AppState::new(app.pool().clone(), "test-jwt-secret").await;
+    let (tournament_id, match_id, _r1, _r2) =
+        create_tournament_with_matches(&app, "upd-race").await;
+    let game_id = cs2_game_id(&app).await;
+    let server_id = create_server(&app, &game_id, "Race box").await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
+    let server_uri = format!("/v1/admin/game-servers/{server_id}");
+    wait_for(10, || async {
+        let body: Value = app.get_auth(&server_uri).await.json();
+        (body["data"]["status"] == "available").then_some(())
+    })
+    .await;
+    assert_eq!(
+        overview(&app, &server_id).await["safety"]["restart_needs_force"],
+        false
+    );
+
+    // Hold INSERTs into the jobs table (reads still run).
+    let mut locker = app.pool().begin().await.unwrap();
+    sqlx::query("LOCK TABLE game_server_update_jobs IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *locker)
+        .await
+        .unwrap();
+
+    let mods = json!({"operation": "mods"});
+    let ((status, body), allocated) = tokio::join!(start(&app, &server_id, &mods), async {
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let r = try_allocate(&state, &game_id, &tournament_id, &match_id).await;
+        locker.commit().await.unwrap();
+        r
+    });
+
+    let allocated = allocated.expect("the job was not in yet: the server was allocatable");
+    assert_eq!(
+        allocated.server_id.map(|s| s.to_string()).as_deref(),
+        Some(server_id.as_str())
+    );
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let detail = body["detail"].as_str().unwrap();
+    assert!(detail.contains("reservation is live"), "{detail}");
+    assert!(agent.commands("update_start").is_empty());
+    assert_gated(&app, &server_id, 1).await;
     agent.close().await;
 }
 

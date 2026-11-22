@@ -24,12 +24,12 @@ pub type Script = Arc<dyn Fn(&str) -> (bool, String) + Send + Sync>;
 /// the agent 0.3.0 update commands, whose answers depend on `args`.
 pub type FrameScript = Arc<dyn Fn(&Value) -> (bool, String) + Send + Sync>;
 
-/// The job id [`update_script`] reports for jobs the "agent" starts itself
-/// (`update_check`, the `repair-config` behind `set_matchzy_overrides`).
 /// A script answering this closes the socket instead of replying: the
 /// command went out and no answer will ever come back.
 pub const DROP_CONNECTION: &str = "__drop_connection__";
 
+/// The job id [`update_script`] reports for jobs the "agent" starts itself
+/// (`update_check`, the `repair-config` behind `set_matchzy_overrides`).
 pub const AGENT_JOB_ID: &str = "0193a5b0-7c1e-7000-8000-00000000a6e7";
 
 /// The operations `update_start` takes (`update::OPERATIONS` in the agent).

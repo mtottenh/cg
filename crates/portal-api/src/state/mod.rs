@@ -309,6 +309,9 @@ pub struct AppState {
     pub server_event_repo: Arc<PgServerEventRepository>,
     /// Admin console commands sent to game servers (audit).
     pub admin_server_command_repo: Arc<PgAdminServerCommandRepository>,
+    /// Game-server updates: jobs, per-server update state, and the agent
+    /// channel they ride on.
+    pub game_server_updates: crate::game_server_updates::UpdateChannel,
     /// Every MatchZy demo upload request and its outcome (Pipeline view).
     pub demo_upload_attempt_repo: Arc<PgDemoUploadAttemptRepository>,
     /// Mid-series substitutions (§6.8).
@@ -935,6 +938,14 @@ impl AppState {
             Arc::new(PgAdminServerCommandRepository::new(db_pool.clone()));
         let demo_upload_attempt_repo =
             Arc::new(PgDemoUploadAttemptRepository::new(db_pool.clone()));
+        let game_server_updates = crate::game_server_updates::UpdateChannel {
+            service: portal_domain::services::game_server::GameServerUpdateService::new(Arc::new(
+                portal_db::PgGameServerUpdateRepository::new(db_pool.clone()),
+            )),
+            agent_manager: Arc::clone(&agent_manager),
+            audit: Arc::clone(&admin_server_command_repo),
+            push_locks: Arc::default(),
+        };
         let match_substitution_repo = Arc::new(PgMatchSubstitutionRepository::new(db_pool.clone()));
         let tournament_match_game_repo =
             Arc::new(PgTournamentMatchGameRepository::new(db_pool.clone()));
@@ -1070,6 +1081,7 @@ impl AppState {
             server_reservation_repo,
             server_event_repo,
             admin_server_command_repo,
+            game_server_updates,
             demo_upload_attempt_repo,
             match_substitution_repo,
             tournament_match_game_repo,

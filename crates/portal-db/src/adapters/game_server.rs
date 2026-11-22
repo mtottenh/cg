@@ -681,6 +681,22 @@ impl ServerReservationRepository for PgServerReservationRepository {
 
         // §6.7 allocation predicate. FOR UPDATE SKIP LOCKED settles the race
         // between two matches finishing veto simultaneously at the database.
+        // A server with a restart-capable update job in flight is skipped
+        // (`UpdateOperation::restarts_server`); it is eligible again the
+        // moment the job reaches any terminal status — nothing to release.
+        //
+        // Against an update start the row lock is the arbiter: inserting a
+        // job takes FOR KEY SHARE on its `game_servers` row (the foreign
+        // key check) until it commits, and the admin's safety gate reads
+        // reservations only after that commit. While the insert is in
+        // flight SKIP LOCKED passes over the server. But the NOT EXISTS
+        // below reads the statement's snapshot, which may predate a job
+        // committed just before the lock was taken — so the job check is
+        // repeated after locking, in a fresh statement (READ COMMITTED: a
+        // fresh snapshot, taken after the lock and so after any job insert
+        // that held it). Either the job is seen there, or its insert
+        // committed after this transaction and its gate sees our
+        // reservation.
         let pick_sql = format!(
             "SELECT {SERVER_COLS} FROM game_servers gs \
              WHERE gs.enabled AND gs.status = 'available' AND gs.game_id = $1 \
@@ -688,6 +704,13 @@ impl ServerReservationRepository for PgServerReservationRepository {
                AND gs.last_heartbeat_at > $3 \
                AND gs.last_gamestate = 'none' \
                AND (NOT $7 OR gs.allow_pugs) \
+               AND NOT (gs.id = ANY($8)) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM game_server_update_jobs uj \
+                   WHERE uj.server_id = gs.id \
+                     AND uj.status IN ('queued', 'running') \
+                     AND uj.operation IN ('game', 'mods', 'all') \
+               ) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM server_bookings b \
                    WHERE b.server_id = gs.id \
@@ -705,17 +728,40 @@ impl ServerReservationRepository for PgServerReservationRepository {
              LIMIT 1 \
              FOR UPDATE OF gs SKIP LOCKED"
         );
-        let server_row = sqlx::query_as::<_, GameServerRow>(&pick_sql)
-            .bind(game_id.as_uuid())
-            .bind(region)
-            .bind(heartbeat_cutoff)
-            .bind(now)
-            .bind(tournament_id.as_uuid())
-            .bind(scheduled_at)
-            .bind(for_pug)
-            .fetch_optional(&mut *tx)
+        let mut passed_over: Vec<uuid::Uuid> = Vec::new();
+        let server_row = loop {
+            let picked = sqlx::query_as::<_, GameServerRow>(&pick_sql)
+                .bind(game_id.as_uuid())
+                .bind(region)
+                .bind(heartbeat_cutoff)
+                .bind(now)
+                .bind(tournament_id.as_uuid())
+                .bind(scheduled_at)
+                .bind(for_pug)
+                .bind(&passed_over)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(internal)?;
+            let Some(row) = picked else {
+                break None;
+            };
+            let (updating,): (bool,) = sqlx::query_as(
+                "SELECT EXISTS ( \
+                     SELECT 1 FROM game_server_update_jobs \
+                     WHERE server_id = $1 AND status IN ('queued', 'running') \
+                       AND operation IN ('game', 'mods', 'all'))",
+            )
+            .bind(row.id)
+            .fetch_one(&mut *tx)
             .await
             .map_err(internal)?;
+            if !updating {
+                break Some(row);
+            }
+            // Very rare (the window is one statement wide), and bounded by
+            // the number of servers: each is passed over at most once.
+            passed_over.push(row.id);
+        };
 
         let Some(server_row) = server_row else {
             tx.rollback().await.map_err(internal)?;

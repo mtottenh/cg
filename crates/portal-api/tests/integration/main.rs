@@ -15,6 +15,7 @@ mod enrichment_retry;
 mod evidence;
 mod forfeit;
 mod game_server_flow;
+mod game_server_updates;
 mod game_servers;
 mod games;
 mod league_teams;

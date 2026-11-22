@@ -16,6 +16,7 @@ mod dispute;
 mod evidence;
 mod forfeit;
 mod game_server;
+mod game_server_update;
 mod league;
 mod league_team;
 mod match_lineup;
@@ -54,6 +55,7 @@ pub use game_server::{
     PgMatchSubstitutionRepository, PgServerBookingRepository, PgServerEventRepository,
     PgServerReservationRepository,
 };
+pub use game_server_update::PgGameServerUpdateRepository;
 pub use league::{PgLeagueInvitationRepository, PgLeagueMemberRepository, PgLeagueRepository};
 pub use league_team::{
     PgLeagueSeasonParticipantRepository, PgLeagueSeasonRepository,

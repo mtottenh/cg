@@ -7,6 +7,7 @@
 pub mod ca;
 pub mod registry;
 pub mod setup;
+pub mod updates;
 
 pub use ca::{AGENT_CERT_VALIDITY_DAYS, CertificateAuthority, GeneratedCa, IssuedCertificate};
 pub use registry::{
@@ -14,3 +15,7 @@ pub use registry::{
     HEARTBEAT_STALENESS_SECS, generate_enrollment_token, hash_token,
 };
 pub use setup::{derive_map_sides, generate_connect_password, generate_reservation_token};
+pub use updates::{
+    GameServerUpdateService, Reconciled, UPDATE_JOB_PASS_MAX, UPDATE_JOB_STALL_MINUTES,
+    frame_job_id, parse_progress, parse_result,
+};

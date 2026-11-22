@@ -16,6 +16,7 @@ pub mod eligibility;
 pub mod evidence;
 pub mod forfeit;
 pub mod game_server;
+pub mod game_server_update;
 pub mod league;
 pub mod league_team;
 pub mod match_lifecycle;
@@ -85,6 +86,10 @@ pub use forfeit::{
 pub use game_server::{
     AdminServerCommand, AgentCertificate, GameServer, HeartbeatUpdate, MatchSubstitution,
     ServerBooking, ServerEvent, ServerReservation,
+};
+pub use game_server_update::{
+    AgentUpdateReport, CAPABILITY_LGSM_UPDATE, GameServerUpdateJob, GameServerUpdateState,
+    LOG_TAIL_MAX_BYTES, ResultOutcome, UpdateProgress, UpdateResult, bound_log_tail,
 };
 pub use league::{
     CreateLeagueCommand, League, LeagueAccessType, LeagueInvitation, LeagueInvitationStatus,

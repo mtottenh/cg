@@ -16,6 +16,7 @@ pub mod dispute;
 pub mod evidence;
 pub mod forfeit;
 pub mod game_server;
+pub mod game_server_update;
 pub mod league;
 pub mod league_team;
 pub mod match_lifecycle;
@@ -73,6 +74,7 @@ pub use game_server::{
     MatchSubstitutionRepository, RecordHeartbeat, ServerBookingRepository, ServerEventRepository,
     ServerReservationRepository, UpdateGameServer,
 };
+pub use game_server_update::{CreateUpdateJob, GameServerUpdateRepository};
 pub use league::{
     AddLeagueMember, CreateLeague, CreateLeagueInvitation, LeagueInvitationRepository,
     LeagueMemberRepository, LeagueRepository, UpdateLeague,

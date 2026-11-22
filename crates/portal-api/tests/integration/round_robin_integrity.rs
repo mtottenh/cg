@@ -2703,3 +2703,191 @@ async fn wrong_forfeit_is_corrected_in_double_elimination() {
         vec![(p2(m), true), (p1(m), false)]
     );
 }
+
+// ============================================================================
+// 21. EVERY FORFEIT IS RECORDED; A SETTLED ONE IS NEVER RE-COMPLETED
+// ============================================================================
+
+async fn captain_forfeit(
+    app: &TestApp,
+    cup: &Cup,
+    match_id: &str,
+    reg: &str,
+) -> (StatusCode, String) {
+    let r = app
+        .post_json_with_token(
+            &format!(
+                "/v1/tournaments/{}/matches/{match_id}/forfeit",
+                cup.tournament_id
+            ),
+            &json!({ "registration_id": reg }),
+            &cup.tokens[reg],
+        )
+        .await;
+    (r.status, r.text())
+}
+
+async fn raw_admin_forfeit(
+    app: &TestApp,
+    cup: &Cup,
+    match_id: &str,
+    reg: &str,
+    forfeit_type: &str,
+) -> (StatusCode, String) {
+    let r = app
+        .post_json(
+            &format!(
+                "/v1/admin/tournaments/{}/matches/{match_id}/forfeit",
+                cup.tournament_id
+            ),
+            &json!({
+                "forfeiting_registration_id": reg,
+                "forfeit_type": forfeit_type,
+                "reason": "Ruled out by the tournament admin"
+            }),
+        )
+        .await;
+    (r.status, r.text())
+}
+
+/// A captain's own forfeit used to write no forfeit record, so a later admin
+/// forfeit for the same side took the settled match for an interrupted
+/// forfeit: it returned 200, wrote a `disqualification` record onto it and
+/// re-ran settlement. The captain's forfeit is now recorded, and an admin
+/// forfeit of it — either side — is refused without touching anything.
+#[tokio::test]
+async fn admin_forfeit_after_a_captain_forfeit_is_refused() {
+    let app = TestApp::new().await;
+    let cup = create_cup(
+        &app,
+        "se-capt-then-admin",
+        "single_elimination",
+        4,
+        json!({}),
+    )
+    .await;
+    start(&app, &cup).await;
+    let m = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|m| m["round"] == 1)
+        .unwrap();
+    let match_id = str_of(&m, "id");
+    let match_uuid = Uuid::parse_str(&match_id).unwrap();
+    transition_match_to_in_progress(&app, &cup.tournament_id, &match_id).await;
+    let forfeiter = p1(&m);
+
+    let (st, text) = captain_forfeit(&app, &cup, &match_id, &forfeiter).await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let records = || async {
+        sqlx::query_as::<_, (String, String, bool)>(
+            "SELECT forfeiting_registration_id::text, forfeit_type, triggered_by_system
+             FROM forfeit_records WHERE match_id = $1",
+        )
+        .bind(match_uuid)
+        .fetch_all(app.pool())
+        .await
+        .unwrap()
+    };
+    let expected = vec![(forfeiter.clone(), "withdrawal".to_string(), false)];
+    assert_eq!(
+        records().await,
+        expected,
+        "the captain's forfeit is recorded"
+    );
+    let sagas = || async {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM saga_executions WHERE match_id = $1")
+            .bind(match_uuid)
+            .fetch_one(app.pool())
+            .await
+            .unwrap()
+    };
+    let sagas_before = sagas().await;
+    assert_eq!(sagas_before, 1, "settled once");
+    let final_before = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|x| x["round"] == 2)
+        .unwrap();
+    assert!(seats(&final_before, &p2(&m)), "{final_before:?}");
+
+    for reg in [forfeiter.clone(), p2(&m)] {
+        let (st, text) = raw_admin_forfeit(&app, &cup, &match_id, &reg, "disqualification").await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{text}");
+    }
+    assert_eq!(records().await, expected, "no record was added");
+    assert_eq!(sagas().await, sagas_before, "settlement did not run again");
+    let after = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(after["status"], "forfeit");
+    assert_eq!(after["winner_registration_id"], p2(&m).as_str());
+    let final_after = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|x| x["round"] == 2)
+        .unwrap();
+    assert_eq!(
+        (
+            &final_after["participant1_registration_id"],
+            &final_after["participant2_registration_id"],
+            &final_after["status"]
+        ),
+        (
+            &final_before["participant1_registration_id"],
+            &final_before["participant2_registration_id"],
+            &final_before["status"]
+        )
+    );
+}
+
+/// The captain's forfeit died after its match write (no record, never
+/// settled). The captain's retry finishes it: records it and advances the
+/// walkover winner, rather than being refused as already forfeited.
+#[tokio::test]
+async fn interrupted_captain_forfeit_is_finished_by_its_retry() {
+    let app = TestApp::new().await;
+    let cup = create_cup(&app, "se-capt-retry", "single_elimination", 4, json!({})).await;
+    start(&app, &cup).await;
+    let m = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|m| m["round"] == 1)
+        .unwrap();
+    let match_id = str_of(&m, "id");
+    let match_uuid = Uuid::parse_str(&match_id).unwrap();
+    sqlx::query(
+        "UPDATE tournament_matches
+         SET status = 'forfeit', winner_registration_id = $2, loser_registration_id = $3,
+             participant1_score = 0, participant2_score = 2, completed_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(match_uuid)
+    .bind(Uuid::parse_str(&p2(&m)).unwrap())
+    .bind(Uuid::parse_str(&p1(&m)).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    let (st, text) = captain_forfeit(&app, &cup, &match_id, &p1(&m)).await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let records: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM forfeit_records WHERE match_id = $1 AND superseded_at IS NULL",
+    )
+    .bind(match_uuid)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(records, 1);
+    let fin = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|x| x["round"] == 2)
+        .unwrap();
+    assert!(
+        seats(&fin, &p2(&m)),
+        "the walkover winner was advanced: {fin:?}"
+    );
+
+    // Now fully recorded: a second retry is refused.
+    let (st, text) = captain_forfeit(&app, &cup, &match_id, &p1(&m)).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{text}");
+}

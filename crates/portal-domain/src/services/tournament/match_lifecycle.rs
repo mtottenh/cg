@@ -503,7 +503,14 @@ where
     // ==========================================================================
 
     /// Get a match by ID or return error.
-    async fn get_match(&self, match_id: TournamentMatchId) -> Result<TournamentMatch, DomainError> {
+    ///
+    /// # Errors
+    ///
+    /// `TournamentMatchNotFound` if there is no such match.
+    pub async fn get_match(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<TournamentMatch, DomainError> {
         self.match_repo
             .find_by_id(match_id)
             .await?

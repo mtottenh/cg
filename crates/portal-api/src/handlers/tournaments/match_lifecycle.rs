@@ -21,6 +21,7 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use portal_core::types::TournamentMatchStatus;
 use portal_core::{TournamentMatchId, TournamentRegistrationId};
+use portal_domain::entities::forfeit::{ForfeitTrigger, ForfeitType};
 
 /// Get match status details.
 #[utoipa::path(
@@ -237,14 +238,40 @@ pub async fn forfeit_match(
 
     require_registration_actor(&state, &auth, &perm_checker, registration_id).await?;
 
-    let match_ = state
-        .match_lifecycle_service
-        .forfeit(match_id, registration_id, auth.user_id)
+    // A captain conceding the match. Recorded like every other forfeit (the
+    // forfeit record is what tells a finished forfeit from an interrupted
+    // one — see `ForfeitService::finish_interrupted_forfeit`).
+    let forfeit_type = ForfeitType::Withdrawal;
+    let reason = Some("Conceded by the participant".to_string());
+    let trigger = ForfeitTrigger::User(auth.user_id);
+
+    // A retry of this same forfeit that died after its match write finishes
+    // it (record, then settlement) instead of being refused as terminal.
+    let finished = state
+        .forfeit_service
+        .finish_interrupted_forfeit(
+            match_id,
+            registration_id,
+            forfeit_type,
+            reason.clone(),
+            trigger.clone(),
+        )
         .await?;
+    if finished.is_none() {
+        state
+            .match_lifecycle_service
+            .forfeit(match_id, registration_id, auth.user_id)
+            .await?;
+        state
+            .forfeit_service
+            .record_forfeit(match_id, registration_id, forfeit_type, reason, &trigger)
+            .await?;
+    }
     // A forfeit is a decided result: advance the winner / recompute the
     // standings / seed the next stage exactly as a confirmed result would.
     crate::result_settlement::settle(&state.match_completion_saga, match_id).await;
 
+    let match_ = state.match_lifecycle_service.get_match(match_id).await?;
     Ok(Json(DataResponse::new(
         TournamentMatchResponse::from(match_),
         request_id,

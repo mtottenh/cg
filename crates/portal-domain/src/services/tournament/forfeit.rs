@@ -54,42 +54,17 @@ where
         // Get the match
         let match_ = self.get_match(match_id).await?;
 
-        // Finish an interrupted forfeit. The match write comes first (below);
-        // if the process died — or the record insert failed — right after
-        // it, the match is `forfeit` with no forfeit record and, because the
-        // error surfaced before the caller could settle it, with no
-        // progression either. `validate_can_forfeit` would refuse every
-        // retry (the match is terminal), and in an elimination bracket
-        // nothing else would ever advance the walkover winner. So a retry
-        // for the same side on such a match completes the record and reports
-        // the forfeit as processed, which lets the caller settle it — the
-        // one-sided counterpart of the double-forfeit retry below.
-        if match_.status == TournamentMatchStatus::Forfeit
-            && match_.loser_registration_id == Some(forfeiting_registration_id)
-            && !self.forfeit_repo.exists_for_match(match_id).await?
+        if let Some(finished) = self
+            .finish_interrupted(
+                &match_,
+                forfeiting_registration_id,
+                forfeit_type,
+                reason.clone(),
+                &triggered_by,
+            )
+            .await?
         {
-            let forfeit_record = self
-                .forfeit_repo
-                .create(CreateForfeitRecord {
-                    match_id,
-                    forfeiting_registration_id,
-                    forfeit_type,
-                    reason,
-                    triggered_by_user_id: triggered_by.user_id(),
-                    triggered_by_system: triggered_by.is_system(),
-                })
-                .await?;
-            info!(
-                match_id = %match_id,
-                forfeiting = %forfeiting_registration_id,
-                "Completed an interrupted forfeit"
-            );
-            return Ok(ForfeitResult {
-                match_id,
-                forfeit_record,
-                winner_registration_id: match_.winner_registration_id,
-                progression_triggered: false,
-            });
+            return Ok(finished);
         }
 
         // Validate the match can be forfeited
@@ -153,6 +128,113 @@ where
             // match-completion saga (`settle_result`), which flips this.
             progression_triggered: false,
         })
+    }
+
+    /// Finish a forfeit for `forfeiting_registration_id` that was
+    /// interrupted after its match write, if that is what this match is.
+    ///
+    /// Every forfeit path writes the match (`forfeit`, winner, loser), then
+    /// the forfeit record, then has its caller settle the result. A match
+    /// that is `forfeit` against this side with **no active forfeit record**
+    /// therefore died between the first two steps — and so before
+    /// settlement: its winner was never advanced. `validate_can_forfeit`
+    /// would refuse every retry (the match is terminal), and in an
+    /// elimination bracket nothing else would ever advance the walkover
+    /// winner, so a retry for the same side completes the record and reports
+    /// the forfeit as processed, which lets the caller settle it.
+    ///
+    /// The inference holds only because *every* path writes the record —
+    /// the captain's own forfeit included ([`Self::record_forfeit`]), and
+    /// migration 0103 backfilled the forfeits recorded before it did. A
+    /// fully recorded forfeit returns `None` here and is then refused, so an
+    /// already-settled forfeit is never settled a second time.
+    ///
+    /// # Errors
+    ///
+    /// Propagates repository errors.
+    pub async fn finish_interrupted_forfeit(
+        &self,
+        match_id: TournamentMatchId,
+        forfeiting_registration_id: TournamentRegistrationId,
+        forfeit_type: ForfeitType,
+        reason: Option<String>,
+        triggered_by: ForfeitTrigger,
+    ) -> Result<Option<ForfeitResult>, DomainError> {
+        let match_ = self.get_match(match_id).await?;
+        self.finish_interrupted(
+            &match_,
+            forfeiting_registration_id,
+            forfeit_type,
+            reason,
+            &triggered_by,
+        )
+        .await
+    }
+
+    async fn finish_interrupted(
+        &self,
+        match_: &TournamentMatch,
+        forfeiting_registration_id: TournamentRegistrationId,
+        forfeit_type: ForfeitType,
+        reason: Option<String>,
+        triggered_by: &ForfeitTrigger,
+    ) -> Result<Option<ForfeitResult>, DomainError> {
+        if match_.status != TournamentMatchStatus::Forfeit
+            || match_.loser_registration_id != Some(forfeiting_registration_id)
+            || self.forfeit_repo.exists_for_match(match_.id).await?
+        {
+            return Ok(None);
+        }
+        let forfeit_record = self
+            .record_forfeit(
+                match_.id,
+                forfeiting_registration_id,
+                forfeit_type,
+                reason,
+                triggered_by,
+            )
+            .await?;
+        info!(
+            match_id = %match_.id,
+            forfeiting = %forfeiting_registration_id,
+            "Completed an interrupted forfeit"
+        );
+        Ok(Some(ForfeitResult {
+            match_id: match_.id,
+            forfeit_record,
+            winner_registration_id: match_.winner_registration_id,
+            progression_triggered: false,
+        }))
+    }
+
+    /// Write the forfeit record for a forfeit whose match write has landed.
+    ///
+    /// For forfeit paths that write the match themselves (a captain's own
+    /// forfeit, `MatchLifecycleService::forfeit`): they must call this
+    /// before settling, so the record is there for every forfeit — see
+    /// [`Self::finish_interrupted_forfeit`]. Idempotent per side.
+    ///
+    /// # Errors
+    ///
+    /// Propagates repository errors.
+    pub async fn record_forfeit(
+        &self,
+        match_id: TournamentMatchId,
+        forfeiting_registration_id: TournamentRegistrationId,
+        forfeit_type: ForfeitType,
+        reason: Option<String>,
+        triggered_by: &ForfeitTrigger,
+    ) -> Result<crate::entities::forfeit::ForfeitRecord, DomainError> {
+        self.forfeit_repo
+            .create(CreateForfeitRecord {
+                match_id,
+                forfeiting_registration_id,
+                forfeit_type,
+                reason,
+                triggered_by_user_id: triggered_by.user_id(),
+                triggered_by_system: triggered_by.is_system(),
+            })
+            .await
     }
 
     /// Process a no-show forfeit (auto-triggered by check-in system).

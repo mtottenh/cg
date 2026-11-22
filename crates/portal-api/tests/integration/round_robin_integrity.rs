@@ -3430,3 +3430,41 @@ async fn completion_saga_does_not_undo_a_revert_made_while_it_runs() {
     assert_eq!(saga_statuses(&app, &match_id).await, vec!["failed"]);
 }
 
+// ============================================================================
+// 27. A SAGA WHOSE MATCH IS GONE IS RETIRED
+// ============================================================================
+
+/// A failed completion saga whose match no longer exists used to be skipped
+/// without counting an attempt, so every lifecycle pass picked it up again.
+#[tokio::test]
+async fn failed_saga_for_a_missing_match_is_retired() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-saga-no-match", 3).await;
+    let m = matches(&app, &cup.tournament_id).await[0].clone();
+    let match_id = str_of(&m, "id");
+    admin_forfeit(&app, &cup, &match_id, &p2(&m)).await;
+    let saga_id: Uuid = sqlx::query_scalar(
+        "UPDATE saga_executions
+         SET status = 'failed', retry_count = 0, match_id = NULL,
+             input_data = jsonb_set(input_data, ARRAY['match_id'], to_jsonb(gen_random_uuid()::text))
+         WHERE match_id = $1 AND saga_type = 'match_completion'
+         RETURNING id",
+    )
+    .bind(Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(summary.sagas_redriven, 0, "{summary:?}");
+    let (retries, max): (i32, i32) =
+        sqlx::query_as("SELECT retry_count, max_retries FROM saga_executions WHERE id = $1")
+            .bind(saga_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert!(
+        retries >= max,
+        "the orphaned saga is retired: {retries}/{max}"
+    );
+}

@@ -842,9 +842,31 @@ async fn redrive_stuck_completion_sagas(
                 }
                 continue;
             }
+            Err(DomainError::TournamentMatchNotFound(_)) => {
+                // The match is gone: there is nothing left to complete.
+                warn!(
+                    %saga_id,
+                    match_id = %input.match_id,
+                    "lifecycle: retiring completion saga whose match no longer exists"
+                );
+                if let Err(e) = coordinator.record_retry(&mut execution, true).await {
+                    error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
+                }
+                summary.errors += 1;
+                continue;
+            }
             Err(e) => {
+                // Count it as an attempt, so a saga whose check keeps failing
+                // runs out of retries instead of being picked up — ahead of
+                // the others in the batch — on every pass.
                 warn!(%saga_id, error = %e, "lifecycle: could not check saga's match");
                 summary.errors += 1;
+                if let Err(e) = coordinator.record_retry(&mut execution, false).await {
+                    error!(%saga_id, error = %e, "lifecycle: failed to bump saga retry count");
+                }
+                if execution.retry_count >= execution.max_retries {
+                    raise_progression_stall(state, &input, saga_id).await;
+                }
                 continue;
             }
         }

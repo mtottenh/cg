@@ -3222,3 +3222,132 @@ async fn reverting_a_played_result_does_not_recount_player_stats() {
         "player stats counted a second time"
     );
 }
+
+// ============================================================================
+// 25. A REVIEWED RESULT AFTER A REVERTED PLAYED RESULT IS STILL PROGRESSED
+// ============================================================================
+
+/// Claim p1 2-1 straight on a reopened (`awaiting_result`) match.
+async fn claim_reopened(app: &TestApp, cup: &Cup, m: &Value) -> String {
+    let match_id = str_of(m, "id");
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1(m),
+                "participant1_score": 2,
+                "participant2_score": 1,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+            &cup.tokens[&p1(m)],
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    response.json::<Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// `complete_under_review` for a reopened match: the re-reported claim is
+/// confirmed (p1 2-1), the match completed, a review pending, nothing
+/// progressed.
+async fn reopened_under_review(app: &TestApp, cup: &Cup, m: &Value) -> Uuid {
+    let match_uuid = Uuid::parse_str(&str_of(m, "id")).unwrap();
+    let claim_uuid = Uuid::parse_str(&claim_reopened(app, cup, m).await).unwrap();
+    sqlx::query(
+        "UPDATE result_claims SET status = 'confirmed', confirmed_at = NOW(),
+                confirmed_by_registration_id = $2 WHERE id = $1",
+    )
+    .bind(claim_uuid)
+    .bind(Uuid::parse_str(&p2(m)).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE tournament_matches
+         SET status = 'completed', winner_registration_id = $2, loser_registration_id = $3,
+             participant1_score = 2, participant2_score = 1, completed_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(match_uuid)
+    .bind(Uuid::parse_str(&p1(m)).unwrap())
+    .bind(Uuid::parse_str(&p2(m)).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    sqlx::query_scalar(
+        "INSERT INTO result_reviews
+             (result_claim_id, match_id, score_mismatch, status,
+              captain1_registration_id, captain2_registration_id)
+         VALUES ($1, $2, true, 'pending_admin_review', $3, $4)
+         RETURNING id",
+    )
+    .bind(claim_uuid)
+    .bind(match_uuid)
+    .bind(Uuid::parse_str(&p1(m)).unwrap())
+    .bind(Uuid::parse_str(&p2(m)).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap()
+}
+
+async fn approve_review(app: &TestApp, review_id: Uuid) {
+    app.post_json(
+        &format!("/v1/admin/result-reviews/{review_id}/approve"),
+        &json!({ "notes": "Approved after review" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
+/// A played round-robin result keeps its completed saga across a revert.
+/// The double-resume guard took that saga for "this review was already
+/// resumed", so approving the review of the re-reported result skipped the
+/// progression: the standings never followed it.
+#[tokio::test]
+async fn review_approval_after_a_reverted_played_result_updates_standings() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-review-after-revert", 3).await;
+    let m = matches(&app, &cup.tournament_id).await[0].clone();
+    let match_id = str_of(&m, "id");
+    confirm_win(&app, &cup, &m, &p2(&m), (2, 0)).await;
+    app.post_auth(&format!("/v1/admin/matches/{match_id}/progression/revert"))
+        .await
+        .assert_status(StatusCode::OK);
+    let review_id = reopened_under_review(&app, &cup, &m).await;
+    approve_review(&app, review_id).await;
+
+    let rows = standings(&app, &cup.tournament_id, &str_of(&m, "bracket_id")).await;
+    assert_eq!(row_for(&rows, &p1(&m))["points"], 3, "{rows:?}");
+    assert_eq!(row_for(&rows, &p2(&m))["points"], 0, "{rows:?}");
+}
+
+/// Same, for a group's last match: approving the review must release the
+/// stage and seed the playoffs, not leave it for the lifecycle sweep.
+#[tokio::test]
+async fn review_approval_after_a_reverted_played_result_advances_the_stage() {
+    let app = TestApp::new().await;
+    let cup = groups(&app, "rr-gate-after-revert", 4, 2, 1).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let gb = group_brackets(&brackets(&app, &cup.tournament_id).await);
+    let a = bracket_matches(&all, gb[0]["id"].as_str().unwrap());
+    let b = bracket_matches(&all, gb[1]["id"].as_str().unwrap());
+    let a_id = str_of(&a[0], "id");
+    confirm_win(&app, &cup, &a[0], &p2(&a[0]), (2, 0)).await;
+    app.post_auth(&format!("/v1/admin/matches/{a_id}/progression/revert"))
+        .await
+        .assert_status(StatusCode::OK);
+    let review_id = reopened_under_review(&app, &cup, &a[0]).await;
+    confirm_win(&app, &cup, &b[0], &p1(&b[0]), (2, 0)).await;
+    approve_review(&app, review_id).await;
+
+    let st = stages(&app, &cup.tournament_id).await;
+    assert_eq!(
+        (st[0]["status"].as_str(), st[1]["status"].as_str()),
+        (Some("completed"), Some("active")),
+        "approval did not release the stage: {st:?}"
+    );
+}
+

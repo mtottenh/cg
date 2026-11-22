@@ -511,11 +511,20 @@ where
         // re-drive of a *failed* saga (that path goes through
         // `redrive_stuck_completion_sagas`, never here), which the derived
         // standings recompute makes safe on its own.
+        //
+        // Only a completion of *this* review's result counts: one created
+        // after the review was raised. A completed saga from before it
+        // belongs to an earlier result — one reverted since (a played
+        // round-robin result keeps its completed saga across a revert, see
+        // `clear_result`) — and skipping on it left the re-reported result's
+        // standings and stage advancement undone.
+        let reviewed_since = review.as_ref().map(|r| r.created_at);
         let prior_sagas = self.saga_repo.find_by_match(match_id).await?;
-        if let Some(done) = prior_sagas
-            .into_iter()
-            .find(|s| s.saga_type == "match_completion" && s.is_completed())
-        {
+        if let Some(done) = prior_sagas.into_iter().find(|s| {
+            s.saga_type == "match_completion"
+                && s.is_completed()
+                && reviewed_since.is_none_or(|since| s.created_at >= since)
+        }) {
             info!(
                 match_id = %match_id,
                 saga_id = %done.id,

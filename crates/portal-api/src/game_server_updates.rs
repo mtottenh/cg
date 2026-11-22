@@ -11,6 +11,7 @@
 use crate::websocket::agent_manager::{AgentCommand, AgentConnectionManager, SendError};
 use chrono::Utc;
 use dashmap::DashMap;
+use futures_util::StreamExt;
 use portal_core::ids::GameServerId;
 use portal_core::types::UpdateJobStatus;
 use portal_db::{PgAdminServerCommandRepository, PgGameServerUpdateRepository};
@@ -22,6 +23,9 @@ use std::sync::Arc;
 
 /// The update service over its Postgres repository.
 pub type AppGameServerUpdateService = GameServerUpdateService<PgGameServerUpdateRepository>;
+
+/// `update_status` questions in flight at once during a lost-job pass.
+const PASS_CONCURRENCY: usize = 8;
 
 /// What the audit row keeps of an agent's answer.
 const AUDIT_OUTPUT_MAX: usize = 4 * 1024;
@@ -370,6 +374,12 @@ impl UpdateChannel {
     /// minutes: ask the agent (`update_status`) and settle from its answer;
     /// without an answer the job is `lost`. Either way the server is back
     /// in allocation the moment the job leaves `queued`/`running`.
+    ///
+    /// Bounded: at most `UPDATE_JOB_PASS_MAX` jobs (the oldest; the rest
+    /// wait for the next pass), asked [`PASS_CONCURRENCY`] at a time, so a
+    /// pass of unresponsive agents costs about two command timeouts rather
+    /// than one per job. An audit row is written only for a job whose
+    /// outcome this pass stored.
     pub async fn run_lost_job_pass(&self) -> UpdateJobPassSummary {
         let mut summary = UpdateJobPassSummary::default();
         let stalled = match self.service.stalled_jobs(Utc::now()).await {
@@ -380,22 +390,28 @@ impl UpdateChannel {
                 return summary;
             }
         };
-        for job in stalled {
-            match self.settle_stalled(&job).await {
-                Ok(Reconciled::Lost) => {
+        let mut settled = futures_util::stream::iter(stalled)
+            .map(|job| async move {
+                let outcome = self.settle_stalled(&job).await;
+                (job, outcome)
+            })
+            .buffer_unordered(PASS_CONCURRENCY);
+        while let Some((job, outcome)) = settled.next().await {
+            match outcome {
+                Ok(Reconciled::Lost(Some(lost))) => {
                     summary.lost += 1;
                     tracing::warn!(server_id = %job.server_id, job_id = %job.id,
                         operation = %job.operation, "game-server update job lost");
-                    // Re-read: the audit row carries the stored verdict.
-                    if let Ok(Some(lost)) = self.service.find_job(job.server_id, job.id).await {
-                        self.audit_finish(&lost).await;
-                    }
+                    self.audit_finish(&lost).await;
                 }
-                Ok(Reconciled::Finished) => {
+                Ok(Reconciled::Finished(Some(done))) => {
                     summary.reconciled += 1;
-                    if let Ok(Some(done)) = self.service.find_job(job.server_id, job.id).await {
-                        self.audit_finish(&done).await;
-                    }
+                    self.audit_finish(&done).await;
+                }
+                // Nothing changed: it moved on or ended since it was read
+                // as stalled, or its outcome was already stored.
+                Ok(Reconciled::Lost(None) | Reconciled::Finished(None)) => {
+                    summary.reconciled += 1;
                 }
                 Ok(Reconciled::StillRunning) => summary.reconciled += 1,
                 Err(e) => {
@@ -422,13 +438,14 @@ impl UpdateChannel {
             None
         };
         let Some(answer) = answer else {
-            self.service
+            let lost = self
+                .service
                 .mark_lost(
                     job,
                     "no progress for 20 minutes and the agent could not be asked",
                 )
                 .await?;
-            return Ok(Reconciled::Lost);
+            return Ok(Reconciled::Lost(lost.map(Box::new)));
         };
         let state = parse_output(answer.output.as_deref()).filter(|v| !v.is_null());
         self.service.reconcile_stalled(job, state.as_ref()).await

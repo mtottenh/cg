@@ -22,15 +22,22 @@ use crate::repositories::{CreateUpdateJob, GameServerUpdateRepository};
 /// declared lost.
 pub const UPDATE_JOB_STALL_MINUTES: i64 = 20;
 
+/// Stalled jobs settled per lost-job pass at most; the rest wait for the
+/// next pass (oldest first), so one pass cannot stall the lifecycle loop.
+pub const UPDATE_JOB_PASS_MAX: i64 = 16;
+
 /// What `update_status` reconciliation concluded about a stalled job.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Reconciled {
     /// The helper is still on this job; it stays in flight.
     StillRunning,
-    /// The helper had finished it; the real outcome is stored.
-    Finished,
-    /// The host knows nothing (more) about it.
-    Lost,
+    /// The helper had finished it. `Some` when this call stored the job's
+    /// first outcome; `None` when nothing changed (already stored).
+    Finished(Option<Box<GameServerUpdateJob>>),
+    /// The host knows nothing (more) about it. `Some` when this call
+    /// declared it lost; `None` when nothing changed (it moved on, or
+    /// ended, after it was read as stalled).
+    Lost(Option<Box<GameServerUpdateJob>>),
 }
 
 fn opt_str(v: &Value, key: &str) -> Option<String> {
@@ -384,7 +391,7 @@ where
         self.repo
             .list_stalled_jobs(
                 now - chrono::Duration::minutes(UPDATE_JOB_STALL_MINUTES),
-                50,
+                UPDATE_JOB_PASS_MAX,
             )
             .await
     }
@@ -412,12 +419,13 @@ where
     ) -> Result<Reconciled, DomainError> {
         let state = agent_state.filter(|s| frame_job_id(s) == Some(job.id));
         let Some(state) = state else {
-            self.mark_lost(
-                job,
-                "no progress for 20 minutes and the host has no record of this job",
-            )
-            .await?;
-            return Ok(Reconciled::Lost);
+            let lost = self
+                .mark_lost(
+                    job,
+                    "no progress for 20 minutes and the host has no record of this job",
+                )
+                .await?;
+            return Ok(Reconciled::Lost(lost.map(Box::new)));
         };
         if state.get("status").and_then(Value::as_str) == Some("running") {
             let phase = state.get("phase").and_then(Value::as_str);
@@ -425,16 +433,22 @@ where
             return Ok(Reconciled::StillRunning);
         }
         match self.record_result(job.server_id, state).await? {
+            Some(ResultOutcome::Stored {
+                job,
+                first_outcome: true,
+            }) => Ok(Reconciled::Finished(Some(job))),
             Some(ResultOutcome::Stored { .. } | ResultOutcome::Duplicate) => {
-                Ok(Reconciled::Finished)
+                Ok(Reconciled::Finished(None))
             }
             Some(ResultOutcome::Foreign) | None => {
-                self.mark_lost(
-                    job,
-                    "no progress for 20 minutes and the host's record of this job is unreadable",
-                )
-                .await?;
-                Ok(Reconciled::Lost)
+                let lost = self
+                    .mark_lost(
+                        job,
+                        "no progress for 20 minutes and the host's record of this job is \
+                         unreadable",
+                    )
+                    .await?;
+                Ok(Reconciled::Lost(lost.map(Box::new)))
             }
         }
     }

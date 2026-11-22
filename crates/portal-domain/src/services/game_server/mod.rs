@@ -16,6 +16,6 @@ pub use registry::{
 };
 pub use setup::{derive_map_sides, generate_connect_password, generate_reservation_token};
 pub use updates::{
-    GameServerUpdateService, Reconciled, UPDATE_JOB_STALL_MINUTES, frame_job_id, parse_progress,
-    parse_result,
+    GameServerUpdateService, Reconciled, UPDATE_JOB_PASS_MAX, UPDATE_JOB_STALL_MINUTES,
+    frame_job_id, parse_progress, parse_result,
 };

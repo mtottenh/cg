@@ -1982,6 +1982,80 @@ async fn test_lost_job_pass_asks_the_agent_and_otherwise_gives_up() {
     agent.close().await;
 }
 
+/// A verdict reached on a stalled job that has since been settled by the
+/// agent changes nothing, and so writes no second audit row.
+#[tokio::test]
+async fn test_settling_an_already_settled_job_changes_nothing() {
+    let (mut app, state) = TestApp::new_with_agent_dev_auth_and_state().await;
+    let game_id = cs2_game_id(&app).await;
+    let server_id = create_server(&app, &game_id, "Settled box").await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
+    let service = &state.game_server_updates.service;
+    let sid = server_id.parse().unwrap();
+
+    let job_id = start_ok(&app, &server_id, &json!({"operation": "mods"})).await;
+    age_job(&app, &job_id).await;
+    // The pass reads it as stalled ...
+    let stalled = service
+        .find_job(sid, job_id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    // ... and meanwhile its result arrives.
+    agent.send(mods_result(&job_id, "portal")).await;
+    job_when(&app, &server_id, &job_id, |j| j["status"] == "succeeded").await;
+    let audited = |rows: &[Value]| {
+        rows.iter()
+            .filter(|r| r["kind"] == "update_result:mods")
+            .count()
+    };
+    // The finish is audited just after the row is stored.
+    wait_for(10, || async {
+        (audited(&history(&app, &server_id).await) == 1).then_some(())
+    })
+    .await;
+
+    let mut state_file = mods_result(&job_id, "portal");
+    state_file.as_object_mut().unwrap().remove("type");
+    let settled = service
+        .reconcile_stalled(&stalled, Some(&state_file))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            settled,
+            portal_domain::services::game_server::Reconciled::Finished(None)
+        ),
+        "{settled:?}"
+    );
+    let settled = service.reconcile_stalled(&stalled, None).await.unwrap();
+    assert!(
+        matches!(
+            settled,
+            portal_domain::services::game_server::Reconciled::Lost(None)
+        ),
+        "{settled:?}"
+    );
+    assert_eq!(job(&app, &server_id, &job_id).await["status"], "succeeded");
+
+    // And a pass over nothing stalled asks nobody and writes nothing.
+    let summary = state.game_server_updates.run_lost_job_pass().await;
+    assert_eq!(
+        (summary.reconciled, summary.lost, summary.errors),
+        (0, 0, 0)
+    );
+    assert_eq!(audited(&history(&app, &server_id).await), 1);
+    assert!(agent.commands("update_status").is_empty());
+    agent.close().await;
+}
+
 // =============================================================================
 // MatchZy overrides
 // =============================================================================

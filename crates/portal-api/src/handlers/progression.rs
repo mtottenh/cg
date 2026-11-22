@@ -3,6 +3,7 @@
 //! Handlers for viewing and managing bracket progression.
 
 use crate::dto::common::DataResponse;
+use crate::dto::requests::progression::explicit_scores;
 use crate::dto::requests::{ProcessProgressionRequest, ReapplyProgressionRequest};
 use crate::dto::responses::ProgressionResponse;
 use crate::error::{ApiError, ApiResult};
@@ -73,6 +74,10 @@ pub async fn revert_progression(
 /// Reapply progression with a different winner.
 ///
 /// Reverts existing progression and reapplies with the new winner.
+/// The recorded series score always agrees with the new winner: explicit
+/// `participant1_score`/`participant2_score` are validated against the match's
+/// best-of; when omitted, a stored score naming the other side is mirrored,
+/// and a stored score that names no winner (0–0) is refused with 400.
 /// Requires admin permissions.
 #[utoipa::path(
     post,
@@ -83,7 +88,7 @@ pub async fn revert_progression(
     ),
     responses(
         (status = 200, description = "Progression reapplied", body = DataResponse<ProgressionResponse>),
-        (status = 400, description = "Invalid request", body = ApiError),
+        (status = 400, description = "Invalid request, or scores missing/invalid for the match's best-of or inconsistent with the winner", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Admin permission required", body = ApiError),
         (status = 404, description = "Match not found", body = ApiError),
@@ -115,9 +120,12 @@ pub async fn reapply_progression(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid winner registration ID format"))?;
 
+    let scores = explicit_scores(req.participant1_score, req.participant2_score)
+        .map_err(ApiError::bad_request)?;
+
     let result = state
         .progression_service
-        .reapply_progression(match_id, new_winner)
+        .reapply_progression(match_id, new_winner, scores)
         .await?;
     crate::result_settlement::settle_after_manual_progression(
         &state.match_completion_saga,
@@ -135,7 +143,8 @@ pub async fn reapply_progression(
 /// Process match completion and advance bracket.
 ///
 /// Manually triggers bracket progression with explicit winner and loser.
-/// Used when automatic progression needs manual intervention.
+/// Used when automatic progression needs manual intervention. Optional
+/// `participant1_score`/`participant2_score` follow the same rules as reapply.
 /// Requires admin permissions.
 #[utoipa::path(
     post,
@@ -146,7 +155,7 @@ pub async fn reapply_progression(
     ),
     responses(
         (status = 200, description = "Progression processed", body = DataResponse<ProgressionResponse>),
-        (status = 400, description = "Invalid request", body = ApiError),
+        (status = 400, description = "Invalid request, or scores missing/invalid for the match's best-of or inconsistent with the winner", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Admin permission required", body = ApiError),
         (status = 404, description = "Match not found", body = ApiError),
@@ -182,9 +191,17 @@ pub async fn process_progression(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid loser registration ID format"))?;
 
+    let scores = explicit_scores(req.participant1_score, req.participant2_score)
+        .map_err(ApiError::bad_request)?;
+
     let result = state
         .progression_service
-        .process_match_completion(match_id, winner_registration_id, loser_registration_id)
+        .process_match_completion(
+            match_id,
+            winner_registration_id,
+            loser_registration_id,
+            scores,
+        )
         .await?;
     crate::result_settlement::settle_after_manual_progression(
         &state.match_completion_saga,

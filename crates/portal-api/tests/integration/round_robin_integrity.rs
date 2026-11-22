@@ -1824,7 +1824,8 @@ async fn rematch_ruling_reopens_a_finished_round_robin() {
 /// Reverting a forfeit clears its walkover score with it: the match is open
 /// for play again and used to sit there still showing 2–0. A *played*
 /// result's score is kept across a revert, because revert → reapply ("same
-/// series, other winner") re-records the winner over it.
+/// series, other winner") re-records the winner over it — mirrored, so the
+/// new winner holds the winning game count.
 #[tokio::test]
 async fn reverted_forfeit_does_not_keep_its_walkover_score() {
     let app = TestApp::new().await;
@@ -1876,7 +1877,8 @@ async fn reverted_forfeit_does_not_keep_its_walkover_score() {
     let reapplied = get_match(&app, &cup.tournament_id, &played_id).await;
     assert_eq!(reapplied["status"], "completed");
     assert_eq!(reapplied["winner_registration_id"], p2(played).as_str());
-    assert_eq!(score(&reapplied), (2, 1));
+    // The series score follows the new winner: 2–1 for p1 becomes 1–2.
+    assert_eq!(score(&reapplied), (1, 2));
 }
 
 // ============================================================================
@@ -2451,8 +2453,9 @@ async fn manual_progression_opens_and_settles_cross_bracket_matches() {
         .collect();
     assert_eq!(openers.len(), 2, "{all:?}");
 
-    // Record both openers by hand (participant 1 wins), through the manual
-    // progression endpoint only.
+    // Record both openers by hand (participant 1 wins 2–0), through the
+    // manual progression endpoint only. The unplayed match stores 0–0, which
+    // names no winner, so the score is given explicitly.
     let process = |m: Value| {
         let app = &app;
         let cup = &cup;
@@ -2463,7 +2466,9 @@ async fn manual_progression_opens_and_settles_cross_bracket_matches() {
                 &format!("/v1/admin/matches/{match_id}/progression/process"),
                 &json!({
                     "winner_registration_id": p1(&m),
-                    "loser_registration_id": p2(&m)
+                    "loser_registration_id": p2(&m),
+                    "participant1_score": 2,
+                    "participant2_score": 0
                 }),
             )
             .await

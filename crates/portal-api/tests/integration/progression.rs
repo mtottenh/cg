@@ -908,3 +908,353 @@ async fn test_reapply_records_the_new_winner_on_an_elimination_match() {
         "revert after reapply must still empty the slot"
     );
 }
+
+// ============================================================================
+// REAPPLY / PROCESS KEEP THE SCORE CONSISTENT WITH THE WINNER
+// ============================================================================
+
+/// Confirm a result through the claim flow with an explicit series score.
+async fn complete_match_with_score(
+    app: &TestApp,
+    match_id: &str,
+    winner_reg: &str,
+    p1_score: i32,
+    p2_score: i32,
+    opponent_token: &str,
+) {
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": winner_reg,
+                "participant1_score": p1_score,
+                "participant2_score": p2_score,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    app.post_with_token(
+        &format!("/v1/matches/{match_id}/result/{claim_id}/confirm"),
+        opponent_token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
+/// (participant1_score, participant2_score, winner, loser) straight off the row.
+async fn recorded_result(app: &TestApp, match_id: Uuid) -> (i32, i32, Option<Uuid>, Option<Uuid>) {
+    sqlx::query_as(
+        "SELECT participant1_score, participant2_score,
+                winner_registration_id, loser_registration_id
+         FROM tournament_matches WHERE id = $1",
+    )
+    .bind(match_id)
+    .fetch_one(app.pool())
+    .await
+    .expect("read the recorded result")
+}
+
+/// (points, game_differential) for a registration in a bracket.
+async fn points_and_game_diff(
+    app: &TestApp,
+    bracket_id: Uuid,
+    registration_id: &str,
+) -> (i32, i32) {
+    sqlx::query_as(
+        "SELECT points, game_differential FROM tournament_standings
+         WHERE bracket_id = $1 AND registration_id = $2",
+    )
+    .bind(bracket_id)
+    .bind(Uuid::parse_str(registration_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .expect("standing row")
+}
+
+/// Reapplying a played 2–1 for A as a win for B must record B winning 2–1
+/// (stored 1–2), not B "winning" with the losing game count — which used to
+/// credit A with the game difference, a live tiebreaker.
+#[tokio::test]
+async fn test_reapply_for_the_other_side_mirrors_the_stored_score() {
+    let app = TestApp::new().await;
+    let (_t, match_id, p1_reg, p2_reg, opponent_token, bracket_id) =
+        create_rr_match_in_progress(&app, "prog-reapply-mirror").await;
+    let mid = Uuid::parse_str(&match_id).unwrap();
+
+    complete_match_with_score(&app, &match_id, &p1_reg, 2, 1, &opponent_token).await;
+    assert_eq!(
+        points_and_game_diff(&app, bracket_id, &p1_reg).await,
+        (3, 1)
+    );
+
+    app.post_auth(&format!("/v1/admin/matches/{match_id}/progression/revert"))
+        .await
+        .assert_status(StatusCode::OK);
+    app.post_json(
+        &format!("/v1/admin/matches/{match_id}/progression/reapply"),
+        &json!({ "new_winner_registration_id": p2_reg }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let p2 = Uuid::parse_str(&p2_reg).unwrap();
+    let p1 = Uuid::parse_str(&p1_reg).unwrap();
+    assert_eq!(
+        recorded_result(&app, mid).await,
+        (1, 2, Some(p2), Some(p1)),
+        "the new winner must hold the winning game count"
+    );
+    assert_eq!(
+        points_and_game_diff(&app, bracket_id, &p2_reg).await,
+        (3, 1),
+        "new winner: 3 points, +1 game difference"
+    );
+    assert_eq!(
+        points_and_game_diff(&app, bracket_id, &p1_reg).await,
+        (0, -1),
+        "overturned winner: 0 points, -1 game difference"
+    );
+
+    // Reapplying the same winner again keeps the (now consistent) score.
+    app.post_json(
+        &format!("/v1/admin/matches/{match_id}/progression/reapply"),
+        &json!({ "new_winner_registration_id": p2_reg }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    assert_eq!(recorded_result(&app, mid).await, (1, 2, Some(p2), Some(p1)));
+    assert_eq!(
+        points_and_game_diff(&app, bracket_id, &p2_reg).await,
+        (3, 1)
+    );
+}
+
+/// Explicit scores on reapply are honoured, validated against the best-of,
+/// must name the new winner, and must come as a pair. A refused request
+/// leaves the recorded result untouched (validation precedes the revert).
+#[tokio::test]
+async fn test_reapply_honours_and_validates_explicit_scores() {
+    let app = TestApp::new().await;
+    let (_t, match_id, p1_reg, p2_reg, opponent_token, bracket_id) =
+        create_rr_match_in_progress(&app, "prog-reapply-explicit").await;
+    let mid = Uuid::parse_str(&match_id).unwrap();
+    let p1 = Uuid::parse_str(&p1_reg).unwrap();
+    let p2 = Uuid::parse_str(&p2_reg).unwrap();
+    let uri = format!("/v1/admin/matches/{match_id}/progression/reapply");
+
+    complete_match_with_score(&app, &match_id, &p1_reg, 2, 1, &opponent_token).await;
+
+    for (body, why) in [
+        (
+            json!({ "new_winner_registration_id": p2_reg,
+                    "participant1_score": 0, "participant2_score": 3 }),
+            "0-3 is not a finished Bo3",
+        ),
+        (
+            json!({ "new_winner_registration_id": p2_reg,
+                    "participant1_score": 2, "participant2_score": 0 }),
+            "2-0 names participant 1, not the new winner",
+        ),
+        (
+            json!({ "new_winner_registration_id": p2_reg, "participant2_score": 2 }),
+            "scores must be given together",
+        ),
+    ] {
+        let response = app.post_json(&uri, &body).await;
+        response.assert_status(StatusCode::BAD_REQUEST);
+        let problem: serde_json::Value = response.json();
+        assert_eq!(problem["status"], 400, "{why}: RFC 7807 body");
+        assert_eq!(
+            recorded_result(&app, mid).await,
+            (2, 1, Some(p1), Some(p2)),
+            "{why}: a refused reapply must not revert the result"
+        );
+    }
+
+    let response = app
+        .post_json(
+            &uri,
+            &json!({ "new_winner_registration_id": p2_reg,
+                     "participant1_score": 0, "participant2_score": 2 }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(recorded_result(&app, mid).await, (0, 2, Some(p2), Some(p1)));
+    assert_eq!(
+        points_and_game_diff(&app, bracket_id, &p2_reg).await,
+        (3, 2)
+    );
+    assert_eq!(
+        points_and_game_diff(&app, bracket_id, &p1_reg).await,
+        (0, -2)
+    );
+}
+
+/// A reverted forfeit is reopened at 0–0, which names no winner: recording
+/// a result over it needs an explicit score.
+#[tokio::test]
+async fn test_reapply_over_a_reverted_forfeit_requires_explicit_scores() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, p1_reg, p2_reg, _opp, bracket_id) =
+        create_rr_match_in_progress(&app, "prog-reapply-forfeit").await;
+    let mid = Uuid::parse_str(&match_id).unwrap();
+
+    app.post_json(
+        &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/forfeit"),
+        &json!({
+            "forfeiting_registration_id": p1_reg,
+            "forfeit_type": "no_show",
+            "reason": "Test forfeit"
+        }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    app.post_auth(&format!("/v1/admin/matches/{match_id}/progression/revert"))
+        .await
+        .assert_status(StatusCode::OK);
+    assert_eq!(recorded_result(&app, mid).await, (0, 0, None, None));
+
+    let uri = format!("/v1/admin/matches/{match_id}/progression/reapply");
+    let response = app
+        .post_json(&uri, &json!({ "new_winner_registration_id": p2_reg }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let detail = response.json::<serde_json::Value>()["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        detail.contains("participant1_score"),
+        "the 400 must ask for explicit scores: {detail}"
+    );
+
+    // process with a winner-changing body has the same rule.
+    let response = app
+        .post_json(
+            &format!("/v1/admin/matches/{match_id}/progression/process"),
+            &json!({ "winner_registration_id": p2_reg, "loser_registration_id": p1_reg }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    app.post_json(
+        &uri,
+        &json!({ "new_winner_registration_id": p2_reg,
+                 "participant1_score": 1, "participant2_score": 2 }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let p1 = Uuid::parse_str(&p1_reg).unwrap();
+    let p2 = Uuid::parse_str(&p2_reg).unwrap();
+    assert_eq!(recorded_result(&app, mid).await, (1, 2, Some(p2), Some(p1)));
+    assert_eq!(
+        points_and_game_diff(&app, bracket_id, &p2_reg).await,
+        (3, 1)
+    );
+}
+
+/// `progression/process` with a winner that contradicts the stored score
+/// mirrors it, the same as reapply.
+#[tokio::test]
+async fn test_process_with_a_winner_changing_body_mirrors_the_stored_score() {
+    let app = TestApp::new().await;
+    let (_t, match_id, p1_reg, p2_reg, _opp, bracket_id) =
+        create_rr_match_in_progress(&app, "prog-process-mirror").await;
+    let mid = Uuid::parse_str(&match_id).unwrap();
+    let p1 = Uuid::parse_str(&p1_reg).unwrap();
+    let p2 = Uuid::parse_str(&p2_reg).unwrap();
+
+    sqlx::query(
+        "UPDATE tournament_matches SET
+            participant1_score = 2, participant2_score = 1,
+            winner_registration_id = $2, loser_registration_id = $3,
+            status = 'completed', completed_at = NOW(), updated_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(mid)
+    .bind(p1)
+    .bind(p2)
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    app.post_json(
+        &format!("/v1/admin/matches/{match_id}/progression/process"),
+        &json!({ "winner_registration_id": p2_reg, "loser_registration_id": p1_reg }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    assert_eq!(recorded_result(&app, mid).await, (1, 2, Some(p2), Some(p1)));
+    assert_eq!(
+        points_and_game_diff(&app, bracket_id, &p2_reg).await,
+        (3, 1)
+    );
+    assert_eq!(
+        points_and_game_diff(&app, bracket_id, &p1_reg).await,
+        (0, -1)
+    );
+
+    // Explicit scores on process are validated like any other result path.
+    app.post_json(
+        &format!("/v1/admin/matches/{match_id}/progression/process"),
+        &json!({ "winner_registration_id": p2_reg, "loser_registration_id": p1_reg,
+                 "participant1_score": 0, "participant2_score": 3 }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+}
+
+/// Single elimination: reverting a played 1–0 and reapplying for the other
+/// side records the new winner 1–0 and seats them downstream; explicit
+/// scores are validated against the Bo1.
+#[tokio::test]
+async fn test_reapply_on_an_elimination_match_mirrors_the_score_and_reseats() {
+    let app = TestApp::new().await;
+    let tournament_id =
+        start_bracket_tournament(&app, "prog-reapply-se-score", "single_elimination", 4).await;
+    let semi = feeding_matches(&app, &tournament_id)
+        .await
+        .into_iter()
+        .next()
+        .expect("a seeded semi-final");
+
+    play_and_advance(&app, &semi).await;
+
+    app.post_auth(&format!("/v1/admin/matches/{}/progression/revert", semi.id))
+        .await
+        .assert_status(StatusCode::OK);
+
+    let uri = format!("/v1/admin/matches/{}/progression/reapply", semi.id);
+    app.post_json(
+        &uri,
+        &json!({ "new_winner_registration_id": semi.p2_reg,
+                 "participant1_score": 0, "participant2_score": 2 }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+
+    app.post_json(&uri, &json!({ "new_winner_registration_id": semi.p2_reg }))
+        .await
+        .assert_status(StatusCode::OK);
+
+    assert_eq!(
+        recorded_result(&app, semi.id).await,
+        (0, 1, Some(semi.p2_reg), Some(semi.p1_reg)),
+        "the new winner must hold the winning game count"
+    );
+    let final_slots = slots(&app, semi.winner_target).await;
+    assert!(
+        final_slots.0 == Some(semi.p2_reg) || final_slots.1 == Some(semi.p2_reg),
+        "the new winner must be seated in the final"
+    );
+    assert!(
+        final_slots.0 != Some(semi.p1_reg) && final_slots.1 != Some(semi.p1_reg),
+        "the old winner must not still be there"
+    );
+}

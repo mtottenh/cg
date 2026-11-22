@@ -214,15 +214,21 @@ where
     }
 
     /// Process match completion and handle all progression.
+    ///
+    /// `scores` is an optional explicit `(participant1, participant2)` series
+    /// score to record with the result. It must be a finished series for the
+    /// match's best-of and must name `winner_registration_id` as the winner.
+    /// Without it the stored score is kept when it agrees with the winner and
+    /// mirrored when it names the other side (see `resolve_recorded_scores`).
     #[instrument(skip(self))]
     pub async fn process_match_completion(
         &self,
         match_id: TournamentMatchId,
         winner_registration_id: TournamentRegistrationId,
         loser_registration_id: TournamentRegistrationId,
+        scores: Option<(i32, i32)>,
     ) -> Result<ProgressionResult, DomainError> {
         let match_ = self.get_match(match_id).await?;
-        let bracket = self.get_bracket(match_.bracket_id).await?;
 
         // This is reachable from the admin `progression/process` endpoint
         // with caller-supplied ids, and `record_outcome` below writes them
@@ -230,6 +236,33 @@ where
         // participants beat the other" on a match that has been played (or
         // is being reported/corrected).
         Self::ensure_reportable(&match_, winner_registration_id, loser_registration_id)?;
+        let scores = Self::resolve_recorded_scores(
+            &match_,
+            winner_registration_id,
+            loser_registration_id,
+            scores,
+        )?;
+
+        self.apply_completion(
+            match_,
+            winner_registration_id,
+            loser_registration_id,
+            scores,
+        )
+        .await
+    }
+
+    /// Everything `process_match_completion` does once the request has been
+    /// validated and the series score to record has been settled.
+    async fn apply_completion(
+        &self,
+        match_: TournamentMatch,
+        winner_registration_id: TournamentRegistrationId,
+        loser_registration_id: TournamentRegistrationId,
+        scores: (i32, i32),
+    ) -> Result<ProgressionResult, DomainError> {
+        let match_id = match_.id;
+        let bracket = self.get_bracket(match_.bracket_id).await?;
 
         // Record who won BEFORE anything derives from it.
         //
@@ -241,8 +274,13 @@ where
         // participant who was never advanced (P-169). Attribution is a property
         // of the match, not of the bracket family, so it is written for every
         // format.
-        self.record_outcome(&match_, winner_registration_id, loser_registration_id)
-            .await?;
+        self.record_outcome(
+            &match_,
+            winner_registration_id,
+            loser_registration_id,
+            scores,
+        )
+        .await?;
 
         // Advance winner
         let winner_advancement = self.advance_winner(&match_, winner_registration_id).await?;
@@ -438,18 +476,20 @@ where
     /// that matters: the row is the source of truth, and on the reapply path it
     /// carries the overturned result. Running it any number of times converges.
     ///
-    /// Scores stay as recorded; only the attribution changes. That matches the
-    /// old delta behaviour, which read the winner's games out of whichever
-    /// participant slot they occupied. Correcting the *score* is
-    /// `ResultService::override_result`'s job, and it is audited.
+    /// `scores` is the series score settled by `resolve_recorded_scores`, so
+    /// the row never records a winner holding the losing game count — which
+    /// standings would otherwise credit as game difference to the loser.
     async fn record_outcome(
         &self,
         match_: &TournamentMatch,
         winner_id: TournamentRegistrationId,
         loser_id: TournamentRegistrationId,
+        (participant1_score, participant2_score): (i32, i32),
     ) -> Result<(), DomainError> {
         if match_.winner_registration_id == Some(winner_id)
             && match_.loser_registration_id == Some(loser_id)
+            && match_.participant1_score == participant1_score
+            && match_.participant2_score == participant2_score
         {
             return Ok(());
         }
@@ -457,8 +497,8 @@ where
         self.match_repo
             .submit_result(
                 match_.id,
-                match_.participant1_score,
-                match_.participant2_score,
+                participant1_score,
+                participant2_score,
                 winner_id,
                 loser_id,
             )
@@ -854,6 +894,77 @@ where
              instead"
                 .to_string(),
         )
+    }
+
+    /// Settle the `(participant1, participant2)` series score to record with a
+    /// manually (re)applied result, so it always agrees with `winner`.
+    ///
+    /// - Explicit `scores` must be a finished series for the match's best-of
+    ///   (`validate_series_score`, same rule as claims, overrides and dispute
+    ///   adjustments) and must name `winner` as the winner. They are refused
+    ///   on a forfeit: its score is the walkover, not a played series.
+    /// - Without them the stored score is kept when the winner already holds
+    ///   the higher count, and mirrored when it names the other participant —
+    ///   a 2–1 for A reapplied for B is recorded 1–2, B winning 2–1. Reapply
+    ///   used to keep the score as-is, recording the new winner with the
+    ///   losing game count, so standings credited the loser with the game
+    ///   difference.
+    /// - A tied stored score (0–0 on a reverted forfeit or an unreported
+    ///   match) cannot be mirrored into a result. The forfeit path is the only
+    ///   one that writes a walkover score, and reapply does not turn a forfeit
+    ///   into a result, so this is refused: the caller must supply the score.
+    ///   Re-processing a match that already records exactly this result is
+    ///   left alone (idempotent).
+    ///
+    /// Callers must have run `ensure_reportable`, so `winner` and `loser` are
+    /// the match's two participants.
+    fn resolve_recorded_scores(
+        match_: &TournamentMatch,
+        winner: TournamentRegistrationId,
+        loser: TournamentRegistrationId,
+        scores: Option<(i32, i32)>,
+    ) -> Result<(i32, i32), DomainError> {
+        let stored = (match_.participant1_score, match_.participant2_score);
+
+        if let Some((p1, p2)) = scores {
+            if match_.status == TournamentMatchStatus::Forfeit {
+                return Err(DomainError::InvalidMatchResult(
+                    "This match was decided by forfeit; its walkover score cannot be replaced. \
+                     Revert it (progression/revert) to reopen it first"
+                        .to_string(),
+                ));
+            }
+            super::helpers::validate_series_score(match_.match_format, p1, p2)?;
+            let (score_winner, _) = super::helpers::derive_result_outcome(match_, p1, p2)?;
+            if score_winner != winner {
+                return Err(DomainError::InvalidMatchResult(format!(
+                    "Scores {p1}-{p2} name the other participant as the winner"
+                )));
+            }
+            return Ok((p1, p2));
+        }
+
+        let winner_is_p1 = match_.participant1_registration_id == Some(winner);
+        let (winner_games, loser_games) = if winner_is_p1 {
+            stored
+        } else {
+            (stored.1, stored.0)
+        };
+        match winner_games.cmp(&loser_games) {
+            std::cmp::Ordering::Greater => Ok(stored),
+            std::cmp::Ordering::Less => Ok((stored.1, stored.0)),
+            std::cmp::Ordering::Equal
+                if match_.winner_registration_id == Some(winner)
+                    && match_.loser_registration_id == Some(loser) =>
+            {
+                Ok(stored)
+            }
+            std::cmp::Ordering::Equal => Err(DomainError::InvalidMatchResult(format!(
+                "The match's stored score is {}-{}, which does not determine a winner. \
+                 Supply participant1_score and participant2_score",
+                stored.0, stored.1
+            ))),
+        }
     }
 
     /// Refuse a manual result that is not "one of this match's participants
@@ -1682,10 +1793,15 @@ where
     /// It inherits the refusal too: if the next round has already been played,
     /// this returns the same conflict rather than rewriting under it.
     #[instrument(skip(self))]
+    ///
+    /// `scores` is the optional explicit series score (see
+    /// `process_match_completion`). It and the stored score are settled
+    /// *before* the revert, so a refused score leaves the result untouched.
     pub async fn reapply_progression(
         &self,
         match_id: TournamentMatchId,
         new_winner_registration_id: TournamentRegistrationId,
+        scores: Option<(i32, i32)>,
     ) -> Result<ProgressionResult, DomainError> {
         let match_ = self.get_match(match_id).await?;
 
@@ -1708,14 +1824,29 @@ where
             }
             .ok_or_else(|| DomainError::InvalidState("Cannot determine loser".to_string()))?;
 
+        // Validate everything before the revert mutates anything.
+        Self::ensure_reportable(
+            &match_,
+            new_winner_registration_id,
+            new_loser_registration_id,
+        )?;
+        let scores = Self::resolve_recorded_scores(
+            &match_,
+            new_winner_registration_id,
+            new_loser_registration_id,
+            scores,
+        )?;
+
         // First revert existing progression
         self.revert_progression(match_id).await?;
 
-        // Then process with new winner
-        self.process_match_completion(
-            match_id,
+        // Then process with new winner, over the reverted row.
+        let match_ = self.get_match(match_id).await?;
+        self.apply_completion(
+            match_,
             new_winner_registration_id,
             new_loser_registration_id,
+            scores,
         )
         .await
     }

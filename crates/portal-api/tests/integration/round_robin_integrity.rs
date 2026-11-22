@@ -3011,3 +3011,136 @@ async fn refused_forfeit_revert_changes_nothing_in_double_elimination() {
         vec![(p2(m), false)]
     );
 }
+
+// ============================================================================
+// 23. A REVERTED RESULT IS NOT RESURRECTED BY ITS OWN COMPLETION SAGA
+// ============================================================================
+
+async fn stage_failed_saga(app: &TestApp, match_id: &str) {
+    let n = sqlx::query(
+        "UPDATE saga_executions SET status = 'failed', retry_count = 0,
+                last_error = 'simulated failure'
+         WHERE match_id = $1 AND saga_type = 'match_completion'",
+    )
+    .bind(Uuid::parse_str(match_id).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap()
+    .rows_affected();
+    assert!(n > 0, "no completion saga to stage");
+}
+
+async fn saga_statuses(app: &TestApp, match_id: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT status FROM saga_executions
+         WHERE match_id = $1 AND saga_type = 'match_completion' ORDER BY created_at",
+    )
+    .bind(Uuid::parse_str(match_id).unwrap())
+    .fetch_all(app.pool())
+    .await
+    .unwrap()
+}
+
+/// A forfeit whose completion saga failed is reverted. The lifecycle pass
+/// used to re-drive that failed saga, which completed the reopened match
+/// with the reverted result (p1 2-0) and seated p1 in the final again.
+#[tokio::test]
+async fn failed_saga_does_not_resurrect_a_reverted_forfeit() {
+    let app = TestApp::new().await;
+    let cup = create_cup(
+        &app,
+        "se-revert-failed-saga",
+        "single_elimination",
+        4,
+        json!({}),
+    )
+    .await;
+    start(&app, &cup).await;
+    let m = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|m| m["round"] == 1)
+        .unwrap();
+    let match_id = str_of(&m, "id");
+    transition_match_to_in_progress(&app, &cup.tournament_id, &match_id).await;
+    admin_forfeit(&app, &cup, &match_id, &p2(&m)).await;
+    stage_failed_saga(&app, &match_id).await;
+
+    revert_and_expect_reopened(&app, &cup, &match_id).await;
+    assert!(
+        saga_statuses(&app, &match_id)
+            .await
+            .iter()
+            .all(|s| s == "compensated"),
+        "the revert retires every completion saga of the match"
+    );
+
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(summary.sagas_redriven, 0, "{summary:?}");
+    let after = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(after["status"], "awaiting_result", "{after:?}");
+    assert!(after["winner_registration_id"].is_null(), "{after:?}");
+    let fin = matches(&app, &cup.tournament_id)
+        .await
+        .into_iter()
+        .find(|x| x["round"] == 2)
+        .unwrap();
+    assert!(!seats(&fin, &p1(&m)), "{fin:?}");
+}
+
+/// Defence in depth: a completion saga that fails *after* its result was
+/// reverted (so the revert could not retire it) is retired by the re-drive,
+/// not run — the saga refuses a result its match no longer carries.
+#[tokio::test]
+async fn saga_failed_after_a_revert_is_retired_not_redriven() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-stale-saga", 3).await;
+    let m = matches(&app, &cup.tournament_id).await[0].clone();
+    let match_id = str_of(&m, "id");
+    admin_forfeit(&app, &cup, &match_id, &p2(&m)).await;
+    revert_and_expect_reopened(&app, &cup, &match_id).await;
+    stage_failed_saga(&app, &match_id).await;
+
+    let summary = run_lifecycle(&app).await;
+    assert_eq!(summary.sagas_redriven, 0, "{summary:?}");
+    let after = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(after["status"], "awaiting_result", "{after:?}");
+    assert!(after["winner_registration_id"].is_null(), "{after:?}");
+    let rows = standings(&app, &cup.tournament_id, &str_of(&m, "bracket_id")).await;
+    assert_eq!(row_for(&rows, &p1(&m))["points"], 0, "{rows:?}");
+    let (retries, max): (i32, i32) = sqlx::query_as(
+        "SELECT retry_count, max_retries FROM saga_executions
+         WHERE match_id = $1 AND saga_type = 'match_completion'",
+    )
+    .bind(Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert!(retries >= max, "the stale saga is retired: {retries}/{max}");
+}
+
+/// A round-robin result under review is reverted before the review is
+/// resolved. Approving the review afterwards must not record it again.
+#[tokio::test]
+async fn approving_a_review_does_not_resurrect_a_reverted_result() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-review-revert", 3).await;
+    let m = matches(&app, &cup.tournament_id).await[0].clone();
+    let match_id = str_of(&m, "id");
+    let review_id = complete_under_review(&app, &cup, &m).await;
+    app.post_auth(&format!("/v1/admin/matches/{match_id}/progression/revert"))
+        .await
+        .assert_status(StatusCode::OK);
+
+    let _ = app
+        .post_json(
+            &format!("/v1/admin/result-reviews/{review_id}/approve"),
+            &json!({ "notes": "Approved after review" }),
+        )
+        .await;
+    let after = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(after["status"], "awaiting_result", "{after:?}");
+    assert!(after["winner_registration_id"].is_null(), "{after:?}");
+    let rows = standings(&app, &cup.tournament_id, &str_of(&m, "bracket_id")).await;
+    assert_eq!(row_for(&rows, &p1(&m))["points"], 0, "{rows:?}");
+}

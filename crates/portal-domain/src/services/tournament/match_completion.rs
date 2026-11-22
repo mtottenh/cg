@@ -453,6 +453,26 @@ where
         }
     }
 
+    /// Whether `input` is still the result recorded on its match — the
+    /// condition the saga itself enforces before progressing anything (see
+    /// `ensure_result_stands`). Lets a re-drive retire a saga whose result was
+    /// reverted or changed instead of failing it until it gives up.
+    ///
+    /// # Errors
+    ///
+    /// `TournamentMatchNotFound`, or a repository error.
+    pub async fn result_still_stands(
+        &self,
+        input: &MatchCompletionInput,
+    ) -> Result<bool, DomainError> {
+        let match_ = self
+            .match_repo
+            .find_by_id(input.match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
+        Ok(Self::ensure_result_stands(&match_, input).is_ok())
+    }
+
     /// Continue the saga after a review has been resolved.
     ///
     /// This resumes from step 3 (get bracket) onward, skipping validation steps.
@@ -786,6 +806,9 @@ where
             .find_by_id(input.match_id)
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
+        // A review can resolve long after the result was recorded; the result
+        // may have been reverted (or changed) in the meantime.
+        Self::ensure_result_stands(&match_, &input)?;
 
         self.run_progression_steps_inner(saga_coordinator, execution, input, &match_)
             .await
@@ -869,6 +892,40 @@ where
     // SAGA STEPS
     // =========================================================================
 
+    /// Refuse to progress a result the match no longer carries.
+    ///
+    /// Every path that starts this saga decides the match first: claim
+    /// confirmation writes the result in the same transaction as the
+    /// confirmation, the forfeit paths write the walkover, and
+    /// `settle_result` reads its input off a decided row. So when the saga
+    /// runs, the match is decided with exactly the input's winner and loser —
+    /// unless the result was taken back (revert) or changed (a ruling) since
+    /// the saga's input was captured: a failed saga re-driven later, or a
+    /// paused one resumed when its review resolves. Progressing it then would
+    /// re-complete a reopened match with the reverted result and seat its
+    /// winner again, so it is refused instead.
+    fn ensure_result_stands(
+        match_: &TournamentMatch,
+        input: &MatchCompletionInput,
+    ) -> Result<(), DomainError> {
+        if match_.status.is_decided()
+            && match_.winner_registration_id == Some(input.winner_registration_id)
+            && match_.loser_registration_id == Some(input.loser_registration_id)
+        {
+            return Ok(());
+        }
+        Err(DomainError::Conflict(format!(
+            "Match {} no longer carries this result (it is {}{}); it was reverted or \
+             changed after the completion was started, so the completion is not applied",
+            match_.id,
+            match_.status,
+            match_
+                .winner_registration_id
+                .map(|w| format!(", won by {w}"))
+                .unwrap_or_default(),
+        )))
+    }
+
     /// Step 1: Validate the match state.
     async fn step_validate_match(
         &self,
@@ -884,20 +941,12 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
 
-        // Validate match is in valid state for completion.
-        // The match may already be decided — completed (by confirm_claim) or
-        // forfeited (by a forfeit path) — that's OK, the saga handles
-        // progression from that point.
-        if !match_.status.is_decided()
-            && !match_
-                .status
-                .can_transition_to(TournamentMatchStatus::Completed)
-        {
-            let err = format!("Match in {} status cannot be completed", match_.status);
+        // The result this saga progresses must still be the match's result.
+        if let Err(e) = Self::ensure_result_stands(&match_, input) {
             saga_coordinator
-                .fail_step(execution, STEP_NAME, &err)
+                .fail_step(execution, STEP_NAME, &e.to_string())
                 .await?;
-            return Err(DomainError::InvalidState(err));
+            return Err(e);
         }
 
         // Validate participants

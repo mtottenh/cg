@@ -647,18 +647,24 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
 
-        // The match's completed completion saga is retired the same way
-        // (`compensated`: its effects were taken back). Settlement treats a
-        // completed `match_completion` saga as "progression already ran" and
-        // skips it, so a result recorded on the reopened match — a forfeit
-        // for the other side, a played result — would otherwise never be
-        // advanced: the right team would stay out of the next round.
+        // The match's completion sagas are retired the same way
+        // (`compensated`: the result they carry was taken back):
+        //
+        // - a completed one, because settlement treats a completed
+        //   `match_completion` saga as "progression already ran" and skips
+        //   it, so a result recorded on the reopened match — a forfeit for
+        //   the other side, a played result — would otherwise never be
+        //   advanced: the right team would stay out of the next round;
+        // - an unfinished one (failed, pending, running, paused), because
+        //   each would complete the match with the *reverted* result: the
+        //   lifecycle pass re-drives a failed saga, and the result re-recorded
+        //   the old winner over the reopened match.
         sqlx::query(
             r"
             UPDATE saga_executions SET status = 'compensated', updated_at = $2
             WHERE match_id = $1
               AND saga_type = 'match_completion'
-              AND status = 'completed'
+              AND status IN ('completed', 'failed', 'pending', 'running', 'paused')
               AND EXISTS (
                   SELECT 1 FROM tournament_matches
                   WHERE id = $1 AND status IN ('completed', 'forfeit')

@@ -821,6 +821,34 @@ async fn redrive_stuck_completion_sagas(
             continue;
         }
 
+        // The result this saga carries was reverted or changed since it
+        // failed: re-driving it would re-complete the match with the old
+        // result. Retire it — nothing is owed.
+        match state
+            .match_completion_saga
+            .result_still_stands(&input)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                info!(
+                    %saga_id,
+                    match_id = %input.match_id,
+                    "lifecycle: retiring completion saga whose result no longer stands"
+                );
+                if let Err(e) = coordinator.record_retry(&mut execution, true).await {
+                    error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
+                    summary.errors += 1;
+                }
+                continue;
+            }
+            Err(e) => {
+                warn!(%saga_id, error = %e, "lifecycle: could not check saga's match");
+                summary.errors += 1;
+                continue;
+            }
+        }
+
         let match_id = input.match_id;
         let saga_result = state
             .match_completion_saga

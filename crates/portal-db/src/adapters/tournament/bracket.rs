@@ -151,6 +151,31 @@ impl TournamentBracketRepository for PgTournamentBracketRepository {
         Ok(TournamentBracket::from(row))
     }
 
+    async fn compare_and_set_current_round(
+        &self,
+        id: TournamentBracketId,
+        expected: i32,
+        next: i32,
+    ) -> Result<bool, DomainError> {
+        let result = sqlx::query(
+            r"
+            UPDATE tournament_brackets SET
+                current_round = $3,
+                updated_at = $4
+            WHERE id = $1 AND current_round = $2
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(expected)
+        .bind(next)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(result.rows_affected() == 1)
+    }
+
     async fn list_by_stage(
         &self,
         stage_id: TournamentStageId,

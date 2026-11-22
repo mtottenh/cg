@@ -3,6 +3,7 @@
 use crate::DbPool;
 use crate::entities::{NewResultClaim, ResultClaimRow};
 use async_trait::async_trait;
+use portal_core::types::TournamentMatchStatus;
 use portal_core::{
     DemoMatchLinkId, DomainError, EvidenceId, ResultClaimId, TournamentMatchId,
     TournamentRegistrationId, UserId,
@@ -326,7 +327,18 @@ impl ResultClaimRepository for PgResultClaimRepository {
             DomainError::Conflict("Result claim has already been resolved".to_string())
         })?;
 
-        sqlx::query(
+        // Status guard on the match too: a claim is a report on a match
+        // that is being played. If the match was decided another way while
+        // the claim sat pending (forfeit, disqualification, double forfeit,
+        // an admin ruling), confirming the claim must not rewrite that
+        // decision. Zero rows → the whole transaction (including the claim
+        // flip above) rolls back with a Conflict.
+        let reportable: Vec<String> = TournamentMatchStatus::ALL
+            .iter()
+            .filter(|s| s.can_submit_result())
+            .map(ToString::to_string)
+            .collect();
+        let applied = sqlx::query(
             r"
             UPDATE tournament_matches SET
                 participant1_score = $2,
@@ -336,7 +348,7 @@ impl ResultClaimRepository for PgResultClaimRepository {
                 completed_at = NOW(),
                 status = 'completed',
                 updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND status = ANY($6)
             ",
         )
         .bind(match_id.as_uuid())
@@ -344,9 +356,15 @@ impl ResultClaimRepository for PgResultClaimRepository {
         .bind(participant2_score)
         .bind(winner_registration_id.as_uuid())
         .bind(loser_registration_id.as_uuid())
+        .bind(&reportable)
         .execute(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(format!("Failed to apply match result: {e}")))?;
+        if applied.rows_affected() == 0 {
+            return Err(DomainError::Conflict(
+                "Match is no longer awaiting a result; the claim cannot be confirmed".to_string(),
+            ));
+        }
 
         tx.commit()
             .await

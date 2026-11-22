@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use portal_core::types::{TournamentMatchStatus, TournamentRegistrationStatus};
+use portal_core::types::{TournamentMatchStatus, TournamentRegistrationStatus, WithdrawalPolicy};
 use portal_core::{DomainError, TournamentId, TournamentMatchId, TournamentRegistrationId, UserId};
 use tracing::{info, instrument, warn};
 
@@ -13,8 +13,10 @@ use crate::entities::forfeit::{ForfeitResult, ForfeitTrigger, ForfeitType};
 use crate::entities::tournament::TournamentMatch;
 use crate::repositories::forfeit::{CreateForfeitRecord, ForfeitRecordRepository};
 use crate::repositories::tournament::{
-    TournamentMatchRepository, TournamentRegistrationRepository,
+    TournamentMatchRepository, TournamentRegistrationRepository, TournamentRepository,
 };
+
+use super::match_completion::{DepartedParticipantForfeiter, DepartureOutcome};
 
 /// Service for handling forfeits.
 #[derive(Clone)]
@@ -52,23 +54,51 @@ where
         // Get the match
         let match_ = self.get_match(match_id).await?;
 
+        if let Some(finished) = self
+            .finish_interrupted(
+                &match_,
+                forfeiting_registration_id,
+                forfeit_type,
+                reason.clone(),
+                &triggered_by,
+            )
+            .await?
+        {
+            return Ok(finished);
+        }
+
         // Validate the match can be forfeited
         self.validate_can_forfeit(&match_, forfeiting_registration_id)?;
-
-        // NOTE: there is deliberately no `exists_for_match` refusal here.
-        // The forfeit record insert and the match update are two separate
-        // writes; if the process died between them the record existed while
-        // the match was still un-forfeited, and the old guard refused every
-        // retry, stranding the match forever. Re-forfeiting an *already
-        // terminal* match is still rejected by `validate_can_forfeit` above
-        // (a match in `forfeit`/`completed`/`cancelled` fails `can_forfeit`),
-        // and the record insert is idempotent (migration 0072), so a retry
-        // simply finishes the interrupted work.
 
         // Determine the winner (opponent)
         let winner_registration_id = self.determine_winner(&match_, forfeiting_registration_id)?;
 
-        // Create the forfeit record
+        // Write the match first. The update is guarded on the match still
+        // being forfeitable, so of two concurrent forfeits (one per side, or
+        // the same one twice) exactly one gets past this line; the other
+        // returns `Conflict` having written nothing — in particular no
+        // second forfeit record. The same statement supersedes any pending
+        // result claim on the match, so a claim filed before the forfeit
+        // (e.g. by a team that was then disqualified) cannot be confirmed
+        // over it later.
+        //
+        // The walkover is recorded with its series score (wins_required–0)
+        // so the derived standings credit it exactly like a played result.
+        let (winner_score, loser_score) = forfeit_type.default_score(match_.match_format);
+        self.match_repo
+            .forfeit(
+                match_id,
+                winner_registration_id,
+                forfeiting_registration_id,
+                winner_score,
+                loser_score,
+            )
+            .await?;
+
+        // Then the audit record. The insert is idempotent (migration 0072).
+        // There is deliberately no `exists_for_match` refusal anywhere on
+        // this path: a record left behind by an attempt that died before the
+        // match write (the old order) must not strand the match.
         let forfeit_record = self
             .forfeit_repo
             .create(CreateForfeitRecord {
@@ -79,11 +109,6 @@ where
                 triggered_by_user_id: triggered_by.user_id(),
                 triggered_by_system: triggered_by.is_system(),
             })
-            .await?;
-
-        // Update match with forfeit result
-        self.match_repo
-            .forfeit(match_id, winner_registration_id, forfeiting_registration_id)
             .await?;
 
         info!(
@@ -98,8 +123,118 @@ where
             match_id,
             forfeit_record,
             winner_registration_id: Some(winner_registration_id),
-            progression_triggered: false, // Will be true when progression service is integrated
+            // The forfeit is recorded; bracket progression / standings /
+            // stage advancement are run by the caller through the
+            // match-completion saga (`settle_result`), which flips this.
+            progression_triggered: false,
         })
+    }
+
+    /// Finish a forfeit for `forfeiting_registration_id` that was
+    /// interrupted after its match write, if that is what this match is.
+    ///
+    /// Every forfeit path writes the match (`forfeit`, winner, loser), then
+    /// the forfeit record, then has its caller settle the result. A match
+    /// that is `forfeit` against this side with **no active forfeit record**
+    /// therefore died between the first two steps — and so before
+    /// settlement: its winner was never advanced. `validate_can_forfeit`
+    /// would refuse every retry (the match is terminal), and in an
+    /// elimination bracket nothing else would ever advance the walkover
+    /// winner, so a retry for the same side completes the record and reports
+    /// the forfeit as processed, which lets the caller settle it.
+    ///
+    /// The inference holds only because *every* path writes the record —
+    /// the captain's own forfeit included ([`Self::record_forfeit`]), and
+    /// migration 0103 backfilled the forfeits recorded before it did. A
+    /// fully recorded forfeit returns `None` here and is then refused, so an
+    /// already-settled forfeit is never settled a second time.
+    ///
+    /// # Errors
+    ///
+    /// Propagates repository errors.
+    pub async fn finish_interrupted_forfeit(
+        &self,
+        match_id: TournamentMatchId,
+        forfeiting_registration_id: TournamentRegistrationId,
+        forfeit_type: ForfeitType,
+        reason: Option<String>,
+        triggered_by: ForfeitTrigger,
+    ) -> Result<Option<ForfeitResult>, DomainError> {
+        let match_ = self.get_match(match_id).await?;
+        self.finish_interrupted(
+            &match_,
+            forfeiting_registration_id,
+            forfeit_type,
+            reason,
+            &triggered_by,
+        )
+        .await
+    }
+
+    async fn finish_interrupted(
+        &self,
+        match_: &TournamentMatch,
+        forfeiting_registration_id: TournamentRegistrationId,
+        forfeit_type: ForfeitType,
+        reason: Option<String>,
+        triggered_by: &ForfeitTrigger,
+    ) -> Result<Option<ForfeitResult>, DomainError> {
+        if match_.status != TournamentMatchStatus::Forfeit
+            || match_.loser_registration_id != Some(forfeiting_registration_id)
+            || self.forfeit_repo.exists_for_match(match_.id).await?
+        {
+            return Ok(None);
+        }
+        let forfeit_record = self
+            .record_forfeit(
+                match_.id,
+                forfeiting_registration_id,
+                forfeit_type,
+                reason,
+                triggered_by,
+            )
+            .await?;
+        info!(
+            match_id = %match_.id,
+            forfeiting = %forfeiting_registration_id,
+            "Completed an interrupted forfeit"
+        );
+        Ok(Some(ForfeitResult {
+            match_id: match_.id,
+            forfeit_record,
+            winner_registration_id: match_.winner_registration_id,
+            progression_triggered: false,
+        }))
+    }
+
+    /// Write the forfeit record for a forfeit whose match write has landed.
+    ///
+    /// For forfeit paths that write the match themselves (a captain's own
+    /// forfeit, `MatchLifecycleService::forfeit`): they must call this
+    /// before settling, so the record is there for every forfeit — see
+    /// [`Self::finish_interrupted_forfeit`]. Idempotent per side.
+    ///
+    /// # Errors
+    ///
+    /// Propagates repository errors.
+    pub async fn record_forfeit(
+        &self,
+        match_id: TournamentMatchId,
+        forfeiting_registration_id: TournamentRegistrationId,
+        forfeit_type: ForfeitType,
+        reason: Option<String>,
+        triggered_by: &ForfeitTrigger,
+    ) -> Result<crate::entities::forfeit::ForfeitRecord, DomainError> {
+        self.forfeit_repo
+            .create(CreateForfeitRecord {
+                match_id,
+                forfeiting_registration_id,
+                forfeit_type,
+                reason,
+                triggered_by_user_id: triggered_by.user_id(),
+                triggered_by_system: triggered_by.is_system(),
+            })
+            .await
     }
 
     /// Process a no-show forfeit (auto-triggered by check-in system).
@@ -139,20 +274,14 @@ where
             .participant2_registration_id
             .ok_or_else(|| DomainError::InvalidState("No participant 2 in match".to_string()))?;
 
-        // Already fully processed? Return the existing outcome as a no-op
-        // instead of refusing. A *partially* processed double forfeit (one
-        // record written, the match never cancelled) falls through and is
-        // completed by the writes below — the record inserts are idempotent
-        // (migration 0072) and the status update is naturally idempotent.
-        if match_.status == TournamentMatchStatus::Cancelled
-            && let Some(existing) = self.forfeit_repo.find_by_match(match_id).await?
-        {
-            return Ok(ForfeitResult {
-                match_id,
-                forfeit_record: existing,
-                winner_registration_id: None,
-                progression_triggered: false,
-            });
+        // Call the match off first (guarded: a match that was decided in
+        // the meantime — a result, a one-sided forfeit — is a `Conflict`,
+        // and nothing else is written). Pending result claims are superseded
+        // in the same statement. A match that is *already* cancelled is a
+        // retry of a double forfeit that died before both records were
+        // written: skip the status write and finish the (idempotent) records.
+        if match_.status != TournamentMatchStatus::Cancelled {
+            self.match_repo.cancel_without_result(match_id).await?;
         }
 
         // Create forfeit records for both teams
@@ -180,11 +309,6 @@ where
             })
             .await?;
 
-        // Update match status to cancelled (no winner)
-        self.match_repo
-            .update_status(match_id, TournamentMatchStatus::Cancelled)
-            .await?;
-
         info!(
             match_id = %match_id,
             "Processed double forfeit"
@@ -198,7 +322,19 @@ where
         })
     }
 
-    /// Withdraw a team from the tournament (forfeits all remaining matches).
+    /// Withdraw a team from the tournament.
+    ///
+    /// The tournament's `withdrawal_policy` decides what happens to the
+    /// matches the team has not played:
+    ///
+    /// - `Forfeit` (default): every unplayed match it is seated in becomes a
+    ///   walkover for the opponent (see [`Self::forfeit_remaining_matches`]).
+    /// - `AdminDecision`: nothing is forfeited automatically — the
+    ///   registration is marked withdrawn and its matches are left for an
+    ///   admin to forfeit, cancel or reassign.
+    /// - `Reseeding` / `WaitlistPromotion`: there is no mid-event reseed or
+    ///   waitlist substitution, so once matches exist these fall back to
+    ///   `Forfeit` — the only policy that leaves the bracket decidable.
     #[instrument(skip(self))]
     pub async fn withdraw_from_tournament(
         &self,
@@ -206,6 +342,7 @@ where
         registration_id: TournamentRegistrationId,
         reason: Option<String>,
         withdrawn_by: UserId,
+        policy: WithdrawalPolicy,
     ) -> Result<Vec<ForfeitResult>, DomainError> {
         // Get the registration
         let registration = self
@@ -238,32 +375,17 @@ where
             .update_status(registration_id, TournamentRegistrationStatus::Withdrawn)
             .await?;
 
-        // Find all pending matches for this registration
-        let pending_matches = self.find_pending_matches(registration_id).await?;
-
-        // Forfeit each pending match
-        let mut results = Vec::new();
-        for match_ in pending_matches {
-            match self
-                .process_forfeit(
-                    match_.id,
-                    registration_id,
-                    ForfeitType::Withdrawal,
-                    reason.clone(),
-                    ForfeitTrigger::User(withdrawn_by),
-                )
-                .await
-            {
-                Ok(result) => results.push(result),
-                Err(e) => {
-                    warn!(
-                        match_id = %match_.id,
-                        error = %e,
-                        "Failed to process withdrawal forfeit for match"
-                    );
-                }
-            }
-        }
+        let results = if policy == WithdrawalPolicy::AdminDecision {
+            Vec::new()
+        } else {
+            self.forfeit_remaining_matches(
+                registration_id,
+                ForfeitType::Withdrawal,
+                reason.clone(),
+                ForfeitTrigger::User(withdrawn_by),
+            )
+            .await?
+        };
 
         info!(
             tournament_id = %tournament_id,
@@ -303,35 +425,17 @@ where
             .update_status(registration_id, TournamentRegistrationStatus::Disqualified)
             .await?;
 
-        // Find all pending matches for this registration
-        let pending_matches = self.find_pending_matches(registration_id).await?;
-
-        // Forfeit each pending match
-        let mut results = Vec::new();
-        for match_ in pending_matches {
-            match self
-                .process_forfeit(
-                    match_.id,
-                    registration_id,
-                    ForfeitType::Disqualification,
-                    Some(reason.clone()),
-                    ForfeitTrigger::Admin {
-                        user_id: disqualified_by,
-                        reason: reason.clone(),
-                    },
-                )
-                .await
-            {
-                Ok(result) => results.push(result),
-                Err(e) => {
-                    warn!(
-                        match_id = %match_.id,
-                        error = %e,
-                        "Failed to process disqualification forfeit for match"
-                    );
-                }
-            }
-        }
+        let results = self
+            .forfeit_remaining_matches(
+                registration_id,
+                ForfeitType::Disqualification,
+                Some(reason.clone()),
+                ForfeitTrigger::Admin {
+                    user_id: disqualified_by,
+                    reason: reason.clone(),
+                },
+            )
+            .await?;
 
         info!(
             tournament_id = %tournament_id,
@@ -340,6 +444,59 @@ where
             forfeited_matches = results.len(),
             "Processed disqualification"
         );
+
+        Ok(results)
+    }
+
+    /// Forfeit every match a registration still has to play.
+    ///
+    /// "Still has to play" is every match it is seated in whose status admits
+    /// an administrative forfeit — `Ready`, `Scheduled`, `CheckingIn`,
+    /// `PickBan`, `InProgress`, `AwaitingResult`. That includes `Ready`, the
+    /// status every round-robin match is generated in (the old filter picked
+    /// `Ready` and `Pending` and `process_forfeit` then refused both, so a
+    /// round-robin withdrawal forfeited nothing). Left alone:
+    ///
+    /// - `Pending` — the opponent is not known yet, there is nobody to award
+    ///   the walkover to;
+    /// - `Disputed` — a result is already on the table; the dispute decides it;
+    /// - anything terminal.
+    ///
+    /// Used by withdrawal and both disqualification endpoints. A failure on
+    /// one match is logged and does not stop the others.
+    #[instrument(skip(self, reason, triggered_by))]
+    pub async fn forfeit_remaining_matches(
+        &self,
+        registration_id: TournamentRegistrationId,
+        forfeit_type: ForfeitType,
+        reason: Option<String>,
+        triggered_by: ForfeitTrigger,
+    ) -> Result<Vec<ForfeitResult>, DomainError> {
+        let pending_matches = self.find_pending_matches(registration_id).await?;
+
+        let mut results = Vec::new();
+        for match_ in pending_matches {
+            match self
+                .process_forfeit(
+                    match_.id,
+                    registration_id,
+                    forfeit_type,
+                    reason.clone(),
+                    triggered_by.clone(),
+                )
+                .await
+            {
+                Ok(result) => results.push(result),
+                Err(e) => {
+                    warn!(
+                        match_id = %match_.id,
+                        error = %e,
+                        forfeit_type = %forfeit_type,
+                        "Failed to forfeit remaining match"
+                    );
+                }
+            }
+        }
 
         Ok(results)
     }
@@ -360,8 +517,10 @@ where
         match_: &TournamentMatch,
         forfeiting_registration_id: TournamentRegistrationId,
     ) -> Result<(), DomainError> {
-        // Check if match can be forfeited based on status
-        if !match_.status.can_forfeit() {
+        // Check if match can be forfeited based on status. Administrative /
+        // system forfeits also act on `Ready` matches (see
+        // `can_forfeit_administratively`).
+        if !match_.status.can_forfeit_administratively() {
             return Err(DomainError::InvalidState(format!(
                 "Match in {} status cannot be forfeited",
                 match_.status
@@ -406,19 +565,142 @@ where
     ) -> Result<Vec<TournamentMatch>, DomainError> {
         let matches = self.match_repo.list_by_participant(registration_id).await?;
 
-        // Filter to only pending/scheduled/ready matches
+        // Exactly the matches `validate_can_forfeit` will accept, so nothing
+        // selected here is then refused (and silently skipped).
         Ok(matches
             .into_iter()
-            .filter(|m| {
-                matches!(
-                    m.status,
-                    TournamentMatchStatus::Pending
-                        | TournamentMatchStatus::Scheduled
-                        | TournamentMatchStatus::Ready
-                        | TournamentMatchStatus::CheckingIn
-                )
-            })
+            .filter(|m| m.status.can_forfeit_administratively() && m.has_both_participants())
             .collect())
+    }
+}
+
+// =============================================================================
+// DEPARTED PARTICIPANTS
+// =============================================================================
+
+/// Forfeits matches on behalf of participants who have left the tournament.
+///
+/// [`ForfeitService::forfeit_remaining_matches`] deals with the matches a
+/// participant is in when it withdraws or is disqualified. This deals with
+/// the ones it only reaches *afterwards* — see
+/// [`MatchCompletionSaga::settle_departed`](super::MatchCompletionSaga::settle_departed),
+/// which calls it for every match progression makes playable.
+#[derive(Clone)]
+pub struct DepartedForfeiter<FRR, TMR, TRR, TR> {
+    forfeits: ForfeitService<FRR, TMR, TRR>,
+    tournament_repo: Arc<TR>,
+}
+
+impl<FRR, TMR, TRR, TR> DepartedForfeiter<FRR, TMR, TRR, TR>
+where
+    FRR: ForfeitRecordRepository,
+    TMR: TournamentMatchRepository,
+    TRR: TournamentRegistrationRepository,
+    TR: TournamentRepository,
+{
+    /// Create a new departed-participant forfeiter.
+    pub const fn new(forfeits: ForfeitService<FRR, TMR, TRR>, tournament_repo: Arc<TR>) -> Self {
+        Self {
+            forfeits,
+            tournament_repo,
+        }
+    }
+
+    /// The forfeit type owed by a registration that has left, or `None` if
+    /// it is still in the event (or its matches are an admin's call).
+    async fn departure(
+        &self,
+        tournament_id: TournamentId,
+        registration_id: TournamentRegistrationId,
+    ) -> Result<Option<ForfeitType>, DomainError> {
+        let registration = self
+            .forfeits
+            .registration_repo
+            .find_by_id(registration_id)
+            .await?
+            .ok_or(DomainError::TournamentRegistrationNotFound(registration_id))?;
+        Ok(match registration.status {
+            TournamentRegistrationStatus::Disqualified => Some(ForfeitType::Disqualification),
+            TournamentRegistrationStatus::NoShow => Some(ForfeitType::NoShow),
+            TournamentRegistrationStatus::Withdrawn => {
+                // Same policy the withdrawal itself applied to the matches
+                // the team was in: under `AdminDecision` nothing is forfeited
+                // automatically.
+                let policy = self
+                    .tournament_repo
+                    .find_by_id(tournament_id)
+                    .await?
+                    .ok_or(DomainError::TournamentNotFound(tournament_id))?
+                    .withdrawal_policy;
+                (policy != WithdrawalPolicy::AdminDecision).then_some(ForfeitType::Withdrawal)
+            }
+            _ => None,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl<FRR, TMR, TRR, TR> DepartedParticipantForfeiter for DepartedForfeiter<FRR, TMR, TRR, TR>
+where
+    FRR: ForfeitRecordRepository + 'static,
+    TMR: TournamentMatchRepository + 'static,
+    TRR: TournamentRegistrationRepository + 'static,
+    TR: TournamentRepository + 'static,
+{
+    #[instrument(skip(self))]
+    async fn forfeit_if_departed(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<DepartureOutcome>, DomainError> {
+        let match_ = self.forfeits.get_match(match_id).await?;
+        let (Some(p1), Some(p2)) = (
+            match_.participant1_registration_id,
+            match_.participant2_registration_id,
+        ) else {
+            return Ok(None);
+        };
+        if !match_.status.can_forfeit_administratively() {
+            return Ok(None);
+        }
+
+        let d1 = self.departure(match_.tournament_id, p1).await?;
+        let d2 = self.departure(match_.tournament_id, p2).await?;
+        let trigger = ForfeitTrigger::System {
+            reason: "participant_departed".to_string(),
+        };
+
+        let result = match (d1, d2) {
+            (None, None) => return Ok(None),
+            (Some(_), Some(_)) => self
+                .forfeits
+                .process_double_forfeit(
+                    match_id,
+                    Some("Both participants have left the tournament".to_string()),
+                    trigger,
+                )
+                .await
+                .map(|_| DepartureOutcome::CalledOff),
+            (Some(forfeit_type), None) | (None, Some(forfeit_type)) => {
+                let departed = if d1.is_some() { p1 } else { p2 };
+                self.forfeits
+                    .process_forfeit(
+                        match_id,
+                        departed,
+                        forfeit_type,
+                        Some("Participant has left the tournament".to_string()),
+                        trigger,
+                    )
+                    .await
+                    .map(|_| DepartureOutcome::Walkover)
+            }
+        };
+
+        match result {
+            Ok(outcome) => Ok(Some(outcome)),
+            // Decided by someone else between the read above and the write.
+            Err(DomainError::Conflict(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 

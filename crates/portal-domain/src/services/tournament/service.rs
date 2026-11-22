@@ -28,6 +28,32 @@ use crate::repositories::tournament::{
 use super::bracket_generator::{BracketGenerator, CrossLinkType};
 use super::registration::initial_registration_status;
 
+/// Why one bracket's next Swiss round was not generated.
+enum SwissRoundFailure {
+    /// Nothing was left behind: the bracket is on the round it was on and a
+    /// retry starts clean.
+    NotAdvanced(DomainError),
+    /// The round was created, finishing it failed, and so did undoing it.
+    Incomplete(DomainError),
+    /// The round was claimed, none of its matches could be written, and the
+    /// claim could not be released. Nothing exists; a later
+    /// generate-next-round releases the stale claim and generates the round.
+    ClaimStuck(DomainError),
+}
+
+/// How long a claimed Swiss round may have no matches before a later
+/// generate-next-round treats the claim as abandoned. The claim and the
+/// match insert are consecutive statements, so a live generation holds an
+/// empty claim for milliseconds.
+const STALE_SWISS_ROUND_CLAIM: chrono::Duration = chrono::Duration::seconds(60);
+
+impl From<DomainError> for SwissRoundFailure {
+    /// Everything that fails before the round is claimed.
+    fn from(e: DomainError) -> Self {
+        Self::NotAdvanced(e)
+    }
+}
+
 /// Service for tournament management.
 pub struct TournamentService<TR, TSR, TBR, TRR, TMR, TSTR, TMPR, TIR>
 where
@@ -978,6 +1004,18 @@ where
             return Err(DomainError::InsufficientParticipants);
         }
 
+        // Validate the format settings against who is actually starting
+        // BEFORE claiming: an impossible group shape or an unparseable
+        // round-format override used to surface only inside generation,
+        // after the claim had committed `in_progress` — leaving a tournament
+        // with no brackets that every retry treated as already started.
+        super::format_validation::validate_for_start(
+            tournament.format,
+            &tournament.format_settings,
+            tournament.default_match_format,
+            participants.len(),
+        )?;
+
         // Atomically claim the start. Only one caller can win the transition
         // scheduled/registration -> in_progress; a concurrent second start (or
         // a retried one) gets None and must NOT build a second bracket set.
@@ -995,6 +1033,74 @@ where
             return Ok(claimed);
         }
 
+        // Generation failing after the claim must not strand the tournament:
+        // undo what this attempt built and release the claim, so the start
+        // can be retried (the recovery guard above would otherwise treat any
+        // half-built bracket as "already started").
+        let stages_before: Vec<_> = self
+            .stage_repo
+            .list_by_tournament(id)
+            .await?
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        match self.generate_start(id, &tournament, participants).await {
+            Ok(started) => Ok(started),
+            Err(e) => {
+                tracing::warn!(
+                    tournament_id = %id,
+                    error = %e,
+                    "Bracket generation failed after the start claim; rolling back"
+                );
+                self.rollback_failed_start(id, tournament.status, &stages_before)
+                    .await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Undo a start whose generation failed: drop the brackets (matches and
+    /// standings cascade), drop the stages this attempt created, and put the
+    /// tournament back in its pre-start status. Best-effort — a failure here
+    /// is logged; the original generation error is what the caller sees.
+    async fn rollback_failed_start(
+        &self,
+        id: TournamentId,
+        previous_status: TournamentStatus,
+        stages_before: &[portal_core::TournamentStageId],
+    ) {
+        let result: Result<(), DomainError> = async {
+            for bracket in self.bracket_repo.list_by_tournament(id).await? {
+                self.bracket_repo.delete(bracket.id).await?;
+            }
+            for stage in self.stage_repo.list_by_tournament(id).await? {
+                if stages_before.contains(&stage.id) {
+                    self.stage_repo
+                        .update_status(stage.id, StageStatus::Pending)
+                        .await?;
+                } else {
+                    self.stage_repo.delete(stage.id).await?;
+                }
+            }
+            self.tournament_repo
+                .update_status(id, previous_status)
+                .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            tracing::warn!(tournament_id = %id, error = %e, "Rolling back a failed start failed");
+        }
+    }
+
+    /// Build the brackets for a claimed start and mark it started.
+    async fn generate_start(
+        &self,
+        id: TournamentId,
+        tournament: &Tournament,
+        participants: Vec<crate::entities::tournament::TournamentRegistration>,
+    ) -> Result<Tournament, DomainError> {
+        let tournament = tournament.clone();
         let seeded_participants = BracketGenerator::prepare_participants(participants);
 
         // Groups + Playoffs creates its own stages, so handle separately
@@ -1441,12 +1547,12 @@ where
     ) -> Result<(), DomainError> {
         let n = seeded_participants.len();
 
-        // Determine max rounds from format_settings or default to ceil(log2(N))
-        let max_rounds = tournament
-            .format_settings
-            .get("max_rounds")
-            .and_then(serde_json::Value::as_i64)
-            .map_or_else(|| (n as f64).log2().ceil() as i32, |v| v as i32);
+        // Rounds from format_settings `max_rounds` (default ceil(log2(N))),
+        // clamped to what can be paired without rematches.
+        let max_rounds = super::bracket_generator::swiss_total_rounds(
+            n,
+            super::bracket_generator::parse_swiss_max_rounds(&tournament.format_settings)?,
+        );
 
         // Create bracket entry
         let bracket = self
@@ -1679,9 +1785,13 @@ where
                     .await?;
                 }
                 GroupStageFormat::Swiss => {
-                    // Generate only R1 for Swiss groups
-                    let n = group.len();
-                    let max_rounds = (n as f64).log2().ceil() as i32;
+                    // Generate only R1 for Swiss groups. Later rounds come
+                    // from generate_next_swiss_round, up to `max_rounds`
+                    // (per group: groups may differ in size by one).
+                    let max_rounds = super::bracket_generator::swiss_total_rounds(
+                        group.len(),
+                        config.swiss_max_rounds,
+                    );
 
                     let (generated, bye_participant) = BracketGenerator::swiss_initial_round(
                         id,
@@ -1751,8 +1861,23 @@ where
 
     /// Generate the next Swiss round for a tournament.
     ///
-    /// Validates that all current-round matches are complete, then generates
-    /// the next round of Swiss pairings based on current standings.
+    /// Advances every Swiss bracket in an active stage whose current round
+    /// is fully played and which has rounds left — the single bracket of a
+    /// standalone Swiss tournament, or each Swiss group of a Groups +
+    /// Playoffs tournament (groups advance independently, so a group that
+    /// finished its round need not wait for the others). Returns the new
+    /// matches of every bracket that advanced.
+    ///
+    /// A round is over when every match in it is settled (played, or
+    /// cancelled by a double forfeit / double DQ).
+    ///
+    /// Errors:
+    /// - `InvalidState` when no bracket could advance — "Not all
+    ///   current-round matches are complete" if any bracket is mid-round,
+    ///   else "Maximum number of rounds reached";
+    /// - `Conflict` when a concurrent request claimed every ready bracket,
+    ///   or when some brackets advanced and others failed (the message
+    ///   names both; retrying only advances the ones still behind).
     pub async fn generate_next_swiss_round(
         &self,
         tournament_id: TournamentId,
@@ -1773,45 +1898,242 @@ where
             ));
         }
 
-        // Get brackets
-        let brackets = self.bracket_repo.list_by_tournament(tournament_id).await?;
-        let bracket = brackets
+        // Swiss brackets of the active stage(s). Once a Swiss group stage
+        // hands over to the playoffs it is Completed and nothing in it may
+        // grow another round.
+        let active_stages: std::collections::HashSet<_> = self
+            .stage_repo
+            .list_by_tournament(tournament_id)
+            .await?
             .into_iter()
-            .find(|b| b.bracket_type == BracketType::Swiss)
-            .ok_or_else(|| DomainError::InvalidState("No Swiss bracket found".to_string()))?;
-
-        // Verify all current-round matches are complete
-        let all_matches = self.match_repo.list_by_bracket(bracket.id).await?;
-        let current_round_matches: Vec<&TournamentMatch> = all_matches
-            .iter()
-            .filter(|m| m.round == bracket.current_round)
+            .filter(|s| s.status == StageStatus::Active)
+            .map(|s| s.id)
             .collect();
-
-        if current_round_matches.is_empty() {
+        let mut brackets: Vec<TournamentBracket> = self
+            .bracket_repo
+            .list_by_tournament(tournament_id)
+            .await?
+            .into_iter()
+            .filter(|b| b.bracket_type == BracketType::Swiss)
+            .collect();
+        if brackets.is_empty() {
             return Err(DomainError::InvalidState(
-                "No matches found for current round".to_string(),
+                "No Swiss bracket found".to_string(),
             ));
         }
-
-        let all_complete = current_round_matches.iter().all(|m| m.is_complete());
-        if !all_complete {
+        brackets.retain(|b| active_stages.contains(&b.stage_id));
+        if brackets.is_empty() {
             return Err(DomainError::InvalidState(
-                "Not all current-round matches are complete".to_string(),
+                "Swiss stage is already complete".to_string(),
             ));
         }
+        brackets.sort_by_key(|b| b.group_number.unwrap_or(0));
 
-        // Check max rounds
+        let mut new_matches = Vec::new();
+        let mut advanced: Vec<String> = Vec::new();
+        let mut failed: Vec<(String, DomainError)> = Vec::new();
+        let mut incomplete: Vec<(String, DomainError)> = Vec::new();
+        let mut stuck: Vec<(String, DomainError)> = Vec::new();
+        let mut lost_race = false;
+        let mut blocked: Option<DomainError> = None;
+        for mut bracket in brackets {
+            let all_matches = self.match_repo.list_by_bracket(bracket.id).await?;
+
+            // A round that was claimed but has no matches. Either a
+            // concurrent request holds the claim and is about to insert them
+            // (a recent claim: leave it alone), or a generation failed to
+            // insert its matches *and* to hand the claim back — which would
+            // otherwise block the bracket for good on "no matches found for
+            // the current round". An old empty claim is treated as what it
+            // is, a round that was never generated: release it and generate
+            // the round now.
+            if bracket.current_round > 1
+                && !all_matches.iter().any(|m| m.round == bracket.current_round)
+            {
+                let abandoned = bracket.updated_at < chrono::Utc::now() - STALE_SWISS_ROUND_CLAIM;
+                if !abandoned
+                    || !self
+                        .bracket_repo
+                        .compare_and_set_current_round(
+                            bracket.id,
+                            bracket.current_round,
+                            bracket.current_round - 1,
+                        )
+                        .await?
+                {
+                    lost_race = true;
+                    continue;
+                }
+                tracing::warn!(
+                    bracket_id = %bracket.id,
+                    round = bracket.current_round,
+                    "Released an abandoned Swiss round claim with no matches"
+                );
+                bracket.current_round -= 1;
+            }
+
+            let current_round_matches: Vec<&TournamentMatch> = all_matches
+                .iter()
+                .filter(|m| m.round == bracket.current_round)
+                .collect();
+
+            // A round is over once every match in it is settled — played,
+            // or called off (double forfeit / double DQ → Cancelled). The
+            // same rule decides bracket completion in progression; requiring
+            // Completed here stalled a group forever on one cancelled match.
+            let skip = if current_round_matches.is_empty() {
+                Some("No matches found for current round")
+            } else if !current_round_matches.iter().all(|m| m.is_settled()) {
+                Some("Not all current-round matches are complete")
+            } else if bracket.current_round >= bracket.total_rounds {
+                Some("Maximum number of rounds reached")
+            } else {
+                None
+            };
+            if let Some(reason) = skip {
+                // A mid-round bracket is the more actionable reason to
+                // report than a finished one.
+                if blocked.is_none() || !reason.starts_with("Maximum") {
+                    blocked = Some(DomainError::InvalidState(reason.to_string()));
+                }
+                continue;
+            }
+
+            // One bracket's failure must not stop the others (a group that
+            // cannot be paired would otherwise block every group after it);
+            // its claim is released, so a retry picks it up again.
+            match self
+                .generate_swiss_round_for_bracket(&tournament, &bracket, &all_matches)
+                .await
+            {
+                Ok(Some(matches)) => {
+                    advanced.push(bracket.name.clone());
+                    new_matches.extend(matches);
+                }
+                Ok(None) => lost_race = true,
+                Err(SwissRoundFailure::NotAdvanced(e)) => {
+                    tracing::warn!(
+                        bracket_id = %bracket.id,
+                        error = %e,
+                        "Swiss round generation failed for bracket"
+                    );
+                    failed.push((bracket.name.clone(), e));
+                }
+                Err(SwissRoundFailure::ClaimStuck(e)) => {
+                    tracing::error!(
+                        bracket_id = %bracket.id,
+                        error = %e,
+                        "Swiss round claim could not be released after its match insert failed"
+                    );
+                    stuck.push((bracket.name.clone(), e));
+                }
+                Err(SwissRoundFailure::Incomplete(e)) => {
+                    tracing::error!(
+                        bracket_id = %bracket.id,
+                        error = %e,
+                        "Swiss round was created but could not be finished or rolled back"
+                    );
+                    incomplete.push((bracket.name.clone(), e));
+                }
+            }
+        }
+
+        if !incomplete.is_empty() || !stuck.is_empty() {
+            // The round exists for these brackets — never report them as
+            // "not advanced", and do not invite a retry that cannot help.
+            let describe = |list: &[(String, DomainError)]| {
+                list.iter()
+                    .map(|(name, e)| format!("{name} ({e})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let mut parts = Vec::new();
+            if !incomplete.is_empty() {
+                parts.push(format!(
+                    "The next round was created for {} but setting it up failed part-way and \
+                     could not be undone; its matches need admin attention",
+                    describe(&incomplete)
+                ));
+            }
+            if !stuck.is_empty() {
+                parts.push(format!(
+                    "No round was generated for {}: its matches could not be written and the \
+                     round's claim could not be released. Nothing was created; call \
+                     generate-next-round again in a minute and it will be regenerated",
+                    describe(&stuck)
+                ));
+            }
+            if !advanced.is_empty() {
+                parts.push(format!("Generated normally for {}", advanced.join(", ")));
+            }
+            if !failed.is_empty() {
+                parts.push(format!("Not generated for {}", describe(&failed)));
+            }
+            let message = parts.join(". ");
+            return Err(DomainError::Conflict(message));
+        }
+        if !failed.is_empty() {
+            if advanced.is_empty() {
+                // Nothing changed: report the failure as it is.
+                return Err(failed.swap_remove(0).1);
+            }
+            // Partial success: say exactly what did and did not advance.
+            let failures = failed
+                .iter()
+                .map(|(name, e)| format!("{name} ({e})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(DomainError::Conflict(format!(
+                "Next round generated for {} but not for {failures}; \
+                 retrying is safe — it only advances brackets that still need it",
+                advanced.join(", ")
+            )));
+        }
+        if new_matches.is_empty() {
+            if lost_race {
+                return Err(DomainError::Conflict(
+                    "The next Swiss round is already being generated by another request"
+                        .to_string(),
+                ));
+            }
+            return Err(blocked.unwrap_or_else(|| {
+                DomainError::InvalidState("No Swiss round to generate".to_string())
+            }));
+        }
+        Ok(new_matches)
+    }
+
+    /// Pair and persist round `current_round + 1` of one Swiss bracket whose
+    /// current round is settled.
+    ///
+    /// The round is claimed with a compare-and-set on `current_round` before
+    /// any match is written, so of two concurrent requests exactly one pairs
+    /// it; the other gets `Ok(None)` and leaves the bracket alone.
+    ///
+    /// A failure is all-or-nothing wherever that can be arranged: if writing
+    /// the matches, seating their participants, opening them or recording the
+    /// bye fails, the round's matches are deleted and the claim released, and
+    /// the error is [`SwissRoundFailure::NotAdvanced`] — the bracket really is
+    /// where it was and a retry starts clean. Only when that undo itself fails
+    /// is the error [`SwissRoundFailure::Incomplete`]: the round exists and
+    /// must not be reported as "not advanced".
+    async fn generate_swiss_round_for_bracket(
+        &self,
+        tournament: &Tournament,
+        bracket: &TournamentBracket,
+        all_matches: &[TournamentMatch],
+    ) -> Result<Option<Vec<TournamentMatch>>, SwissRoundFailure> {
+        let tournament_id = tournament.id;
         let next_round = bracket.current_round + 1;
-        if next_round > bracket.total_rounds {
-            return Err(DomainError::InvalidState(
-                "Maximum number of rounds reached".to_string(),
-            ));
-        }
 
         // Get current standings
         let standings = self.standings_repo.list_by_bracket(bracket.id).await?;
 
-        // Build completed pairings set from all matches
+        // Pairings already used, from every match row. A cancelled match
+        // (double forfeit) counts as used too: the two never played, but it
+        // keeps the pairing count consistent with the rematch-free round cap
+        // (`swiss_total_rounds`). Its participants carry no result and no
+        // points from it and stay eligible to be paired with anyone else.
         let completed_pairings: Vec<(
             portal_core::TournamentRegistrationId,
             portal_core::TournamentRegistrationId,
@@ -1882,7 +2204,7 @@ where
             .ok_or_else(|| {
                 DomainError::Internal(format!("Stage {} not found", bracket.stage_id))
             })?;
-        let format_plan = Self::stage_format_plan(&tournament, &stage)?;
+        let format_plan = Self::stage_format_plan(tournament, &stage)?;
 
         // Generate next round
         let (generated, bye_participant) = BracketGenerator::swiss_next_round(
@@ -1890,44 +2212,126 @@ where
             bracket.stage_id,
             bracket.id,
             next_round,
+            bracket.total_rounds,
             swiss_standings,
             &completed_pairings,
             &format_plan,
         )?;
 
-        // Create matches
-        let new_matches = self.match_repo.bulk_create(generated.matches).await?;
-        let position_to_match = Self::build_position_map(&new_matches);
-        self.apply_initial_assignments(&generated.initial_assignments, &position_to_match)
-            .await?;
-
-        // Record the round's bye, if any. Byes have no match row, so the
-        // derived standings recompute folds them in from this table
-        // instead. Recording is keyed on (bracket, registration, round),
-        // so re-running round generation cannot award it twice.
-        if let Some(bye_id) = bye_participant {
-            self.standings_repo
-                .record_bye(bracket.id, bye_id, next_round)
-                .await?;
+        // Claim the round. Losing the claim means a concurrent request is
+        // generating (or has generated) it from the same snapshot.
+        if !self
+            .bracket_repo
+            .compare_and_set_current_round(bracket.id, bracket.current_round, next_round)
+            .await?
+        {
+            return Ok(None);
         }
-        self.standings_repo.recompute_bracket(bracket.id).await?;
 
-        // Update bracket current_round
-        self.bracket_repo
-            .update(
-                bracket.id,
-                crate::repositories::tournament::UpdateTournamentBracket {
-                    name: None,
-                    total_rounds: None,
-                    current_round: Some(next_round),
-                },
-            )
-            .await?;
+        // Create matches (one statement). On failure nothing was written, so
+        // hand the round back.
+        let new_matches = match self.match_repo.bulk_create(generated.matches).await {
+            Ok(matches) => matches,
+            Err(e) => {
+                if let Err(release_err) = self
+                    .bracket_repo
+                    .compare_and_set_current_round(bracket.id, next_round, bracket.current_round)
+                    .await
+                {
+                    tracing::error!(
+                        bracket_id = %bracket.id,
+                        error = %release_err,
+                        "Failed to release Swiss round claim after match insert failed"
+                    );
+                    return Err(SwissRoundFailure::ClaimStuck(e));
+                }
+                return Err(SwissRoundFailure::NotAdvanced(e));
+            }
+        };
 
-        // Mark matches with both participants as Ready
-        self.mark_ready_matches(bracket.id).await?;
+        // Seat the participants, open the matches and record the bye. Any of
+        // these failing leaves a round nobody can play (empty or unopened
+        // matches, a bye with no points) that no retry would repair — the
+        // round is already claimed — so undo the round instead.
+        //
+        // The bye goes last: it is the one write the undo below cannot take
+        // back, so nothing that can fail-and-undo may follow it. Byes have no
+        // match row, so the derived standings recompute folds them in from
+        // this table; recording is keyed on (bracket, registration, round).
+        let finish: Result<(), DomainError> = async {
+            let position_to_match = Self::build_position_map(&new_matches);
+            self.apply_initial_assignments(&generated.initial_assignments, &position_to_match)
+                .await?;
+            self.mark_ready_matches(bracket.id).await?;
+            if let Some(bye_id) = bye_participant {
+                self.standings_repo
+                    .record_bye(bracket.id, bye_id, next_round)
+                    .await?;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(e) = finish {
+            let undo: Result<(), DomainError> = async {
+                for m in &new_matches {
+                    self.match_repo.delete(m.id).await?;
+                }
+                if !self
+                    .bracket_repo
+                    .compare_and_set_current_round(bracket.id, next_round, bracket.current_round)
+                    .await?
+                {
+                    return Err(DomainError::Internal(
+                        "Swiss round claim was no longer held".to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            .await;
+            return Err(match undo {
+                Ok(()) => SwissRoundFailure::NotAdvanced(e),
+                Err(undo_err) => {
+                    tracing::error!(
+                        bracket_id = %bracket.id,
+                        error = %undo_err,
+                        "Failed to undo a half-created Swiss round"
+                    );
+                    SwissRoundFailure::Incomplete(e)
+                }
+            });
+        }
 
-        Ok(new_matches)
+        // The round is complete and playable from here on; what is left is
+        // derived data. A failed recompute only leaves the bye's points out
+        // of the standings until the next result in this bracket recomputes
+        // them, so it does not fail the round.
+        if let Err(e) = self.standings_repo.recompute_bracket(bracket.id).await {
+            tracing::warn!(
+                bracket_id = %bracket.id,
+                error = %e,
+                "Standings recompute failed after generating a Swiss round"
+            );
+        }
+
+        // Return the rows as they now stand: `new_matches` predates the
+        // participant assignment and the Ready flip above.
+        let created: std::collections::HashSet<TournamentMatchId> =
+            new_matches.iter().map(|m| m.id).collect();
+        let fresh = match self.match_repo.list_by_bracket(bracket.id).await {
+            Ok(all) => all
+                .into_iter()
+                .filter(|m| created.contains(&m.id))
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    bracket_id = %bracket.id,
+                    error = %e,
+                    "Could not re-read a generated Swiss round; returning it as created"
+                );
+                new_matches
+            }
+        };
+        Ok(Some(fresh))
     }
 
     // =========================================================================

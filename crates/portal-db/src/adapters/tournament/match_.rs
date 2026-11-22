@@ -31,6 +31,55 @@ impl PgTournamentMatchRepository {
     }
 }
 
+/// The textual statuses satisfying `pred`, for a `status = ANY($n)` guard
+/// that must agree with a domain predicate.
+fn statuses_where(pred: impl Fn(&TournamentMatchStatus) -> bool) -> Vec<String> {
+    TournamentMatchStatus::ALL
+        .iter()
+        .filter(|s| pred(s))
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// Supersede every pending result claim on a match that has just been
+/// decided some other way (forfeit, double forfeit). Left pending, such a
+/// claim was later auto-confirmed — or confirmed by the opponent — and
+/// rewrote the forfeit with the claimed result.
+async fn supersede_pending_claims_in_tx(
+    tx: &mut DbTransaction<'_>,
+    match_id: TournamentMatchId,
+) -> Result<(), DomainError> {
+    sqlx::query(
+        r"
+        UPDATE result_claims
+        SET status = 'superseded', updated_at = NOW()
+        WHERE match_id = $1 AND status = 'pending'
+        ",
+    )
+    .bind(match_id.as_uuid())
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| DomainError::Internal(format!("Failed to supersede pending claims: {e}")))?;
+    Ok(())
+}
+
+/// SQL predicate over a `tournament_matches` row aliased `m`: it is
+/// `completed` and a result review attached to its latest result claim is
+/// still pending. Shared with the stage adapter's settled-stage listing so
+/// the two cannot disagree about what "under review" means.
+pub(crate) const RESULT_UNDER_REVIEW_SQL: &str = r"
+    (m.status = 'completed' AND EXISTS (
+        SELECT 1 FROM result_reviews r
+        WHERE r.match_id = m.id
+          AND r.status::text IN ('pending_acknowledgment', 'pending_admin_review')
+          AND r.result_claim_id = (
+              SELECT c.id FROM result_claims c
+              WHERE c.match_id = m.id
+              ORDER BY c.created_at DESC, c.id DESC
+              LIMIT 1
+          )
+    ))";
+
 #[async_trait]
 impl TournamentMatchRepository for PgTournamentMatchRepository {
     async fn find_by_id(
@@ -552,18 +601,105 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
     async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError> {
         let now = Utc::now();
 
-        // Scores are deliberately kept: they are audit data, and the admin
-        // reapply path rewrites the winner over the same scores. Standings
-        // are derived from completed rows carrying BOTH a winner and a
-        // loser, so nulling those two columns is what takes this match out
+        // Standings are derived from decided rows carrying BOTH a winner and
+        // a loser, so nulling those two columns is what takes this match out
         // of the calculation. Running it on an already-cleared match is a
         // no-op — which is exactly what makes revert idempotent.
+        //
+        // A *played* result's scores are deliberately kept: they are audit
+        // data, and the admin reapply path (revert, then re-record the winner)
+        // rewrites the winner over the same series score. A *forfeit's* score
+        // is not a score anyone played — it is the synthetic walkover the
+        // forfeit wrote — so it goes with the forfeit: a reverted forfeit used
+        // to sit there open for play still showing 2–0.
+        //
+        // A decided match (`completed` / `forfeit`) also leaves that status
+        // for `awaiting_result`. Left `completed`, a reverted match still
+        // counted as finished for bracket completion while carrying no
+        // result, captains could not re-report it (claims need
+        // in_progress/awaiting_result) and the admin override refused it —
+        // a dead match. Any other status is left alone.
+        //
+        // A reverted forfeit's record is superseded in the same transaction
+        // (kept for audit, `superseded_at` stamped): the match is no longer
+        // decided by it, so it must not read as this match's forfeit — the
+        // reopened match can be forfeited again, for either side, or played.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        sqlx::query(
+            r"
+            UPDATE forfeit_records SET superseded_at = $2
+            WHERE match_id = $1
+              AND superseded_at IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM tournament_matches
+                  WHERE id = $1 AND status = 'forfeit'
+              )
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // The match's completion sagas are retired the same way
+        // (`compensated`: the result they carry was taken back):
+        //
+        // - a completed one *of a forfeit* (the saga's own input says so —
+        //   not the match's current status: a played result's saga kept
+        //   across a revert must stay kept when a forfeit recorded on top of
+        //   it is reverted in turn), because settlement treats a
+        //   completed `match_completion` saga as "progression already ran"
+        //   and skips it, so the result recorded on the reopened match — a
+        //   forfeit for the other side, a played result — would otherwise
+        //   never be advanced: the right team would stay out of the next
+        //   round. A forfeit's saga skipped the player-stats step, so
+        //   running a full saga for the next result counts nothing twice.
+        //   A *played* result's completed saga is kept: its stats are
+        //   counted, and a full saga for whatever is recorded next (a
+        //   ruling settles through `settle_result`) would count them again.
+        //   Reverting a played result only reopens round-robin / Swiss
+        //   matches, whose standings settlement re-derives either way;
+        // - an unfinished one (failed, pending, running, paused), because
+        //   each would complete the match with the *reverted* result: the
+        //   lifecycle pass re-drives a failed saga, and the result re-recorded
+        //   the old winner over the reopened match.
+        sqlx::query(
+            r"
+            UPDATE saga_executions SET status = 'compensated', updated_at = $2
+            WHERE match_id = $1
+              AND saga_type = 'match_completion'
+              AND (
+                  status IN ('failed', 'pending', 'running', 'paused')
+                  OR (status = 'completed' AND input_data->>'is_forfeit' = 'true')
+              )
+              AND EXISTS (
+                  SELECT 1 FROM tournament_matches
+                  WHERE id = $1 AND status IN ('completed', 'forfeit')
+              )
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
         let row = sqlx::query_as::<_, TournamentMatchRow>(
             r"
             UPDATE tournament_matches SET
                 winner_registration_id = NULL,
                 loser_registration_id = NULL,
+                participant1_score = CASE WHEN status = 'forfeit' THEN 0 ELSE participant1_score END,
+                participant2_score = CASE WHEN status = 'forfeit' THEN 0 ELSE participant2_score END,
                 completed_at = NULL,
+                status = CASE WHEN status IN ('completed', 'forfeit')
+                              THEN 'awaiting_result' ELSE status END,
                 updated_at = $2
             WHERE id = $1
             RETURNING *
@@ -571,9 +707,13 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         )
         .bind(id.as_uuid())
         .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(TournamentMatch::from(row))
     }
@@ -704,18 +844,38 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         id: TournamentMatchId,
         winner_id: TournamentRegistrationId,
         loser_id: TournamentRegistrationId,
+        winner_score: i32,
+        loser_score: i32,
     ) -> Result<TournamentMatch, DomainError> {
         let now = Utc::now();
+        let forfeitable = statuses_where(TournamentMatchStatus::can_forfeit_administratively);
 
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // The walkover score goes into the slot the winner occupies, so the
+        // derived standings (which read the winner's games from that slot)
+        // credit a walkover exactly the way they credit a played result.
+        //
+        // Status guard: the service checked the status on a row it read
+        // earlier, so two concurrent forfeits (one per side, say) both passed
+        // that check. Without the guard both writes landed — the row named
+        // the second caller's winner while the first caller had already
+        // advanced theirs. Now the loser of the race updates nothing.
         let row = sqlx::query_as::<_, TournamentMatchRow>(
             r"
             UPDATE tournament_matches SET
                 winner_registration_id = $2,
                 loser_registration_id = $3,
+                participant1_score = CASE WHEN participant1_registration_id = $2 THEN $5 ELSE $6 END,
+                participant2_score = CASE WHEN participant1_registration_id = $2 THEN $6 ELSE $5 END,
                 completed_at = $4,
                 status = 'forfeit',
                 updated_at = $4
-            WHERE id = $1
+            WHERE id = $1 AND status = ANY($7)
             RETURNING *
             ",
         )
@@ -723,9 +883,89 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         .bind(winner_id.as_uuid())
         .bind(loser_id.as_uuid())
         .bind(now)
-        .fetch_one(&self.pool)
+        .bind(winner_score)
+        .bind(loser_score)
+        .bind(&forfeitable)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or_else(|| {
+            DomainError::Conflict(
+                "Match can no longer be forfeited — it was decided by another request".to_string(),
+            )
+        })?;
+
+        supersede_pending_claims_in_tx(&mut tx, id).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(TournamentMatch::from(row))
+    }
+
+    async fn any_result_under_review_in_bracket(
+        &self,
+        bracket_id: TournamentBracketId,
+    ) -> Result<bool, DomainError> {
+        let sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM tournament_matches m \
+             WHERE m.bracket_id = $1 AND {RESULT_UNDER_REVIEW_SQL})"
+        );
+        sqlx::query_scalar::<_, bool>(&sql)
+            .bind(bracket_id.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))
+    }
+
+    async fn has_result_under_review(&self, id: TournamentMatchId) -> Result<bool, DomainError> {
+        let sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM tournament_matches m \
+             WHERE m.id = $1 AND {RESULT_UNDER_REVIEW_SQL})"
+        );
+        sqlx::query_scalar::<_, bool>(&sql)
+            .bind(id.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))
+    }
+
+    async fn cancel_without_result(
+        &self,
+        id: TournamentMatchId,
+    ) -> Result<TournamentMatch, DomainError> {
+        let open = statuses_where(|s| !s.is_terminal());
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        let row = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            UPDATE tournament_matches SET status = 'cancelled', updated_at = NOW()
+            WHERE id = $1 AND status = ANY($2)
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(&open)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?
+        .ok_or_else(|| {
+            DomainError::Conflict(
+                "Match can no longer be called off — it was decided by another request".to_string(),
+            )
+        })?;
+
+        supersede_pending_claims_in_tx(&mut tx, id).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(TournamentMatch::from(row))
     }

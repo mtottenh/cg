@@ -506,13 +506,18 @@ where
     /// consistent, and (b) there is no code path that changes a score without
     /// recording who changed it, from what, to what, and why.
     ///
-    /// Bracket progression is **not** re-run here — deliberately, and for the
+    /// Participant moves are **not** re-run here — deliberately, and for the
     /// same reason `resolve_adjusted` does not: moving participants that have
     /// already advanced is the job of the explicit
     /// revert/reapply-progression controls, which an admin uses after the
     /// correction if the winner changed. Silently reshaping downstream
     /// pairings as a side effect of a score edit would be worse than the
-    /// defect being fixed.
+    /// defect being fixed. What *is* derived from the row — round-robin /
+    /// Swiss standings and the stage-advancement check — is re-run by the
+    /// caller through `MatchCompletionSaga::settle_result`.
+    ///
+    /// Refused for a forfeit (see below) and for a score that is not a
+    /// finished best-of series.
     #[instrument(skip(self, reason))]
     pub async fn override_result(
         &self,
@@ -535,6 +540,24 @@ where
                 "Match has no recorded result to correct".to_string(),
             ));
         }
+
+        // A forfeit's "score" is the walkover the forfeit path recorded, not
+        // a played series. Overriding it would silently turn the walkover
+        // into a played `completed` result with no record of why the
+        // forfeit went away. Undoing a forfeit is revert (which reopens the
+        // match for a real result) or reapply — both explicit.
+        if match_.status == portal_core::types::TournamentMatchStatus::Forfeit {
+            return Err(DomainError::InvalidState(
+                "Match was decided by forfeit; revert the forfeit instead of overriding its score"
+                    .to_string(),
+            ));
+        }
+
+        crate::services::tournament::helpers::validate_series_score(
+            match_.match_format,
+            participant1_score,
+            participant2_score,
+        )?;
 
         let (winner_id, loser_id) = crate::services::tournament::helpers::derive_result_outcome(
             &match_,
@@ -813,6 +836,14 @@ where
             ));
         }
 
+        // The total being in range is not enough: 3–0 is three games but not
+        // a Bo3 result. The winner must have exactly `wins_required`.
+        crate::services::tournament::helpers::validate_series_score(
+            match_.match_format,
+            participant1_score,
+            participant2_score,
+        )?;
+
         // Validate game results if provided
         if !game_results.is_empty() {
             // Game count should match series score
@@ -945,6 +976,25 @@ where
     async fn auto_confirm_claim(&self, claim: &ResultClaim) -> Result<ResultClaim, DomainError> {
         // Get the match
         let match_ = self.get_match(claim.match_id).await?;
+
+        // The match was decided some other way while this claim sat pending
+        // (forfeit, disqualification, double forfeit). The forfeit paths
+        // supersede pending claims themselves; this retires any that predate
+        // that (or slipped past it), so the sweep does not retry — and get
+        // refused by the confirm's match-status guard — on every pass.
+        if match_.status.is_terminal() {
+            if let Err(e) = self
+                .claim_repo
+                .update_status(claim.id, ClaimStatus::Superseded)
+                .await
+            {
+                warn!(claim_id = %claim.id, error = %e, "Failed to retire a stale result claim");
+            }
+            return Err(DomainError::Conflict(format!(
+                "Match is already {}; the pending claim was superseded",
+                match_.status
+            )));
+        }
 
         // Find the registration recorded as the (auto-)confirmer: the
         // submitter's opponent — or, for server-sourced claims with no

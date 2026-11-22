@@ -123,6 +123,35 @@ pub trait StageAdvancer: Send + Sync + 'static {
     ) -> Result<Option<TournamentStageId>, DomainError>;
 }
 
+/// What was done with a match found seating a departed participant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepartureOutcome {
+    /// One side had left: the match was forfeited to the other.
+    Walkover,
+    /// Both sides had left: the match was called off with no winner.
+    CalledOff,
+}
+
+/// Trait for forfeiting a match on behalf of a participant who has left the
+/// tournament (withdrawn, disqualified, no-show).
+///
+/// Used by the saga when progression seats such a participant in a match
+/// that then becomes playable, without depending on the forfeit service.
+#[async_trait]
+pub trait DepartedParticipantForfeiter: Send + Sync + 'static {
+    /// If `match_id` is playable and one (or both) of its participants has
+    /// left the tournament, record the forfeit (or double forfeit) and
+    /// return what was done. `None` when the match is not playable yet, is
+    /// already decided, or both participants are still in the event.
+    ///
+    /// Only records the result; settling it (advancing the walkover winner,
+    /// standings, stage advancement) is the caller's job.
+    async fn forfeit_if_departed(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<DepartureOutcome>, DomainError>;
+}
+
 // =============================================================================
 // INPUT/OUTPUT TYPES
 // =============================================================================
@@ -170,6 +199,15 @@ pub struct MatchCompletionOutput {
     pub summary: String,
 }
 
+/// What [`MatchCompletionSaga::settle_result`] did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SettleOutcome {
+    /// The full completion saga ran (winner advancement, standings, stage).
+    pub progression_ran: bool,
+    /// The result finished a group stage and seeded the next one.
+    pub stage_advanced: bool,
+}
+
 // =============================================================================
 // MATCH COMPLETION SAGA
 // =============================================================================
@@ -194,6 +232,9 @@ pub struct MatchCompletionSaga<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA> {
     review_creator: Arc<RC>,
     stats_updater: Arc<MSU>,
     stage_advancer: Arc<SA>,
+    /// Optional: without it, matches seating a departed participant are
+    /// left for an admin (the pre-existing behaviour).
+    departed_forfeiter: Option<Arc<dyn DepartedParticipantForfeiter>>,
 }
 
 impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA> Clone
@@ -211,6 +252,7 @@ impl<TMR, TBR, TRR, TSTR, SR, PLR, MDV, RC, MSU, SA> Clone
             review_creator: Arc::clone(&self.review_creator),
             stats_updater: Arc::clone(&self.stats_updater),
             stage_advancer: Arc::clone(&self.stage_advancer),
+            departed_forfeiter: self.departed_forfeiter.clone(),
         }
     }
 }
@@ -254,7 +296,111 @@ where
             review_creator,
             stats_updater,
             stage_advancer,
+            departed_forfeiter: None,
         }
+    }
+
+    /// Forfeit matches that progression seats a departed participant in
+    /// (see [`Self::settle_departed`]).
+    #[must_use]
+    pub fn with_departed_forfeiter(
+        mut self,
+        forfeiter: Arc<dyn DepartedParticipantForfeiter>,
+    ) -> Self {
+        self.departed_forfeiter = Some(forfeiter);
+        self
+    }
+
+    /// Forfeit and settle `match_id` if it is playable and seats a
+    /// participant who has left the tournament.
+    ///
+    /// Withdrawal and disqualification forfeit the matches the participant
+    /// is in *at that moment*. A match they only reach afterwards — the
+    /// final they were already seated in while it waited for the other
+    /// semi-final, the losers-bracket match their forfeited winners-bracket
+    /// match drops them into — used to become playable with nobody to play
+    /// it. Everything that makes a match playable calls this for it; the
+    /// forfeit is then settled like any other, so it chains: the walkover
+    /// winner moves on, and if *that* seats a departed participant the next
+    /// match is forfeited in turn.
+    ///
+    /// Returns what was done, `None` if the match needed nothing.
+    #[instrument(skip(self))]
+    pub async fn settle_departed(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<Option<DepartureOutcome>, DomainError> {
+        let Some(forfeiter) = &self.departed_forfeiter else {
+            return Ok(None);
+        };
+        let Some(outcome) = forfeiter.forfeit_if_departed(match_id).await? else {
+            return Ok(None);
+        };
+        info!(match_id = %match_id, ?outcome, "Forfeited a match seating a departed participant");
+        self.settle_result_boxed(match_id).await?;
+        Ok(Some(outcome))
+    }
+
+    /// Do for the matches `source_match_id` feeds what the saga does after
+    /// seating participants in them: open each one that now has both
+    /// participants, and walk it over if one of them has left the
+    /// tournament ([`Self::settle_departed`]).
+    ///
+    /// For the manual progression endpoints, which seat participants through
+    /// `ProgressionService` rather than this saga. Their own "newly ready"
+    /// pass only looks at the processed match's bracket, so a loser dropped
+    /// into the losers bracket — or a winner sent to the grand final — sat
+    /// in a match that was never opened. The targets here are the same ones
+    /// the saga uses: the match's winner and loser links.
+    ///
+    /// Returns the matches it opened.
+    #[instrument(skip(self))]
+    pub async fn settle_fed_matches(
+        &self,
+        source_match_id: TournamentMatchId,
+    ) -> Result<Vec<TournamentMatchId>, DomainError> {
+        let source = self
+            .match_repo
+            .find_by_id(source_match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(source_match_id))?;
+        let mut opened = Vec::new();
+        for target_id in [source.winner_progresses_to, source.loser_progresses_to]
+            .into_iter()
+            .flatten()
+        {
+            if self.mark_ready_if_seated(target_id).await? {
+                opened.push(target_id);
+            }
+            self.settle_departed(target_id).await?;
+        }
+        Ok(opened)
+    }
+
+    /// Open `match_id` (`pending → ready`) if both participants are seated.
+    async fn mark_ready_if_seated(&self, match_id: TournamentMatchId) -> Result<bool, DomainError> {
+        if let Some(target) = self.match_repo.find_by_id(match_id).await?
+            && target.status == TournamentMatchStatus::Pending
+            && target.has_both_participants()
+        {
+            self.match_repo
+                .update_status(match_id, TournamentMatchStatus::Ready)
+                .await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// [`Self::settle_result`] behind a boxed future: settling a departure
+    /// forfeit from inside a running saga re-enters the saga, and the
+    /// recursion needs an indirection.
+    fn settle_result_boxed(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SettleOutcome, DomainError>> + Send + '_>,
+    > {
+        Box::pin(self.settle_result(match_id))
     }
 
     /// Execute the match completion saga.
@@ -307,6 +453,26 @@ where
         }
     }
 
+    /// Whether `input` is still the result recorded on its match — the
+    /// condition the saga itself enforces before progressing anything (see
+    /// `ensure_result_stands`). Lets a re-drive retire a saga whose result was
+    /// reverted or changed instead of failing it until it gives up.
+    ///
+    /// # Errors
+    ///
+    /// `TournamentMatchNotFound`, or a repository error.
+    pub async fn result_still_stands(
+        &self,
+        input: &MatchCompletionInput,
+    ) -> Result<bool, DomainError> {
+        let match_ = self
+            .match_repo
+            .find_by_id(input.match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
+        Ok(Self::ensure_result_stands(&match_, input).is_ok())
+    }
+
     /// Continue the saga after a review has been resolved.
     ///
     /// This resumes from step 3 (get bracket) onward, skipping validation steps.
@@ -345,11 +511,20 @@ where
         // re-drive of a *failed* saga (that path goes through
         // `redrive_stuck_completion_sagas`, never here), which the derived
         // standings recompute makes safe on its own.
+        //
+        // Only a completion of *this* review's result counts: one created
+        // after the review was raised. A completed saga from before it
+        // belongs to an earlier result — one reverted since (a played
+        // round-robin result keeps its completed saga across a revert, see
+        // `clear_result`) — and skipping on it left the re-reported result's
+        // standings and stage advancement undone.
+        let reviewed_since = review.as_ref().map(|r| r.created_at);
         let prior_sagas = self.saga_repo.find_by_match(match_id).await?;
-        if let Some(done) = prior_sagas
-            .into_iter()
-            .find(|s| s.saga_type == "match_completion" && s.is_completed())
-        {
+        if let Some(done) = prior_sagas.into_iter().find(|s| {
+            s.saga_type == "match_completion"
+                && s.is_completed()
+                && reviewed_since.is_none_or(|since| s.created_at >= since)
+        }) {
             info!(
                 match_id = %match_id,
                 saga_id = %done.id,
@@ -403,6 +578,195 @@ where
         }
     }
 
+    /// Bring the bracket in line with a result that was written outside the
+    /// claim → confirm flow: a forfeit (admin, captain, no-show, withdrawal,
+    /// disqualification), an admin score override, a dispute resolution, a
+    /// double forfeit.
+    ///
+    /// Those paths write the match row and used to stop there — no standings
+    /// recompute, no winner advancement, no groups → playoffs transition — so
+    /// a group whose last match was forfeited or disputed never finished.
+    /// This is the one entry point they share, and it reuses the normal
+    /// completion machinery rather than re-implementing it:
+    ///
+    /// - **Decided match whose progression never ran** (no completed
+    ///   `match_completion` saga for it — forfeits, and dispute resolutions on
+    ///   the claim path): run the full saga with the result read off the row.
+    ///   Demo validation is skipped (no claim id / forfeit), every progression
+    ///   step is idempotent, and it records a saga row like any completion, so
+    ///   the lifecycle re-drive covers a crash half-way.
+    /// - **Anything else** — the result changed under a match that was already
+    ///   progressed (override, overturn of a confirmed result), or the match
+    ///   lost its result (rematch, double forfeit): recompute the derived
+    ///   standings and re-run the stage-advancement check. Participants an
+    ///   elimination result already seated are *not* moved — that remains the
+    ///   explicit revert/reapply controls' job.
+    #[instrument(skip(self))]
+    pub async fn settle_result(
+        &self,
+        match_id: TournamentMatchId,
+    ) -> Result<SettleOutcome, DomainError> {
+        let match_ = self
+            .match_repo
+            .find_by_id(match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
+
+        if match_.status.is_decided()
+            && let (Some(winner), Some(loser)) =
+                (match_.winner_registration_id, match_.loser_registration_id)
+        {
+            let progressed = self
+                .saga_repo
+                .find_by_match(match_id)
+                .await?
+                .iter()
+                .any(|s| s.saga_type == "match_completion" && s.is_completed());
+
+            // "No completed saga" is not always "progression never ran": the
+            // match's completion may be *paused* on a result review (demo
+            // validation flagged it). Running the saga from here — with no
+            // claim id, so demo validation is skipped — would advance the
+            // bracket straight past that review. Leave progression to the
+            // review's own resolution, which resumes it from the match row
+            // (so it picks up whatever this ruling just wrote). Forfeits are
+            // never under review, so only a `completed` match is held.
+            //
+            // "Pending review" means a review on the match's *current*
+            // result (its latest claim) — a review left over from a result
+            // that was since replayed does not hold anything up.
+            if !progressed
+                && match_.status == TournamentMatchStatus::Completed
+                && self.match_repo.has_result_under_review(match_id).await?
+            {
+                info!(
+                    match_id = %match_id,
+                    "Settlement deferred: result review still pending"
+                );
+                // The ruling may have changed the winner or score on the row;
+                // standings are derived from rows, so bring them in line now.
+                // Only progression and stage advancement wait for the review
+                // (the stage gate holds the latter on its own).
+                let bracket = self
+                    .bracket_repo
+                    .find_by_id(match_.bracket_id)
+                    .await?
+                    .ok_or(DomainError::TournamentBracketNotFound(match_.bracket_id))?;
+                if matches!(
+                    bracket.bracket_type,
+                    BracketType::RoundRobin | BracketType::Swiss
+                ) {
+                    self.standings_repo.recompute_bracket(bracket.id).await?;
+                }
+                return Ok(SettleOutcome {
+                    progression_ran: false,
+                    stage_advanced: false,
+                });
+            }
+
+            if !progressed {
+                let (winner_score, loser_score) =
+                    if match_.participant1_registration_id == Some(winner) {
+                        (match_.participant1_score, match_.participant2_score)
+                    } else {
+                        (match_.participant2_score, match_.participant1_score)
+                    };
+                let result = self
+                    .execute_completion(MatchCompletionInput {
+                        match_id,
+                        winner_registration_id: winner,
+                        loser_registration_id: loser,
+                        winner_score,
+                        loser_score,
+                        is_forfeit: match_.status == TournamentMatchStatus::Forfeit,
+                        saga_id: None,
+                        result_claim_id: None,
+                    })
+                    .await?;
+                return Ok(SettleOutcome {
+                    progression_ran: result.success,
+                    stage_advanced: result.output.is_some_and(|o| o.stage_advanced),
+                });
+            }
+        }
+
+        self.rederive_bracket(match_.bracket_id).await
+    }
+
+    /// Re-derive what a bracket computes from its match rows — the round-robin
+    /// / Swiss standings and the stage-advancement check — without moving any
+    /// participant.
+    ///
+    /// The settle step for a *correction* of a result that was already
+    /// recorded (the admin score override): the corrected row must reach the
+    /// standings, but a changed elimination winner is moved only by the
+    /// explicit revert/reapply controls, never as a side effect.
+    #[instrument(skip(self))]
+    pub async fn rederive_bracket(
+        &self,
+        bracket_id: TournamentBracketId,
+    ) -> Result<SettleOutcome, DomainError> {
+        let bracket = self
+            .bracket_repo
+            .find_by_id(bracket_id)
+            .await?
+            .ok_or(DomainError::TournamentBracketNotFound(bracket_id))?;
+        if matches!(
+            bracket.bracket_type,
+            BracketType::RoundRobin | BracketType::Swiss
+        ) {
+            self.standings_repo.recompute_bracket(bracket.id).await?;
+        }
+        let opened = self
+            .stage_advancer
+            .advance_if_stage_complete(bracket.id)
+            .await?;
+
+        Ok(SettleOutcome {
+            progression_ran: false,
+            stage_advanced: opened.is_some(),
+        })
+    }
+
+    /// Re-run settlement for a whole stage: recompute every standings
+    /// bracket in it, then run the stage-advancement check.
+    ///
+    /// This is the retry for settlement that failed *after* its result was
+    /// written. A full completion leaves a saga row the lifecycle pass
+    /// re-drives, but the re-derive path ([`Self::rederive_bracket`] — admin
+    /// overrides, double forfeits, rulings on an already-progressed match)
+    /// writes none, and neither does a forfeit whose handler died before it
+    /// got to settle. The lifecycle pass calls this for every stage whose
+    /// matches are all settled but which is still open; like everything it
+    /// calls, it is idempotent and single-winner.
+    #[instrument(skip(self))]
+    pub async fn rederive_stage(
+        &self,
+        stage_id: TournamentStageId,
+    ) -> Result<SettleOutcome, DomainError> {
+        let brackets = self.bracket_repo.list_by_stage(stage_id).await?;
+        for bracket in &brackets {
+            if matches!(
+                bracket.bracket_type,
+                BracketType::RoundRobin | BracketType::Swiss
+            ) {
+                self.standings_repo.recompute_bracket(bracket.id).await?;
+            }
+        }
+        let opened = match brackets.first() {
+            Some(bracket) => {
+                self.stage_advancer
+                    .advance_if_stage_complete(bracket.id)
+                    .await?
+            }
+            None => None,
+        };
+        Ok(SettleOutcome {
+            progression_ran: false,
+            stage_advanced: opened.is_some(),
+        })
+    }
+
     /// Run the saga steps in sequence.
     async fn run_steps(
         &self,
@@ -451,6 +815,9 @@ where
             .find_by_id(input.match_id)
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
+        // A review can resolve long after the result was recorded; the result
+        // may have been reverted (or changed) in the meantime.
+        Self::ensure_result_stands(&match_, &input)?;
 
         self.run_progression_steps_inner(saga_coordinator, execution, input, &match_)
             .await
@@ -502,6 +869,15 @@ where
             .step_advance_stage(saga_coordinator, execution, match_)
             .await?;
 
+        // Step 7.7: Walk over any next match that just seated a departed
+        // participant
+        self.step_settle_departed(
+            saga_coordinator,
+            execution,
+            [winner_next_match_id, loser_next_match_id],
+        )
+        .await?;
+
         // Step 8: Update player stats (best-effort, non-blocking)
         self.step_update_player_stats(saga_coordinator, execution, &input)
             .await;
@@ -525,6 +901,40 @@ where
     // SAGA STEPS
     // =========================================================================
 
+    /// Refuse to progress a result the match no longer carries.
+    ///
+    /// Every path that starts this saga decides the match first: claim
+    /// confirmation writes the result in the same transaction as the
+    /// confirmation, the forfeit paths write the walkover, and
+    /// `settle_result` reads its input off a decided row. So when the saga
+    /// runs, the match is decided with exactly the input's winner and loser —
+    /// unless the result was taken back (revert) or changed (a ruling) since
+    /// the saga's input was captured: a failed saga re-driven later, or a
+    /// paused one resumed when its review resolves. Progressing it then would
+    /// re-complete a reopened match with the reverted result and seat its
+    /// winner again, so it is refused instead.
+    fn ensure_result_stands(
+        match_: &TournamentMatch,
+        input: &MatchCompletionInput,
+    ) -> Result<(), DomainError> {
+        if match_.status.is_decided()
+            && match_.winner_registration_id == Some(input.winner_registration_id)
+            && match_.loser_registration_id == Some(input.loser_registration_id)
+        {
+            return Ok(());
+        }
+        Err(DomainError::Conflict(format!(
+            "Match {} no longer carries this result (it is {}{}); it was reverted or \
+             changed after the completion was started, so the completion is not applied",
+            match_.id,
+            match_.status,
+            match_
+                .winner_registration_id
+                .map(|w| format!(", won by {w}"))
+                .unwrap_or_default(),
+        )))
+    }
+
     /// Step 1: Validate the match state.
     async fn step_validate_match(
         &self,
@@ -540,19 +950,12 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
 
-        // Validate match is in valid state for completion.
-        // The match may already be completed (by confirm_claim) — that's OK,
-        // the saga handles progression from that point.
-        if match_.status != TournamentMatchStatus::Completed
-            && !match_
-                .status
-                .can_transition_to(TournamentMatchStatus::Completed)
-        {
-            let err = format!("Match in {} status cannot be completed", match_.status);
+        // The result this saga progresses must still be the match's result.
+        if let Err(e) = Self::ensure_result_stands(&match_, input) {
             saga_coordinator
-                .fail_step(execution, STEP_NAME, &err)
+                .fail_step(execution, STEP_NAME, &e.to_string())
                 .await?;
-            return Err(DomainError::InvalidState(err));
+            return Err(e);
         }
 
         // Validate participants
@@ -727,67 +1130,32 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(input.match_id))?;
 
-        // If the match is already completed (e.g., by confirm_claim), skip
-        if match_.status == TournamentMatchStatus::Completed {
+        // Every path that starts this saga records the result on the match
+        // first (claim confirmation in the same transaction, the forfeit
+        // paths, settlement reading a decided row), so there is nothing to
+        // write here — only to confirm the result is still there. It used to
+        // submit the input's result when the match was not decided, which
+        // undid a revert that landed after step 1 validated the match (demo
+        // validation in between makes that window real): the reopened match
+        // was completed again with the reverted result.
+        if let Err(e) = Self::ensure_result_stands(&match_, input) {
             saga_coordinator
-                .complete_step(
-                    execution,
-                    STEP_NAME,
-                    Some(serde_json::json!({
-                        "action": "already_completed",
-                        "winner_id": input.winner_registration_id.to_string()
-                    })),
-                )
+                .fail_step(execution, STEP_NAME, &e.to_string())
                 .await?;
-
-            info!(
-                match_id = %input.match_id,
-                "Match already completed, skipping"
-            );
-            return Ok(());
+            return Err(e);
         }
-
-        let (p1_score, p2_score) =
-            if match_.participant1_registration_id == Some(input.winner_registration_id) {
-                (input.winner_score, input.loser_score)
-            } else {
-                (input.loser_score, input.winner_score)
-            };
-
-        // Submit the result. `submit_result` already sets
-        // `status = 'completed'` on the match row (see the adapter's
-        // UPDATE), so the prior separate `match_repo.complete(...)`
-        // call that used to follow this was redundant *and*
-        // non-atomic — if `complete()` failed after `submit_result()`,
-        // the saga step logged a partial success but the db reflected
-        // the correct end state anyway. Dropping it tightens the
-        // invariant: one write, one atomic transition. See audit I5.
-        self.match_repo
-            .submit_result(
-                input.match_id,
-                p1_score,
-                p2_score,
-                input.winner_registration_id,
-                input.loser_registration_id,
-            )
-            .await?;
 
         saga_coordinator
             .complete_step(
                 execution,
                 STEP_NAME,
                 Some(serde_json::json!({
-                    "winner_id": input.winner_registration_id.to_string(),
-                    "score": format!("{}-{}", p1_score, p2_score)
+                    "action": "already_completed",
+                    "status": match_.status.to_string(),
+                    "winner_id": input.winner_registration_id.to_string()
                 })),
             )
             .await?;
-
-        info!(
-            match_id = %input.match_id,
-            winner = %input.winner_registration_id,
-            "Match completed"
-        );
 
         Ok(())
     }
@@ -1014,13 +1382,7 @@ where
             .into_iter()
             .flatten()
         {
-            if let Some(target) = self.match_repo.find_by_id(target_id).await?
-                && target.status == TournamentMatchStatus::Pending
-                && target.has_both_participants()
-            {
-                self.match_repo
-                    .update_status(target_id, TournamentMatchStatus::Ready)
-                    .await?;
+            if self.mark_ready_if_seated(target_id).await? {
                 newly_ready.push(target_id.to_string());
             }
         }
@@ -1139,6 +1501,64 @@ where
         }
 
         Ok(opened.is_some())
+    }
+
+    /// Step 7.7: forfeit the matches this result fed if they are now
+    /// playable against a participant who has left the tournament.
+    ///
+    /// Recording the forfeit is part of this saga (a failure fails the step
+    /// and the re-drive retries it). *Settling* it is a completion of its
+    /// own, with its own saga row and its own re-drive, so a failure there
+    /// is logged rather than failing this match's completion.
+    async fn step_settle_departed(
+        &self,
+        saga_coordinator: &SagaCoordinator<SR>,
+        execution: &mut SagaExecution,
+        targets: [Option<TournamentMatchId>; 2],
+    ) -> Result<(), DomainError> {
+        const STEP_NAME: &str = "settle_departed";
+        let mut walked_over = Vec::new();
+
+        if let Some(forfeiter) = &self.departed_forfeiter {
+            for target_id in targets.into_iter().flatten() {
+                let outcome = match forfeiter.forfeit_if_departed(target_id).await {
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        saga_coordinator
+                            .fail_step(execution, STEP_NAME, &e.to_string())
+                            .await?;
+                        return Err(e);
+                    }
+                };
+                let Some(outcome) = outcome else { continue };
+                walked_over.push(serde_json::json!({
+                    "match_id": target_id.to_string(),
+                    "outcome": format!("{outcome:?}"),
+                }));
+                info!(
+                    match_id = %target_id,
+                    ?outcome,
+                    "Forfeited a match seating a departed participant"
+                );
+                if let Err(e) = self.settle_result_boxed(target_id).await {
+                    warn!(
+                        match_id = %target_id,
+                        error = %e,
+                        "Settling a departure forfeit failed; left for the lifecycle re-drive"
+                    );
+                }
+            }
+        }
+
+        saga_coordinator
+            .complete_step(
+                execution,
+                STEP_NAME,
+                Some(serde_json::json!({ "walked_over": walked_over })),
+            )
+            .await?;
+
+        Ok(())
     }
 
     /// Step 8: Update player stats (best-effort).

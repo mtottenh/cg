@@ -28,6 +28,7 @@ mod checkin;
 mod dispute;
 mod evidence;
 mod forfeit;
+pub mod format_validation;
 pub(crate) mod helpers;
 mod lineup;
 mod match_completion;
@@ -58,11 +59,12 @@ pub use evidence::{
     EvidencePluginClient, EvidenceS3Client, EvidenceService, EvidenceServiceConfig, ObjectPage,
     StoredObject,
 };
-pub use forfeit::ForfeitService;
+pub use forfeit::{DepartedForfeiter, ForfeitService};
 pub use lineup::LineupService;
 pub use match_completion::{
-    DemoValidationOutcome, MatchCompletionInput, MatchCompletionOutput, MatchCompletionSaga,
-    MatchDemoValidator, MatchStatsUpdater, ReviewCreator, StageAdvancer,
+    DemoValidationOutcome, DepartedParticipantForfeiter, DepartureOutcome, MatchCompletionInput,
+    MatchCompletionOutput, MatchCompletionSaga, MatchDemoValidator, MatchStatsUpdater,
+    ReviewCreator, SettleOutcome, StageAdvancer,
 };
 pub use match_lifecycle::{MatchLifecycleService, MatchStatusDetails, MatchStatusTransitioner};
 pub use progression::{Advancement, LoserResult, ProgressionResult, ProgressionService};

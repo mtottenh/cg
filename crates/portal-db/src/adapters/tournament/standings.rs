@@ -23,11 +23,17 @@ const WIN_POINTS: i32 = 3;
 ///
 /// Two contributions are unioned:
 ///
-/// 1. **Completed match rows** — one row per side. `status = 'completed'`
-///    only: forfeits (`status = 'forfeit'`) never fed standings under the
-///    delta model either, and folding them in now would silently invent
-///    points for every already-forfeited match. Winner/loser game scores are
-///    read from the participant slot the winner occupies (not
+/// 1. **Decided match rows** — one row per side, for `status IN
+///    ('completed', 'forfeit')`. A forfeit is a decided result: the opponent
+///    takes the win and the points, and the walkover's game score is whatever
+///    the forfeit path recorded on the row — `ForfeitType::default_score`,
+///    i.e. `wins_required`–0. (Forfeits used to be excluded on the grounds
+///    that the delta model never counted them; the consequence was that a
+///    no-show handed its opponent nothing and a group containing one never
+///    finished. Rows forfeited before scores were recorded carry 0–0, so on
+///    their first recompute they count as a win/loss with no game swing —
+///    no games are invented for them.) Winner/loser game scores are read
+///    from the participant slot the winner occupies (not
 ///    `GREATEST`/`LEAST`), exactly as the old `standings_deltas` did, so an
 ///    overturned result whose winner has the lower score is attributed the
 ///    same way it always was.
@@ -52,7 +58,7 @@ WITH contributions AS (
         $2::int4 AS points
     FROM tournament_matches m
     WHERE m.bracket_id = $1
-      AND m.status = 'completed'
+      AND m.status IN ('completed', 'forfeit')
       AND m.winner_registration_id IS NOT NULL
       AND m.loser_registration_id IS NOT NULL
 
@@ -68,7 +74,7 @@ WITH contributions AS (
         0 AS points
     FROM tournament_matches m
     WHERE m.bracket_id = $1
-      AND m.status = 'completed'
+      AND m.status IN ('completed', 'forfeit')
       AND m.winner_registration_id IS NOT NULL
       AND m.loser_registration_id IS NOT NULL
 
@@ -115,6 +121,58 @@ UPDATE tournament_standings s SET
     updated_at        = $3
 FROM derived d
 WHERE s.id = d.id
+";
+
+/// Re-rank one bracket's standings.
+///
+/// Ordering, most significant first:
+///
+/// 1. `points`, 2. `game_differential`, 3. `matches_won` — unchanged from the
+///    original ranking.
+/// 4. **Head-to-head** among the participants still level on all three: the
+///    number of decided matches each won against the *other members of that
+///    tie group*. Two-way ties resolve on the direct result; a cycle (A>B>C>A)
+///    leaves everyone on 1 and falls through.
+/// 5. **Seed** (`tournament_registrations.seed`, lower is better, unseeded
+///    last), then 6. **registration id** — a total order, so a fully level
+///    group ranks identically on every recompute instead of in whatever order
+///    the planner happened to return the rows.
+const RANK_STANDINGS_SQL: &str = r"
+WITH s AS (
+    SELECT ts.id, ts.registration_id, ts.points, ts.game_differential, ts.matches_won,
+           tr.seed
+    FROM tournament_standings ts
+    JOIN tournament_registrations tr ON tr.id = ts.registration_id
+    WHERE ts.bracket_id = $1
+),
+h2h AS (
+    SELECT s.id, COUNT(m.id) AS h2h_wins
+    FROM s
+    LEFT JOIN s o
+      ON o.registration_id <> s.registration_id
+     AND o.points = s.points
+     AND o.game_differential = s.game_differential
+     AND o.matches_won = s.matches_won
+    LEFT JOIN tournament_matches m
+      ON m.bracket_id = $1
+     AND m.status IN ('completed', 'forfeit')
+     AND m.winner_registration_id = s.registration_id
+     AND m.loser_registration_id = o.registration_id
+    GROUP BY s.id
+),
+ranked AS (
+    SELECT s.id,
+        ROW_NUMBER() OVER (
+            ORDER BY s.points DESC, s.game_differential DESC, s.matches_won DESC,
+                     h.h2h_wins DESC, s.seed ASC NULLS LAST, s.registration_id ASC
+        ) AS new_position
+    FROM s
+    JOIN h2h h ON h.id = s.id
+)
+UPDATE tournament_standings t
+SET position = r.new_position, updated_at = $2
+FROM ranked r
+WHERE t.id = r.id
 ";
 
 /// `PostgreSQL` implementation of `TournamentStandingsRepository`.
@@ -233,30 +291,15 @@ impl TournamentStandingsRepository for PgTournamentStandingsRepository {
         &self,
         bracket_id: TournamentBracketId,
     ) -> Result<Vec<TournamentStanding>, DomainError> {
-        let now = Utc::now();
-
-        // Update positions based on points, then game differential, then match wins
-        sqlx::query(
-            r"
-            WITH ranked AS (
-                SELECT id,
-                    ROW_NUMBER() OVER (
-                        ORDER BY points DESC, game_differential DESC, matches_won DESC
-                    ) as new_position
-                FROM tournament_standings
-                WHERE bracket_id = $1
-            )
-            UPDATE tournament_standings s
-            SET position = r.new_position, updated_at = $2
-            FROM ranked r
-            WHERE s.id = r.id
-            ",
-        )
-        .bind(bracket_id.as_uuid())
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        Self::recalculate_positions_in_tx(&mut tx, bracket_id).await?;
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         // Return updated standings
         self.list_by_bracket(bracket_id).await
@@ -346,7 +389,33 @@ impl TournamentStandingsRepository for PgTournamentStandingsRepository {
 // =============================================================================
 
 impl PgTournamentStandingsRepository {
-    /// Recompute every standing in a bracket from the completed match rows
+    /// Row-lock every standing of a bracket, in primary-key order, for the
+    /// rest of the transaction.
+    ///
+    /// The derive and re-rank statements each update all of a bracket's
+    /// standings, locking the rows in whatever order their plan visits them.
+    /// Two recomputes of the same bracket at once (two results settled
+    /// together, or racing admin progression calls) could therefore each hold
+    /// a row the other needed: Postgres broke the deadlock after
+    /// `deadlock_timeout` by aborting one, and the request behind it failed
+    /// with a 500. Taking the locks up front, in one fixed order, makes the
+    /// second recompute wait for the first instead. Re-locking rows this
+    /// transaction already holds is a no-op, so both statements call it.
+    async fn lock_bracket_standings_in_tx(
+        tx: &mut DbTransaction<'_>,
+        bracket_id: TournamentBracketId,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "SELECT id FROM tournament_standings WHERE bracket_id = $1 ORDER BY id FOR UPDATE",
+        )
+        .bind(bracket_id.as_uuid())
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Recompute every standing in a bracket from the decided match rows
     /// (and recorded byes) that are their source of truth, inside a caller-
     /// supplied transaction.
     ///
@@ -358,6 +427,8 @@ impl PgTournamentStandingsRepository {
         tx: &mut DbTransaction<'_>,
         bracket_id: TournamentBracketId,
     ) -> Result<(), DomainError> {
+        Self::lock_bracket_standings_in_tx(tx, bracket_id).await?;
+
         sqlx::query(DERIVE_STANDINGS_SQL)
             .bind(bracket_id.as_uuid())
             .bind(WIN_POINTS)
@@ -374,29 +445,16 @@ impl PgTournamentStandingsRepository {
         tx: &mut DbTransaction<'_>,
         bracket_id: TournamentBracketId,
     ) -> Result<(), DomainError> {
+        Self::lock_bracket_standings_in_tx(tx, bracket_id).await?;
+
         let now = Utc::now();
 
-        sqlx::query(
-            r"
-            WITH ranked AS (
-                SELECT id,
-                    ROW_NUMBER() OVER (
-                        ORDER BY points DESC, game_differential DESC, matches_won DESC
-                    ) as new_position
-                FROM tournament_standings
-                WHERE bracket_id = $1
-            )
-            UPDATE tournament_standings s
-            SET position = r.new_position, updated_at = $2
-            FROM ranked r
-            WHERE s.id = r.id
-            ",
-        )
-        .bind(bracket_id.as_uuid())
-        .bind(now)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| DomainError::Internal(e.to_string()))?;
+        sqlx::query(RANK_STANDINGS_SQL)
+            .bind(bracket_id.as_uuid())
+            .bind(now)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
     }

@@ -142,6 +142,167 @@ impl TournamentStageRepository for PgTournamentStageRepository {
         Ok(TournamentStage::from(row))
     }
 
+    async fn compare_and_set_status(
+        &self,
+        id: TournamentStageId,
+        from: Vec<StageStatus>,
+        to: StageStatus,
+    ) -> Result<Option<TournamentStage>, DomainError> {
+        let from: Vec<String> = from.iter().map(ToString::to_string).collect();
+        let row = sqlx::query_as::<_, TournamentStageRow>(
+            r"
+            UPDATE tournament_stages SET status = $3, updated_at = $4
+            WHERE id = $1 AND status = ANY($2)
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(&from)
+        .bind(to.to_string())
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(row.map(TournamentStage::from))
+    }
+
+    async fn list_settled_unfinished(
+        &self,
+        idle_before: chrono::DateTime<Utc>,
+        max_attempts: i32,
+        limit: i64,
+    ) -> Result<Vec<TournamentStageId>, DomainError> {
+        // "Idle" is measured on the stage's matches (and the reviews of
+        // their results), not on the stage row: that row is only written
+        // when the stage changes status, so its `updated_at` is the
+        // tournament's start time and says nothing about whether a live
+        // settlement is in flight.
+        let under_review = super::match_::RESULT_UNDER_REVIEW_SQL;
+        let sql = format!(
+            r"
+            SELECT s.id
+            FROM tournament_stages s
+            JOIN tournaments t ON t.id = s.tournament_id
+            LEFT JOIN LATERAL (
+                SELECT n.status FROM tournament_stages n
+                WHERE n.tournament_id = s.tournament_id AND n.stage_order > s.stage_order
+                ORDER BY n.stage_order ASC
+                LIMIT 1
+            ) nxt ON TRUE
+            WHERE t.status = 'in_progress'
+              AND s.status IN ('pending', 'active')
+              AND EXISTS (SELECT 1 FROM tournament_brackets b WHERE b.stage_id = s.id)
+              -- Shapes stage settlement can actually finish. Anything else
+              -- (a round robin feeding another stage, Swiss groups with no
+              -- playoff) would be listed forever and never change.
+              AND CASE s.format
+                  WHEN 'round_robin' THEN nxt.status IS NULL
+                  WHEN 'group_stage' THEN
+                      nxt.status = 'pending'
+                      OR (nxt.status IS NULL AND NOT EXISTS (
+                          SELECT 1 FROM tournament_brackets b
+                          WHERE b.stage_id = s.id AND b.bracket_type <> 'round_robin'
+                      ))
+                  ELSE FALSE
+              END
+              -- Retry budget: wait out the idle period after an attempt, and
+              -- stop after `max_attempts` until a match changes.
+              AND (
+                  s.settlement_attempted_at IS NULL
+                  OR EXISTS (
+                      SELECT 1 FROM tournament_matches m
+                      JOIN tournament_brackets b ON b.id = m.bracket_id
+                      WHERE b.stage_id = s.id AND m.updated_at > s.settlement_attempted_at
+                  )
+                  OR (s.settlement_attempts < $3 AND s.settlement_attempted_at < $1)
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM tournament_brackets b
+                  WHERE b.stage_id = s.id
+                    AND (
+                        (b.bracket_type = 'swiss' AND b.current_round < b.total_rounds)
+                        OR NOT EXISTS (
+                            SELECT 1 FROM tournament_matches m WHERE m.bracket_id = b.id
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM tournament_matches m
+                            WHERE m.bracket_id = b.id
+                              AND (
+                                  m.status NOT IN ('completed', 'forfeit', 'cancelled')
+                                  OR {under_review}
+                                  OR m.updated_at >= $1
+                                  OR EXISTS (
+                                      SELECT 1 FROM result_reviews rr
+                                      WHERE rr.match_id = m.id AND rr.updated_at >= $1
+                                  )
+                              )
+                        )
+                    )
+              )
+            ORDER BY s.updated_at ASC
+            LIMIT $2
+            "
+        );
+        let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(&sql)
+            .bind(idle_before)
+            .bind(limit)
+            .bind(max_attempts)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id,)| TournamentStageId::from_uuid(id))
+            .collect())
+    }
+
+    async fn record_settlement_attempt(&self, id: TournamentStageId) -> Result<i32, DomainError> {
+        sqlx::query_scalar::<_, i32>(
+            r"
+            UPDATE tournament_stages s SET
+                settlement_attempts = CASE
+                    WHEN s.settlement_attempted_at IS NULL OR EXISTS (
+                        SELECT 1 FROM tournament_matches m
+                        JOIN tournament_brackets b ON b.id = m.bracket_id
+                        WHERE b.stage_id = s.id AND m.updated_at > s.settlement_attempted_at
+                    ) THEN 1
+                    ELSE s.settlement_attempts + 1
+                END,
+                settlement_attempted_at = NOW()
+            WHERE s.id = $1
+            RETURNING s.settlement_attempts
+            ",
+        )
+        .bind(id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))
+    }
+
+    async fn reclaim_stale_completed(
+        &self,
+        id: TournamentStageId,
+        stale_before: chrono::DateTime<Utc>,
+    ) -> Result<Option<TournamentStage>, DomainError> {
+        let row = sqlx::query_as::<_, TournamentStageRow>(
+            r"
+            UPDATE tournament_stages SET updated_at = $3
+            WHERE id = $1 AND status = 'completed' AND updated_at < $2
+            RETURNING *
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(stale_before)
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(row.map(TournamentStage::from))
+    }
+
     async fn transition_stages(
         &self,
         from_stage_id: TournamentStageId,

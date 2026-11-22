@@ -49,8 +49,8 @@ impl PgForfeitRecordRepository {
 #[async_trait]
 impl ForfeitRecordRepository for PgForfeitRecordRepository {
     /// Idempotent create: a second attempt for the same
-    /// (match, forfeiting registration) returns the record that already
-    /// exists instead of failing, so a forfeit whose match update never
+    /// (match, forfeiting registration) returns the *active* record that
+    /// already exists instead of failing, so a forfeit whose match update never
     /// landed can be retried and recovered (see migration 0072).
     async fn create(&self, data: CreateForfeitRecord) -> Result<ForfeitRecord, DomainError> {
         let inserted = sqlx::query_as::<_, ForfeitRecordRow>(
@@ -60,7 +60,8 @@ impl ForfeitRecordRepository for PgForfeitRecordRepository {
                 triggered_by_user_id, triggered_by_system
             )
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (match_id, forfeiting_registration_id) DO NOTHING
+            ON CONFLICT (match_id, forfeiting_registration_id) WHERE superseded_at IS NULL
+            DO NOTHING
             RETURNING *
             ",
         )
@@ -80,6 +81,7 @@ impl ForfeitRecordRepository for PgForfeitRecordRepository {
                 r"
                 SELECT * FROM forfeit_records
                 WHERE match_id = $1 AND forfeiting_registration_id = $2
+                  AND superseded_at IS NULL
                 ",
             )
             .bind(data.match_id.as_uuid())
@@ -108,7 +110,8 @@ impl ForfeitRecordRepository for PgForfeitRecordRepository {
         match_id: TournamentMatchId,
     ) -> Result<Option<ForfeitRecord>, DomainError> {
         let record = sqlx::query_as::<_, ForfeitRecordRow>(
-            "SELECT * FROM forfeit_records WHERE match_id = $1 ORDER BY forfeited_at DESC LIMIT 1",
+            "SELECT * FROM forfeit_records WHERE match_id = $1 AND superseded_at IS NULL \
+             ORDER BY forfeited_at DESC LIMIT 1",
         )
         .bind(match_id.as_uuid())
         .fetch_optional(&self.pool)
@@ -125,7 +128,7 @@ impl ForfeitRecordRepository for PgForfeitRecordRepository {
         let records = sqlx::query_as::<_, ForfeitRecordRow>(
             r"
             SELECT * FROM forfeit_records
-            WHERE forfeiting_registration_id = $1
+            WHERE forfeiting_registration_id = $1 AND superseded_at IS NULL
             ORDER BY forfeited_at DESC
             ",
         )
@@ -138,11 +141,13 @@ impl ForfeitRecordRepository for PgForfeitRecordRepository {
     }
 
     async fn exists_for_match(&self, match_id: TournamentMatchId) -> Result<bool, DomainError> {
-        let row = sqlx::query("SELECT 1 FROM forfeit_records WHERE match_id = $1")
-            .bind(match_id.as_uuid())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+        let row = sqlx::query(
+            "SELECT 1 FROM forfeit_records WHERE match_id = $1 AND superseded_at IS NULL",
+        )
+        .bind(match_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(row.is_some())
     }

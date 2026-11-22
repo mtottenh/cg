@@ -381,6 +381,11 @@ where
         // a fresh read of the match row. The actual match mutation
         // happens inside `resolve_with_overturn`'s transaction.
         let match_ = self.get_match(dispute.match_id).await?;
+        super::helpers::validate_series_score(
+            match_.match_format,
+            new_participant1_score,
+            new_participant2_score,
+        )?;
         let loser_id = if match_.participant1_registration_id == Some(new_winner_registration_id) {
             match_.participant2_registration_id
         } else {
@@ -513,6 +518,12 @@ where
         self.validate_can_resolve(&dispute)?;
 
         let match_ = self.get_match(dispute.match_id).await?;
+
+        super::helpers::validate_series_score(
+            match_.match_format,
+            new_participant1_score,
+            new_participant2_score,
+        )?;
 
         // Shared with the admin score-override (P-72) so the two paths cannot
         // disagree about who the adjusted score makes the winner. It also

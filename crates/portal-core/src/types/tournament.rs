@@ -414,12 +414,50 @@ impl FromStr for TournamentMatchStatus {
 }
 
 impl TournamentMatchStatus {
+    /// Every status, for callers that need to turn one of the predicates
+    /// below into a set (e.g. a SQL status guard that must agree with it).
+    pub const ALL: [Self; 11] = [
+        Self::Pending,
+        Self::Ready,
+        Self::Scheduled,
+        Self::CheckingIn,
+        Self::PickBan,
+        Self::InProgress,
+        Self::AwaitingResult,
+        Self::Completed,
+        Self::Cancelled,
+        Self::Forfeit,
+        Self::Disputed,
+    ];
+
     /// Check if the match is in a terminal state.
     ///
     /// Terminal states are final - no further transitions are possible.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed | Self::Cancelled | Self::Forfeit)
+    }
+
+    /// Check if the match carries a decided result — played to completion or
+    /// walked over by a forfeit. Both feed standings, bracket completion and
+    /// stage advancement; `Cancelled` (a bye / double forfeit) is terminal but
+    /// decides nothing.
+    #[must_use]
+    pub const fn is_decided(&self) -> bool {
+        matches!(self, Self::Completed | Self::Forfeit)
+    }
+
+    /// Check if an *administrative or system* forfeit (no-show, withdrawal,
+    /// disqualification, admin forfeit) may act on a match in this status.
+    ///
+    /// Wider than [`Self::can_forfeit`] by `Ready`: every round-robin match is
+    /// generated `Ready` and stays there until someone schedules it, so a
+    /// participant who withdraws from a self-scheduled event never has a match
+    /// in a `can_forfeit` status. `Pending` stays excluded — the opponent is not
+    /// known yet, so there is nobody to award the walkover to.
+    #[must_use]
+    pub const fn can_forfeit_administratively(&self) -> bool {
+        matches!(self, Self::Ready) || self.can_forfeit()
     }
 
     /// Check if the match can be started.
@@ -611,6 +649,18 @@ impl TournamentRegistrationStatus {
             self,
             Self::Eliminated | Self::Disqualified | Self::Withdrawn | Self::NoShow
         )
+    }
+
+    /// Check if the participant has left the event of their own accord or
+    /// been removed from it — withdrawn, disqualified or a no-show — as
+    /// opposed to merely knocked out (`Eliminated`, which a double-elimination
+    /// entry can be while still owing losers-bracket matches).
+    ///
+    /// A departed participant plays no further match: any it is still seated
+    /// in is a walkover for the opponent.
+    #[must_use]
+    pub const fn has_departed(&self) -> bool {
+        matches!(self, Self::Disqualified | Self::Withdrawn | Self::NoShow)
     }
 
     /// Check if the participant can compete.

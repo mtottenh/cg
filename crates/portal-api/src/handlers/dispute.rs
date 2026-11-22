@@ -627,6 +627,9 @@ pub async fn admin_resolve_uphold(
         .dispute_service
         .resolve_uphold(dispute_id, req.notes, auth.user_id)
         .await?;
+    // A resolution writes (or clears) the match result; settle the bracket
+    // so standings, progression and stage advancement follow it.
+    crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
 
     Ok(Json(DataResponse::new(
         DisputeResolutionResultResponse::from(result),
@@ -685,6 +688,9 @@ pub async fn admin_resolve_overturn(
             auth.user_id,
         )
         .await?;
+    // A resolution writes (or clears) the match result; settle the bracket
+    // so standings, progression and stage advancement follow it.
+    crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
 
     Ok(Json(DataResponse::new(
         DisputeResolutionResultResponse::from(result),
@@ -731,6 +737,9 @@ pub async fn admin_resolve_rematch(
         .dispute_service
         .resolve_rematch(dispute_id, req.notes, auth.user_id)
         .await?;
+    // A resolution writes (or clears) the match result; settle the bracket
+    // so standings, progression and stage advancement follow it.
+    crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
 
     Ok(Json(DataResponse::new(
         DisputeResolutionResultResponse::from(result),
@@ -783,6 +792,9 @@ pub async fn admin_resolve_adjusted(
             auth.user_id,
         )
         .await?;
+    // A resolution writes (or clears) the match result; settle the bracket
+    // so standings, progression and stage advancement follow it.
+    crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
 
     Ok(Json(DataResponse::new(
         DisputeResolutionResultResponse::from(result),
@@ -829,6 +841,9 @@ pub async fn admin_resolve_double_dq(
         .dispute_service
         .resolve_double_dq(dispute_id, req.notes, auth.user_id)
         .await?;
+    // A resolution writes (or clears) the match result; settle the bracket
+    // so standings, progression and stage advancement follow it.
+    crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
 
     Ok(Json(DataResponse::new(
         DisputeResolutionResultResponse::from(result),

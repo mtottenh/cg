@@ -558,6 +558,10 @@ pub async fn admin_override_match_result(
             Some(request_id.to_string()),
         )
         .await?;
+    // The corrected score feeds the derived standings and may change who
+    // finishes where in a group; recompute and re-run the stage check.
+    crate::result_settlement::rederive(&state.match_completion_saga, match_id, updated.bracket_id)
+        .await;
 
     Ok(Json(DataResponse::new(
         TournamentMatchResponse::from(updated),

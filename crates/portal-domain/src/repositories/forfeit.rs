@@ -18,6 +18,9 @@ pub struct CreateForfeitRecord {
 }
 
 /// Repository for forfeit records.
+///
+/// A forfeit that was reverted keeps its record, marked superseded; every
+/// lookup here sees only *active* (non-superseded) records.
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait ForfeitRecordRepository: Send + Sync + 'static {

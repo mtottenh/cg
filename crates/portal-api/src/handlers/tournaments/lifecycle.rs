@@ -349,7 +349,28 @@ pub async fn update_tournament(
         }
     }
 
-    let cmd = req.try_into()?;
+    let cmd: portal_domain::entities::tournament::UpdateTournamentCommand = req.try_into()?;
+
+    // Same format-settings validation as create, against the merged result
+    // (the format itself is not updatable, so read it off the tournament).
+    if cmd.format_settings.is_some()
+        || cmd.max_participants.is_some()
+        || cmd.default_match_format.is_some()
+    {
+        let current = state
+            .tournament_service
+            .get_tournament(tournament_id)
+            .await?;
+        portal_domain::services::tournament::format_validation::validate_format_settings(
+            current.format,
+            cmd.format_settings
+                .as_ref()
+                .unwrap_or(&current.format_settings),
+            cmd.default_match_format
+                .unwrap_or(current.default_match_format),
+            cmd.max_participants.unwrap_or(current.max_participants),
+        )?;
+    }
 
     let tournament = state
         .tournament_service

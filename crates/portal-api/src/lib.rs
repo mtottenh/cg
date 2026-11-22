@@ -30,6 +30,7 @@ pub mod middleware;
 pub mod observability;
 pub mod openapi;
 pub mod pug_flow;
+pub mod result_settlement;
 pub mod routes;
 pub mod state;
 pub mod steam_openid;

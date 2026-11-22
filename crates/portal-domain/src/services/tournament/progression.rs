@@ -7,14 +7,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use portal_core::types::{
-    BracketType, MatchFormat, MatchFormatPlan, MatchParticipantSource, StageFormat, StageStatus,
-    TournamentMatchStatus,
+    BracketStatus, BracketType, MatchFormat, MatchFormatPlan, MatchParticipantSource, StageFormat,
+    StageStatus, TournamentMatchStatus,
 };
 use portal_core::{
     DomainError, TournamentBracketId, TournamentId, TournamentMatchId, TournamentRegistrationId,
     TournamentStageId,
 };
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 use crate::entities::tournament::{
     SeededParticipant, TournamentBracket, TournamentMatch, TournamentStanding,
@@ -137,6 +137,17 @@ impl ProgressionRole {
     }
 }
 
+/// A checked withdrawal of one of a match's outputs from the downstream slot
+/// it filled (see `ProgressionService::plan_withdrawal`).
+#[derive(Debug, Clone, Copy)]
+struct PlannedWithdrawal {
+    target_match_id: TournamentMatchId,
+    slot: ParticipantSlot,
+    occupant: TournamentRegistrationId,
+    target_status: TournamentMatchStatus,
+    role: ProgressionRole,
+}
+
 /// Statuses a downstream match may be in and still have a participant pulled
 /// back out of it: nothing has happened there yet beyond the pairing itself.
 ///
@@ -151,6 +162,20 @@ const fn target_is_still_untouched(status: TournamentMatchStatus) -> bool {
             | TournamentMatchStatus::Ready
             | TournamentMatchStatus::Scheduled
     )
+}
+
+/// How long a claimed-but-unfinished stage advancement may sit before a
+/// re-drive treats its claimer as dead and takes over. Generating a playoff
+/// bracket is a handful of inserts; minutes of silence means the process that
+/// claimed it is gone.
+const STALE_ADVANCEMENT_CLAIM: chrono::Duration = chrono::Duration::minutes(5);
+
+/// What a finished group stage hands to the stage after it (see
+/// `ProgressionService::plan_next_stage`).
+struct NextStagePlan {
+    next_stage: crate::entities::tournament::TournamentStage,
+    participants: Vec<SeededParticipant>,
+    format_plan: MatchFormatPlan,
 }
 
 /// Service for handling bracket progression.
@@ -198,6 +223,13 @@ where
     ) -> Result<ProgressionResult, DomainError> {
         let match_ = self.get_match(match_id).await?;
         let bracket = self.get_bracket(match_.bracket_id).await?;
+
+        // This is reachable from the admin `progression/process` endpoint
+        // with caller-supplied ids, and `record_outcome` below writes them
+        // onto the row. Refuse anything that is not "one of this match's two
+        // participants beat the other" on a match that has been played (or
+        // is being reported/corrected).
+        Self::ensure_reportable(&match_, winner_registration_id, loser_registration_id)?;
 
         // Record who won BEFORE anything derives from it.
         //
@@ -471,17 +503,44 @@ where
         &self,
         bracket_id: TournamentBracketId,
     ) -> Result<bool, DomainError> {
+        // A Swiss bracket only holds the rounds generated so far, so "every
+        // match is done" is just "the current round is done" until the final
+        // round exists. Without this a Swiss group stage handed over to the
+        // playoffs after round 1.
+        let bracket = self.get_bracket(bracket_id).await?;
+        if bracket.bracket_type == BracketType::Swiss
+            && bracket.current_round < bracket.total_rounds
+        {
+            return Ok(false);
+        }
+
         let matches = self.match_repo.list_by_bracket(bracket_id).await?;
 
-        // Bracket is complete if all matches are completed or cancelled
-        let all_done = matches.iter().all(|m| {
-            matches!(
-                m.status,
-                TournamentMatchStatus::Completed | TournamentMatchStatus::Cancelled
-            )
-        });
+        // Swiss round generation claims the round (bumps current_round)
+        // before inserting its matches; in that window the final round has
+        // no rows yet and must not read as "every match done".
+        if bracket.bracket_type == BracketType::Swiss
+            && !matches.iter().any(|m| m.round == bracket.current_round)
+        {
+            return Ok(false);
+        }
 
-        Ok(all_done)
+        // Bracket is complete once every match is settled (played or
+        // called off) — the same rule Swiss round generation uses.
+        if !matches.iter().all(TournamentMatch::is_settled) {
+            return Ok(false);
+        }
+
+        // ... and none of those results is still under review. `is_settled`
+        // is the row-level rule; a `completed` row whose result review is
+        // pending can still be rejected (which reopens the match), so a
+        // bracket holding one has not finished. Without this, another
+        // group's last result — or the lifecycle's stage sweep — seeded the
+        // playoffs from a result nobody had signed off.
+        Ok(!self
+            .match_repo
+            .any_result_under_review_in_bracket(bracket_id)
+            .await?)
     }
 
     /// Check if a tournament is complete.
@@ -492,8 +551,19 @@ where
     ) -> Result<bool, DomainError> {
         let stages = self.stage_repo.list_by_tournament(tournament_id).await?;
 
-        // Tournament is complete if all stages are complete
+        // Tournament is complete if all stages are complete.
+        //
+        // A stage already marked `Completed` has handed over (or finished)
+        // and is not re-examined bracket by bracket. That matters for Swiss
+        // group stages advanced before Swiss brackets were required to play
+        // every round: their groups still read `current_round <
+        // total_rounds`, which `check_bracket_completion` now calls
+        // unfinished — and would hold a tournament whose playoffs are over
+        // "incomplete" for good.
         for stage in stages {
+            if stage.status == StageStatus::Completed {
+                continue;
+            }
             let brackets = self.bracket_repo.list_by_stage(stage.id).await?;
             for bracket in brackets {
                 if !self.check_bracket_completion(bracket.id).await? {
@@ -529,12 +599,42 @@ where
     /// a non-group stage, a group stage with nothing after it (a plain round
     /// robin), or a stage already marked `Completed` (a saga re-drive after
     /// the playoffs were seeded) all return `None` without touching anything.
+    ///
+    /// **Single winner.** The group stage is *claimed* before anything is
+    /// generated: a compare-and-set `active → completed` on its status. Of any
+    /// number of concurrent callers (two results landing at once, a saga
+    /// re-drive racing a live completion, a double-clicked admin "process"),
+    /// exactly one wins the claim and generates the playoffs; the rest see
+    /// `None`. Previously the status check, the generation and the status flip
+    /// were three separate steps, so two callers could both seed the playoffs.
+    ///
+    /// **Re-drivable.** If generation fails, the claimer deletes whatever
+    /// part of the next stage it created and releases the claim
+    /// (`completed → active`), so the next result or re-drive retries from
+    /// clean. If the claimer *died* mid-generation, the group stage is left
+    /// `completed` with the next stage still `pending`; once that claim is
+    /// older than [`STALE_ADVANCEMENT_CLAIM`] a re-drive takes it over
+    /// (compare-and-set on `updated_at`), clears the partial stage and
+    /// generates it again.
+    ///
+    /// **Terminal round robin.** When the finished stage has nothing after it
+    /// and is a round robin (a standalone round-robin event, or round-robin
+    /// groups with no playoff), its brackets and the stage are marked
+    /// `completed` — the event's results are final. The tournament itself is
+    /// not completed automatically, matching elimination formats, where
+    /// completing the tournament is an explicit admin action.
     #[instrument(skip(self))]
     pub async fn advance_stage_if_complete(
         &self,
         bracket_id: TournamentBracketId,
     ) -> Result<Option<TournamentStageId>, DomainError> {
         if !self.check_bracket_completion(bracket_id).await? {
+            // An unfinished bracket in a terminal round-robin stage that was
+            // marked finished means a result was taken back without going
+            // through `revert_progression` (a dispute's rematch ruling):
+            // reopen the stage the same way a revert does.
+            let bracket = self.get_bracket(bracket_id).await?;
+            self.reopen_terminal_round_robin(&bracket).await?;
             return Ok(None);
         }
         let bracket = self.get_bracket(bracket_id).await?;
@@ -545,43 +645,274 @@ where
             .ok_or_else(|| {
                 DomainError::Internal(format!("Stage {} not found", bracket.stage_id))
             })?;
-        if stage.format != StageFormat::GroupStage || stage.status == StageStatus::Completed {
-            return Ok(None);
-        }
-        if self
+        let next_stage = self
             .stage_repo
             .find_next_stage(bracket.tournament_id, stage.stage_order)
+            .await?;
+
+        let Some(next_stage) = next_stage else {
+            self.complete_terminal_round_robin(&stage).await?;
+            return Ok(None);
+        };
+
+        if stage.format != StageFormat::GroupStage {
+            return Ok(None);
+        }
+
+        let stale_takeover = stage.status == StageStatus::Completed;
+        let stale_before = chrono::Utc::now() - STALE_ADVANCEMENT_CLAIM;
+        if stale_takeover {
+            // Already advanced — or claimed by a caller that never finished.
+            // A claim that is not stale yet belongs to a caller that is
+            // still advancing the stage (typically a concurrent request for
+            // the same result): a no-op, decided before planning anything,
+            // so a loser of that race never sees a half-built next stage.
+            if next_stage.status != StageStatus::Pending || stage.updated_at >= stale_before {
+                return Ok(None);
+            }
+        } else if !self.check_stage_completion(stage.id).await? {
+            return Ok(None);
+        }
+
+        // Work out what the next stage would be seeded with *before*
+        // claiming anything. A stage that cannot be advanced (too few
+        // eligible finishers, an unusable playoff format) fails here, with
+        // the stage untouched. It used to be claimed first, fail in
+        // generation and be released again — an `active → completed →
+        // active` flip on every attempt, visible to anything watching the
+        // stage and repeated on every retry.
+        let plan = self.plan_next_stage(&stage, next_stage.clone()).await?;
+
+        if stale_takeover {
+            if self
+                .stage_repo
+                .reclaim_stale_completed(stage.id, stale_before)
+                .await?
+                .is_none()
+            {
+                return Ok(None);
+            }
+            warn!(
+                stage_id = %stage.id,
+                next_stage_id = %next_stage.id,
+                "Taking over an abandoned stage advancement"
+            );
+            self.clear_stage_brackets(next_stage.id).await?;
+        } else if self
+            .stage_repo
+            .compare_and_set_status(
+                stage.id,
+                vec![StageStatus::Pending, StageStatus::Active],
+                StageStatus::Completed,
+            )
             .await?
             .is_none()
         {
+            // The claim. Losing it means another caller is advancing (or
+            // has advanced) this stage.
             return Ok(None);
         }
-        if !self.check_stage_completion(stage.id).await? {
-            return Ok(None);
+
+        match self
+            .advance_to_next_stage(bracket.tournament_id, &stage, plan)
+            .await
+        {
+            Ok(next_stage_id) => {
+                self.mark_brackets_completed(stage.id).await?;
+                Ok(Some(next_stage_id))
+            }
+            Err(e) => {
+                // Release the claim so the advancement can be retried: drop
+                // the half-built next stage first (nobody else can be writing
+                // it while we hold the claim), then reopen the group stage.
+                warn!(
+                    stage_id = %stage.id,
+                    error = %e,
+                    "Stage advancement failed; releasing the claim"
+                );
+                if next_stage.status == StageStatus::Pending {
+                    self.clear_stage_brackets(next_stage.id).await?;
+                }
+                self.stage_repo
+                    .compare_and_set_status(
+                        stage.id,
+                        vec![StageStatus::Completed],
+                        StageStatus::Active,
+                    )
+                    .await?;
+                Err(e)
+            }
         }
-        let next_stage_id = self
-            .advance_to_next_stage(bracket.tournament_id, &stage)
-            .await?;
-        Ok(Some(next_stage_id))
     }
 
-    /// Advance from a completed group stage to the playoff stage.
-    ///
-    /// Reads standings from each group, cross-seeds for playoffs, and generates
-    /// the playoff bracket (SE or DE).
-    async fn advance_to_next_stage(
+    /// Mark a finished terminal round-robin stage (and its brackets)
+    /// completed. Idempotent; a no-op for any other stage shape.
+    async fn complete_terminal_round_robin(
         &self,
-        tournament_id: TournamentId,
-        completed_stage: &crate::entities::tournament::TournamentStage,
-    ) -> Result<TournamentStageId, DomainError> {
-        // Find the next stage
-        let next_stage = self
+        stage: &crate::entities::tournament::TournamentStage,
+    ) -> Result<(), DomainError> {
+        if stage.status == StageStatus::Completed {
+            return Ok(());
+        }
+        let brackets = self.bracket_repo.list_by_stage(stage.id).await?;
+        let round_robin = match stage.format {
+            StageFormat::RoundRobin => true,
+            StageFormat::GroupStage => brackets
+                .iter()
+                .all(|b| b.bracket_type == BracketType::RoundRobin),
+            _ => false,
+        };
+        if !round_robin || brackets.is_empty() {
+            return Ok(());
+        }
+        for b in &brackets {
+            if !self.check_bracket_completion(b.id).await? {
+                return Ok(());
+            }
+        }
+        if self
             .stage_repo
-            .find_next_stage(tournament_id, completed_stage.stage_order)
+            .compare_and_set_status(
+                stage.id,
+                vec![StageStatus::Pending, StageStatus::Active],
+                StageStatus::Completed,
+            )
             .await?
-            .ok_or_else(|| {
-                DomainError::InvalidState("No next stage found for advancement".to_string())
-            })?;
+            .is_some()
+        {
+            self.mark_brackets_completed(stage.id).await?;
+            info!(stage_id = %stage.id, "Round-robin stage complete");
+        }
+        Ok(())
+    }
+
+    /// Undo [`Self::complete_terminal_round_robin`] when a result in a
+    /// finished terminal stage is reverted. A group stage that has already
+    /// seeded a next stage is left alone — reopening it would not unseed the
+    /// playoffs.
+    async fn reopen_terminal_round_robin(
+        &self,
+        bracket: &TournamentBracket,
+    ) -> Result<(), DomainError> {
+        let Some(stage) = self.stage_repo.find_by_id(bracket.stage_id).await? else {
+            return Ok(());
+        };
+        if stage.status != StageStatus::Completed
+            || self
+                .stage_repo
+                .find_next_stage(bracket.tournament_id, stage.stage_order)
+                .await?
+                .is_some()
+        {
+            return Ok(());
+        }
+        if self
+            .stage_repo
+            .compare_and_set_status(stage.id, vec![StageStatus::Completed], StageStatus::Active)
+            .await?
+            .is_some()
+        {
+            for b in self.bracket_repo.list_by_stage(stage.id).await? {
+                if b.status == BracketStatus::Completed {
+                    self.bracket_repo
+                        .update_status(b.id, BracketStatus::Active)
+                        .await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn mark_brackets_completed(
+        &self,
+        stage_id: TournamentStageId,
+    ) -> Result<(), DomainError> {
+        for b in self.bracket_repo.list_by_stage(stage_id).await? {
+            if b.status != BracketStatus::Completed {
+                self.bracket_repo
+                    .update_status(b.id, BracketStatus::Completed)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete every bracket (and, by cascade, match and standing) of a stage
+    /// that has not been opened yet — the remains of a failed or abandoned
+    /// generation.
+    async fn clear_stage_brackets(&self, stage_id: TournamentStageId) -> Result<(), DomainError> {
+        for b in self.bracket_repo.list_by_stage(stage_id).await? {
+            self.bracket_repo.delete(b.id).await?;
+        }
+        Ok(())
+    }
+
+    fn forfeit_is_not_reapplied() -> DomainError {
+        DomainError::InvalidState(
+            "This match was decided by forfeit and cannot be re-recorded for the other side. \
+             Revert it (progression/revert) and forfeit the match for the other participant \
+             instead"
+                .to_string(),
+        )
+    }
+
+    /// Refuse a manual result that is not "one of this match's participants
+    /// beat the other" on a match whose result may be (re)recorded.
+    fn ensure_reportable(
+        match_: &TournamentMatch,
+        winner: TournamentRegistrationId,
+        loser: TournamentRegistrationId,
+    ) -> Result<(), DomainError> {
+        let seated = [
+            match_.participant1_registration_id,
+            match_.participant2_registration_id,
+        ];
+        if winner == loser || !seated.contains(&Some(winner)) || !seated.contains(&Some(loser)) {
+            return Err(DomainError::InvalidMatchResult(
+                "Winner and loser must be the match's two participants".to_string(),
+            ));
+        }
+        // Re-processing a forfeit as recorded is fine (idempotent); turning
+        // it into a result for the other side is not — see
+        // `reapply_progression`.
+        if match_.status == TournamentMatchStatus::Forfeit
+            && match_.winner_registration_id != Some(winner)
+        {
+            return Err(Self::forfeit_is_not_reapplied());
+        }
+        if !matches!(
+            match_.status,
+            TournamentMatchStatus::InProgress
+                | TournamentMatchStatus::AwaitingResult
+                | TournamentMatchStatus::Completed
+                | TournamentMatchStatus::Forfeit
+        ) {
+            return Err(DomainError::InvalidState(format!(
+                "Cannot record a result for a match in {} status",
+                match_.status
+            )));
+        }
+        Ok(())
+    }
+
+    /// Decide what the stage after `completed_stage` will be seeded with:
+    /// the eligible finishers of each group, cross-seeded, and the format
+    /// plan for the playoff matches. Read-only — everything that can make an
+    /// advancement impossible is checked here, before the stage is claimed.
+    async fn plan_next_stage(
+        &self,
+        completed_stage: &crate::entities::tournament::TournamentStage,
+        next_stage: crate::entities::tournament::TournamentStage,
+    ) -> Result<NextStagePlan, DomainError> {
+        if !matches!(
+            next_stage.format,
+            StageFormat::SingleElimination | StageFormat::DoubleElimination
+        ) {
+            return Err(DomainError::InvalidState(format!(
+                "Unsupported playoff format: {}",
+                next_stage.format
+            )));
+        }
 
         // Get all group brackets ordered by group_number
         let mut group_brackets = self.bracket_repo.list_by_stage(completed_stage.id).await?;
@@ -589,7 +920,12 @@ where
 
         let advance_per_group = completed_stage.advancement_count.unwrap_or(2) as usize;
 
-        // Get standings from each group and map back to SeededParticipant
+        // Get standings from each group and map back to SeededParticipant.
+        //
+        // Only participants still in the event can advance: a withdrawn,
+        // disqualified or no-show registration keeps its rows in the group
+        // standings (its results stand) but its playoff slot goes to the next
+        // eligible finisher in the group.
         let mut group_standings: Vec<Vec<SeededParticipant>> = Vec::new();
         for bracket in &group_brackets {
             let standings = self.standing_repo.list_by_bracket(bracket.id).await?;
@@ -606,6 +942,14 @@ where
                             standing.registration_id
                         ))
                     })?;
+                if reg.status.is_terminal() {
+                    info!(
+                        registration_id = %reg.id,
+                        status = %reg.status,
+                        "Skipping a registration that is out of the event for advancement"
+                    );
+                    continue;
+                }
                 group_top.push(SeededParticipant {
                     registration_id: reg.id,
                     seed: standing.position,
@@ -618,12 +962,9 @@ where
         }
 
         // Cross-seed for playoffs
-        let playoff_participants =
-            groups::cross_seed_for_playoffs(group_standings, advance_per_group);
+        let participants = groups::cross_seed_for_playoffs(group_standings, advance_per_group);
 
-        let num_playoff_participants = playoff_participants.len();
-
-        if num_playoff_participants < 2 {
+        if participants.len() < 2 {
             return Err(DomainError::InvalidState(
                 "Not enough participants advanced to playoffs".to_string(),
             ));
@@ -640,6 +981,29 @@ where
             Some(&next_stage.format_settings),
         )
         .map_err(|e| DomainError::InvalidState(format!("invalid stage format settings: {e}")))?;
+
+        Ok(NextStagePlan {
+            next_stage,
+            participants,
+            format_plan,
+        })
+    }
+
+    /// Advance from a completed (and claimed) group stage to the playoff
+    /// stage: generate the playoff bracket (SE or DE) from `plan` and flip
+    /// the two stage statuses.
+    async fn advance_to_next_stage(
+        &self,
+        tournament_id: TournamentId,
+        completed_stage: &crate::entities::tournament::TournamentStage,
+        plan: NextStagePlan,
+    ) -> Result<TournamentStageId, DomainError> {
+        let NextStagePlan {
+            next_stage,
+            participants: playoff_participants,
+            format_plan,
+        } = plan;
+        let num_playoff_participants = playoff_participants.len();
 
         // Generate playoff brackets based on stage format
         match next_stage.format {
@@ -1015,22 +1379,32 @@ where
                 // so a revert converges the bracket regardless of how it got
                 // into its current state.
                 self.standing_repo.recompute_bracket(bracket.id).await?;
+
+                // The match is open again, so a round-robin stage that had
+                // been marked finished is not any more.
+                self.reopen_terminal_round_robin(&bracket).await?;
             }
             RevertEffect::WithdrawFromDownstream => {
-                let winner_withdrawn = self
-                    .withdraw_from_target(
+                // Check both outputs before touching either. Withdrawing the
+                // winner and only then finding the losers-bracket match
+                // already played used to refuse the revert half-done: the
+                // walkover winner gone from the next round, the match still
+                // decided.
+                let winner_plan = self
+                    .plan_withdrawal(
                         &match_,
                         match_.winner_progresses_to,
                         ProgressionRole::Winner,
                     )
                     .await?;
-                let loser_withdrawn = self
-                    .withdraw_from_target(
-                        &match_,
-                        match_.loser_progresses_to,
-                        ProgressionRole::Loser,
-                    )
+                let loser_plan = self
+                    .plan_withdrawal(&match_, match_.loser_progresses_to, ProgressionRole::Loser)
                     .await?;
+                let winner_withdrawn = winner_plan.is_some();
+                let loser_withdrawn = loser_plan.is_some();
+                for planned in [winner_plan, loser_plan].into_iter().flatten() {
+                    self.apply_withdrawal(&match_, planned).await?;
+                }
 
                 info!(
                     match_id = %match_id,
@@ -1039,6 +1413,22 @@ where
                     loser_withdrawn,
                     "Withdrew this match's advancements from the downstream matches"
                 );
+
+                // A forfeit is not re-recordable for the other side
+                // (`forfeit_is_not_reapplied`): the supported correction is
+                // revert, then forfeit the other participant. That needs the
+                // match reopened, exactly as the standings formats reopen it
+                // above — left `forfeit` it could be neither forfeited again
+                // nor played, and no transition leads out of `forfeit`. A
+                // *played* result is deliberately left recorded: reapply
+                // re-records the winner over it.
+                if match_.status == TournamentMatchStatus::Forfeit {
+                    self.match_repo.clear_result(match_id).await?;
+                    info!(
+                        match_id = %match_id,
+                        "Reopened the reverted forfeit so it can be forfeited again or played"
+                    );
+                }
             }
         }
 
@@ -1047,8 +1437,11 @@ where
         Ok(())
     }
 
-    /// Take whoever this match sent into `target_match_id` back out of the slot
-    /// it put them in. Returns whether a slot was actually cleared.
+    /// Work out — without changing anything — how to take whoever this match
+    /// sent into `target_match_id` back out of the slot it put them in.
+    /// `None` when there is nothing to withdraw. Every check that can refuse
+    /// a revert lives here, so `revert_progression` can run all of them, for
+    /// both outputs, before it mutates anything.
     ///
     /// The slot is resolved from the bracket *wiring* rather than from the
     /// occupant's identity: a slot whose `participantN_source` is
@@ -1062,16 +1455,16 @@ where
     /// than repair: when the occupant did not come from this match at all, and
     /// when the downstream round has already moved on (see
     /// `ensure_target_has_not_moved_on`).
-    async fn withdraw_from_target(
+    async fn plan_withdrawal(
         &self,
         source_match: &TournamentMatch,
         target_match_id: Option<TournamentMatchId>,
         role: ProgressionRole,
-    ) -> Result<bool, DomainError> {
+    ) -> Result<Option<PlannedWithdrawal>, DomainError> {
         // No link: this was a final, or the loser is eliminated. Nothing was
         // ever seated downstream, so there is nothing to take back.
         let Some(target_match_id) = target_match_id else {
-            return Ok(false);
+            return Ok(None);
         };
 
         // Whoever this match advanced must be one of its own participants.
@@ -1091,7 +1484,7 @@ where
                 target_match = %target_match_id,
                 "Revert: source match has no participants, so it advanced nobody"
             );
-            return Ok(false);
+            return Ok(None);
         }
 
         let target = self.get_match(target_match_id).await?;
@@ -1129,7 +1522,7 @@ where
                 role = role.label(),
                 "Revert: no downstream slot is fed by this match; nothing to withdraw"
             );
-            return Ok(false);
+            return Ok(None);
         };
 
         // Already empty — a repeat revert, or progression never ran. Converges
@@ -1141,7 +1534,7 @@ where
                 role = role.label(),
                 "Revert: downstream slot is already empty"
             );
-            return Ok(false);
+            return Ok(None);
         };
 
         // The wired slot is held by someone who cannot have come from here.
@@ -1163,6 +1556,29 @@ where
         self.ensure_target_has_not_moved_on(source_match, &target)
             .await?;
 
+        Ok(Some(PlannedWithdrawal {
+            target_match_id,
+            slot,
+            occupant,
+            target_status: target.status,
+            role,
+        }))
+    }
+
+    /// Carry out a withdrawal checked by [`Self::plan_withdrawal`].
+    async fn apply_withdrawal(
+        &self,
+        source_match: &TournamentMatch,
+        planned: PlannedWithdrawal,
+    ) -> Result<(), DomainError> {
+        let PlannedWithdrawal {
+            target_match_id,
+            slot,
+            occupant,
+            target_status,
+            role,
+        } = planned;
+
         self.match_repo
             .clear_participant(target_match_id, slot)
             .await?;
@@ -1173,8 +1589,8 @@ where
         // pairing as playable — and `find_newly_ready_matches` only ever
         // promotes Pending, so it would never be re-marked when the slot is
         // legitimately refilled.
-        if target_is_still_untouched(target.status)
-            && target.status != TournamentMatchStatus::Pending
+        if target_is_still_untouched(target_status)
+            && target_status != TournamentMatchStatus::Pending
         {
             self.match_repo
                 .update_status(target_match_id, TournamentMatchStatus::Pending)
@@ -1189,7 +1605,7 @@ where
             "Reverted advancement out of the downstream match"
         );
 
-        Ok(true)
+        Ok(())
     }
 
     /// Refuse to reach into a downstream match that has already moved on.
@@ -1272,6 +1688,16 @@ where
         new_winner_registration_id: TournamentRegistrationId,
     ) -> Result<ProgressionResult, DomainError> {
         let match_ = self.get_match(match_id).await?;
+
+        // A forfeit is not a played series whose winner can be swapped. The
+        // revert below clears its walkover score, so re-recording a winner
+        // would leave a `completed` 0–0 "result" — a win with no games —
+        // where there had been a walkover. Same rule as the admin score
+        // override, which also refuses a forfeit: undo the forfeit and
+        // forfeit the other side instead.
+        if match_.status == TournamentMatchStatus::Forfeit {
+            return Err(Self::forfeit_is_not_reapplied());
+        }
 
         // Determine new loser
         let new_loser_registration_id =

@@ -951,8 +951,26 @@ pub async fn disqualify(
 
     let registration = state
         .registration_service
-        .disqualify(registration_id, req.reason)
+        .disqualify(registration_id, req.reason.clone())
         .await?;
+
+    // A disqualified participant plays no further matches: every match it
+    // still had to play becomes a walkover for its opponent, settled like
+    // any other result. (This endpoint used to flip the status only, leaving
+    // its round-robin matches unplayable and its group unfinishable.)
+    let mut forfeits = state
+        .forfeit_service
+        .forfeit_remaining_matches(
+            registration_id,
+            portal_domain::entities::forfeit::ForfeitType::Disqualification,
+            Some(req.reason.clone()),
+            portal_domain::entities::forfeit::ForfeitTrigger::Admin {
+                user_id: auth.user_id,
+                reason: req.reason,
+            },
+        )
+        .await?;
+    crate::handlers::forfeit::settle_forfeits(&state.match_completion_saga, &mut forfeits).await;
 
     Ok(Json(DataResponse::new(
         TournamentRegistrationResponse::from(registration),

@@ -263,6 +263,64 @@ pub trait TournamentStageRepository: Send + Sync {
         status: StageStatus,
     ) -> Result<TournamentStage, DomainError>;
 
+    /// Compare-and-set a stage's status: move it to `to` only if it is
+    /// currently one of `from`. Returns the updated row, or `None` when the
+    /// stage was not in any of `from` (someone else got there first).
+    ///
+    /// This is the claim that makes stage advancement single-winner: of any
+    /// number of concurrent "the group stage just finished" callers, exactly
+    /// one sees `Some` and generates the next stage.
+    async fn compare_and_set_status(
+        &self,
+        id: TournamentStageId,
+        from: Vec<StageStatus>,
+        to: StageStatus,
+    ) -> Result<Option<TournamentStage>, DomainError>;
+
+    /// Stages whose results are all in but which were never settled: an
+    /// unfinished (`pending` / `active`) group or round-robin stage of an
+    /// in-progress tournament in which every bracket has matches, every
+    /// match is settled (completed, forfeit or cancelled), no result is
+    /// still under review and every Swiss bracket has generated its last
+    /// round — and none of whose matches (or their result reviews) has been
+    /// written since `idle_before`.
+    ///
+    /// Only stages that *can* be settled this way are listed: a round robin
+    /// with nothing after it, a group stage whose next stage is still
+    /// pending, or round-robin groups with nothing after them. And a stage
+    /// the sweep already tried `max_attempts` times is left out until one of
+    /// its matches changes (see [`Self::record_settlement_attempt`]); between
+    /// attempts it waits for `idle_before` to pass the last one.
+    ///
+    /// Normally empty: the result that finishes a stage advances it. A row
+    /// here means that settlement failed (or its process died) after the
+    /// result was written; the lifecycle pass re-runs it.
+    async fn list_settled_unfinished(
+        &self,
+        idle_before: DateTime<Utc>,
+        max_attempts: i32,
+        limit: i64,
+    ) -> Result<Vec<TournamentStageId>, DomainError>;
+
+    /// Record that the lifecycle sweep tried to settle this stage and it is
+    /// still open. Returns the number of attempts made since the stage's
+    /// matches last changed (the count restarts at 1 when a match was
+    /// written after the previous attempt).
+    async fn record_settlement_attempt(&self, id: TournamentStageId) -> Result<i32, DomainError>;
+
+    /// Take over a `Completed` stage whose last write is older than
+    /// `stale_before`, by bumping its `updated_at` — a compare-and-set on the
+    /// timestamp. Returns `None` when the stage is not completed or was
+    /// touched more recently (a live advancement still owns it).
+    ///
+    /// Used to re-drive a stage advancement whose claimer died between
+    /// claiming the group stage and opening the next one.
+    async fn reclaim_stale_completed(
+        &self,
+        id: TournamentStageId,
+        stale_before: DateTime<Utc>,
+    ) -> Result<Option<TournamentStage>, DomainError>;
+
     /// Flip two stages' statuses in a single transaction.
     ///
     /// Designed for the stage-advancement path in
@@ -364,6 +422,19 @@ pub trait TournamentBracketRepository: Send + Sync {
         &self,
         id: TournamentBracketId,
     ) -> Result<TournamentBracket, DomainError>;
+
+    /// Compare-and-set `current_round` from `expected` to `next`.
+    ///
+    /// Returns `false` (and changes nothing) when the bracket's
+    /// `current_round` is no longer `expected` — another writer moved it
+    /// first. Used as the claim for generating a Swiss round, so two
+    /// concurrent requests cannot both pair the same round.
+    async fn compare_and_set_current_round(
+        &self,
+        id: TournamentBracketId,
+        expected: i32,
+        next: i32,
+    ) -> Result<bool, DomainError>;
 
     /// List all brackets for a stage.
     async fn list_by_stage(
@@ -859,6 +930,19 @@ pub trait TournamentMatchRepository: Send + Sync {
     /// winner, so "reverting" a result means removing it from that source —
     /// subtracting deltas is no longer meaningful (and was never idempotent).
     /// Calling this on a match with no recorded result is a no-op.
+    ///
+    /// A match whose result was decided (`completed` / `forfeit`) moves back
+    /// to `awaiting_result`, so it no longer counts as finished for bracket
+    /// completion and its captains can report it again. A played result's
+    /// scores stay on the row (the reapply path re-records a winner over
+    /// them); a forfeit's synthetic walkover score is reset to 0–0 and its
+    /// forfeit record is marked superseded (kept for audit, no longer
+    /// active), so the reopened match can be forfeited again or played.
+    /// A decided match's unfinished `match_completion` sagas are marked
+    /// `compensated` (none may re-record the reverted result), and so is a
+    /// forfeit's completed one, so settlement progresses the next result
+    /// recorded on it. A played result's completed saga is kept, so its
+    /// player stats are never counted a second time.
     async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
 
     /// Schedule a match.
@@ -882,12 +966,52 @@ pub trait TournamentMatchRepository: Send + Sync {
     /// Complete a match.
     async fn complete(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
 
-    /// Forfeit a match.
+    /// Forfeit a match: record the walkover winner/loser and the walkover
+    /// series score (`winner_score` lands in the winner's participant slot),
+    /// and move the match to `forfeit`.
+    ///
+    /// The write is guarded on the match still being forfeitable
+    /// (`TournamentMatchStatus::can_forfeit_administratively`): of two
+    /// concurrent forfeits exactly one wins and the other gets
+    /// `DomainError::Conflict`. In the same transaction every pending result
+    /// claim on the match is superseded, so a claim filed before the forfeit
+    /// can never be confirmed over it.
     async fn forfeit(
         &self,
         id: TournamentMatchId,
         winner_id: TournamentRegistrationId,
         loser_id: TournamentRegistrationId,
+        winner_score: i32,
+        loser_score: i32,
+    ) -> Result<TournamentMatch, DomainError>;
+
+    /// Whether any `completed` match in the bracket has its result under
+    /// review: a result review in a pending status (awaiting captain
+    /// acknowledgment or an admin decision) attached to the match's latest
+    /// result claim.
+    ///
+    /// Such a match is settled as far as its row goes, but its result is not
+    /// final — the review may still be rejected, which reopens the match — so
+    /// nothing that is decided from "the whole bracket is in" (seeding the
+    /// next stage, declaring the bracket finished) may count it yet. A review
+    /// left behind by an earlier claim (one that predates a rematch and the
+    /// replayed result's own claim) does not count.
+    async fn any_result_under_review_in_bracket(
+        &self,
+        bracket_id: TournamentBracketId,
+    ) -> Result<bool, DomainError>;
+
+    /// [`Self::any_result_under_review_in_bracket`] for a single match.
+    async fn has_result_under_review(&self, id: TournamentMatchId) -> Result<bool, DomainError>;
+
+    /// Call a match off with no winner (double forfeit): move it to
+    /// `cancelled` and supersede its pending result claims, in one
+    /// transaction. Guarded on the match not being terminal already —
+    /// `DomainError::Conflict` if a result (or another forfeit) got there
+    /// first.
+    async fn cancel_without_result(
+        &self,
+        id: TournamentMatchId,
     ) -> Result<TournamentMatch, DomainError>;
 
     /// File a dispute.
@@ -1503,6 +1627,11 @@ pub trait ResultClaimRepository: Send + Sync {
     /// the whole transaction rolls back). This is what prevents the
     /// completion saga from running twice and double-counting
     /// round-robin/swiss standings.
+    ///
+    /// The match UPDATE is guarded too, on the match still accepting a
+    /// result (`in_progress` / `awaiting_result`): a claim left pending on
+    /// a match that was since forfeited, cancelled or ruled on gets
+    /// `Conflict` instead of overwriting that decision.
     async fn confirm_and_apply_to_match(
         &self,
         id: ResultClaimId,

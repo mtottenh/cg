@@ -471,6 +471,12 @@ pub async fn get_bracket_standings(
 }
 
 /// Generate the next Swiss round for a tournament.
+///
+/// Advances every Swiss bracket of the active stage whose current round is
+/// settled (every match played or cancelled) and which has rounds left: the one bracket of a Swiss
+/// tournament, or each Swiss group of a groups-and-playoffs tournament
+/// (groups advance independently). The response lists the new matches of
+/// every bracket that advanced.
 #[utoipa::path(
     post,
     path = "/v1/admin/tournaments/{tournament_id}/generate-next-round",
@@ -478,11 +484,12 @@ pub async fn get_bracket_standings(
         ("tournament_id" = String, Path, description = "Tournament ID")
     ),
     responses(
-        (status = 200, description = "Next round generated", body = DataResponse<Vec<TournamentMatchResponse>>),
-        (status = 400, description = "Not Swiss format or current round not complete", body = ApiError),
+        (status = 200, description = "Next round generated for every Swiss bracket/group that was ready", body = DataResponse<Vec<TournamentMatchResponse>>),
+        (status = 400, description = "Not Swiss format, or no Swiss bracket could advance (a round still in progress, or every bracket has played its final round)", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 403, description = "Forbidden", body = ApiError),
         (status = 404, description = "Tournament not found", body = ApiError),
+        (status = 409, description = "A concurrent request is already generating the round, or some brackets advanced and others failed (the detail names both; retrying only advances the brackets still behind)", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "tournaments"

@@ -10,15 +10,14 @@
 
 use crate::websocket::agent_manager::{AgentCommand, AgentConnectionManager, SendError};
 use chrono::Utc;
+use dashmap::DashMap;
 use portal_core::ids::GameServerId;
 use portal_core::types::UpdateJobStatus;
 use portal_db::{PgAdminServerCommandRepository, PgGameServerUpdateRepository};
-use portal_domain::entities::{
-    AgentUpdateReport, GameServerUpdateJob, GameServerUpdateState, ResultOutcome,
-};
+use portal_domain::entities::{AgentUpdateReport, GameServerUpdateJob, ResultOutcome};
 use portal_domain::repositories::{AdminServerCommandRepository, CreateAdminServerCommand};
 use portal_domain::services::game_server::{GameServerUpdateService, Reconciled, frame_job_id};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::sync::Arc;
 
 /// The update service over its Postgres repository.
@@ -72,6 +71,9 @@ pub struct UpdateChannel {
     pub agent_manager: Arc<AgentConnectionManager>,
     /// The admin audit trail (`admin_server_commands`).
     pub audit: Arc<PgAdminServerCommandRepository>,
+    /// One lock per server around overrides pushes (see
+    /// [`UpdateChannel::push_overrides`]).
+    pub push_locks: Arc<DashMap<GameServerId, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// An agent's `output` for the update commands is a JSON document encoded
@@ -144,9 +146,7 @@ impl UpdateChannel {
         // loop that is running this very function.
         let channel = self.clone();
         tokio::spawn(async move {
-            let push = channel
-                .push_overrides(server_id, &state, state.matchzy_overrides.clone())
-                .await;
+            let push = channel.push_overrides(server_id).await;
             tracing::info!(server_id = %server_id, outcome = ?push,
                 "pushed MatchZy overrides on connect");
         });
@@ -230,14 +230,33 @@ impl UpdateChannel {
     // Overrides
     // ------------------------------------------------------------------
 
-    /// Send `overrides` to the server's agent and record whether it took
-    /// them. `state` is the server's update state as just read.
-    pub async fn push_overrides(
-        &self,
-        server_id: GameServerId,
-        state: &GameServerUpdateState,
-        overrides: Map<String, Value>,
-    ) -> OverridesPush {
+    /// Send the server's stored overrides to its agent and record whether
+    /// it took them.
+    ///
+    /// Pushes to one server are serialized, and each sends what is stored
+    /// when it runs (read under the lock), not what its caller saw: two
+    /// PUTs racing, or a PUT racing the push on connect, cannot deliver an
+    /// older set after a newer one. The last push to run always carries
+    /// the newest stored set, and `pending` is cleared only for the set
+    /// that was sent (`mark_overrides_delivered` compares), so the host and
+    /// the database cannot disagree with `pending` false.
+    pub async fn push_overrides(&self, server_id: GameServerId) -> OverridesPush {
+        let lock = Arc::clone(
+            self.push_locks
+                .entry(server_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .value(),
+        );
+        let _serialized = lock.lock().await;
+        let state = match self.service.state(server_id).await {
+            Ok(state) => state,
+            Err(e) => {
+                return OverridesPush::Pending {
+                    reason: format!("the stored overrides could not be read: {e}"),
+                };
+            }
+        };
+        let overrides = state.matchzy_overrides.clone();
         if !self.agent_manager.is_connected(server_id) {
             return OverridesPush::Pending {
                 reason: SendError::NotConnected.to_string(),

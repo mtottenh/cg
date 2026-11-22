@@ -1368,16 +1368,16 @@ pub async fn set_matchzy_overrides(
 
     let updates = &state.game_server_updates;
     // 404 before anything is written.
-    let update_state = updates.service.state(id).await.map_err(ApiError::from)?;
+    updates.service.state(id).await.map_err(ApiError::from)?;
     updates
         .service
         .set_matchzy_overrides(id, &overrides)
         .await
         .map_err(ApiError::from)?;
 
-    let push = updates
-        .push_overrides(id, &update_state, overrides.clone())
-        .await;
+    // Sends whatever is stored when the push runs: if another PUT landed
+    // meanwhile, that newer set (see `push_overrides`).
+    let push = updates.push_overrides(id).await;
     let (delivery, job_id, detail) = match push {
         OverridesPush::Applying { job_id } => (OverridesDelivery::Applying, job_id, None),
         OverridesPush::Written { reason } => (OverridesDelivery::Written, None, Some(reason)),

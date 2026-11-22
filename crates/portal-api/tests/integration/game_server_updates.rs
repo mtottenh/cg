@@ -2188,6 +2188,49 @@ async fn test_overrides_are_pushed_on_put_when_the_agent_is_connected() {
     agent.close().await;
 }
 
+/// PUTs racing each other: whatever order their pushes run in, the host
+/// ends up with what the database holds, and `pending` is false only when
+/// it does.
+#[tokio::test]
+async fn test_concurrent_override_puts_leave_the_host_with_the_stored_set() {
+    let mut app = TestApp::new_with_agent_dev_auth().await;
+    let game_id = cs2_game_id(&app).await;
+    let server_id = create_server(&app, &game_id, "Racing overrides box").await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({"overrides_applied": true}),
+    )
+    .await;
+    let uri = format!("/v1/admin/game-servers/{server_id}/matchzy-overrides");
+
+    for round in 0..3 {
+        agent.clear();
+        let bodies: Vec<Value> = (0..8)
+            .map(|i| json!({"overrides": {"matchzy_max_tech_pauses": round * 10 + i}}))
+            .collect();
+        let puts = bodies.iter().map(|b| app.put_json(&uri, b));
+        for response in futures_util::future::join_all(puts).await {
+            response.assert_status(StatusCode::OK);
+        }
+
+        let response = app.get_auth(&uri).await;
+        response.assert_status(StatusCode::OK);
+        let stored: Value = response.json();
+        let pushed = agent.commands("set_matchzy_overrides");
+        assert!(!pushed.is_empty());
+        let last = &pushed.last().unwrap()["args"]["overrides"];
+        assert_eq!(stored["data"]["pending"], false, "{stored}");
+        assert_eq!(
+            last, &stored["data"]["overrides"],
+            "round {round}: the host's last set is not the stored one"
+        );
+    }
+    agent.close().await;
+}
+
 #[tokio::test]
 async fn test_overrides_saved_while_the_agent_is_away_are_pushed_on_connect() {
     let mut app = TestApp::new_with_agent_dev_auth().await;

@@ -944,6 +944,7 @@ impl AppState {
             )),
             agent_manager: Arc::clone(&agent_manager),
             audit: Arc::clone(&admin_server_command_repo),
+            push_locks: Arc::default(),
         };
         let match_substitution_repo = Arc::new(PgMatchSubstitutionRepository::new(db_pool.clone()));
         let tournament_match_game_repo =

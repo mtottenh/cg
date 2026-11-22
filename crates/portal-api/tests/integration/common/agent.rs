@@ -28,31 +28,88 @@ pub type FrameScript = Arc<dyn Fn(&Value) -> (bool, String) + Send + Sync>;
 /// (`update_check`, the `repair-config` behind `set_matchzy_overrides`).
 pub const AGENT_JOB_ID: &str = "0193a5b0-7c1e-7000-8000-00000000a6e7";
 
+/// The operations `update_start` takes (`update::OPERATIONS` in the agent).
+const OPERATIONS: [&str; 5] = ["lgsm", "game", "mods", "all", "repair-config"];
+
+/// `^[0-9a-f-]{36}$` — the agent's `valid_job_id`, which it applies to
+/// the job id of `update_start` and `update_ack`.
+fn valid_job_id(id: &str) -> bool {
+    id.len() == 36
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
+}
+
 /// A frame script that answers the agent 0.3.0 update commands the way
-/// the real agent does (portal-server-agent README, "Protocol") and
-/// everything else with a canned `ok`.
+/// the real agent does (portal-server-agent `src/run.rs`
+/// `execute_update_command` and `Updater::start`), refusals included: a
+/// frame the real agent would reject is rejected here with the agent's
+/// own error string, so a portal that drifts from the wire contract fails
+/// these tests instead of production. Everything else gets a canned `ok`.
 pub fn update_script() -> FrameScript {
     Arc::new(|frame: &Value| {
-        let args = &frame["args"];
-        match frame["cmd"].as_str().unwrap_or_default() {
+        let cmd = frame["cmd"].as_str().unwrap_or_default();
+        let args = frame.get("args").filter(|a| !a.is_null());
+        let refuse = |e: &str| (false, e.to_string());
+        match cmd {
             "update_check" => (
                 true,
                 json!({"started": true, "job_id": AGENT_JOB_ID, "operation": "check"}).to_string(),
             ),
-            "update_start" => (
-                true,
-                json!({"started": true, "job_id": args["job_id"],
-                       "operation": args["operation"]})
-                .to_string(),
-            ),
+            "update_start" => {
+                let Some(args) = args else {
+                    return refuse("update_start requires args");
+                };
+                let Some(operation) = args["operation"].as_str() else {
+                    return refuse("missing operation");
+                };
+                let Some(job_id) = args["job_id"].as_str() else {
+                    return refuse("missing job_id");
+                };
+                if !OPERATIONS.contains(&operation) {
+                    return refuse(&format!(
+                        "unknown operation (expected one of: {})",
+                        OPERATIONS.join(", ")
+                    ));
+                }
+                if !valid_job_id(job_id) {
+                    return refuse("job_id must be a lowercase UUID");
+                }
+                (
+                    true,
+                    json!({"started": true, "job_id": job_id, "operation": operation}).to_string(),
+                )
+            }
             "update_status" => (true, "null".to_string()),
-            "update_ack" => (true, json!({"acked": args["job_id"]}).to_string()),
-            "set_matchzy_overrides" => (
-                true,
-                json!({"written": args["overrides"].as_object().map_or(0, serde_json::Map::len),
-                       "started": true, "job_id": AGENT_JOB_ID, "operation": "repair-config"})
-                .to_string(),
-            ),
+            "update_ack" => {
+                let Some(args) = args else {
+                    return refuse("update_ack requires args");
+                };
+                let Some(job_id) = args["job_id"].as_str() else {
+                    return refuse("missing job_id");
+                };
+                if !valid_job_id(job_id) {
+                    return refuse("job_id must be a lowercase UUID");
+                }
+                (true, json!({"acked": job_id}).to_string())
+            }
+            "set_matchzy_overrides" => {
+                let Some(args) = args else {
+                    return refuse("set_matchzy_overrides requires args");
+                };
+                let Some(overrides) = args.get("overrides") else {
+                    return refuse("missing overrides");
+                };
+                let Some(map) = overrides.as_object() else {
+                    return refuse("overrides must be an object of cvar: value");
+                };
+                (
+                    true,
+                    json!({"written": map.len(), "started": true, "job_id": AGENT_JOB_ID,
+                           "operation": "repair-config"})
+                    .to_string(),
+                )
+            }
             other => (true, format!("ran: {other}")),
         }
     })

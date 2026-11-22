@@ -815,12 +815,22 @@ async fn test_a_real_result_supersedes_a_synthesized_failure() {
     let job_id = start_ok(&app, &server_id, &json!({"operation": "mods"})).await;
 
     // The helper left no trace: the agent makes a failure up.
-    let mut synthesized = failed_result(&job_id, "mods", "the helper ended without a result");
-    synthesized["agent_synthesized"] = json!(true);
+    // Exactly the agent's shape (`Updater::settle_pending` + `result_frame`):
+    // no trigger, no timestamps, no versions, no log.
+    let synthesized = json!({
+        "type": "update_result", "job_id": job_id, "operation": "mods",
+        "status": "failed", "phase": "starting", "failed_phase": "starting",
+        "agent_synthesized": true,
+        "error": "the update helper ended without reporting anything (it could not get \
+                  the lock, or the unit failed - see journalctl)",
+    });
     agent.send(synthesized.clone()).await;
     let failed = job_when(&app, &server_id, &job_id, |j| j["status"] == "failed").await;
     assert_eq!(failed["agent_synthesized"], true);
     assert_eq!(failed["phase"], "starting");
+    // The portal's own record of who started it stands.
+    assert_eq!(failed["trigger"], "portal");
+    assert!(!failed["requested_by"].is_null());
     assert!(overview(&app, &server_id).await["active_job"].is_null());
     agent.wait_for_commands("update_ack", 1).await;
 
@@ -2029,4 +2039,75 @@ async fn test_every_update_endpoint_requires_admin_servers_manage() {
         .json();
     assert_eq!(body["data"]["overrides"], json!({}));
     agent.close().await;
+}
+
+/// The fake agent must refuse what the real one refuses (portal-server-agent
+/// `src/run.rs`), or a portal that drifted from the wire contract would
+/// pass these tests and break in production.
+#[test]
+fn test_the_fake_agent_refuses_what_the_real_agent_refuses() {
+    let script = update_script();
+    let frame = |cmd: &str, args: Value| json!({"id": "c1", "cmd": cmd, "args": args});
+    let job = "0193a5b0-7c1e-7000-8000-000000000001";
+
+    let (ok, out) = script(&frame(
+        "update_start",
+        json!({"operation": "mods", "job_id": job}),
+    ));
+    assert!(ok, "{out}");
+    let out: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        out,
+        json!({"started": true, "job_id": job, "operation": "mods"})
+    );
+
+    for (args, error) in [
+        (
+            json!({"operation": "mods", "job_id": job.to_uppercase()}),
+            "job_id must be a lowercase UUID",
+        ),
+        (
+            json!({"operation": "mods", "job_id": job.replace('-', "")}),
+            "job_id must be a lowercase UUID",
+        ),
+        (
+            json!({"operation": "check", "job_id": job}),
+            "unknown operation (expected one of: lgsm, game, mods, all, repair-config)",
+        ),
+        (
+            json!({"operation": "repair_config", "job_id": job}),
+            "unknown operation (expected one of: lgsm, game, mods, all, repair-config)",
+        ),
+        (json!({"job_id": job}), "missing operation"),
+        (json!({"operation": "mods"}), "missing job_id"),
+        (json!(null), "update_start requires args"),
+    ] {
+        assert_eq!(
+            script(&frame("update_start", args.clone())),
+            (false, error.to_string()),
+            "{args}"
+        );
+    }
+
+    let (ok, out) = script(&frame("update_ack", json!({"job_id": job})));
+    assert!(ok);
+    assert_eq!(
+        serde_json::from_str::<Value>(&out).unwrap(),
+        json!({"acked": job})
+    );
+    assert_eq!(
+        script(&frame("update_ack", json!({"job_id": "J"}))),
+        (false, "job_id must be a lowercase UUID".to_string())
+    );
+    assert_eq!(
+        script(&frame("set_matchzy_overrides", json!({"matchzy_x": 1}))),
+        (false, "missing overrides".to_string())
+    );
+    assert_eq!(
+        script(&frame("set_matchzy_overrides", json!({"overrides": []}))),
+        (
+            false,
+            "overrides must be an object of cvar: value".to_string()
+        )
+    );
 }

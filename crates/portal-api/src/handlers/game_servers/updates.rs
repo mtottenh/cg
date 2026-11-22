@@ -68,7 +68,8 @@ pub struct UpdateVersions {
     pub lgsm: Option<String>,
     /// CS2 Steam build id.
     pub cs2_build: Option<String>,
-    /// Metamod release archive name; known only after a `mods`/`all` run.
+    /// Metamod version as the helper reports it (e.g. `2.0.0-git1491`);
+    /// known only after a `mods`/`all` run through the helper.
     pub metamod: Option<String>,
     /// CounterStrikeSharp release.
     pub cssharp: Option<String>,

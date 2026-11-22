@@ -405,7 +405,7 @@ impl UpdateChannel {
         let Some(answer) = answer else {
             self.service
                 .mark_lost(
-                    job.id,
+                    job,
                     "no progress for 20 minutes and the agent could not be asked",
                 )
                 .await?;

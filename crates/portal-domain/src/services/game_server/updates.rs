@@ -328,7 +328,7 @@ where
         error: &str,
     ) -> Result<Option<GameServerUpdateJob>, DomainError> {
         self.repo
-            .finish_job(id, UpdateJobStatus::Failed, error)
+            .finish_job(id, UpdateJobStatus::Failed, error, None)
             .await
     }
 
@@ -389,14 +389,17 @@ where
             .await
     }
 
-    /// Declare a stalled job lost.
+    /// Declare a stalled job lost — unless it has moved since it was read
+    /// as stalled (`job.updated_at`): progress, a heartbeat naming it or a
+    /// result that landed meanwhile wins over the guess. Returns the job
+    /// when this call ended it, `None` when nothing changed.
     pub async fn mark_lost(
         &self,
-        id: GameServerUpdateJobId,
+        job: &GameServerUpdateJob,
         reason: &str,
     ) -> Result<Option<GameServerUpdateJob>, DomainError> {
         self.repo
-            .finish_job(id, UpdateJobStatus::Lost, reason)
+            .finish_job(job.id, UpdateJobStatus::Lost, reason, Some(job.updated_at))
             .await
     }
 
@@ -410,7 +413,7 @@ where
         let state = agent_state.filter(|s| frame_job_id(s) == Some(job.id));
         let Some(state) = state else {
             self.mark_lost(
-                job.id,
+                job,
                 "no progress for 20 minutes and the host has no record of this job",
             )
             .await?;
@@ -427,7 +430,7 @@ where
             }
             Some(ResultOutcome::Foreign) | None => {
                 self.mark_lost(
-                    job.id,
+                    job,
                     "no progress for 20 minutes and the host's record of this job is unreadable",
                 )
                 .await?;

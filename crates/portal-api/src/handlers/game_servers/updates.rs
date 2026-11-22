@@ -27,6 +27,7 @@ use portal_domain::entities::{
     GameServer, GameServerUpdateJob, GameServerUpdateState, ServerBooking, ServerReservation,
 };
 use portal_domain::repositories::{CreateAdminServerCommand, ServerReservationRepository};
+use portal_domain::services::game_server::UPDATE_JOB_STALL_MINUTES;
 use portal_plugins::games::cs2::console;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -799,17 +800,26 @@ async fn start_job(
             send_error(e)
         }
         // The frame went out and no answer came back: the helper may be
-        // running. `lost` says exactly that, and — unlike `failed` — gives
-        // way to the agent's progress or result if it was.
+        // running. The job stays `queued` — for a restarting operation
+        // that keeps the server out of allocation, as it must while CS2
+        // may be about to restart — and is settled by what the agent says
+        // next: progress or a heartbeat naming it moves it on, a result
+        // ends it, and the lost-job pass asks the agent (`update_status`)
+        // after 20 minutes of silence.
         Err(e) => {
-            let reason = format!("{e}; whether the update started is unknown");
-            updates
-                .service
-                .mark_lost(job.id, &reason)
-                .await
-                .map_err(ApiError::from)?;
-            updates.audit(audit_row(false, reason)).await;
-            send_error(e)
+            let mut reason = format!(
+                "{e}: whether the update started is unknown. Job {} stays queued until the \
+                 agent reports on it, or is settled by the lost-job pass after {} minutes \
+                 without word",
+                job.id, UPDATE_JOB_STALL_MINUTES
+            );
+            if job.blocks_allocation() {
+                reason.push_str("; meanwhile the server is not allocated to matches");
+            }
+            updates.audit(audit_row(false, reason.clone())).await;
+            tracing::warn!(server_id = %server.id, job_id = %job.id, operation = %operation,
+                error = %e, "game-server update start unanswered; outcome unknown");
+            bad_gateway(reason)
         }
     };
     Err(failure)
@@ -1035,7 +1045,7 @@ pub async fn check_updates(
         (status = 403, description = "Missing admin.servers.manage", body = ApiError),
         (status = 404, description = "Server not found", body = ApiError),
         (status = 409, description = "No agent connected; no lgsm_update capability; another job is running; players connected or a reservation/booking is live or imminent (without force); or the agent refused. `detail` names the reason", body = ApiError),
-        (status = 502, description = "The agent did not answer or could not start the helper", body = ApiError),
+        (status = 502, description = "The agent could not start the helper (the job ends `failed`), or it did not answer: then whether the update started is unknown, `detail` says so and names the job, which stays `queued` until the agent reports on it or the lost-job pass settles it", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "game_servers"
@@ -1075,7 +1085,7 @@ pub async fn start_update(
         (status = 403, description = "Missing admin.servers.manage", body = ApiError),
         (status = 404, description = "Server not found", body = ApiError),
         (status = 409, description = "No agent connected; no lgsm_update capability; another job is running; or the agent refused", body = ApiError),
-        (status = 502, description = "The agent did not answer or could not start the helper", body = ApiError),
+        (status = 502, description = "The agent could not start the helper, or it did not answer (outcome unknown: the job stays `queued`, see the start endpoint)", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "game_servers"

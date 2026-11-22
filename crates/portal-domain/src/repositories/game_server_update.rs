@@ -132,11 +132,16 @@ pub trait GameServerUpdateRepository: Send + Sync + 'static {
     /// End a job in flight with a portal-side verdict (`failed` when the
     /// agent refused it, `lost` when it went silent). Returns the job when
     /// it was still in flight; `None` when it had already ended.
+    ///
+    /// With `unchanged_since`, only a job not updated after that instant
+    /// is ended: a verdict reached on what the job looked like then must
+    /// not overwrite progress that has landed since.
     async fn finish_job(
         &self,
         id: GameServerUpdateJobId,
         status: UpdateJobStatus,
         error: &str,
+        unchanged_since: Option<DateTime<Utc>>,
     ) -> Result<Option<GameServerUpdateJob>, DomainError>;
 
     /// Jobs in flight with no progress since `cutoff`, oldest first.

@@ -8,7 +8,9 @@
 //! The "server" is a [`FakeAgent`] connected over the dev-auth WebSocket.
 
 use crate::common::TestApp;
-use crate::common::agent::{AGENT_JOB_ID, FakeAgent, FrameScript, update_script, wait_for};
+use crate::common::agent::{
+    AGENT_JOB_ID, DROP_CONNECTION, FakeAgent, FrameScript, update_script, wait_for,
+};
 use crate::tournaments::create_tournament_with_matches;
 use axum::http::StatusCode;
 use chrono::{Duration, Utc};
@@ -1386,6 +1388,137 @@ async fn test_a_start_the_agent_drops_is_lost_and_revived_by_progress() {
 
     agent.send(mods_result(&job_id, "portal")).await;
     job_when(&app, &server_id, &job_id, |j| j["status"] == "succeeded").await;
+    agent.close().await;
+}
+
+/// `update_start` went out and the agent vanished before answering: the
+/// helper may be running. The job is not declared over — it stays queued
+/// (and the server out of allocation) until the agent says what happened.
+#[tokio::test]
+async fn test_an_unanswered_start_stays_queued_until_the_agent_reports() {
+    let (mut app, state) = TestApp::new_with_agent_dev_auth_and_state().await;
+    let (tournament_id, match_id, _r1, _r2) =
+        create_tournament_with_matches(&app, "upd-unknown").await;
+    let game_id = cs2_game_id(&app).await;
+    let server_id = create_server(&app, &game_id, "Unanswered box").await;
+    let dropper: FrameScript = Arc::new(|frame: &Value| {
+        if frame["cmd"] == "update_start" {
+            (true, DROP_CONNECTION.to_string())
+        } else {
+            update_script()(frame)
+        }
+    });
+    let agent = connect_capable(&mut app, &server_id, dropper, Some(EMPTY_STATUS), json!({})).await;
+
+    let (status, body) = start(&app, &server_id, &json!({"operation": "mods"})).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    let detail = body["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("whether the update started is unknown"),
+        "{detail}"
+    );
+    assert!(detail.contains("stays queued"), "{detail}");
+    assert!(detail.contains("not allocated to matches"), "{detail}");
+    assert_eq!(agent.commands("update_start").len(), 1);
+    let job_id = agent.commands("update_start")[0]["args"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(detail.contains(&job_id), "{detail}");
+    agent.close().await;
+
+    let queued = job(&app, &server_id, &job_id).await;
+    assert_eq!(queued["status"], "queued", "{queued}");
+    assert!(queued["finished_at"].is_null());
+    assert_eq!(queued["blocks_allocation"], true);
+    let rows = history(&app, &server_id).await;
+    let row = rows
+        .iter()
+        .find(|r| r["command"] == format!("update_start mods {job_id}"))
+        .expect("the unanswered start is audited");
+    assert_eq!(row["ok"], false);
+
+    // The agent is back and idle, but the job may still restart CS2: the
+    // server stays out of allocation, and nothing else may start.
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
+    let server_uri = format!("/v1/admin/game-servers/{server_id}");
+    wait_for(10, || async {
+        let body: Value = app.get_auth(&server_uri).await.json();
+        (body["data"]["status"] == "available").then_some(())
+    })
+    .await;
+    assert!(
+        try_allocate(&state, &game_id, &tournament_id, &match_id)
+            .await
+            .is_none(),
+        "an unanswered mods start keeps the server out of allocation"
+    );
+    let (status, body) = start(&app, &server_id, &json!({"operation": "lgsm"})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // It had started after all: progress moves it on, the result ends it.
+    let stalled = state
+        .game_server_updates
+        .service
+        .find_job(server_id.parse().unwrap(), job_id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    agent
+        .send(progress(&job_id, "mods", "mods-update", "portal"))
+        .await;
+    job_when(&app, &server_id, &job_id, |j| j["status"] == "running").await;
+    // A lost verdict reached on the job as it was before the progress
+    // landed changes nothing.
+    let verdict = state
+        .game_server_updates
+        .service
+        .mark_lost(&stalled, "test: a stale verdict")
+        .await
+        .unwrap();
+    assert!(verdict.is_none());
+    assert_eq!(job(&app, &server_id, &job_id).await["status"], "running");
+
+    agent.send(mods_result(&job_id, "portal")).await;
+    job_when(&app, &server_id, &job_id, |j| j["status"] == "succeeded").await;
+
+    // Never heard of again: the lost-job pass settles it.
+    let dropper: FrameScript = Arc::new(|frame: &Value| {
+        if frame["cmd"] == "update_start" {
+            (true, DROP_CONNECTION.to_string())
+        } else {
+            update_script()(frame)
+        }
+    });
+    agent.close().await;
+    let agent = connect_capable(&mut app, &server_id, dropper, Some(EMPTY_STATUS), json!({})).await;
+    let (status, _) = start(&app, &server_id, &json!({"operation": "all"})).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let job2 = agent.commands("update_start")[0]["args"]["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    agent.close().await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
+    assert_eq!(job(&app, &server_id, &job2).await["status"], "queued");
+    age_job(&app, &job2).await;
+    let summary = state.game_server_updates.run_lost_job_pass().await;
+    assert_eq!((summary.lost, summary.errors), (1, 0));
+    assert_eq!(job(&app, &server_id, &job2).await["status"], "lost");
     agent.close().await;
 }
 

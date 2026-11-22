@@ -510,6 +510,7 @@ impl GameServerUpdateRepository for PgGameServerUpdateRepository {
         id: GameServerUpdateJobId,
         status: UpdateJobStatus,
         error: &str,
+        unchanged_since: Option<DateTime<Utc>>,
     ) -> Result<Option<GameServerUpdateJob>, DomainError> {
         if !status.is_terminal() {
             return Err(DomainError::Internal(format!(
@@ -520,11 +521,13 @@ impl GameServerUpdateRepository for PgGameServerUpdateRepository {
             "UPDATE game_server_update_jobs SET status = $2, error = $3, \
                 finished_at = NOW(), updated_at = NOW() \
              WHERE id = $1 AND status IN ('queued', 'running') \
+               AND ($4::timestamptz IS NULL OR updated_at <= $4) \
              RETURNING *",
         )
         .bind(id.as_uuid())
         .bind(status.as_str())
         .bind(error)
+        .bind(unchanged_since)
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;

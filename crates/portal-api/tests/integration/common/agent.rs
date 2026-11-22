@@ -26,6 +26,10 @@ pub type FrameScript = Arc<dyn Fn(&Value) -> (bool, String) + Send + Sync>;
 
 /// The job id [`update_script`] reports for jobs the "agent" starts itself
 /// (`update_check`, the `repair-config` behind `set_matchzy_overrides`).
+/// A script answering this closes the socket instead of replying: the
+/// command went out and no answer will ever come back.
+pub const DROP_CONNECTION: &str = "__drop_connection__";
+
 pub const AGENT_JOB_ID: &str = "0193a5b0-7c1e-7000-8000-00000000a6e7";
 
 /// The operations `update_start` takes (`update::OPERATIONS` in the agent).
@@ -171,6 +175,9 @@ impl FakeAgent {
                                 serde_json::from_str(&text).expect("portal frame is JSON");
                             seen.lock().unwrap().push(frame.clone());
                             let (ok, output) = script(&frame);
+                            if output == DROP_CONNECTION {
+                                break;
+                            }
                             let reply = if ok {
                                 json!({ "id": frame["id"], "ok": true, "output": output })
                             } else {

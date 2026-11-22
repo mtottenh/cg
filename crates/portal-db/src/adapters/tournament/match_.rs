@@ -619,6 +619,58 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         // result, captains could not re-report it (claims need
         // in_progress/awaiting_result) and the admin override refused it —
         // a dead match. Any other status is left alone.
+        //
+        // A reverted forfeit's record is superseded in the same transaction
+        // (kept for audit, `superseded_at` stamped): the match is no longer
+        // decided by it, so it must not read as this match's forfeit — the
+        // reopened match can be forfeited again, for either side, or played.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        sqlx::query(
+            r"
+            UPDATE forfeit_records SET superseded_at = $2
+            WHERE match_id = $1
+              AND superseded_at IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM tournament_matches
+                  WHERE id = $1 AND status = 'forfeit'
+              )
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // The match's completed completion saga is retired the same way
+        // (`compensated`: its effects were taken back). Settlement treats a
+        // completed `match_completion` saga as "progression already ran" and
+        // skips it, so a result recorded on the reopened match — a forfeit
+        // for the other side, a played result — would otherwise never be
+        // advanced: the right team would stay out of the next round.
+        sqlx::query(
+            r"
+            UPDATE saga_executions SET status = 'compensated', updated_at = $2
+            WHERE match_id = $1
+              AND saga_type = 'match_completion'
+              AND status = 'completed'
+              AND EXISTS (
+                  SELECT 1 FROM tournament_matches
+                  WHERE id = $1 AND status IN ('completed', 'forfeit')
+              )
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
         let row = sqlx::query_as::<_, TournamentMatchRow>(
             r"
             UPDATE tournament_matches SET
@@ -636,9 +688,13 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         )
         .bind(id.as_uuid())
         .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(TournamentMatch::from(row))
     }

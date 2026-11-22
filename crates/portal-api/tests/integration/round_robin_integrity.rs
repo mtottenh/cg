@@ -2558,3 +2558,148 @@ async fn concurrent_standings_recomputes_do_not_deadlock() {
         }
     }
 }
+
+// ============================================================================
+// 20. A WRONG FORFEIT CAN BE CORRECTED IN ELIMINATION FORMATS
+// ============================================================================
+
+/// `(forfeiting registration, superseded?)` for every forfeit record of a
+/// match, oldest first.
+async fn forfeit_records_of(app: &TestApp, match_id: &str) -> Vec<(String, bool)> {
+    let rows: Vec<(Uuid, bool)> = sqlx::query_as(
+        "SELECT forfeiting_registration_id, superseded_at IS NOT NULL
+         FROM forfeit_records WHERE match_id = $1 ORDER BY forfeited_at, id",
+    )
+    .bind(Uuid::parse_str(match_id).unwrap())
+    .fetch_all(app.pool())
+    .await
+    .unwrap();
+    rows.into_iter().map(|(r, s)| (r.to_string(), s)).collect()
+}
+
+/// Revert a forfeit and check it reopened the match: no winner, no walkover
+/// score, open for a result again.
+async fn revert_and_expect_reopened(app: &TestApp, cup: &Cup, match_id: &str) {
+    app.post_auth(&format!("/v1/admin/matches/{match_id}/progression/revert"))
+        .await
+        .assert_status(StatusCode::OK);
+    let reopened = get_match(app, &cup.tournament_id, match_id).await;
+    assert_eq!(reopened["status"], "awaiting_result", "{reopened:?}");
+    assert!(reopened["winner_registration_id"].is_null(), "{reopened:?}");
+    assert!(reopened["loser_registration_id"].is_null(), "{reopened:?}");
+    assert_eq!(reopened["participant1_score"], 0, "{reopened:?}");
+    assert_eq!(reopened["participant2_score"], 0, "{reopened:?}");
+}
+
+/// Single elimination, the final already half-seated by the other semi: the
+/// admin forfeits the wrong side of a semi and the wrong team walks into the
+/// final. Reapply refuses a forfeit and tells the admin to revert and forfeit
+/// the other side — so that has to work end to end: the revert reopens the
+/// semi (it used to stay `forfeit`, which nothing can forfeit again or move
+/// out of), the forfeit for the other side is accepted, and the right team
+/// ends up in the final.
+#[tokio::test]
+async fn wrong_forfeit_is_corrected_in_single_elimination() {
+    let app = TestApp::new().await;
+    let cup = create_cup(&app, "se-fix-forfeit", "single_elimination", 4, json!({})).await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let semis: Vec<Value> = all.iter().filter(|m| m["round"] == 1).cloned().collect();
+    let (m, other) = (&semis[0], &semis[1]);
+    confirm_win(&app, &cup, other, &p1(other), (2, 0)).await;
+    let match_id = str_of(m, "id");
+    transition_match_to_in_progress(&app, &cup.tournament_id, &match_id).await;
+    let final_of = |all: Vec<Value>| all.into_iter().find(|x| x["round"] == 2).unwrap();
+
+    // The wrong side: p2 forfeits, p1 walks over into the final.
+    admin_forfeit(&app, &cup, &match_id, &p2(m)).await;
+    let fin = final_of(matches(&app, &cup.tournament_id).await);
+    assert!(seats(&fin, &p1(m)), "{fin:?}");
+    assert_eq!(fin["status"], "ready", "{fin:?}");
+
+    revert_and_expect_reopened(&app, &cup, &match_id).await;
+    let fin = final_of(matches(&app, &cup.tournament_id).await);
+    assert!(!seats(&fin, &p1(m)), "{fin:?}");
+    assert_eq!(fin["status"], "pending", "{fin:?}");
+
+    // The correction: forfeit the other side.
+    admin_forfeit(&app, &cup, &match_id, &p1(m)).await;
+    let corrected = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(corrected["status"], "forfeit", "{corrected:?}");
+    assert_eq!(corrected["winner_registration_id"], p2(m).as_str());
+    let fin = final_of(matches(&app, &cup.tournament_id).await);
+    assert!(
+        seats(&fin, &p2(m)),
+        "the right team reaches the final: {fin:?}"
+    );
+    assert!(!seats(&fin, &p1(m)), "{fin:?}");
+    assert!(seats(&fin, &p1(other)), "{fin:?}");
+    assert_eq!(fin["status"], "ready", "{fin:?}");
+
+    // The audit trail keeps the reverted forfeit, superseded.
+    assert_eq!(
+        forfeit_records_of(&app, &match_id).await,
+        vec![(p2(m), true), (p1(m), false)]
+    );
+}
+
+/// Double elimination: the wrongly forfeited side was also routed into the
+/// losers bracket. Revert takes both out (winners final and losers match);
+/// forfeiting the other side then routes each team to the right bracket.
+#[tokio::test]
+async fn wrong_forfeit_is_corrected_in_double_elimination() {
+    let app = TestApp::new().await;
+    let cup = create_cup(&app, "de-fix-forfeit", "double_elimination", 4, json!({})).await;
+    start(&app, &cup).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let openers: Vec<Value> = all
+        .iter()
+        .filter(|m| {
+            m["participant1_registration_id"].is_string()
+                && m["participant2_registration_id"].is_string()
+        })
+        .cloned()
+        .collect();
+    assert_eq!(openers.len(), 2, "{all:?}");
+    let (m, other) = (&openers[0], &openers[1]);
+    confirm_win(&app, &cup, other, &p1(other), (2, 0)).await;
+    let match_id = str_of(m, "id");
+    transition_match_to_in_progress(&app, &cup.tournament_id, &match_id).await;
+
+    // Where each of m's outputs lands.
+    let (winner_target, loser_target): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT winner_progresses_to, loser_progresses_to FROM tournament_matches WHERE id = $1",
+    )
+    .bind(Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    let (winner_target, loser_target) = (winner_target.to_string(), loser_target.to_string());
+    let at = |all: &[Value], id: &str| all.iter().find(|x| x["id"] == id).unwrap().clone();
+
+    admin_forfeit(&app, &cup, &match_id, &p2(m)).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    assert!(seats(&at(&all, &winner_target), &p1(m)));
+    assert!(seats(&at(&all, &loser_target), &p2(m)));
+
+    revert_and_expect_reopened(&app, &cup, &match_id).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    for target in [&winner_target, &loser_target] {
+        let t = at(&all, target);
+        assert!(!seats(&t, &p1(m)) && !seats(&t, &p2(m)), "{t:?}");
+        assert_eq!(t["status"], "pending", "{t:?}");
+    }
+
+    admin_forfeit(&app, &cup, &match_id, &p1(m)).await;
+    let all = matches(&app, &cup.tournament_id).await;
+    let wf = at(&all, &winner_target);
+    let lb = at(&all, &loser_target);
+    assert!(seats(&wf, &p2(m)) && !seats(&wf, &p1(m)), "{wf:?}");
+    assert!(seats(&lb, &p1(m)) && !seats(&lb, &p2(m)), "{lb:?}");
+    assert_eq!(wf["status"], "ready", "{wf:?}");
+    assert_eq!(lb["status"], "ready", "{lb:?}");
+    assert_eq!(
+        forfeit_records_of(&app, &match_id).await,
+        vec![(p2(m), true), (p1(m), false)]
+    );
+}

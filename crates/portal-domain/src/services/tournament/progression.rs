@@ -1396,6 +1396,22 @@ where
                     loser_withdrawn,
                     "Withdrew this match's advancements from the downstream matches"
                 );
+
+                // A forfeit is not re-recordable for the other side
+                // (`forfeit_is_not_reapplied`): the supported correction is
+                // revert, then forfeit the other participant. That needs the
+                // match reopened, exactly as the standings formats reopen it
+                // above — left `forfeit` it could be neither forfeited again
+                // nor played, and no transition leads out of `forfeit`. A
+                // *played* result is deliberately left recorded: reapply
+                // re-records the winner over it.
+                if match_.status == TournamentMatchStatus::Forfeit {
+                    self.match_repo.clear_result(match_id).await?;
+                    info!(
+                        match_id = %match_id,
+                        "Reopened the reverted forfeit so it can be forfeited again or played"
+                    );
+                }
             }
         }
 

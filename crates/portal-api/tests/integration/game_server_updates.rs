@@ -419,7 +419,14 @@ async fn test_an_unknown_operation_or_job_is_rejected() {
     let mut app = TestApp::new_with_agent_dev_auth().await;
     let game_id = cs2_game_id(&app).await;
     let server_id = create_server(&app, &game_id, "Strict box").await;
-    let agent = connect_capable(&mut app, &server_id, update_script(), None, json!({})).await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
 
     // `repair-config` and `check` have their own endpoints; anything else
     // is not an operation.
@@ -708,7 +715,14 @@ async fn test_a_rolled_back_result_is_stored_with_its_report() {
     let mut app = TestApp::new_with_agent_dev_auth().await;
     let game_id = cs2_game_id(&app).await;
     let server_id = create_server(&app, &game_id, "Rollback box").await;
-    let agent = connect_capable(&mut app, &server_id, update_script(), None, json!({})).await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
     let job_id = start_ok(&app, &server_id, &json!({"operation": "all"})).await;
 
     agent
@@ -783,7 +797,14 @@ async fn test_a_replayed_result_is_idempotent_and_acked_again() {
     let mut app = TestApp::new_with_agent_dev_auth().await;
     let game_id = cs2_game_id(&app).await;
     let server_id = create_server(&app, &game_id, "Replay box").await;
-    let agent = connect_capable(&mut app, &server_id, update_script(), None, json!({})).await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
     let job_id = start_ok(&app, &server_id, &json!({"operation": "mods"})).await;
 
     agent.send(mods_result(&job_id, "portal")).await;
@@ -824,7 +845,14 @@ async fn test_a_replayed_result_is_idempotent_and_acked_again() {
 
     // A reconnect replays it once more (the agent never saw our ack).
     agent.close().await;
-    let agent = connect_capable(&mut app, &server_id, update_script(), None, json!({})).await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
     agent.send(mods_result(&job_id, "portal")).await;
     agent.wait_for_commands("update_ack", 1).await;
     assert_eq!(job(&app, &server_id, &job_id).await, first);
@@ -836,7 +864,14 @@ async fn test_a_real_result_supersedes_a_synthesized_failure() {
     let mut app = TestApp::new_with_agent_dev_auth().await;
     let game_id = cs2_game_id(&app).await;
     let server_id = create_server(&app, &game_id, "Synth box").await;
-    let agent = connect_capable(&mut app, &server_id, update_script(), None, json!({})).await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
     let job_id = start_ok(&app, &server_id, &json!({"operation": "mods"})).await;
 
     // The helper left no trace: the agent makes a failure up.
@@ -891,7 +926,14 @@ async fn test_jobs_started_on_the_host_get_a_row() {
         create_tournament_with_matches(&app, "upd-local").await;
     let game_id = cs2_game_id(&app).await;
     let server_id = create_server(&app, &game_id, "Cron box").await;
-    let agent = connect_capable(&mut app, &server_id, update_script(), None, json!({})).await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
 
     // The nightly cron: progress arrives for an id the portal never made.
     agent
@@ -1000,7 +1042,14 @@ async fn test_one_server_cannot_touch_another_servers_job() {
     let game_id = cs2_game_id(&app).await;
     let server_a = create_server(&app, &game_id, "Box A").await;
     let server_b = create_server(&app, &game_id, "Box B").await;
-    let agent_a = connect_capable(&mut app, &server_a, update_script(), None, json!({})).await;
+    let agent_a = connect_capable(
+        &mut app,
+        &server_a,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
     let agent_b = connect_capable(&mut app, &server_b, update_script(), None, json!({})).await;
     let job_id = start_ok(&app, &server_a, &json!({"operation": "mods"})).await;
 
@@ -1236,6 +1285,79 @@ async fn test_a_live_reservation_or_an_imminent_booking_gates_restarting_updates
     agent.close().await;
 }
 
+/// The gate fails closed: a player count it cannot know, or a match the
+/// server reports, needs `force` like connected players do.
+#[tokio::test]
+async fn test_unknown_players_or_a_loaded_match_gate_restarting_updates() {
+    let mut app = TestApp::new_with_agent_dev_auth().await;
+    let game_id = cs2_game_id(&app).await;
+    let server_id = create_server(&app, &game_id, "Unknown box").await;
+    // Connected and capable, but no CS2 `status` in its heartbeat.
+    let agent = connect_capable(&mut app, &server_id, update_script(), None, json!({})).await;
+
+    let data = overview(&app, &server_id).await;
+    assert!(data["safety"]["humans_connected"].is_null(), "{data}");
+    assert_eq!(data["safety"]["restart_needs_force"], true, "{data}");
+    assert_eq!(
+        data["safety"]["reasons"],
+        json!(["player count unknown (no fresh CS2 status from the agent in the last 2 minutes)"])
+    );
+    for operation in ["game", "mods", "all"] {
+        let (status, body) = start(&app, &server_id, &json!({"operation": operation})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{operation}: {body}");
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap()
+                .contains("player count unknown"),
+            "{body}"
+        );
+    }
+    // `lgsm` restarts nothing and is not gated.
+    let lgsm = start_ok(&app, &server_id, &json!({"operation": "lgsm"})).await;
+    let mut result = mods_result(&lgsm, "portal");
+    result["operation"] = json!("lgsm");
+    agent.send(result).await;
+    job_when(&app, &server_id, &lgsm, |j| j["status"] == "succeeded").await;
+
+    // Nobody connected, but a match is live the portal did not set up.
+    agent
+        .heartbeat_with("live", Some(EMPTY_STATUS), capable())
+        .await;
+    let data = wait_for(10, || async {
+        let data = overview(&app, &server_id).await;
+        (data["safety"]["humans_connected"] == 0
+            && data["safety"]["reasons"].as_array().is_some_and(|r| {
+                r.iter()
+                    .any(|x| x == "MatchZy has a match loaded (gamestate live)")
+            }))
+        .then_some(data)
+    })
+    .await;
+    assert_eq!(data["safety"]["restart_needs_force"], true);
+    let (status, body) = start(&app, &server_id, &json!({"operation": "mods"})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap().contains("gamestate live"),
+        "{body}"
+    );
+    assert!(
+        agent.commands("update_start").len() == 1,
+        "only lgsm was sent"
+    );
+
+    // Force overrides every one of them.
+    let (status, body) = start(
+        &app,
+        &server_id,
+        &json!({"operation": "mods", "force": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(agent.commands("update_start").len(), 2);
+    agent.close().await;
+}
+
 // =============================================================================
 // One job at a time
 // =============================================================================
@@ -1267,7 +1389,7 @@ async fn test_one_job_at_a_time_and_a_refused_start_leaves_no_queued_row() {
             update_script()(frame)
         }
     });
-    let agent = connect_capable(&mut app, &server_id, script, None, json!({})).await;
+    let agent = connect_capable(&mut app, &server_id, script, Some(EMPTY_STATUS), json!({})).await;
 
     // The agent refuses (cron got there first): 409, and the row is closed.
     let (status, body) = start(&app, &server_id, &json!({"operation": "game"})).await;
@@ -1348,7 +1470,14 @@ async fn test_a_start_the_agent_drops_is_lost_and_revived_by_progress() {
     let mut app = TestApp::new_with_agent_dev_auth().await;
     let game_id = cs2_game_id(&app).await;
     let server_id = create_server(&app, &game_id, "Dropped box").await;
-    let agent = connect_capable(&mut app, &server_id, update_script(), None, json!({})).await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
 
     // The agent goes away between gate and send: nothing was started.
     agent.close().await;
@@ -1362,7 +1491,14 @@ async fn test_a_start_the_agent_drops_is_lost_and_revived_by_progress() {
 
     // A portal-side `lost` verdict is a guess; the agent saying the job is
     // running is better evidence, and its result settles it.
-    let agent = connect_capable(&mut app, &server_id, update_script(), None, json!({})).await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
     let job_id = start_ok(&app, &server_id, &json!({"operation": "mods"})).await;
     sqlx::query(
         "UPDATE game_server_update_jobs SET status = 'lost', error = 'gave up', \
@@ -1838,7 +1974,7 @@ async fn test_lost_job_pass_asks_the_agent_and_otherwise_gives_up() {
 
     // The job had been running all along: the result replayed on reconnect
     // replaces the guess.
-    let agent = connect_capable(&mut app, &server_id, script, None, json!({})).await;
+    let agent = connect_capable(&mut app, &server_id, script, Some(EMPTY_STATUS), json!({})).await;
     agent.send(mods_result(&job4, "portal")).await;
     let done = job_when(&app, &server_id, &job4, |j| j["status"] == "succeeded").await;
     assert!(done["error"].is_null());
@@ -1967,7 +2103,7 @@ async fn test_overrides_are_pushed_on_put_when_the_agent_is_connected() {
         }
         update_script()(frame)
     });
-    let agent = connect_capable(&mut app, &server_id, script, None, json!({})).await;
+    let agent = connect_capable(&mut app, &server_id, script, Some(EMPTY_STATUS), json!({})).await;
 
     let wanted = json!({
         "matchzy_kick_when_no_match_loaded": false,
@@ -2192,7 +2328,14 @@ async fn test_every_update_endpoint_requires_admin_servers_manage() {
     let mut app = TestApp::new_with_agent_dev_auth().await;
     let game_id = cs2_game_id(&app).await;
     let server_id = create_server(&app, &game_id, "Guarded box").await;
-    let agent = connect_capable(&mut app, &server_id, update_script(), None, json!({})).await;
+    let agent = connect_capable(
+        &mut app,
+        &server_id,
+        update_script(),
+        Some(EMPTY_STATUS),
+        json!({}),
+    )
+    .await;
     let job_id = start_ok(&app, &server_id, &json!({"operation": "lgsm"})).await;
     agent.clear();
 

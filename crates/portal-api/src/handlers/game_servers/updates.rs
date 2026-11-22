@@ -21,7 +21,8 @@ use portal_core::ids::{GameServerId, GameServerUpdateJobId, UserId};
 use portal_core::matchzy_overrides::validate_matchzy_overrides;
 use portal_core::permissions;
 use portal_core::types::{
-    ReservationKind, ReservationStatus, UpdateJobStatus, UpdateJobTrigger, UpdateOperation,
+    GameServerStatus, ReservationKind, ReservationStatus, UpdateJobStatus, UpdateJobTrigger,
+    UpdateOperation,
 };
 use portal_domain::entities::{
     GameServer, GameServerUpdateJob, GameServerUpdateState, ServerBooking, ServerReservation,
@@ -220,7 +221,9 @@ pub struct UpdateSafety {
     pub players: Vec<String>,
     pub reservation: Option<UpdateSafetyReservation>,
     pub bookings: Vec<UpdateSafetyBooking>,
-    /// Whether `game`, `mods` and `all` need `force: true` right now.
+    /// Whether `game`, `mods` and `all` need `force: true` right now. The
+    /// gate fails closed: unknowns (player count, match state, a failed
+    /// reservation or booking lookup) count as reasons too.
     pub restart_needs_force: bool,
     /// Why, one line each — the same lines the 409 names.
     pub reasons: Vec<String>,
@@ -565,14 +568,28 @@ impl Usernames {
     }
 }
 
+/// Which of the gate's lookups failed. A failed lookup is a reason in
+/// itself: the gate fails closed.
+#[derive(Debug, Clone, Copy, Default)]
+struct LookupFailures {
+    reservation: bool,
+    bookings: bool,
+}
+
 /// What a restart would interrupt: humans on the server (from the
-/// heartbeat's `status`, when it is fresh), a live reservation, and
-/// bookings that are active or start within 30 minutes.
+/// heartbeat's `status`, when it is fresh), a match the server or MatchZy
+/// reports, a live reservation, and bookings that are active or start
+/// within 30 minutes.
+///
+/// It fails closed: what cannot be known — who is connected, whether a
+/// match is loaded, whether a reservation or booking exists — is a reason
+/// too, which only `force` overrides.
 fn assess_safety(
     server: &GameServer,
     agent_connected: bool,
     reservation: Option<&ServerReservation>,
     bookings: &[ServerBooking],
+    failed: LookupFailures,
     now: DateTime<Utc>,
 ) -> UpdateSafety {
     let fresh = agent_connected
@@ -607,17 +624,45 @@ fn assess_safety(
         .collect();
 
     let mut reasons = Vec::new();
-    if let Some(n) = humans_connected.filter(|n| *n > 0) {
-        reasons.push(format!(
+    match humans_connected {
+        Some(0) => {}
+        Some(n) => reasons.push(format!(
             "{n} player{} connected",
             if n == 1 { " is" } else { "s are" }
-        ));
+        )),
+        None => reasons.push(
+            "player count unknown (no fresh CS2 status from the agent in the last 2 minutes)"
+                .to_string(),
+        ),
+    }
+    match server.status {
+        GameServerStatus::InMatch => {
+            reasons.push("the server is hosting a portal match (status in_match)".into());
+        }
+        GameServerStatus::BusyExternal => reasons.push(
+            "the server is running a match the portal did not set up (status busy_external)".into(),
+        ),
+        // With a reservation found, its own reason says it better.
+        GameServerStatus::Reserved | GameServerStatus::Configuring if reservation.is_none() => {
+            reasons.push(format!("the server is {} for a match", server.status));
+        }
+        _ => {}
+    }
+    match server.last_gamestate {
+        Some(g) if g.is_idle() => {}
+        Some(g) => reasons.push(format!("MatchZy has a match loaded (gamestate {g})")),
+        None => reasons.push("match state unknown (no MatchZy gamestate from the agent)".into()),
     }
     if let Some(r) = reservation {
         reasons.push(format!(
             "a {} reservation is live on this server (match {}, {})",
             r.kind, r.match_id, r.status
         ));
+    } else if failed.reservation {
+        reasons.push("whether a reservation is live could not be checked".into());
+    }
+    if failed.bookings {
+        reasons.push("the server's bookings could not be checked".into());
     }
     for b in &near {
         let what = b.reason.as_deref().unwrap_or("no reason given");
@@ -659,8 +704,9 @@ fn assess_safety(
 }
 
 async fn safety_for(state: &AppState, server: &GameServer, connected: bool) -> UpdateSafety {
-    // Lookup failures read as "nothing found" and are logged: the gate is
-    // advisory protection, and the agent's own lock is the hard one.
+    // A failed lookup is logged and becomes a reason of its own: the gate
+    // fails closed rather than reading an error as "nothing found".
+    let mut failed = LookupFailures::default();
     let reservation = match state
         .server_reservation_repo
         .find_live_by_server(server.id)
@@ -669,22 +715,24 @@ async fn safety_for(state: &AppState, server: &GameServer, connected: bool) -> U
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(server_id = %server.id, error = %e, "live-reservation lookup failed");
+            failed.reservation = true;
             None
         }
     };
-    let bookings = state
-        .game_server_registry
-        .list_bookings(server.id)
-        .await
-        .unwrap_or_else(|e| {
+    let bookings = match state.game_server_registry.list_bookings(server.id).await {
+        Ok(b) => b,
+        Err(e) => {
             tracing::warn!(server_id = %server.id, error = %e, "booking lookup failed");
+            failed.bookings = true;
             Vec::new()
-        });
+        }
+    };
     assess_safety(
         server,
         connected,
         reservation.as_ref(),
         &bookings,
+        failed,
         Utc::now(),
     )
 }
@@ -1032,8 +1080,10 @@ pub async fn check_updates(
 /// poll the job for progress and the result.
 ///
 /// `game`, `mods` and `all` restart CS2 and are refused (409) while humans
-/// are connected, a reservation is live, or a booking is active or starts
-/// within 30 minutes — unless `force` is set. While such a job is in
+/// are connected, the server or MatchZy reports a match, a reservation is
+/// live, or a booking is active or starts within 30 minutes — and when any
+/// of that cannot be known (no fresh status, a failed lookup) — unless
+/// `force` is set. While such a job is in
 /// flight the server is not allocated to matches.
 #[utoipa::path(
     post,
@@ -1480,6 +1530,155 @@ mod tests {
         assert_eq!(r.cvars_removed, vec!["matchzy_max_tech_pauses_allowed"]);
         assert_eq!(r.files_changed.len(), 2);
         assert!(config_report(Some(&json!(null))).is_none());
+    }
+
+    const EMPTY: &str = "hostname: x\nmap     : de_mirage\n\
+        players : 0 humans, 0 bots (12 max) (not hibernating) (unreserved)\n\n\
+          id     time ping loss      state   rate adr name\n#end\n";
+
+    /// An idle, available server whose agent sent an empty `status` just now.
+    fn idle_server(now: DateTime<Utc>) -> GameServer {
+        GameServer {
+            id: GameServerId::new(),
+            name: "box".into(),
+            game_id: portal_core::ids::GameId::new(),
+            ip_address: "203.0.113.10".parse().unwrap(),
+            port: 27015,
+            gotv_port: None,
+            region: "eu-west".into(),
+            enabled: true,
+            allow_pugs: true,
+            status: GameServerStatus::Available,
+            current_match_id: None,
+            agent_cert_serial: None,
+            agent_cert_expires_at: None,
+            agent_version: Some("0.3.0".into()),
+            last_heartbeat_at: Some(now),
+            last_gamestate: Some(portal_core::types::AgentGamestate::None),
+            last_map: None,
+            last_player_count: Some(0),
+            last_status_output: Some(EMPTY.into()),
+            last_status_at: Some(now),
+            enrollment_token_hash: None,
+            enrollment_token_expires_at: None,
+            has_demo_token: false,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn safety(server: &GameServer, connected: bool, failed: LookupFailures) -> UpdateSafety {
+        assess_safety(server, connected, None, &[], failed, Utc::now())
+    }
+
+    #[test]
+    fn an_idle_server_needs_no_force() {
+        let s = safety(&idle_server(Utc::now()), true, LookupFailures::default());
+        assert_eq!(s.humans_connected, Some(0));
+        assert!(!s.restart_needs_force, "{:?}", s.reasons);
+        assert!(s.reasons.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_player_count_needs_force() {
+        let now = Utc::now();
+        let unknown = "player count unknown (no fresh CS2 status from the agent in the last 2 \
+                       minutes)";
+        // No status at all (agent sends none, or RCON is down).
+        let mut server = idle_server(now);
+        server.last_status_output = None;
+        server.last_status_at = None;
+        let s = safety(&server, true, LookupFailures::default());
+        assert_eq!(s.humans_connected, None);
+        assert!(s.restart_needs_force);
+        assert_eq!(s.reasons, vec![unknown]);
+        // A status, but a stale one.
+        let mut server = idle_server(now);
+        server.last_status_at = Some(now - Duration::minutes(5));
+        assert_eq!(
+            safety(&server, true, LookupFailures::default()).reasons,
+            vec![unknown]
+        );
+        // The agent is away: its last status says nothing about now.
+        assert_eq!(
+            safety(&idle_server(now), false, LookupFailures::default()).reasons,
+            vec![unknown]
+        );
+    }
+
+    #[test]
+    fn a_busy_server_or_a_loaded_match_needs_force() {
+        let now = Utc::now();
+        let mut server = idle_server(now);
+        server.status = GameServerStatus::BusyExternal;
+        server.last_gamestate = Some(portal_core::types::AgentGamestate::Live);
+        let s = safety(&server, true, LookupFailures::default());
+        assert!(s.restart_needs_force);
+        assert_eq!(
+            s.reasons,
+            vec![
+                "the server is running a match the portal did not set up (status \
+                 busy_external)",
+                "MatchZy has a match loaded (gamestate live)",
+            ]
+        );
+
+        let mut server = idle_server(now);
+        server.status = GameServerStatus::InMatch;
+        assert_eq!(
+            safety(&server, true, LookupFailures::default()).reasons,
+            vec!["the server is hosting a portal match (status in_match)"]
+        );
+
+        // Reserved with no live reservation found: the status alone says so.
+        let mut server = idle_server(now);
+        server.status = GameServerStatus::Reserved;
+        assert_eq!(
+            safety(&server, true, LookupFailures::default()).reasons,
+            vec!["the server is reserved for a match"]
+        );
+
+        let mut server = idle_server(now);
+        server.last_gamestate = Some(portal_core::types::AgentGamestate::Warmup);
+        assert_eq!(
+            safety(&server, true, LookupFailures::default()).reasons,
+            vec!["MatchZy has a match loaded (gamestate warmup)"]
+        );
+        server.last_gamestate = None;
+        assert_eq!(
+            safety(&server, true, LookupFailures::default()).reasons,
+            vec!["match state unknown (no MatchZy gamestate from the agent)"]
+        );
+    }
+
+    #[test]
+    fn a_failed_lookup_needs_force() {
+        let server = idle_server(Utc::now());
+        let s = safety(
+            &server,
+            true,
+            LookupFailures {
+                reservation: true,
+                bookings: false,
+            },
+        );
+        assert!(s.restart_needs_force);
+        assert_eq!(
+            s.reasons,
+            vec!["whether a reservation is live could not be checked"]
+        );
+        let s = safety(
+            &server,
+            true,
+            LookupFailures {
+                reservation: false,
+                bookings: true,
+            },
+        );
+        assert_eq!(
+            s.reasons,
+            vec!["the server's bookings could not be checked"]
+        );
     }
 
     #[test]

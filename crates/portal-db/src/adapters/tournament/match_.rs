@@ -650,11 +650,18 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         // The match's completion sagas are retired the same way
         // (`compensated`: the result they carry was taken back):
         //
-        // - a completed one, because settlement treats a completed
-        //   `match_completion` saga as "progression already ran" and skips
-        //   it, so a result recorded on the reopened match — a forfeit for
-        //   the other side, a played result — would otherwise never be
-        //   advanced: the right team would stay out of the next round;
+        // - a completed one *of a forfeit*, because settlement treats a
+        //   completed `match_completion` saga as "progression already ran"
+        //   and skips it, so the result recorded on the reopened match — a
+        //   forfeit for the other side, a played result — would otherwise
+        //   never be advanced: the right team would stay out of the next
+        //   round. A forfeit's saga skipped the player-stats step, so
+        //   running a full saga for the next result counts nothing twice.
+        //   A *played* result's completed saga is kept: its stats are
+        //   counted, and a full saga for whatever is recorded next (a
+        //   ruling settles through `settle_result`) would count them again.
+        //   Reverting a played result only reopens round-robin / Swiss
+        //   matches, whose standings settlement re-derives either way;
         // - an unfinished one (failed, pending, running, paused), because
         //   each would complete the match with the *reverted* result: the
         //   lifecycle pass re-drives a failed saga, and the result re-recorded
@@ -664,7 +671,16 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
             UPDATE saga_executions SET status = 'compensated', updated_at = $2
             WHERE match_id = $1
               AND saga_type = 'match_completion'
-              AND status IN ('completed', 'failed', 'pending', 'running', 'paused')
+              AND (
+                  status IN ('failed', 'pending', 'running', 'paused')
+                  OR (
+                      status = 'completed'
+                      AND EXISTS (
+                          SELECT 1 FROM tournament_matches
+                          WHERE id = $1 AND status = 'forfeit'
+                      )
+                  )
+              )
               AND EXISTS (
                   SELECT 1 FROM tournament_matches
                   WHERE id = $1 AND status IN ('completed', 'forfeit')

@@ -938,8 +938,11 @@ pub trait TournamentMatchRepository: Send + Sync {
     /// them); a forfeit's synthetic walkover score is reset to 0–0 and its
     /// forfeit record is marked superseded (kept for audit, no longer
     /// active), so the reopened match can be forfeited again or played.
-    /// A decided match's completed `match_completion` saga is marked
-    /// `compensated`, so settlement progresses the next result recorded on it.
+    /// A decided match's unfinished `match_completion` sagas are marked
+    /// `compensated` (none may re-record the reverted result), and so is a
+    /// forfeit's completed one, so settlement progresses the next result
+    /// recorded on it. A played result's completed saga is kept, so its
+    /// player stats are never counted a second time.
     async fn clear_result(&self, id: TournamentMatchId) -> Result<TournamentMatch, DomainError>;
 
     /// Schedule a match.

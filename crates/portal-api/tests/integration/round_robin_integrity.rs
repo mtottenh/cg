@@ -3144,3 +3144,81 @@ async fn approving_a_review_does_not_resurrect_a_reverted_result() {
     let rows = standings(&app, &cup.tournament_id, &str_of(&m, "bracket_id")).await;
     assert_eq!(row_for(&rows, &p1(&m))["points"], 0, "{rows:?}");
 }
+
+// ============================================================================
+// 24. REVERTING A PLAYED RESULT KEEPS ITS COMPLETED SAGA
+// ============================================================================
+
+/// Total `matches_played` on the game profiles of a match's two players.
+async fn profile_matches_played(app: &TestApp, m: &Value) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(pgp.matches_played), 0)::int8
+         FROM player_game_profiles pgp
+         JOIN tournament_registrations r ON r.player_id = pgp.player_id
+         WHERE r.id = ANY($1)",
+    )
+    .bind(vec![
+        Uuid::parse_str(&p1(m)).unwrap(),
+        Uuid::parse_str(&p2(m)).unwrap(),
+    ])
+    .fetch_one(app.pool())
+    .await
+    .unwrap()
+}
+
+/// A played round-robin result is reverted and a ruling then records a new
+/// one. The played result's completed saga must survive the revert: retiring
+/// it made settlement run the full saga for the ruling, counting the
+/// players' stats a second time. Exactly one completed saga per decided
+/// result, stats counted once.
+#[tokio::test]
+async fn reverting_a_played_result_does_not_recount_player_stats() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-revert-stats", 3).await;
+    let m = matches(&app, &cup.tournament_id).await[0].clone();
+    let match_id = str_of(&m, "id");
+    confirm_win(&app, &cup, &m, &p1(&m), (2, 0)).await;
+    let played = profile_matches_played(&app, &m).await;
+    assert_eq!(played, 2, "one match counted for each player");
+
+    app.post_auth(&format!("/v1/admin/matches/{match_id}/progression/revert"))
+        .await
+        .assert_status(StatusCode::OK);
+    assert_eq!(saga_statuses(&app, &match_id).await, vec!["completed"]);
+
+    // The reopened match is `awaiting_result`: claim it straight away.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": p1(&m),
+                "participant1_score": 2,
+                "participant2_score": 1,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+            &cup.tokens[&p1(&m)],
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let claim_id = response.json::<Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    dispute_and_adjust_to_p2_win(&app, &cup, &m, &claim_id).await;
+
+    let after = get_match(&app, &cup.tournament_id, &match_id).await;
+    assert_eq!(
+        after["winner_registration_id"],
+        p2(&m).as_str(),
+        "{after:?}"
+    );
+    let rows = standings(&app, &cup.tournament_id, &str_of(&m, "bracket_id")).await;
+    assert_eq!(row_for(&rows, &p2(&m))["points"], 3, "{rows:?}");
+    assert_eq!(saga_statuses(&app, &match_id).await, vec!["completed"]);
+    assert_eq!(
+        profile_matches_played(&app, &m).await,
+        played,
+        "player stats counted a second time"
+    );
+}

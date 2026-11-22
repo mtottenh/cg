@@ -650,7 +650,10 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         // The match's completion sagas are retired the same way
         // (`compensated`: the result they carry was taken back):
         //
-        // - a completed one *of a forfeit*, because settlement treats a
+        // - a completed one *of a forfeit* (the saga's own input says so —
+        //   not the match's current status: a played result's saga kept
+        //   across a revert must stay kept when a forfeit recorded on top of
+        //   it is reverted in turn), because settlement treats a
         //   completed `match_completion` saga as "progression already ran"
         //   and skips it, so the result recorded on the reopened match — a
         //   forfeit for the other side, a played result — would otherwise
@@ -673,13 +676,7 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
               AND saga_type = 'match_completion'
               AND (
                   status IN ('failed', 'pending', 'running', 'paused')
-                  OR (
-                      status = 'completed'
-                      AND EXISTS (
-                          SELECT 1 FROM tournament_matches
-                          WHERE id = $1 AND status = 'forfeit'
-                      )
-                  )
+                  OR (status = 'completed' AND input_data->>'is_forfeit' = 'true')
               )
               AND EXISTS (
                   SELECT 1 FROM tournament_matches

@@ -3351,3 +3351,33 @@ async fn review_approval_after_a_reverted_played_result_advances_the_stage() {
     );
 }
 
+/// A played result is reverted, a forfeit is recorded and reverted in turn,
+/// and a ruling then records a played result. Reverting the forfeit must not
+/// retire the *played* result's completed saga (it was judged by the match's
+/// status, `forfeit` at that moment): settlement would then run the full
+/// saga for the ruling and count the players' stats again.
+#[tokio::test]
+async fn reverting_a_forfeit_keeps_an_earlier_played_results_saga() {
+    let app = TestApp::new().await;
+    let cup = round_robin(&app, "rr-forfeit-over-played", 3).await;
+    let m = matches(&app, &cup.tournament_id).await[0].clone();
+    let match_id = str_of(&m, "id");
+    confirm_win(&app, &cup, &m, &p1(&m), (2, 0)).await;
+    let played = profile_matches_played(&app, &m).await;
+    app.post_auth(&format!("/v1/admin/matches/{match_id}/progression/revert"))
+        .await
+        .assert_status(StatusCode::OK);
+    admin_forfeit(&app, &cup, &match_id, &p2(&m)).await;
+    revert_and_expect_reopened(&app, &cup, &match_id).await;
+    assert_eq!(saga_statuses(&app, &match_id).await, vec!["completed"]);
+
+    let claim_id = claim_reopened(&app, &cup, &m).await;
+    dispute_and_adjust_to_p2_win(&app, &cup, &m, &claim_id).await;
+    assert_eq!(saga_statuses(&app, &match_id).await, vec!["completed"]);
+    assert_eq!(
+        profile_matches_played(&app, &m).await,
+        played,
+        "player stats counted a second time"
+    );
+}
+

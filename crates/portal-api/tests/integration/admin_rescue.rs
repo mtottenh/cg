@@ -519,8 +519,9 @@ async fn extending_an_expired_check_in_window_prevents_the_forfeit() {
     response.assert_status(StatusCode::OK);
     let m = response.json::<Value>()["data"].clone();
     assert_eq!(m["status"], "checking_in");
+    // Seeding is random, so the side that checked in may be either slot.
     assert!(
-        m["participant1_checked_in_at"].is_string(),
+        m["participant1_checked_in_at"].is_string() || m["participant2_checked_in_at"].is_string(),
         "the check-in already made is kept: {m}"
     );
 

@@ -870,8 +870,8 @@ async fn an_invalid_matchzy_config_can_be_cleared_and_reloaded() {
     let server_id = create_server(&app, "rescue-server-1").await;
     let agent = connect_idle_agent(&mut app, &server_id).await;
 
-    // A reload that cannot build a config is refused before anything is
-    // touched: nothing reaches the server.
+    // A reload that cannot build a config (a side with nobody who could
+    // join) is refused before anything is touched: nothing reaches the server.
     let response = app
         .post_json(
             &format!("/v1/matches/{mid}/server/reload"),
@@ -880,7 +880,7 @@ async fn an_invalid_matchzy_config_can_be_cleared_and_reloaded() {
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
     assert!(
-        response.text().contains("no usable Steam ID"),
+        response.text().contains("have no linked Steam ID"),
         "{}",
         response.text()
     );

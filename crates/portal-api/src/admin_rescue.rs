@@ -575,26 +575,26 @@ pub struct RosterCheckResponse {
 }
 
 impl RosterCheckResponse {
-    /// The problems that stop a config from being built at all (as opposed
-    /// to a short-handed team, which loads but cannot ready up).
+    /// The problems that stop a config from being built at all. Follows
+    /// `game_server_flow::roster_for`: a player without a usable Steam ID is
+    /// left off the whitelist, and only a team with nobody usable blocks.
+    /// A short-handed team loads but cannot ready up, so it does not block.
     fn blocking_problems(&self) -> Vec<String> {
         let mut out = self.problems.clone();
         for team in &self.teams {
-            let invalid: Vec<&str> = team
-                .players
-                .iter()
-                .filter(|p| !p.valid)
-                .map(|p| p.display_name.as_str())
-                .collect();
-            if !invalid.is_empty() {
+            if team.players.is_empty() {
+                out.push(format!("\"{}\" has no players", team.name));
+            } else if team.usable_players == 0 {
+                let invalid: Vec<&str> = team
+                    .players
+                    .iter()
+                    .map(|p| p.display_name.as_str())
+                    .collect();
                 out.push(format!(
-                    "players on \"{}\" have no usable Steam ID: {}",
+                    "players on \"{}\" have no linked Steam ID: {}",
                     team.name,
                     invalid.join(", ")
                 ));
-            }
-            if team.players.is_empty() {
-                out.push(format!("\"{}\" has no players", team.name));
             }
         }
         out

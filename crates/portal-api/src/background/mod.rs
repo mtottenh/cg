@@ -612,10 +612,23 @@ async fn advance_stalled_veto_sessions(
                     continue;
                 }
                 match state.veto_service.start_session(session.id).await {
-                    Ok(_) => {
+                    Ok(started) => {
                         summary.veto_sessions_started += 1;
                         info!(match_id = %match_.id, session_id = %session.id,
                             "lifecycle: started veto session of a match already in pick_ban");
+                        // Sockets already in the lobby learn of the start
+                        // here; with both teams connected the coin is
+                        // flipped now rather than after the grace.
+                        if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_.id) {
+                            crate::handlers::veto_ws::broadcast_session_state(&lobby, started);
+                            crate::handlers::veto_ws::try_auto_coin_flip(
+                                &state.veto_service,
+                                &state.tournament_match_repo,
+                                match_.id,
+                                &lobby,
+                            )
+                            .await;
+                        }
                     }
                     Err(e) => {
                         error!(session_id = %session.id, error = %e, "lifecycle: veto start failed");
@@ -663,10 +676,17 @@ async fn advance_stalled_veto_sessions(
                     .record_coin_flip(session.id, winner, true)
                     .await
                 {
-                    Ok(_) => {
+                    Ok(updated) => {
                         summary.veto_coin_flips_auto += 1;
                         info!(match_id = %match_.id, session_id = %session.id,
                             "lifecycle: coin flipped after grace; veto in progress");
+                        // The first turn clock is now running: say so, or
+                        // it expires before any page shows whose turn it is.
+                        if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_.id) {
+                            crate::handlers::veto_ws::broadcast_coin_flip(
+                                &lobby, &match_, winner, updated,
+                            );
+                        }
                     }
                     Err(e) => {
                         error!(session_id = %session.id, error = %e, "lifecycle: auto coin flip failed");

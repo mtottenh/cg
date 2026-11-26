@@ -1598,3 +1598,80 @@ async fn test_ws_overlapping_reconnect_keeps_the_team_present() {
         "once the surviving socket closes, the departure is announced"
     );
 }
+
+// ============================================================================
+// CHECK-IN HAND-OFF: sockets already in the lobby learn the veto has started
+// ============================================================================
+
+/// Both captains sit on the match page through check-in, so no socket joins
+/// after the session starts. The second check-in itself must announce the
+/// session and flip the coin — it used to do neither, and the first turn
+/// timed out into a random ban before either page showed a veto.
+#[tokio::test]
+async fn test_ws_second_check_in_announces_veto_and_flips_coin() {
+    let mut app = TestApp::new().await;
+    let fixture = TwoTeamMatchFixture::new(app.pool(), TEST_JWT_SECRET).await;
+    // The state the lifecycle pass leaves at window-open: checking_in,
+    // veto-gated, with a pre-created pending session.
+    VetoSessionBuilder::new()
+        .match_id_from_uuid(fixture.match_id)
+        .bo3()
+        .build_persisted(app.pool())
+        .await;
+    sqlx::query(
+        "UPDATE tournament_matches \
+         SET status = 'checking_in', veto_required = true, \
+             scheduled_at = NOW(), check_in_deadline = NOW() + INTERVAL '10 minutes' \
+         WHERE id = $1",
+    )
+    .bind(fixture.match_id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    let addr = app.start_server().await;
+    let match_id = fixture.match_id.to_string();
+    let (mut ws_a, mut ws_b) = connect_both_teams(
+        addr,
+        &match_id,
+        &fixture.team_a.captain.token,
+        &fixture.team_b.captain.token,
+    )
+    .await;
+
+    for (reg, token) in [
+        (fixture.reg_a_id, &fixture.team_a.captain.token),
+        (fixture.reg_b_id, &fixture.team_b.captain.token),
+    ] {
+        let response = app
+            .post_json_with_token(
+                &format!(
+                    "/v1/tournaments/{}/matches/{match_id}/check-in",
+                    fixture.tournament_id
+                ),
+                &serde_json::json!({ "registration_id": reg.to_string() }),
+                token,
+            )
+            .await;
+        response.assert_status(StatusCode::OK);
+    }
+
+    for (who, ws) in [("team A", &mut ws_a), ("team B", &mut ws_b)] {
+        let mut saw_flip = false;
+        let mut in_progress = false;
+        while let Some(msg) = next_within(ws, 3000).await {
+            match msg {
+                ServerMessage::CoinFlipResult { .. } => saw_flip = true,
+                ServerMessage::VetoStateUpdate { session } => {
+                    in_progress = session["status"] == "in_progress";
+                }
+                _ => {}
+            }
+            if saw_flip && in_progress {
+                break;
+            }
+        }
+        assert!(saw_flip, "{who} never saw the coin flip");
+        assert!(in_progress, "{who} never saw the session go in_progress");
+    }
+}

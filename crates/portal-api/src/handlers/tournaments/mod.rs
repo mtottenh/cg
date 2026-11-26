@@ -279,6 +279,7 @@ pub(super) async fn auto_create_veto_session(
                 session_id = %existing.session.id,
                 "Started pre-created veto session on pick_ban transition"
             );
+            announce_veto_started(state, match_.id).await;
         }
         return Ok(());
     }
@@ -360,6 +361,31 @@ pub(super) async fn auto_create_veto_session(
         format = %veto_format.id,
         "Auto-created and started veto session on pick_ban transition"
     );
+    announce_veto_started(state, match_.id).await;
 
     Ok(())
+}
+
+/// Tell the sockets already in a match's lobby that its veto session has
+/// started, and flip the coin at once when both teams are connected.
+///
+/// Both captains normally sit on the match page through check-in, so no
+/// socket *joins* after the session starts — and joining was the only thing
+/// that announced it or flipped the coin. Without this the flip waited for
+/// the lifecycle grace, ran unseen, and the first turn timed out into a
+/// random ban before either page showed a veto at all.
+async fn announce_veto_started(state: &TournamentState, match_id: portal_core::TournamentMatchId) {
+    let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_id) else {
+        return;
+    };
+    if let Ok(started) = state.veto_service.get_session_state(match_id).await {
+        crate::handlers::veto_ws::broadcast_session_state(&lobby, started.session);
+    }
+    crate::handlers::veto_ws::try_auto_coin_flip(
+        &state.veto_service,
+        &state.tournament_match_repo,
+        match_id,
+        &lobby,
+    )
+    .await;
 }

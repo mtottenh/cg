@@ -195,6 +195,16 @@ where
             )));
         }
 
+        // A proposal stays open for its whole TTL, long after its earlier
+        // slots have gone by. Accepting one of those scheduled the match in
+        // the past: check-in opened at once and whoever was not online was
+        // forfeited as a no-show ten minutes later.
+        if command.selected_time <= Utc::now() {
+            return Err(DomainError::InvalidState(
+                "That time has already passed. Pick a later time or propose a new one.".to_string(),
+            ));
+        }
+
         // Validate responder is the opponent
         let tournament_match = self
             .match_repo
@@ -205,6 +215,16 @@ where
         self.validate_responder_is_opponent(command.accepted_by, &proposal, &tournament_match)
             .await?;
 
+        // Only a match still waiting for a time can take one. A proposal
+        // that outlived that (the match was scheduled another way, started,
+        // forfeited...) must not rewind it to `scheduled`.
+        if !tournament_match.status.can_schedule() {
+            return Err(DomainError::InvalidState(format!(
+                "Match {} cannot be scheduled in status {:?}",
+                proposal.match_id, tournament_match.status
+            )));
+        }
+
         // Update proposal
         proposal.status = ProposalStatus::Accepted;
         proposal.selected_time = Some(command.selected_time);
@@ -213,6 +233,21 @@ where
 
         let updated_proposal = self.proposal_repo.update(&proposal).await?;
 
+        // The match now has its time: any other proposal still pending on
+        // it (two captains proposing at the same moment) is void, and left
+        // pending it would resurface as the active one.
+        for other in self
+            .proposal_repo
+            .find_by_match_id(proposal.match_id)
+            .await?
+        {
+            if other.id != updated_proposal.id && other.status == ProposalStatus::Pending {
+                let mut cancelled = other;
+                cancelled.status = ProposalStatus::Cancelled;
+                self.proposal_repo.update(&cancelled).await?;
+            }
+        }
+
         // Update match: first set scheduled_at, then update status
         let update = UpdateTournamentMatch {
             scheduled_at: Some(command.selected_time),
@@ -220,11 +255,27 @@ where
         };
         self.match_repo.update(proposal.match_id, update).await?;
 
-        // Update status to Scheduled
-        let updated_match = self
-            .match_repo
-            .update_status(proposal.match_id, TournamentMatchStatus::Scheduled)
-            .await?;
+        // Then the status — through the lifecycle service when it is wired,
+        // so the transition is recorded against the accepting user.
+        let updated_match = if let Some(transitioner) = &self.match_transitioner {
+            transitioner
+                .transition_status(
+                    proposal.match_id,
+                    TournamentMatchStatus::Scheduled,
+                    crate::entities::match_lifecycle::TransitionTrigger::User(
+                        command.accepted_by.user_id,
+                    ),
+                    Some(format!(
+                        "Schedule proposal accepted for {}",
+                        command.selected_time
+                    )),
+                )
+                .await?
+        } else {
+            self.match_repo
+                .update_status(proposal.match_id, TournamentMatchStatus::Scheduled)
+                .await?
+        };
 
         Ok((updated_proposal, updated_match))
     }

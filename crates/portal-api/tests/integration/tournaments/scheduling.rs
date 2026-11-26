@@ -972,3 +972,130 @@ async fn test_admin_schedule_records_an_audit_row_with_the_admin_notes() {
         "P-84: the audit row must name the admin who forced the schedule"
     );
 }
+
+/// Propose two future slots as the dev user; returns the proposal id.
+async fn propose_two_slots(app: &TestApp, tournament_id: &str, match_id: &str) -> String {
+    let time1 = chrono::Utc::now() + chrono::Duration::hours(24);
+    let time2 = chrono::Utc::now() + chrono::Duration::hours(48);
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
+            &json!({ "proposed_times": [time1.to_rfc3339(), time2.to_rfc3339()] }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    body["data"]["id"].as_str().unwrap().to_string()
+}
+
+async fn match_status(app: &TestApp, match_id: &str) -> String {
+    sqlx::query_scalar("SELECT status FROM tournament_matches WHERE id = $1::uuid")
+        .bind(match_id)
+        .fetch_one(app.pool())
+        .await
+        .unwrap()
+}
+
+/// A proposal outlives its earlier slots. Accepting one that has gone by
+/// used to schedule the match in the past, open check-in at once and forfeit
+/// whoever was not online.
+#[tokio::test]
+async fn test_accept_rejects_a_slot_that_has_already_passed() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "accept-past-slot").await;
+    let proposal_id = propose_two_slots(&app, &tournament_id, &match_id).await;
+
+    // Time passes: the first slot is now an hour ago.
+    sqlx::query(
+        "UPDATE schedule_proposals \
+         SET proposed_times = ARRAY[NOW() - INTERVAL '1 hour', proposed_times[2]] \
+         WHERE id = $1::uuid",
+    )
+    .bind(&proposal_id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
+        ))
+        .await;
+    let body: serde_json::Value = response.json();
+    let past = body["data"]["proposed_times"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let future = body["data"]["proposed_times"][1]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept"),
+            &json!({ "proposal_id": proposal_id, "selected_time": past }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(match_status(&app, &match_id).await, "ready");
+
+    // The proposal is still open, and its remaining slot still works.
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept"),
+            &json!({ "proposal_id": proposal_id, "selected_time": future }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(match_status(&app, &match_id).await, "scheduled");
+
+    // The acceptance is on the match's status history.
+    let logged: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM match_status_log \
+         WHERE match_id = $1::uuid AND from_status = 'ready' AND to_status = 'scheduled'",
+    )
+    .bind(&match_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(logged, 1);
+}
+
+/// A proposal left pending after its match moved on must not drag the match
+/// back to `scheduled`.
+#[tokio::test]
+async fn test_accept_rejects_a_match_that_is_no_longer_ready() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "accept-not-ready").await;
+    let proposal_id = propose_two_slots(&app, &tournament_id, &match_id).await;
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
+        ))
+        .await;
+    let body: serde_json::Value = response.json();
+    let slot = body["data"]["proposed_times"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    sqlx::query("UPDATE tournament_matches SET status = 'in_progress' WHERE id = $1::uuid")
+        .bind(&match_id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept"),
+            &json!({ "proposal_id": proposal_id, "selected_time": slot }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(match_status(&app, &match_id).await, "in_progress");
+}

@@ -901,3 +901,34 @@ async fn test_workshop_maps_emit_matchzy_tokens_in_config() {
         .expect("game row 1 materialized");
     assert_eq!(game1.map_id.as_deref(), Some("de_cache_ws"));
 }
+
+/// A tournament that has not opted in to game servers gets no `going_live`
+/// event, so veto completion itself must start the match — otherwise it sits
+/// in `pick_ban` and nobody can report a result.
+#[tokio::test]
+async fn test_veto_completion_starts_match_without_game_server() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "veto-no-server").await;
+    match_to_pick_ban(&app, &tournament_id, &match_id).await;
+
+    portal_api::game_server_flow::on_veto_completed(&state, match_id.parse().unwrap()).await;
+
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tournament_matches WHERE id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "in_progress");
+
+    // No reservation was created for a tournament that is not opted in.
+    let reservations: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM server_reservations WHERE match_id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(reservations, 0);
+}

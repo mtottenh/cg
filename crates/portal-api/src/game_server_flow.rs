@@ -130,7 +130,24 @@ pub async fn on_veto_completed(state: &AppState, match_id: TournamentMatchId) {
             .get_tournament(match_.tournament_id)
             .await?;
         let settings = GameServerSettings::from_tournament_settings(&tournament.settings);
-        if !settings.enabled {
+        if !settings.enabled || !state.gameserver_enabled {
+            // No server will be provisioned, so no `going_live` event will
+            // ever move the match on: start it here. Without this a finished
+            // veto left the match in `pick_ban` for good, and results can
+            // only be reported from `in_progress`.
+            if match_.status == TournamentMatchStatus::PickBan {
+                state
+                    .match_lifecycle_service
+                    .transition(
+                        match_id,
+                        TournamentMatchStatus::InProgress,
+                        TransitionTrigger::System {
+                            job_name: "veto_completed".to_string(),
+                        },
+                        Some("Map veto completed; no game server for this tournament".to_string()),
+                    )
+                    .await?;
+            }
             return Ok::<Option<ServerReservation>, DomainError>(None);
         }
         let reservation = request_assignment(state, match_id).await?;

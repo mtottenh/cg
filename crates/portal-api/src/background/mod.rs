@@ -336,6 +336,11 @@ pub async fn run_lifecycle_pass(
     process_veto_timeouts(state, &mut summary).await;
 
     // ------------------------------------------------------------------
+    // 7a': veto setup that failed when the check-in window opened
+    // ------------------------------------------------------------------
+    repair_missing_veto_setup(state, cfg, &mut summary).await;
+
+    // ------------------------------------------------------------------
     // 7b': veto sessions stalled on a step nobody will take (see fn doc)
     // ------------------------------------------------------------------
     advance_stalled_veto_sessions(state, cfg, now, &mut summary).await;
@@ -572,6 +577,72 @@ pub(crate) async fn ensure_veto_session(
     info!(match_id = %match_.id, session_id = %session.id,
         "lifecycle: veto session pre-created; starts when both sides check in");
     Ok(true)
+}
+
+/// Retry veto setup for matches in check-in that should be veto-gated.
+///
+/// `ensure_veto_session` ran once, when the window opened, and a failure was
+/// only logged: `veto_required` stayed false and, once both teams checked
+/// in, the match skipped the veto and went straight to `in_progress`. This
+/// re-tries it each pass. A session that exists while the flag is still
+/// false (the flag write failed after the session was created) gets the
+/// flag. Matches whose tournament has no veto are a cheap no-op.
+async fn repair_missing_veto_setup(
+    state: &AppState,
+    cfg: &LifecycleConfig,
+    summary: &mut LifecyclePassSummary,
+) {
+    let matches = match state
+        .tournament_match_repo
+        .list_checking_in_without_veto(cfg.batch_limit)
+        .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            error!(error = %e, "lifecycle: list_checking_in_without_veto failed");
+            summary.errors += 1;
+            return;
+        }
+    };
+    for match_ in matches {
+        if state
+            .veto_service
+            .get_session_state(match_.id)
+            .await
+            .is_ok()
+        {
+            match state
+                .tournament_match_repo
+                .set_veto_required(match_.id, true)
+                .await
+            {
+                Ok(_) => {
+                    summary.veto_sessions_created += 1;
+                    warn!(match_id = %match_.id,
+                        "lifecycle: veto session existed without the veto flag; flag set");
+                }
+                Err(e) => {
+                    error!(match_id = %match_.id, error = %e,
+                        "lifecycle: could not set the veto flag");
+                    summary.errors += 1;
+                }
+            }
+            continue;
+        }
+        match ensure_veto_session(state, &match_).await {
+            Ok(true) => {
+                summary.veto_sessions_created += 1;
+                warn!(match_id = %match_.id,
+                    "lifecycle: veto session set up on retry after the window opened");
+            }
+            Ok(false) => {}
+            Err(e) => {
+                error!(match_id = %match_.id, error = %e,
+                    "lifecycle: veto setup retry failed");
+                summary.errors += 1;
+            }
+        }
+    }
 }
 
 /// Veto sessions waiting on a step nobody will take.

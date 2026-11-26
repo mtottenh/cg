@@ -394,6 +394,27 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         Ok(rows.into_iter().map(TournamentMatch::from).collect())
     }
 
+    async fn list_checking_in_without_veto(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError> {
+        let rows = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            SELECT * FROM tournament_matches
+            WHERE status = 'checking_in'
+              AND veto_required = false
+            ORDER BY updated_at
+            LIMIT $1
+            ",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(TournamentMatch::from).collect())
+    }
+
     async fn set_check_in_deadline(
         &self,
         id: TournamentMatchId,

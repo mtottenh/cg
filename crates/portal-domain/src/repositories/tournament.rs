@@ -855,6 +855,14 @@ pub trait TournamentMatchRepository: Send + Sync {
         limit: i64,
     ) -> Result<Vec<TournamentMatch>, DomainError>;
 
+    /// Matches in `checking_in` that are not veto-gated. Most simply have no
+    /// veto; the lifecycle pass re-tries veto setup for the rest, whose
+    /// one-shot setup when the window opened failed.
+    async fn list_checking_in_without_veto(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError>;
+
     /// Set the check-in deadline for a match.
     ///
     /// Written when the automation loop opens the check-in window; nothing

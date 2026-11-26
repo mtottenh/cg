@@ -215,6 +215,28 @@ async fn test_pass_auto_creates_veto_session_when_tournament_configures_format()
         .json();
     assert_eq!(session_status(&body), "pending");
 
+    // Setup failing when the window opened (no session, flag still false)
+    // used to skip the veto for good; the next pass sets it up again.
+    let match_uuid = uuid::Uuid::parse_str(&match_id).unwrap();
+    sqlx::query("DELETE FROM veto_sessions WHERE match_id = $1")
+        .bind(match_uuid)
+        .execute(app.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tournament_matches SET veto_required = false WHERE id = $1")
+        .bind(match_uuid)
+        .execute(app.pool())
+        .await
+        .unwrap();
+    let repaired = run_lifecycle_pass(&state, &test_config(), false).await;
+    assert_eq!(repaired.errors, 0, "pass should not error: {repaired:?}");
+    assert_eq!(repaired.veto_sessions_created, 1);
+    let body: serde_json::Value = app
+        .get_auth(&format!("/v1/matches/{match_id}/veto"))
+        .await
+        .json();
+    assert_eq!(session_status(&body), "pending");
+
     // The match reaches pick/ban (an admin override here; both-checked-in
     // takes the same hook): the pre-created session is started.
     app.post_json(

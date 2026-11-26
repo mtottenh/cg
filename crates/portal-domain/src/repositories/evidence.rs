@@ -193,6 +193,14 @@ pub trait SagaExecutionRepository: Send + Sync {
         limit: i64,
     ) -> Result<Vec<SagaExecution>, DomainError>;
 
+    /// How many sagas of a type have been run for a match. Each re-drive of
+    /// a completion saga creates a new row, so this counts attempts.
+    async fn count_for_match(
+        &self,
+        saga_type: &str,
+        match_id: TournamentMatchId,
+    ) -> Result<i64, DomainError>;
+
     /// Find sagas by status.
     async fn find_by_status(&self, status: SagaStatus) -> Result<Vec<SagaExecution>, DomainError>;
 

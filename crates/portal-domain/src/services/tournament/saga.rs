@@ -305,6 +305,15 @@ where
             .await
     }
 
+    /// How many sagas of a type have been run for a match.
+    pub async fn count_for_match(
+        &self,
+        saga_type: &str,
+        match_id: portal_core::TournamentMatchId,
+    ) -> Result<i64, DomainError> {
+        self.saga_repo.count_for_match(saga_type, match_id).await
+    }
+
     /// Record that a re-drive of this saga was attempted.
     ///
     /// Bumps `retry_count` so the lifecycle re-drive pass gives up after

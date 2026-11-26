@@ -960,6 +960,31 @@ async fn redrive_stuck_completion_sagas(
         }
 
         let match_id = input.match_id;
+
+        // Every re-drive runs a fresh saga row, with a fresh retry budget of
+        // its own, so a step that keeps failing used to grow a new row on
+        // every pass. Stop at a fixed number of attempts per match and hand
+        // it to an admin instead.
+        match coordinator
+            .count_for_match(MATCH_COMPLETION_SAGA, match_id)
+            .await
+        {
+            Ok(attempts) if attempts >= MAX_COMPLETION_ATTEMPTS => {
+                warn!(%saga_id, %match_id, attempts,
+                    "lifecycle: giving up on a completion saga that keeps failing");
+                raise_progression_stall(state, &input, saga_id).await;
+                if let Err(e) = coordinator.record_retry(&mut execution, true).await {
+                    error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
+                    summary.errors += 1;
+                }
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(%saga_id, error = %e, "lifecycle: could not count saga attempts");
+            }
+        }
+
         let saga_result = state
             .match_completion_saga
             .execute_completion(input.clone())
@@ -998,6 +1023,10 @@ async fn redrive_stuck_completion_sagas(
         }
     }
 }
+
+/// Completion saga runs (the first plus re-drives) per match before the
+/// re-drive pass gives up and raises a progression-stall review.
+const MAX_COMPLETION_ATTEMPTS: i64 = 5;
 
 /// How many times [`settle_finished_stages`] tries a stage that stays open
 /// before leaving it alone until one of its matches changes.

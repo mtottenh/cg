@@ -20,6 +20,10 @@ use crate::services::tournament::registration_actor::{RegistrationActor, find_ac
 /// Default time-to-live for schedule proposals (48 hours).
 const DEFAULT_PROPOSAL_TTL_HOURS: i64 = 48;
 
+/// How far behind the clock an admin-set time may be and still count as
+/// "now" rather than as a time in the past.
+const PAST_TOLERANCE_MINUTES: i64 = 5;
+
 /// Service for managing match scheduling through proposals.
 #[derive(Clone)]
 pub struct SchedulingService<SPR, TMR, TRR, LTMR>
@@ -223,6 +227,13 @@ where
                 "Match {} cannot be scheduled in status {:?}",
                 proposal.match_id, tournament_match.status
             )));
+        }
+
+        if let Some(clash) = self
+            .schedule_clash(&tournament_match, command.selected_time)
+            .await?
+        {
+            return Err(DomainError::InvalidState(clash));
         }
 
         // One transaction: the proposal is accepted (only if still pending
@@ -466,7 +477,21 @@ where
         scheduled_at: DateTime<Utc>,
         admin_id: UserId,
         notes: Option<String>,
+        allow_past: bool,
     ) -> Result<TournamentMatch, DomainError> {
+        // A time that has already gone by opens check-in at once. That is
+        // what "start it now" wants, so "now" (allowing for the request's
+        // travel time) is always accepted; anything older has to be asked
+        // for explicitly, because a mistyped date would otherwise put both
+        // teams on a no-show clock.
+        if !allow_past && scheduled_at < Utc::now() - Duration::minutes(PAST_TOLERANCE_MINUTES) {
+            return Err(DomainError::InvalidState(
+                "That time has already passed. Pick a future time, or confirm that the match \
+                 should be scheduled in the past (check-in opens immediately)."
+                    .to_string(),
+            ));
+        }
+
         let tournament_match = self
             .match_repo
             .find_by_id(match_id)
@@ -563,6 +588,31 @@ where
         }
 
         Ok(results)
+    }
+
+    /// Why `candidate` collides with another match of the tournament, if it
+    /// does: either team already playing within two hours, or — when the
+    /// tournament shares one game server — any match within the hour.
+    pub async fn schedule_clash(
+        &self,
+        tournament_match: &TournamentMatch,
+        candidate: DateTime<Utc>,
+    ) -> Result<Option<String>, DomainError> {
+        let context = self
+            .match_repo
+            .schedule_context(tournament_match.id, candidate)
+            .await?;
+        Ok(super::schedule_clash::find_schedule_clash(
+            super::schedule_clash::ScheduleSubject {
+                match_id: tournament_match.id,
+                participants: [
+                    tournament_match.participant1_registration_id,
+                    tournament_match.participant2_registration_id,
+                ],
+            },
+            candidate,
+            &context,
+        ))
     }
 
     /// Get a proposal by id.

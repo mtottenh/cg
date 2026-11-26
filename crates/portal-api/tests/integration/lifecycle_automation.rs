@@ -660,3 +660,44 @@ async fn test_admin_can_set_a_time_on_a_scheduled_match_that_has_none() {
         "checking_in"
     );
 }
+
+/// A match whose time is already past when it is set still gets a whole
+/// check-in window: lead plus grace from the moment the window opens, not a
+/// few minutes before a no-show forfeit.
+#[tokio::test]
+async fn test_a_match_scheduled_in_the_past_gets_a_full_check_in_window() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _, _) =
+        create_tournament_with_matches(&app, "lc-past-full-window").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &json!({
+                "scheduled_at": (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339(),
+                "allow_past": true
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let cfg = test_config();
+    run_lifecycle_pass(&state, &cfg, false).await;
+    assert_eq!(
+        get_match_status(&app, &tournament_id, &match_id).await,
+        "checking_in"
+    );
+    let (deadline,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT check_in_deadline FROM tournament_matches WHERE id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    let left = deadline.expect("deadline stamped") - chrono::Utc::now();
+    let full = cfg.check_in_lead + cfg.check_in_grace;
+    assert!(
+        left > full - chrono::Duration::minutes(1) && left <= full,
+        "expected about {full} left, got {left}"
+    );
+}

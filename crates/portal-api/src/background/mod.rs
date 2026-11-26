@@ -416,14 +416,9 @@ async fn open_check_in_window(
     // `scheduled` match carrying an early deadline is harmless — both
     // sweeps key off `status`, and the value is re-stamped on the retry.
     //
-    // Deadline: grace period from whichever is later — the scheduled time
-    // or now (a match scheduled in the past still gets a full grace window).
-    let base = match_
-        .scheduled_at
-        .map_or_else(Utc::now, |s| s.max(Utc::now()));
     if let Err(e) = state
         .tournament_match_repo
-        .set_check_in_deadline(match_id, base + cfg.check_in_grace)
+        .set_check_in_deadline(match_id, check_in_deadline_for(cfg, match_.scheduled_at))
         .await
     {
         error!(%match_id, error = %e, "lifecycle: failed to set check-in deadline");
@@ -461,6 +456,20 @@ async fn open_check_in_window(
     }
 }
 
+/// When a check-in window opening now should close.
+///
+/// Normally the grace period after the scheduled time. A window never lasts
+/// less than a full lead plus grace from the moment it opens, though: a
+/// match given a time that is minutes away, or already past, would otherwise
+/// leave both teams a few minutes to notice before a no-show forfeit.
+pub(crate) fn check_in_deadline_for(
+    cfg: &LifecycleConfig,
+    scheduled_at: Option<chrono::DateTime<Utc>>,
+) -> chrono::DateTime<Utc> {
+    let full_window = Utc::now() + cfg.check_in_lead + cfg.check_in_grace;
+    scheduled_at.map_or(full_window, |s| (s + cfg.check_in_grace).max(full_window))
+}
+
 /// Stamp a check-in deadline on a match stranded in `checking_in` without
 /// one, so the no-show pass can pick it up again. Idempotent: once the
 /// deadline is set the match no longer matches the repair query.
@@ -471,13 +480,9 @@ async fn repair_check_in_deadline(
     summary: &mut LifecyclePassSummary,
 ) {
     let match_id = match_.id;
-    let base = match_
-        .scheduled_at
-        .map_or_else(Utc::now, |s| s.max(Utc::now()));
-
     match state
         .tournament_match_repo
-        .set_check_in_deadline(match_id, base + cfg.check_in_grace)
+        .set_check_in_deadline(match_id, check_in_deadline_for(cfg, match_.scheduled_at))
         .await
     {
         Ok(_) => {

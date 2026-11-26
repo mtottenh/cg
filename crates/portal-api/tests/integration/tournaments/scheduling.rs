@@ -1336,3 +1336,127 @@ async fn test_accept_schedules_the_match_and_logs_who_accepted() {
     .await
     .assert_status(StatusCode::BAD_REQUEST);
 }
+
+// ============================================================================
+// CLASHES AND PAST TIMES
+// ============================================================================
+
+/// Give the tournament a second match between the same two sides that already
+/// has a time, so there is something to clash with.
+async fn add_scheduled_sibling_match(
+    app: &TestApp,
+    match_id: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) {
+    sqlx::query(
+        "INSERT INTO tournament_matches \
+         SELECT (jsonb_populate_record(m, jsonb_build_object( \
+             'id', gen_random_uuid(), 'match_number', 99, 'bracket_position', 'X99', \
+             'status', 'scheduled', 'scheduled_at', $2::timestamptz))).* \
+         FROM tournament_matches m WHERE m.id = $1::uuid",
+    )
+    .bind(match_id)
+    .bind(at)
+    .execute(app.pool())
+    .await
+    .unwrap();
+}
+
+/// A team cannot agree a time within two hours of another of its matches;
+/// an admin can set one, and is told about the clash.
+#[tokio::test]
+async fn test_a_team_cannot_be_double_booked() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "double-booked").await;
+    let proposal_id = propose_two_slots(&app, &tournament_id, &match_id).await;
+    let active: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
+        ))
+        .await
+        .json();
+    let slot = |i: usize| {
+        active["data"]["proposed_times"][i]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let first: chrono::DateTime<chrono::Utc> = slot(0).parse().unwrap();
+
+    // The same two teams already play 90 minutes after the first slot.
+    add_scheduled_sibling_match(&app, &match_id, first + chrono::Duration::minutes(90)).await;
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept"),
+            &json!({ "proposal_id": proposal_id, "selected_time": slot(0) }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert!(
+        response.text().contains("at least two hours apart"),
+        "{}",
+        response.text()
+    );
+    assert_eq!(match_status(&app, &match_id).await, "ready");
+
+    // An admin setting the same time is not refused, but is warned.
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &json!({ "scheduled_at": slot(0) }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(
+        body["data"]["schedule_warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("at least two hours apart")),
+        "{body}"
+    );
+
+    // A time clear of the other match carries no warning.
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &json!({ "scheduled_at": slot(1) }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert!(body["data"].get("schedule_warning").is_none(), "{body}");
+}
+
+/// An admin-set time that has already gone by has to be asked for: a mistyped
+/// date would otherwise open check-in on the spot.
+#[tokio::test]
+async fn test_admin_schedule_in_the_past_must_be_confirmed() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _) =
+        create_tournament_with_matches(&app, "admin-past-time").await;
+    let url = format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule");
+    let an_hour_ago = chrono::Utc::now() - chrono::Duration::hours(1);
+
+    let response = app
+        .post_json(&url, &json!({ "scheduled_at": an_hour_ago.to_rfc3339() }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(match_status(&app, &match_id).await, "ready");
+
+    // "Now" is not the past, even after the request's travel time.
+    let just_now = chrono::Utc::now() - chrono::Duration::seconds(20);
+    app.post_json(&url, &json!({ "scheduled_at": just_now.to_rfc3339() }))
+        .await
+        .assert_status(StatusCode::OK);
+
+    app.post_json(
+        &url,
+        &json!({ "scheduled_at": an_hour_ago.to_rfc3339(), "allow_past": true }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    assert_eq!(match_status(&app, &match_id).await, "scheduled");
+}

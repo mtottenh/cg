@@ -527,13 +527,26 @@ pub async fn admin_schedule_match(
 
     let match_ = state
         .scheduling_service
-        .admin_schedule(match_id, req.scheduled_at, auth.user_id, req.notes)
+        .admin_schedule(
+            match_id,
+            req.scheduled_at,
+            auth.user_id,
+            req.notes,
+            req.allow_past,
+        )
         .await?;
 
-    Ok(Json(DataResponse::new(
-        TournamentMatchResponse::from(match_),
-        request_id,
-    )))
+    // An admin may overrule a clash (they can see the whole evening), so it
+    // is reported back rather than refused.
+    let schedule_warning = state
+        .scheduling_service
+        .schedule_clash(&match_, req.scheduled_at)
+        .await
+        .unwrap_or_default();
+
+    let mut response = TournamentMatchResponse::from(match_);
+    response.schedule_warning = schedule_warning;
+    Ok(Json(DataResponse::new(response, request_id)))
 }
 
 /// Get standings for a tournament bracket.

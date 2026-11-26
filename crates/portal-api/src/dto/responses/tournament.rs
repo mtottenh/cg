@@ -589,6 +589,11 @@ pub struct TournamentMatchResponse {
     pub check_in_deadline: Option<DateTime<Utc>>,
     pub check_in_required: bool,
     pub veto_required: bool,
+    /// Set only in the reply to an admin setting the match time: why that
+    /// time collides with another match (a team playing twice within two
+    /// hours, or the one game server already taken). The time was applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule_warning: Option<String>,
 
     // Timestamps
     pub created_at: DateTime<Utc>,
@@ -631,6 +636,7 @@ impl From<TournamentMatch> for TournamentMatchResponse {
             check_in_deadline: m.check_in_deadline,
             check_in_required: m.check_in_required,
             veto_required: m.veto_required,
+            schedule_warning: None,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }

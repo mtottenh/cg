@@ -817,6 +817,21 @@ pub trait TournamentMatchRepository: Send + Sync {
         limit: i64,
     ) -> Result<Vec<TournamentMatch>, DomainError>;
 
+    /// What surrounds a candidate time for a match: the unfinished matches
+    /// of its tournament that already have a time within the team-clash
+    /// window, and whether the tournament shares a single game server.
+    ///
+    /// The default (nothing around, no shared server) keeps test doubles
+    /// that do not model scheduling valid.
+    async fn schedule_context(
+        &self,
+        match_id: TournamentMatchId,
+        candidate: DateTime<Utc>,
+    ) -> Result<crate::services::tournament::schedule_clash::ScheduleContext, DomainError> {
+        let _ = (match_id, candidate);
+        Ok(crate::services::tournament::schedule_clash::ScheduleContext::default())
+    }
+
     /// Cross-tournament query: matches in `checking_in` status whose
     /// `check_in_deadline` has passed.
     ///

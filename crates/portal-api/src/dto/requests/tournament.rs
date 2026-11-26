@@ -1009,6 +1009,11 @@ pub struct AdminScheduleRequest {
     /// Optional notes for the scheduling decision.
     #[serde(default)]
     pub notes: Option<String>,
+
+    /// Accept a time more than a few minutes in the past. Check-in opens
+    /// immediately for such a match, so it has to be asked for.
+    #[serde(default)]
+    pub allow_past: bool,
 }
 
 /// Query parameters for listing the current user's tournament matches.

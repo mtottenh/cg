@@ -39,6 +39,7 @@ mod registration_actor;
 mod result;
 mod result_review;
 mod saga;
+pub mod schedule_clash;
 mod scheduling;
 mod seeding;
 mod service;

@@ -1221,6 +1221,9 @@ pub struct ReservationPassSummary {
     pub load_retried: u32,
     /// Stale ready/live reservations reconciled via `get5_status`.
     pub reconciled: u32,
+    /// Reservations released because their match ended without the server
+    /// reporting it (forfeit, no-show, cancel, manual result).
+    pub released_finished: u32,
     /// Errors (each logged; the pass continues).
     pub errors: u32,
 }
@@ -1237,6 +1240,41 @@ pub async fn run_reservation_pass(state: &AppState) -> ReservationPassSummary {
         return summary;
     }
     let now = Utc::now();
+
+    // 0. Reservations whose match is already over. Only `series_end`
+    //    released a server; a forfeit, a no-show, a cancel or a manually
+    //    settled result left the reservation live for good, and with one
+    //    server every later match queued behind it forever. Runs first so
+    //    the freed server can go to a queued match in this same pass. (A
+    //    series that ends normally is released by `series_end` while the
+    //    match is still in_progress, so it never shows up here.)
+    match state
+        .server_reservation_repo
+        .list_live_for_finished_matches(50)
+        .await
+    {
+        Ok(finished) => {
+            for reservation in finished {
+                match cancel_assignment(state, reservation.match_id, "match ended").await {
+                    Ok(()) => {
+                        summary.released_finished += 1;
+                        tracing::info!(match_id = %reservation.match_id,
+                            reservation_id = %reservation.id,
+                            "lifecycle: released the server of a finished match");
+                    }
+                    Err(e) => {
+                        tracing::warn!(reservation_id = %reservation.id, error = %e,
+                            "releasing a finished match's reservation failed");
+                        summary.errors += 1;
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "lifecycle: list_live_for_finished_matches failed");
+            summary.errors += 1;
+        }
+    }
 
     // 1. Queued reservations → allocate + load.
     match state.server_reservation_repo.list_pending(50).await {

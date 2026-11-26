@@ -932,3 +932,55 @@ async fn test_veto_completion_starts_match_without_game_server() {
             .unwrap();
     assert_eq!(reservations, 0);
 }
+
+/// Only `series_end` used to release a server. A match that ends any other
+/// way (forfeit, no-show, cancel) kept its reservation live, and with one
+/// server every later match queued behind it forever.
+#[tokio::test]
+async fn test_pass_releases_server_of_a_forfeited_match() {
+    let app = TestApp::new().await;
+    let mut state = state_for(&app).await;
+    state.gameserver_enabled = true;
+    let (tournament_id, match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "forfeit-release").await;
+    let game_id = get_game_id_str(&app).await;
+    let server_id = seed_available_server(&state, &game_id, "Forfeit box").await;
+    match_to_pick_ban(&app, &tournament_id, &match_id).await;
+    let (reservation, _token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+
+    // A live match keeps its server: the pass must not touch it.
+    portal_api::game_server_flow::run_reservation_pass(&state).await;
+    assert!(
+        state
+            .server_reservation_repo
+            .find_live_by_match(match_id.parse().unwrap())
+            .await
+            .unwrap()
+            .is_some(),
+        "a match still being played must keep its reservation"
+    );
+
+    sqlx::query("UPDATE tournament_matches SET status = 'forfeit' WHERE id = $1::uuid")
+        .bind(&match_id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    let summary = portal_api::game_server_flow::run_reservation_pass(&state).await;
+    assert_eq!(summary.released_finished, 1);
+
+    let after = state
+        .server_reservation_repo
+        .find_by_id(reservation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.status, ReservationStatus::Cancelled);
+    let server_status: String = sqlx::query_scalar("SELECT status FROM game_servers WHERE id = $1")
+        .bind(server_id.as_uuid())
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(server_status, "available");
+}

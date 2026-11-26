@@ -1081,6 +1081,24 @@ impl ServerReservationRepository for PgServerReservationRepository {
         Ok(rows.into_iter().map(ServerReservation::from).collect())
     }
 
+    async fn list_live_for_finished_matches(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<ServerReservation>, DomainError> {
+        let rows = sqlx::query_as::<_, ServerReservationRow>(
+            "SELECT sr.* FROM server_reservations sr \
+             JOIN tournament_matches tm ON tm.id = sr.match_id \
+             WHERE sr.status IN ('pending', 'configuring', 'ready', 'live') \
+               AND tm.status IN ('completed', 'forfeit', 'cancelled') \
+             ORDER BY sr.created_at ASC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.into_iter().map(ServerReservation::from).collect())
+    }
+
     async fn list_stuck_configuring(
         &self,
         before: DateTime<Utc>,

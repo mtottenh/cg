@@ -583,6 +583,10 @@ pub struct TournamentMatchResponse {
     pub participant1_checked_in_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub participant2_checked_in_at: Option<DateTime<Utc>>,
+    /// When the open check-in window closes: a side not checked in by then
+    /// is forfeited as a no-show. Set once the window opens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_in_deadline: Option<DateTime<Utc>>,
     pub check_in_required: bool,
     pub veto_required: bool,
 
@@ -624,6 +628,7 @@ impl From<TournamentMatch> for TournamentMatchResponse {
             vod_url: m.vod_url,
             participant1_checked_in_at: m.participant1_checked_in_at,
             participant2_checked_in_at: m.participant2_checked_in_at,
+            check_in_deadline: m.check_in_deadline,
             check_in_required: m.check_in_required,
             veto_required: m.veto_required,
             created_at: m.created_at,

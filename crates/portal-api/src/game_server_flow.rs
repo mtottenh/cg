@@ -1676,22 +1676,84 @@ async fn reconcile_stale(
         return Ok(true);
     }
 
+    // The server holds no series any more (it restarted, or the match was
+    // ended on it) and reported no result. Maps that finished before that
+    // keep their rows; say how far the series got so the admin can decide
+    // between reloading it and entering the result.
+    let reason = match series_so_far(state, reservation).await {
+        Some((played, p1, p2)) if played > 0 => format!(
+            "the game server stopped holding the series after {played} finished map(s) \
+             ({p1}-{p2} so far; those map results are kept) — reload the match to play it \
+             again, or enter the result"
+        ),
+        _ => "no events received and server is idle — needs admin review".to_string(),
+    };
     state
         .server_reservation_repo
-        .release(
-            reservation.id,
-            ReservationStatus::Failed,
-            Some("no events received and server is idle — needs admin review"),
-        )
+        .release(reservation.id, ReservationStatus::Failed, Some(&reason))
         .await?;
-    broadcast_assignment(
-        state,
-        reservation.match_id,
-        "failed",
-        None,
-        Some("server went silent; match result needs admin review"),
-    );
+    broadcast_assignment(state, reservation.match_id, "failed", None, Some(&reason));
     Ok(true)
+}
+
+/// Finished maps recorded for the match: (count, won by participant 1,
+/// won by participant 2).
+async fn series_so_far(
+    state: &AppState,
+    reservation: &ServerReservation,
+) -> Option<(usize, usize, usize)> {
+    let match_ = get_match(state, reservation.match_id).await.ok()?;
+    let games = state
+        .tournament_match_game_repo
+        .list_by_match(reservation.match_id)
+        .await
+        .ok()?;
+    Some(tally_finished_maps(
+        games.iter().map(|g| g.winner_registration_id),
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ))
+}
+
+/// Count finished maps by their winners: (finished, won by participant 1,
+/// won by participant 2). Maps with no winner are not finished.
+fn tally_finished_maps(
+    winners: impl Iterator<Item = Option<portal_core::ids::TournamentRegistrationId>>,
+    participant1: Option<portal_core::ids::TournamentRegistrationId>,
+    participant2: Option<portal_core::ids::TournamentRegistrationId>,
+) -> (usize, usize, usize) {
+    let (mut p1, mut p2) = (0, 0);
+    for winner in winners.flatten() {
+        if Some(winner) == participant1 {
+            p1 += 1;
+        } else if Some(winner) == participant2 {
+            p2 += 1;
+        }
+    }
+    (p1 + p2, p1, p2)
+}
+
+#[cfg(test)]
+mod series_tally_tests {
+    use super::tally_finished_maps;
+    use portal_core::ids::TournamentRegistrationId;
+
+    #[test]
+    fn counts_only_finished_maps_by_winner() {
+        let (a, b) = (
+            TournamentRegistrationId::new(),
+            TournamentRegistrationId::new(),
+        );
+        let winners = vec![Some(a), Some(b), None, Some(a)];
+        assert_eq!(
+            tally_finished_maps(winners.into_iter(), Some(a), Some(b)),
+            (3, 2, 1)
+        );
+        assert_eq!(
+            tally_finished_maps(std::iter::empty(), Some(a), Some(b)),
+            (0, 0, 0)
+        );
+    }
 }
 
 // =============================================================================

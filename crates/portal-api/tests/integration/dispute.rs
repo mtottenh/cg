@@ -1312,6 +1312,20 @@ async fn test_resolving_a_dispute_clears_the_disputed_flag() {
     .assert_status(StatusCode::OK);
 
     assert!(!match_is_flagged_disputed(&app, &match_id).await);
+
+    // The players read the ruling by its effect, not as "upheld".
+    let message: String = sqlx::query_scalar(
+        "SELECT message FROM dispute_messages WHERE dispute_id = $1::uuid \
+         AND NOT is_internal ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&dispute_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert!(
+        message.starts_with("Ruling: the reported result stands"),
+        "{message}"
+    );
 }
 
 /// The overturn form takes a hand-typed winner id. One that was not

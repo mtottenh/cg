@@ -308,7 +308,21 @@ where
             dispute_id,
             author_user_id: resolved_by,
             author_type: AuthorType::Admin,
-            message: format!("Dispute upheld: {notes}"),
+            // Worded by effect: "upheld" read as "the dispute won", which is
+            // the opposite of what happens.
+            message: ruling_message(
+                &format!(
+                    "the reported result stands{}",
+                    match (
+                        dispute.original_participant1_score,
+                        dispute.original_participant2_score,
+                    ) {
+                        (Some(a), Some(b)) => format!(" ({a}-{b})"),
+                        _ => String::new(),
+                    }
+                ),
+                &notes,
+            ),
             evidence_ids: Vec::new(),
             is_internal: false,
         };
@@ -438,8 +452,11 @@ where
                     dispute_id,
                     author_user_id: resolved_by,
                     author_type: AuthorType::Admin,
-                    message: format!(
-                        "Dispute overturned. New scores: {new_participant1_score}-{new_participant2_score}. {notes}"
+                    message: ruling_message(
+                        &format!(
+                            "the result was changed to {new_participant1_score}-{new_participant2_score}"
+                        ),
+                        &notes,
                     ),
                     evidence_ids: Vec::new(),
                     is_internal: false,
@@ -501,7 +518,7 @@ where
                     dispute_id,
                     author_user_id: resolved_by,
                     author_type: AuthorType::Admin,
-                    message: format!("Rematch ordered: {notes}"),
+                    message: ruling_message("the match will be replayed", &notes),
                     evidence_ids: Vec::new(),
                     is_internal: false,
                 },
@@ -581,7 +598,12 @@ where
                     dispute_id,
                     author_user_id: resolved_by,
                     author_type: AuthorType::Admin,
-                    message: format!("Scores adjusted to {new_participant1_score}-{new_participant2_score}. {notes}"),
+                    message: ruling_message(
+                        &format!(
+                            "the score was corrected to {new_participant1_score}-{new_participant2_score}"
+                        ),
+                        &notes,
+                    ),
                     evidence_ids: Vec::new(),
                     is_internal: false,
                 },
@@ -636,7 +658,7 @@ where
                     dispute_id,
                     author_user_id: resolved_by,
                     author_type: AuthorType::Admin,
-                    message: format!("Both teams disqualified: {notes}"),
+                    message: ruling_message("both teams were disqualified", &notes),
                     evidence_ids: Vec::new(),
                     is_internal: false,
                 },
@@ -825,6 +847,16 @@ where
             )));
         }
         Ok(())
+    }
+}
+
+/// The players' thread message for a ruling, worded by its effect.
+fn ruling_message(effect: &str, notes: &str) -> String {
+    let notes = notes.trim();
+    if notes.is_empty() {
+        format!("Ruling: {effect}.")
+    } else {
+        format!("Ruling: {effect}. {notes}")
     }
 }
 

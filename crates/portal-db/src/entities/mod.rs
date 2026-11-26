@@ -22,6 +22,7 @@ mod game_server_update;
 mod league;
 pub mod league_team;
 mod match_lineup;
+pub mod notification;
 mod player;
 pub mod player_match_history;
 pub mod player_mm_stats;

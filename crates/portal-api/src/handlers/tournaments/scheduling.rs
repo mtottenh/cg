@@ -30,6 +30,7 @@ use portal_core::{ScheduleProposalId, TournamentId, TournamentMatchId, Tournamen
 use portal_domain::entities::schedule_proposal::{
     AcceptProposalCommand, CancelProposalCommand, CounterProposeCommand, RejectProposalCommand,
 };
+use portal_domain::services::NotificationEvent;
 use portal_domain::services::tournament::RegistrationActor;
 
 /// The registrations in a match the caller may *schedule* for.
@@ -150,6 +151,16 @@ pub async fn propose_schedule(
         )
         .await?;
 
+    state
+        .notifier
+        .emit(NotificationEvent::ProposalReceived {
+            match_id,
+            proposal_id: proposal.id,
+            proposed_by: proposal.proposed_by_registration_id,
+            counter: false,
+        })
+        .await;
+
     Ok((
         StatusCode::CREATED,
         Json(DataResponse::new(
@@ -207,6 +218,16 @@ pub async fn accept_schedule_proposal(
 
     let (_proposal, match_) = state.scheduling_service.accept_proposal(command).await?;
 
+    if let Some(scheduled_at) = match_.scheduled_at {
+        state
+            .notifier
+            .emit(NotificationEvent::ProposalAccepted {
+                match_id: match_.id,
+                scheduled_at,
+            })
+            .await;
+    }
+
     Ok(Json(DataResponse::new(
         TournamentMatchResponse::from(match_),
         request_id,
@@ -260,6 +281,15 @@ pub async fn reject_schedule_proposal(
     };
 
     let proposal = state.scheduling_service.reject_proposal(command).await?;
+
+    state
+        .notifier
+        .emit(NotificationEvent::ProposalRejected {
+            match_id: proposal.match_id,
+            proposal_id: proposal.id,
+            proposed_by: proposal.proposed_by_registration_id,
+        })
+        .await;
 
     Ok(Json(DataResponse::new(
         ScheduleProposalResponse::from(proposal),
@@ -405,6 +435,16 @@ pub async fn counter_propose(
 
     let proposal = state.scheduling_service.counter_propose(command).await?;
 
+    state
+        .notifier
+        .emit(NotificationEvent::ProposalReceived {
+            match_id: proposal.match_id,
+            proposal_id: proposal.id,
+            proposed_by: proposal.proposed_by_registration_id,
+            counter: true,
+        })
+        .await;
+
     Ok((
         StatusCode::CREATED,
         Json(DataResponse::new(
@@ -543,6 +583,14 @@ pub async fn admin_schedule_match(
         .schedule_clash(&match_, req.scheduled_at)
         .await
         .unwrap_or_default();
+
+    state
+        .notifier
+        .emit(NotificationEvent::MatchTimeSet {
+            match_id: match_.id,
+            scheduled_at: req.scheduled_at,
+        })
+        .await;
 
     let mut response = TournamentMatchResponse::from(match_);
     response.schedule_warning = schedule_warning;

@@ -552,6 +552,11 @@ define_id!(
     VetoDelegateId
 );
 
+define_id!(
+    /// Unique identifier for a notification sent to one user.
+    NotificationId
+);
+
 // Bot / Service IDs
 define_id!(
     /// Unique identifier for an API key used by bots and services.

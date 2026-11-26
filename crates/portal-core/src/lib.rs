@@ -23,12 +23,12 @@ pub use ids::{
     DisputeMessageId, EvidenceId, ForfeitRecordId, GameId, GameSlug, LeagueId, LeagueInvitationId,
     LeagueMemberId, LeagueSeasonId, LeagueTeamId, LeagueTeamInvitationId, LeagueTeamMemberId,
     LeagueTeamSeasonId, LobbyId, MatchId, MatchLineupId, MatchLineupPlayerId, MatchStatusLogId,
-    PlayerGameProfileId, PlayerId, PlayerMatchHistoryId, PlayerMmStatsId, PlayerRatingHistoryId,
-    ProgressionLogId, PugId, PugWheelSpinId, ResultClaimId, ResultReviewId, SagaId,
-    ScheduleProposalId, SteamTrackingId, SuggestedTimeId, TournamentBracketId, TournamentId,
-    TournamentInvitationId, TournamentMapPoolId, TournamentMatchGameId, TournamentMatchId,
-    TournamentRegistrationId, TournamentStageId, UserId, VetoActionId, VetoDelegateId,
-    VetoLobbyMessageId, VetoSessionId,
+    NotificationId, PlayerGameProfileId, PlayerId, PlayerMatchHistoryId, PlayerMmStatsId,
+    PlayerRatingHistoryId, ProgressionLogId, PugId, PugWheelSpinId, ResultClaimId, ResultReviewId,
+    SagaId, ScheduleProposalId, SteamTrackingId, SuggestedTimeId, TournamentBracketId,
+    TournamentId, TournamentInvitationId, TournamentMapPoolId, TournamentMatchGameId,
+    TournamentMatchId, TournamentRegistrationId, TournamentStageId, UserId, VetoActionId,
+    VetoDelegateId, VetoLobbyMessageId, VetoSessionId,
 };
 pub use types::{
     DemoCategory, DemoLinkType, DemoSource, DemoStatus, DemoUploadLinkNote, DemoUploadOutcome,

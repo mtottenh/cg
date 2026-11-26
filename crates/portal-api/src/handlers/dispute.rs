@@ -630,6 +630,13 @@ pub async fn admin_resolve_uphold(
     // A resolution writes (or clears) the match result; settle the bracket
     // so standings, progression and stage advancement follow it.
     crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
+    state
+        .notifier
+        .emit(portal_domain::services::NotificationEvent::DisputeRuled {
+            match_id: result.dispute.match_id,
+            dispute_id: result.dispute.id,
+        })
+        .await;
 
     Ok(Json(DataResponse::new(
         DisputeResolutionResultResponse::from(result),
@@ -691,6 +698,13 @@ pub async fn admin_resolve_overturn(
     // A resolution writes (or clears) the match result; settle the bracket
     // so standings, progression and stage advancement follow it.
     crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
+    state
+        .notifier
+        .emit(portal_domain::services::NotificationEvent::DisputeRuled {
+            match_id: result.dispute.match_id,
+            dispute_id: result.dispute.id,
+        })
+        .await;
 
     Ok(Json(DataResponse::new(
         DisputeResolutionResultResponse::from(result),
@@ -741,6 +755,13 @@ pub async fn admin_resolve_rematch(
     // A resolution writes (or clears) the match result; settle the bracket
     // so standings, progression and stage advancement follow it.
     crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
+    state
+        .notifier
+        .emit(portal_domain::services::NotificationEvent::DisputeRuled {
+            match_id: result.dispute.match_id,
+            dispute_id: result.dispute.id,
+        })
+        .await;
     start_replay_from_scratch(&app, result.dispute.match_id, auth.user_id).await;
 
     Ok(Json(DataResponse::new(
@@ -834,6 +855,13 @@ pub async fn admin_resolve_adjusted(
     // A resolution writes (or clears) the match result; settle the bracket
     // so standings, progression and stage advancement follow it.
     crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
+    state
+        .notifier
+        .emit(portal_domain::services::NotificationEvent::DisputeRuled {
+            match_id: result.dispute.match_id,
+            dispute_id: result.dispute.id,
+        })
+        .await;
 
     Ok(Json(DataResponse::new(
         DisputeResolutionResultResponse::from(result),
@@ -883,6 +911,13 @@ pub async fn admin_resolve_double_dq(
     // A resolution writes (or clears) the match result; settle the bracket
     // so standings, progression and stage advancement follow it.
     crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
+    state
+        .notifier
+        .emit(portal_domain::services::NotificationEvent::DisputeRuled {
+            match_id: result.dispute.match_id,
+            dispute_id: result.dispute.id,
+        })
+        .await;
 
     Ok(Json(DataResponse::new(
         DisputeResolutionResultResponse::from(result),

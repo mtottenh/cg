@@ -502,6 +502,8 @@ pub struct TournamentState {
     /// Match completion saga — settles a forfeit (standings, winner
     /// advancement, stage advancement) after it is recorded.
     pub match_completion_saga: super::AppMatchCompletionSaga,
+    /// Player notifications.
+    pub notifier: crate::notifications::Notifier,
 }
 
 impl FromRef<AppState> for TournamentState {
@@ -530,6 +532,7 @@ impl FromRef<AppState> for TournamentState {
             server_assignment_tx: s.server_assignment_tx.clone(),
             forfeit_service: s.forfeit_service.clone(),
             match_completion_saga: s.match_completion_saga.clone(),
+            notifier: s.notifier.clone(),
         }
     }
 }
@@ -628,6 +631,8 @@ pub struct ResultState {
     /// override. The write side goes through the match repository so the
     /// audit row and the score share a transaction.
     pub entity_change_repo: Arc<dyn portal_domain::repositories::EntityChangeRepository>,
+    /// Player notifications.
+    pub notifier: crate::notifications::Notifier,
 }
 
 impl FromRef<AppState> for ResultState {
@@ -638,6 +643,7 @@ impl FromRef<AppState> for ResultState {
             match_completion_saga: s.match_completion_saga.clone(),
             player_service: s.player_service.clone(),
             entity_change_repo: Arc::clone(&s.entity_change_repo),
+            notifier: s.notifier.clone(),
         }
     }
 }
@@ -688,6 +694,8 @@ pub struct ForfeitState {
     /// Match completion saga — settles each forfeit (standings, winner
     /// advancement, stage advancement) after it is recorded.
     pub match_completion_saga: super::AppMatchCompletionSaga,
+    /// Player notifications.
+    pub notifier: crate::notifications::Notifier,
 }
 
 impl FromRef<AppState> for ForfeitState {
@@ -698,6 +706,7 @@ impl FromRef<AppState> for ForfeitState {
             league_team_service: s.league_team_service.clone(),
             tournament_service: s.tournament_service.clone(),
             match_completion_saga: s.match_completion_saga.clone(),
+            notifier: s.notifier.clone(),
         }
     }
 }
@@ -728,6 +737,8 @@ pub struct DisputeState {
     /// Match completion saga — a resolution that writes or clears a result
     /// settles the bracket (standings, progression, stage advancement).
     pub match_completion_saga: super::AppMatchCompletionSaga,
+    /// Player notifications.
+    pub notifier: crate::notifications::Notifier,
 }
 
 impl FromRef<AppState> for DisputeState {
@@ -739,6 +750,7 @@ impl FromRef<AppState> for DisputeState {
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             tournament_service: s.tournament_service.clone(),
             match_completion_saga: s.match_completion_saga.clone(),
+            notifier: s.notifier.clone(),
         }
     }
 }
@@ -911,6 +923,8 @@ pub struct VetoState {
         tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
     /// Game repository (default map pool fallback).
     pub game_repo: GameRepository,
+    /// Player notifications.
+    pub notifier: crate::notifications::Notifier,
 }
 
 impl FromRef<AppState> for VetoState {
@@ -925,6 +939,7 @@ impl FromRef<AppState> for VetoState {
             tournament_map_pool_repo: Arc::clone(&s.tournament_map_pool_repo),
             game_repo: s.game_repo.clone(),
             server_assignment_tx: s.server_assignment_tx.clone(),
+            notifier: s.notifier.clone(),
         }
     }
 }
@@ -973,6 +988,8 @@ pub struct VetoWsState {
     /// Veto-completion trigger for server assignment (MatchZy, §6.6).
     pub server_assignment_tx:
         tokio::sync::mpsc::UnboundedSender<portal_core::ids::TournamentMatchId>,
+    /// Player notifications.
+    pub notifier: crate::notifications::Notifier,
 }
 
 impl FromRef<AppState> for VetoWsState {
@@ -987,6 +1004,7 @@ impl FromRef<AppState> for VetoWsState {
             veto_lobby_manager: Arc::clone(&s.veto_lobby_manager),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             server_assignment_tx: s.server_assignment_tx.clone(),
+            notifier: s.notifier.clone(),
         }
     }
 }

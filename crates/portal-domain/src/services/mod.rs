@@ -10,6 +10,7 @@ pub mod eligibility_service;
 pub mod game_server;
 pub mod league;
 pub mod league_team;
+pub mod notification;
 pub mod permission;
 pub mod player;
 pub mod player_game_profile;
@@ -34,6 +35,7 @@ pub use league_team::{
     LeagueSeasonParticipantService, LeagueSeasonService, LeagueTeamInvitationService,
     LeagueTeamService, RosterLockOverride,
 };
+pub use notification::{DiscordPost, NotificationEvent, NotificationPage, NotificationService};
 pub use permission::PermissionService;
 pub use player::{PlayerSearchResult, PlayerService};
 pub use player_game_profile::PlayerGameProfileService;

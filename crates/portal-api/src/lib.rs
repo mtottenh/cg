@@ -28,6 +28,7 @@ pub mod game_server_flow;
 pub mod game_server_updates;
 pub mod handlers;
 pub mod middleware;
+pub mod notifications;
 pub mod observability;
 pub mod openapi;
 pub mod pug_flow;

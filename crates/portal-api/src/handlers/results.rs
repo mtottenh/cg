@@ -22,6 +22,7 @@ use portal_core::{
 use portal_domain::entities::dispute::DisputeReason;
 use portal_domain::entities::result_claim::GameResultInput;
 use portal_domain::repositories::tournament::TournamentMatchRepository;
+use portal_domain::services::NotificationEvent;
 use portal_domain::services::tournament::{
     MATCH_RESULT_OVERRIDE_ENTITY, MATCH_RESULT_OVERRIDE_FIELD, MatchCompletionInput,
     RegistrationActor,
@@ -142,6 +143,15 @@ pub async fn submit_result(
             RegistrationActor::new(auth.user_id, auth.player_id),
         )
         .await?;
+
+    state
+        .notifier
+        .emit(NotificationEvent::ResultToConfirm {
+            match_id,
+            claim_id: claim.id,
+            reported_by: claim.submitted_by_registration_id,
+        })
+        .await;
 
     let auto_confirm_at = claim.auto_confirm_at.unwrap_or_else(chrono::Utc::now);
 
@@ -337,6 +347,12 @@ pub async fn confirm_result(
         .execute_completion(saga_input)
         .await;
     crate::observability::record_saga("match-completion", &saga_result);
+    state
+        .notifier
+        .emit(NotificationEvent::ResultFinal {
+            match_id: claim.match_id,
+        })
+        .await;
 
     match saga_result {
         Ok(result) if result.is_paused() => {

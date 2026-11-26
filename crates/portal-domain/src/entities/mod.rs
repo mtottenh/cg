@@ -21,6 +21,7 @@ pub mod league;
 pub mod league_team;
 pub mod match_lifecycle;
 pub mod match_lineup;
+pub mod notification;
 pub mod player;
 pub mod player_game_profile;
 pub mod player_match_history;

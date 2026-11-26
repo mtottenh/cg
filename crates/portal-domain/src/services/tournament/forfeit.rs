@@ -284,13 +284,22 @@ where
             self.match_repo.cancel_without_result(match_id).await?;
         }
 
+        // A double no-show is recorded as a no-show for both sides, not a
+        // disqualification; other double forfeits keep the old type.
+        let forfeit_type = match &triggered_by {
+            ForfeitTrigger::System { reason } if reason == "check_in_timeout" => {
+                ForfeitType::NoShow
+            }
+            _ => ForfeitType::Disqualification,
+        };
+
         // Create forfeit records for both teams
         let forfeit_record = self
             .forfeit_repo
             .create(CreateForfeitRecord {
                 match_id,
                 forfeiting_registration_id: participant1_id,
-                forfeit_type: ForfeitType::Disqualification,
+                forfeit_type,
                 reason: reason.clone(),
                 triggered_by_user_id: triggered_by.user_id(),
                 triggered_by_system: triggered_by.is_system(),
@@ -302,7 +311,7 @@ where
             .create(CreateForfeitRecord {
                 match_id,
                 forfeiting_registration_id: participant2_id,
-                forfeit_type: ForfeitType::Disqualification,
+                forfeit_type,
                 reason,
                 triggered_by_user_id: triggered_by.user_id(),
                 triggered_by_system: triggered_by.is_system(),

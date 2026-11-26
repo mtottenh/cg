@@ -273,6 +273,18 @@ async fn test_pass_auto_creates_veto_session_when_tournament_configures_format()
     assert!(body["data"]["session"]["first_action_registration_id"].is_string());
 }
 
+/// The newest status-log row of a match: (from, to, system-triggered).
+async fn last_logged_transition(app: &TestApp, match_id: &str) -> (String, String, bool) {
+    sqlx::query_as(
+        "SELECT from_status, to_status, triggered_by_system FROM match_status_log \
+         WHERE match_id = $1::uuid ORDER BY transitioned_at DESC LIMIT 1",
+    )
+    .bind(match_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 async fn test_pass_forfeits_no_show_after_deadline() {
     let app = TestApp::new().await;
@@ -313,6 +325,10 @@ async fn test_pass_forfeits_no_show_after_deadline() {
         get_match_status(&app, &tournament_id, &match_id).await,
         "forfeit"
     );
+    assert_eq!(
+        last_logged_transition(&app, &match_id).await,
+        ("checking_in".into(), "forfeit".into(), true)
+    );
 }
 
 #[tokio::test]
@@ -342,6 +358,18 @@ async fn test_pass_double_forfeits_when_nobody_checks_in() {
         status == "cancelled" || status == "forfeit",
         "double no-show should terminate the match, got {status}"
     );
+    assert_eq!(
+        last_logged_transition(&app, &match_id).await,
+        ("checking_in".into(), "cancelled".into(), true)
+    );
+    // Recorded as two no-shows, not as disqualifications.
+    let types: Vec<String> =
+        sqlx::query_scalar("SELECT forfeit_type FROM forfeit_records WHERE match_id = $1::uuid")
+            .bind(&match_id)
+            .fetch_all(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(types, vec!["no_show".to_string(), "no_show".to_string()]);
 }
 
 #[tokio::test]
@@ -468,6 +496,10 @@ async fn test_pass_auto_confirms_overdue_result_claim_and_progresses() {
     .unwrap();
     assert_eq!(match_status, "completed");
     assert_eq!(winner, Some(uuid::Uuid::parse_str(&p1_reg).unwrap()));
+    assert_eq!(
+        last_logged_transition(&app, &match_id).await,
+        ("awaiting_result".into(), "completed".into(), true)
+    );
 
     // The completion saga ran (bracket progression happened).
     let (sagas,): (i64,) = sqlx::query_as(

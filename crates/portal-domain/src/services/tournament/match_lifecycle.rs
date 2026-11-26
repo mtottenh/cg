@@ -38,6 +38,18 @@ pub trait MatchStatusTransitioner: Send + Sync {
         triggered_by: TransitionTrigger,
         reason: Option<String>,
     ) -> Result<TournamentMatch, DomainError>;
+
+    /// Record a status change another write already made (a forfeit, a
+    /// confirmed result applied in one transaction), so the match's history
+    /// shows it like every other transition.
+    async fn record_transition(
+        &self,
+        match_id: TournamentMatchId,
+        from_status: TournamentMatchStatus,
+        to_status: TournamentMatchStatus,
+        triggered_by: TransitionTrigger,
+        reason: Option<String>,
+    ) -> Result<(), DomainError>;
 }
 
 #[async_trait]
@@ -56,6 +68,19 @@ where
     ) -> Result<TournamentMatch, DomainError> {
         self.transition(match_id, to_status, triggered_by, reason)
             .await
+    }
+
+    async fn record_transition(
+        &self,
+        match_id: TournamentMatchId,
+        from_status: TournamentMatchStatus,
+        to_status: TournamentMatchStatus,
+        triggered_by: TransitionTrigger,
+        reason: Option<String>,
+    ) -> Result<(), DomainError> {
+        self.log_transition(match_id, from_status, to_status, &triggered_by, reason)
+            .await
+            .map(|_| ())
     }
 }
 

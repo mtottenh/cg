@@ -46,7 +46,9 @@ use portal_domain::repositories::tournament::{
     TournamentMapPoolRepository as _, TournamentMatchRepository as _,
     TournamentStageRepository as _,
 };
-use portal_domain::services::tournament::{MatchCompletionInput, SagaCoordinator};
+use portal_domain::services::tournament::{
+    MatchCompletionInput, MatchStatusTransitioner as _, SagaCoordinator,
+};
 use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1222,6 +1224,7 @@ async fn process_check_in_timeout(
     let p1_in = match_.participant1_checked_in_at.is_some();
     let p2_in = match_.participant2_checked_in_at.is_some();
 
+    let both_absent = !p1_in && !p2_in;
     let result = match (p1_in, p2_in) {
         (true, true) => {
             // Both checked in but the match is still in checking_in — the
@@ -1295,6 +1298,34 @@ async fn process_check_in_timeout(
     match result {
         Ok(()) => {
             info!(%match_id, "lifecycle: check-in timeout processed");
+            // The forfeit service writes the status itself; record the step
+            // in the match's history like any other transition.
+            let (to, reason) = if both_absent {
+                (
+                    TournamentMatchStatus::Cancelled,
+                    "Neither team checked in before the deadline",
+                )
+            } else {
+                (
+                    TournamentMatchStatus::Forfeit,
+                    "A team did not check in before the deadline",
+                )
+            };
+            if let Err(e) = state
+                .match_lifecycle_service
+                .record_transition(
+                    match_id,
+                    TournamentMatchStatus::CheckingIn,
+                    to,
+                    TransitionTrigger::System {
+                        job_name: "check_in_timeout".to_string(),
+                    },
+                    Some(reason.to_string()),
+                )
+                .await
+            {
+                warn!(%match_id, error = %e, "lifecycle: could not log the no-show");
+            }
             // The no-show is a decided result (a double no-show a cancelled
             // match): settle it so the walkover winner advances / scores and
             // a group whose last match this was moves on to the playoffs.

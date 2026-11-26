@@ -560,6 +560,13 @@ where
             )
             .await?;
 
+        self.log_completion(
+            &match_,
+            TransitionTrigger::User(confirmed_by.user_id),
+            "Result confirmed by the opponent",
+        )
+        .await;
+
         info!(
             claim_id = %claim_id,
             match_id = %claim.match_id,
@@ -568,6 +575,30 @@ where
         );
 
         Ok(claim)
+    }
+
+    /// Record the `→ completed` step a confirmed claim made inside its own
+    /// transaction (no status-log row was written for it). Best effort: the
+    /// result stands either way.
+    async fn log_completion(
+        &self,
+        match_: &TournamentMatch,
+        trigger: TransitionTrigger,
+        reason: &str,
+    ) {
+        if let Some(transitioner) = &self.match_transitioner
+            && let Err(e) = transitioner
+                .record_transition(
+                    match_.id,
+                    match_.status,
+                    portal_core::types::TournamentMatchStatus::Completed,
+                    trigger,
+                    Some(reason.to_string()),
+                )
+                .await
+        {
+            warn!(match_id = %match_.id, error = %e, "could not log the result's completion");
+        }
     }
 
     /// Administratively correct the score already recorded against a match.
@@ -1119,6 +1150,15 @@ where
                 claim.claimed_participant2_score,
             )
             .await?;
+
+        self.log_completion(
+            &match_,
+            TransitionTrigger::System {
+                job_name: "result_auto_confirm".to_string(),
+            },
+            "Result confirmed automatically when its confirmation window ended",
+        )
+        .await;
 
         info!(
             claim_id = %claim.id,

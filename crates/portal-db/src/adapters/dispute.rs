@@ -557,6 +557,8 @@ impl DisputeRepository for PgDisputeRepository {
                     participant1_score = 0,
                     participant2_score = 0,
                     completed_at = NULL,
+                    disputed = false,
+                    dispute_reason = NULL,
                     updated_at = NOW()
                 WHERE id = $1
                 ",
@@ -571,6 +573,8 @@ impl DisputeRepository for PgDisputeRepository {
                 r"
                 UPDATE tournament_matches SET
                     status = $2,
+                    disputed = false,
+                    dispute_reason = NULL,
                     updated_at = NOW()
                 WHERE id = $1
                 ",
@@ -649,6 +653,8 @@ impl DisputeRepository for PgDisputeRepository {
             r"
             UPDATE tournament_matches SET
                 status = 'completed',
+                disputed = false,
+                dispute_reason = NULL,
                 updated_at = NOW()
             WHERE id = $1
             ",
@@ -878,6 +884,17 @@ impl DisputeRepository for PgDisputeRepository {
             new_loser_registration_id,
         )
         .await?;
+
+        // The dispute is over: drop the flag `raise_atomic` set. Nothing
+        // ever cleared it, so a resolved match went on saying "under
+        // dispute" and, after a rematch, refused manual result reports.
+        sqlx::query(
+            "UPDATE tournament_matches SET disputed = false, dispute_reason = NULL WHERE id = $1",
+        )
+        .bind(match_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         let msg_evidence_ids: Vec<uuid::Uuid> = resolution_message
             .evidence_ids

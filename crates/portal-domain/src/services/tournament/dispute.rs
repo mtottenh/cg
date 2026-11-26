@@ -386,7 +386,23 @@ where
             new_participant1_score,
             new_participant2_score,
         )?;
-        let loser_id = if match_.participant1_registration_id == Some(new_winner_registration_id) {
+        // The winner id is typed in by hand. Anything that was not
+        // participant 1 used to be taken as "participant 2 won" — so another
+        // team's registration id was written as the winner and credited in
+        // the standings, and a winner contradicting the score went through.
+        let winner_is_p1 = match_.participant1_registration_id == Some(new_winner_registration_id);
+        let winner_is_p2 = match_.participant2_registration_id == Some(new_winner_registration_id);
+        if !winner_is_p1 && !winner_is_p2 {
+            return Err(DomainError::InvalidState(
+                "The new winner must be one of the two teams in this match".to_string(),
+            ));
+        }
+        if winner_is_p1 != (new_participant1_score > new_participant2_score) {
+            return Err(DomainError::InvalidState(
+                "The new winner does not match the new score".to_string(),
+            ));
+        }
+        let loser_id = if winner_is_p1 {
             match_.participant2_registration_id
         } else {
             match_.participant1_registration_id

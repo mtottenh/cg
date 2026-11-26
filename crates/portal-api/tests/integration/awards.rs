@@ -943,7 +943,7 @@ async fn test_complete_tournament_auto_finalizes_awards() {
     // Drive completion through the lifecycle endpoint.
     let response = app
         .post_auth(&format!(
-            "/v1/tournaments/{}/complete",
+            "/v1/tournaments/{}/complete?force=true",
             fixture.tournament_id
         ))
         .await;

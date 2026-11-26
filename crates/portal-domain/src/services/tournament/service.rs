@@ -491,7 +491,15 @@ where
     }
 
     /// Complete a tournament.
-    pub async fn complete_tournament(&self, id: TournamentId) -> Result<Tournament, DomainError> {
+    ///
+    /// Refused while a match between two decided participants is still
+    /// unfinished (not completed, forfeited or cancelled), unless `force`:
+    /// completing early froze the standings with games still to play.
+    pub async fn complete_tournament(
+        &self,
+        id: TournamentId,
+        force: bool,
+    ) -> Result<Tournament, DomainError> {
         let tournament = self.get_tournament(id).await?;
 
         if !tournament
@@ -502,6 +510,24 @@ where
                 from: tournament.status.to_string(),
                 to: TournamentStatus::Completed.to_string(),
             });
+        }
+
+        if !force {
+            let unfinished = self
+                .match_repo
+                .list_by_tournament(id)
+                .await?
+                .into_iter()
+                .filter(|m| m.has_both_participants() && !m.status.is_terminal())
+                .count();
+            if unfinished > 0 {
+                return Err(DomainError::InvalidState(format!(
+                    "{unfinished} match{} still to be played; finish {} or complete the \
+                     tournament anyway with force",
+                    if unfinished == 1 { " is" } else { "es are" },
+                    if unfinished == 1 { "it" } else { "them" },
+                )));
+            }
         }
 
         self.tournament_repo

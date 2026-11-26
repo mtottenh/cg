@@ -1165,3 +1165,174 @@ async fn test_admin_transition_to_scheduled_requires_a_time() {
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "ready");
 }
+
+// ============================================================================
+// ONE PENDING PROPOSAL PER MATCH, ANSWERED ONCE
+// ============================================================================
+
+/// The database refuses a second pending proposal on a match. The service's
+/// "is one pending?" read cannot: two captains proposing at the same moment
+/// both passed it.
+#[tokio::test]
+async fn test_a_match_cannot_hold_two_pending_proposals() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, _) =
+        create_tournament_with_matches_and_opponent(&app, "one-pending").await;
+    propose_two_slots(&app, &tournament_id, &match_id).await;
+
+    let duplicate = sqlx::query(
+        "INSERT INTO schedule_proposals \
+             (match_id, proposed_by_registration_id, proposed_by_user_id, proposed_times, \
+              expires_at, status) \
+         SELECT match_id, proposed_by_registration_id, proposed_by_user_id, proposed_times, \
+                expires_at, 'pending' \
+         FROM schedule_proposals WHERE match_id = $1::uuid",
+    )
+    .bind(&match_id)
+    .execute(app.pool())
+    .await;
+    let err = duplicate.expect_err("a second pending proposal must be refused");
+    assert!(
+        err.as_database_error()
+            .is_some_and(sqlx::error::DatabaseError::is_unique_violation),
+        "{err}"
+    );
+
+    // Through the API the same collision is a conflict, not a server error.
+    let time = chrono::Utc::now() + chrono::Duration::hours(30);
+    app.post_json(
+        &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
+        &json!({ "proposed_times": [time.to_rfc3339()] }),
+    )
+    .await
+    .assert_status(StatusCode::CONFLICT);
+}
+
+/// A counter replaces the proposal it answers: the original is no longer
+/// pending (so it cannot be accepted behind the counter's back), the two are
+/// linked, and the match still holds exactly one pending proposal.
+#[tokio::test]
+async fn test_counter_replaces_the_original_proposal() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "counter-replaces").await;
+    let original_id = propose_two_slots(&app, &tournament_id, &match_id).await;
+    let original: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
+        ))
+        .await
+        .json();
+    let original_slot = original["data"]["proposed_times"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let counter_time = chrono::Utc::now() + chrono::Duration::hours(72);
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/counter"),
+            &json!({
+                "original_proposal_id": original_id,
+                "proposed_times": [counter_time.to_rfc3339()]
+            }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let counter_id = response.json::<serde_json::Value>()["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, linked): (String, Option<uuid::Uuid>) = sqlx::query_as(
+        "SELECT status, counter_proposal_id FROM schedule_proposals WHERE id = $1::uuid",
+    )
+    .bind(&original_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(status, "counter_proposed");
+    assert_eq!(linked.map(|id| id.to_string()), Some(counter_id));
+
+    let (pending,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM schedule_proposals WHERE match_id = $1::uuid AND status = 'pending'",
+    )
+    .bind(&match_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(pending, 1);
+
+    // Countering the same proposal again, or accepting it, is refused.
+    app.post_json_with_token(
+        &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/counter"),
+        &json!({
+            "original_proposal_id": original_id,
+            "proposed_times": [counter_time.to_rfc3339()]
+        }),
+        &player2_token,
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+    app.post_json_with_token(
+        &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept"),
+        &json!({ "proposal_id": original_id, "selected_time": original_slot }),
+        &player2_token,
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(match_status(&app, &match_id).await, "ready");
+}
+
+/// Accepting writes the proposal, the match time, the status and the status
+/// log together, against the accepting user.
+#[tokio::test]
+async fn test_accept_schedules_the_match_and_logs_who_accepted() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "accept-logged").await;
+    let proposal_id = propose_two_slots(&app, &tournament_id, &match_id).await;
+    let active: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
+        ))
+        .await
+        .json();
+    let slot = active["data"]["proposed_times"][1]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = app
+        .post_json_with_token(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept"),
+            &json!({ "proposal_id": proposal_id, "selected_time": slot }),
+            &player2_token,
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "scheduled");
+    assert_eq!(body["data"]["scheduled_at"], slot);
+
+    let (from, to, by_user, system): (String, String, Option<uuid::Uuid>, bool) = sqlx::query_as(
+        "SELECT from_status, to_status, triggered_by_user_id, triggered_by_system \
+         FROM match_status_log WHERE match_id = $1::uuid ORDER BY transitioned_at DESC LIMIT 1",
+    )
+    .bind(&match_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!((from.as_str(), to.as_str()), ("ready", "scheduled"));
+    assert!(by_user.is_some() && !system);
+
+    // Answered once: a second accept of the same proposal changes nothing.
+    app.post_json_with_token(
+        &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept"),
+        &json!({ "proposal_id": proposal_id, "selected_time": slot }),
+        &player2_token,
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
+}

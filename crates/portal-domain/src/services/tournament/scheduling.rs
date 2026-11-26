@@ -168,7 +168,7 @@ where
         &self,
         command: AcceptProposalCommand,
     ) -> Result<(ScheduleProposal, TournamentMatch), DomainError> {
-        let mut proposal = self
+        let proposal = self
             .proposal_repo
             .find_by_id(command.proposal_id)
             .await?
@@ -225,57 +225,26 @@ where
             )));
         }
 
-        // Update proposal
-        proposal.status = ProposalStatus::Accepted;
-        proposal.selected_time = Some(command.selected_time);
-        proposal.responded_at = Some(Utc::now());
-        proposal.responded_by_user_id = Some(command.accepted_by.user_id);
-
-        let updated_proposal = self.proposal_repo.update(&proposal).await?;
-
-        // The match now has its time: any other proposal still pending on
-        // it (two captains proposing at the same moment) is void, and left
-        // pending it would resurface as the active one.
-        for other in self
+        // One transaction: the proposal is accepted (only if still pending
+        // — a second acceptor, a withdrawal or the expiry sweep may have got
+        // there first), every other pending proposal on the match is
+        // cancelled, and the match gets its time and `scheduled` status with
+        // a status-log row against the accepting user. A failure part-way
+        // leaves nothing behind.
+        let updated_proposal = self
             .proposal_repo
-            .find_by_match_id(proposal.match_id)
+            .accept_and_schedule(
+                proposal.id,
+                command.selected_time,
+                command.accepted_by.user_id,
+                &[TournamentMatchStatus::Ready],
+            )
+            .await?;
+        let updated_match = self
+            .match_repo
+            .find_by_id(proposal.match_id)
             .await?
-        {
-            if other.id != updated_proposal.id && other.status == ProposalStatus::Pending {
-                let mut cancelled = other;
-                cancelled.status = ProposalStatus::Cancelled;
-                self.proposal_repo.update(&cancelled).await?;
-            }
-        }
-
-        // Update match: first set scheduled_at, then update status
-        let update = UpdateTournamentMatch {
-            scheduled_at: Some(command.selected_time),
-            ..Default::default()
-        };
-        self.match_repo.update(proposal.match_id, update).await?;
-
-        // Then the status — through the lifecycle service when it is wired,
-        // so the transition is recorded against the accepting user.
-        let updated_match = if let Some(transitioner) = &self.match_transitioner {
-            transitioner
-                .transition_status(
-                    proposal.match_id,
-                    TournamentMatchStatus::Scheduled,
-                    crate::entities::match_lifecycle::TransitionTrigger::User(
-                        command.accepted_by.user_id,
-                    ),
-                    Some(format!(
-                        "Schedule proposal accepted for {}",
-                        command.selected_time
-                    )),
-                )
-                .await?
-        } else {
-            self.match_repo
-                .update_status(proposal.match_id, TournamentMatchStatus::Scheduled)
-                .await?
-        };
+            .ok_or(DomainError::TournamentMatchNotFound(proposal.match_id))?;
 
         Ok((updated_proposal, updated_match))
     }
@@ -389,7 +358,7 @@ where
         &self,
         command: CounterProposeCommand,
     ) -> Result<ScheduleProposal, DomainError> {
-        let mut original_proposal = self
+        let original_proposal = self
             .proposal_repo
             .find_by_id(command.original_proposal_id)
             .await?
@@ -435,25 +404,32 @@ where
         )
         .await?;
 
-        // Create counter-proposal
+        // Same rule as proposing and accepting: only a match still waiting
+        // for a time takes proposals.
+        if !tournament_match.status.can_schedule() {
+            return Err(DomainError::InvalidState(format!(
+                "Match {} cannot be scheduled in status {:?}",
+                command.match_id, tournament_match.status
+            )));
+        }
+
+        // The original is marked answered and the counter inserted in one
+        // transaction; the counter cannot exist beside a still-pending
+        // original, and a response that lost a race gets a conflict.
         let new_proposal = self
             .proposal_repo
-            .create(CreateScheduleProposalCommand {
-                match_id: command.match_id,
-                proposed_by_registration_id: command.proposed_by_registration_id,
-                proposed_by_user_id: command.proposed_by.user_id,
-                proposed_times: command.proposed_times,
-                expires_at: command.expires_at,
-                notes: command.notes,
-            })
+            .create_counter(
+                original_proposal.id,
+                CreateScheduleProposalCommand {
+                    match_id: command.match_id,
+                    proposed_by_registration_id: command.proposed_by_registration_id,
+                    proposed_by_user_id: command.proposed_by.user_id,
+                    proposed_times: command.proposed_times,
+                    expires_at: command.expires_at,
+                    notes: command.notes,
+                },
+            )
             .await?;
-
-        // Mark original as counter-proposed
-        original_proposal.status = ProposalStatus::CounterProposed;
-        original_proposal.counter_proposal_id = Some(new_proposal.id);
-        original_proposal.responded_at = Some(Utc::now());
-        original_proposal.responded_by_user_id = Some(command.proposed_by.user_id);
-        self.proposal_repo.update(&original_proposal).await?;
 
         Ok(new_proposal)
     }
@@ -574,11 +550,27 @@ where
 
         let mut results = Vec::new();
         for proposal in expired {
-            let updated = self.proposal_repo.mark_expired(proposal.id).await?;
-            results.push(updated);
+            // One proposal answered between the read and this write (or a
+            // transient error on it) must not stop the rest of the sweep.
+            match self.proposal_repo.mark_expired(proposal.id).await {
+                Ok(updated) => results.push(updated),
+                Err(DomainError::Conflict(_)) => {}
+                Err(e) => {
+                    tracing::warn!(proposal_id = %proposal.id, error = %e,
+                        "could not expire a schedule proposal; continuing the sweep");
+                }
+            }
         }
 
         Ok(results)
+    }
+
+    /// Get a proposal by id.
+    pub async fn get_proposal(
+        &self,
+        id: portal_core::ids::ScheduleProposalId,
+    ) -> Result<Option<ScheduleProposal>, DomainError> {
+        self.proposal_repo.find_by_id(id).await
     }
 
     /// Get active proposal for a match.

@@ -213,6 +213,7 @@ pub struct UpdateTournament {
     pub rules_url: Option<String>,
     pub settings: Option<serde_json::Value>,
     pub withdrawal_policy: Option<WithdrawalPolicy>,
+    pub scheduling_mode: Option<SchedulingMode>,
 }
 
 /// Filters for listing tournaments.

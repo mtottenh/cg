@@ -439,7 +439,12 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        if !tournament_match.status.can_schedule() {
+        // An admin may also set the time on a match that is already
+        // `Scheduled`: that is a reschedule, and it is the only way to repair
+        // a match that reached `Scheduled` with no time at all, which the
+        // check-in sweep never picks up.
+        let already_scheduled = tournament_match.status == TournamentMatchStatus::Scheduled;
+        if !already_scheduled && !tournament_match.status.can_schedule() {
             return Err(DomainError::InvalidState(format!(
                 "Match {} cannot be scheduled in status {:?}",
                 match_id, tournament_match.status
@@ -462,7 +467,22 @@ where
             scheduled_at: Some(scheduled_at),
             ..Default::default()
         };
-        self.match_repo.update(match_id, update).await?;
+        let updated = self.match_repo.update(match_id, update).await?;
+
+        // Scheduled -> Scheduled is not a transition, so there is no
+        // `match_status_log` row to carry the admin and their reason; the
+        // server log is the only record of a reschedule.
+        if already_scheduled {
+            tracing::info!(
+                match_id = %match_id,
+                admin_id = %admin_id,
+                previous = ?tournament_match.scheduled_at,
+                scheduled_at = %scheduled_at,
+                notes = notes.as_deref().unwrap_or_default(),
+                "Admin changed the time of a scheduled match"
+            );
+            return Ok(updated);
+        }
 
         // Then update status — through the lifecycle service when it is wired,
         // so the transition is recorded with the acting admin and their reason.

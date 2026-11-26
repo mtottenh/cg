@@ -972,3 +972,69 @@ async fn test_admin_schedule_records_an_audit_row_with_the_admin_notes() {
         "P-84: the audit row must name the admin who forced the schedule"
     );
 }
+
+/// An admin can move a match that already has a time. Rescheduling used to be
+/// refused outright: `admin_schedule` only accepted a `ready` match, so once a
+/// time was set there was no way to change it.
+#[tokio::test]
+async fn test_admin_can_reschedule_a_scheduled_match() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _) =
+        create_tournament_with_matches(&app, "admin-reschedule-test").await;
+    let url = format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule");
+
+    let first = chrono::Utc::now() + chrono::Duration::hours(12);
+    let response = app
+        .post_json(&url, &json!({ "scheduled_at": first.to_rfc3339() }))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "scheduled");
+
+    let second = chrono::Utc::now() + chrono::Duration::hours(36);
+    let response = app
+        .post_json(&url, &json!({ "scheduled_at": second.to_rfc3339() }))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "scheduled");
+
+    let (stored,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT scheduled_at FROM tournament_matches WHERE id = $1")
+            .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    let stored = stored.expect("the match keeps a scheduled time");
+    assert!(
+        (stored - second).num_seconds().abs() < 1,
+        "the second time must replace the first: stored {stored}, wanted {second}"
+    );
+}
+
+/// Marking a match `scheduled` is not the same as scheduling it. The admin
+/// transition used to accept `ready -> scheduled` with no time, which left the
+/// match waiting for a check-in window that could never open.
+#[tokio::test]
+async fn test_admin_transition_to_scheduled_requires_a_time() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _) =
+        create_tournament_with_matches(&app, "transition-needs-time").await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
+            &json!({ "to_status": "scheduled", "override_reason": "Admin action" }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let response = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}"
+        ))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "ready");
+}

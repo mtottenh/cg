@@ -387,6 +387,13 @@ pub struct UpdateTournamentRequest {
     /// Updated withdrawal policy.
     #[serde(default)]
     pub withdrawal_policy: Option<String>,
+
+    /// Updated scheduling mode: `live`, `self_scheduled`, `hybrid`.
+    ///
+    /// Unlike the other fields this may be changed after the tournament has
+    /// started, provided it is the only field in the request.
+    #[serde(default)]
+    pub scheduling_mode: Option<String>,
 }
 
 impl TryFrom<UpdateTournamentRequest> for UpdateTournamentCommand {
@@ -406,6 +413,14 @@ impl TryFrom<UpdateTournamentRequest> for UpdateTournamentCommand {
             .map(|p| {
                 p.parse::<WithdrawalPolicy>()
                     .map_err(|_| crate::error::ApiError::bad_request("Invalid withdrawal policy"))
+            })
+            .transpose()?;
+
+        let scheduling_mode = req
+            .scheduling_mode
+            .map(|m| {
+                m.parse::<SchedulingMode>()
+                    .map_err(|_| crate::error::ApiError::bad_request("Invalid scheduling mode"))
             })
             .transpose()?;
 
@@ -432,6 +447,7 @@ impl TryFrom<UpdateTournamentRequest> for UpdateTournamentCommand {
             rules_url: req.rules_url,
             settings: merge_eligibility_into_settings(req.settings, req.eligibility_restrictions),
             withdrawal_policy,
+            scheduling_mode,
         })
     }
 }

@@ -145,7 +145,10 @@ impl VetoSessionRepository for PgVetoSessionRepository {
         }
         if let Some(expected) = update.only_if_action_number {
             // A number, not user input: safe to inline.
-            guards.push_str(&format!(" AND current_action_number = {expected}"));
+            let _ = std::fmt::Write::write_fmt(
+                &mut guards,
+                format_args!(" AND current_action_number = {expected}"),
+            );
         }
         let query = format!(
             "UPDATE veto_sessions SET {} WHERE id = $1{guards} RETURNING *",

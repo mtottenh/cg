@@ -1733,29 +1733,6 @@ fn tally_finished_maps(
     (p1 + p2, p1, p2)
 }
 
-#[cfg(test)]
-mod series_tally_tests {
-    use super::tally_finished_maps;
-    use portal_core::ids::TournamentRegistrationId;
-
-    #[test]
-    fn counts_only_finished_maps_by_winner() {
-        let (a, b) = (
-            TournamentRegistrationId::new(),
-            TournamentRegistrationId::new(),
-        );
-        let winners = vec![Some(a), Some(b), None, Some(a)];
-        assert_eq!(
-            tally_finished_maps(winners.into_iter(), Some(a), Some(b)),
-            (3, 2, 1)
-        );
-        assert_eq!(
-            tally_finished_maps(std::iter::empty(), Some(a), Some(b)),
-            (0, 0, 0)
-        );
-    }
-}
-
 // =============================================================================
 // Mid-series substitutions (§6.8)
 // =============================================================================
@@ -2310,4 +2287,27 @@ pub async fn substitution_options(
         });
     }
     Ok(sides)
+}
+
+#[cfg(test)]
+mod series_tally_tests {
+    use super::tally_finished_maps;
+    use portal_core::ids::TournamentRegistrationId;
+
+    #[test]
+    fn counts_only_finished_maps_by_winner() {
+        let (a, b) = (
+            TournamentRegistrationId::new(),
+            TournamentRegistrationId::new(),
+        );
+        let winners = vec![Some(a), Some(b), None, Some(a)];
+        assert_eq!(
+            tally_finished_maps(winners.into_iter(), Some(a), Some(b)),
+            (3, 2, 1)
+        );
+        assert_eq!(
+            tally_finished_maps(std::iter::empty(), Some(a), Some(b)),
+            (0, 0, 0)
+        );
+    }
 }

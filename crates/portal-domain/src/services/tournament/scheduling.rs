@@ -98,13 +98,6 @@ where
         self
     }
 
-    /// Create a new schedule proposal.
-    ///
-    /// # Errors
-    /// - `MatchNotFound` if match doesn't exist
-    /// - `NotAuthorized` if user is not part of the match
-    /// - `InvalidState` if match cannot be scheduled
-    /// - `InvalidState` if proposed times are invalid
     /// Whether a match takes schedule proposals now.
     ///
     /// A match with no time does. So does a scheduled one whose time is more
@@ -133,6 +126,13 @@ where
         )))
     }
 
+    /// Create a new schedule proposal.
+    ///
+    /// # Errors
+    /// - `MatchNotFound` if match doesn't exist
+    /// - `NotAuthorized` if user is not part of the match
+    /// - `InvalidState` if match cannot be scheduled
+    /// - `InvalidState` if proposed times are invalid
     pub async fn propose_schedule(
         &self,
         match_id: TournamentMatchId,

@@ -718,6 +718,7 @@ pub async fn admin_resolve_overturn(
 )]
 pub async fn admin_resolve_rematch(
     State(state): State<DisputeState>,
+    State(app): State<crate::state::AppState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
     headers: HeaderMap,
@@ -740,11 +741,49 @@ pub async fn admin_resolve_rematch(
     // A resolution writes (or clears) the match result; settle the bracket
     // so standings, progression and stage advancement follow it.
     crate::result_settlement::settle(&state.match_completion_saga, result.dispute.match_id).await;
+    start_replay_from_scratch(&app, result.dispute.match_id, auth.user_id).await;
 
     Ok(Json(DataResponse::new(
         DisputeResolutionResultResponse::from(result),
         request_id,
     )))
+}
+
+/// Clear what a played series left on a match ordered replayed: its time,
+/// check-ins, veto and per-map rows (so a new veto runs and the server gets
+/// a new map list), and any game-server reservation. The ruling has already
+/// put the match back to `ready` with no result; without this the old
+/// completed veto stayed and server assignment could not start afresh.
+/// Best effort: the ruling stands either way, and an admin can finish the
+/// job with the match's Reset.
+async fn start_replay_from_scratch(
+    app: &crate::state::AppState,
+    match_id: portal_core::TournamentMatchId,
+    admin_id: portal_core::UserId,
+) {
+    use portal_domain::repositories::match_rescue::{MatchRescueRepository as _, RescueAudit};
+
+    if let Err(e) =
+        crate::game_server_flow::cancel_assignment(app, match_id, "rematch ordered").await
+    {
+        tracing::debug!(%match_id, error = %e, "rematch: no server reservation to release");
+    }
+    let audit = RescueAudit {
+        admin_id,
+        reason: "Rematch ordered: the replay starts from a new time, check-in and veto".into(),
+    };
+    if let Err(e) = portal_db::adapters::PgMatchRescueRepository::new(app.db_pool.clone())
+        .reset_to_ready(
+            match_id,
+            &[portal_core::types::TournamentMatchStatus::Ready],
+            portal_core::types::TournamentMatchStatus::Ready,
+            &audit,
+        )
+        .await
+    {
+        tracing::warn!(%match_id, error = %e,
+            "rematch: could not clear the old series; use the match's Reset");
+    }
 }
 
 /// Admin: Resolve dispute by adjusting scores.

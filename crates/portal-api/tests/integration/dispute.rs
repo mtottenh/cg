@@ -1264,6 +1264,27 @@ async fn test_rematch_clears_the_previous_result_from_the_match() {
         after["completed_at"].is_null(),
         "P-78: nor a completion time"
     );
+
+    // The replay starts from scratch: no leftover time, check-ins or veto
+    // from the series that was played (R-8).
+    let (scheduled_at, p1_in, sessions): (
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT m.scheduled_at, m.participant1_checked_in_at, \
+                (SELECT COUNT(*) FROM veto_sessions v WHERE v.match_id = m.id) \
+         FROM tournament_matches m WHERE m.id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert!(
+        scheduled_at.is_none() && p1_in.is_none(),
+        "{scheduled_at:?} {p1_in:?}"
+    );
+    assert_eq!(sessions, 0);
 }
 
 async fn match_is_flagged_disputed(app: &TestApp, match_id: &str) -> bool {

@@ -18,6 +18,7 @@
 //! All endpoints are documented with `#[utoipa::path]` attributes.
 
 pub mod adapters;
+pub mod admin_rescue;
 pub mod app;
 pub mod background;
 pub mod dto;

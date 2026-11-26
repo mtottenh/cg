@@ -38,6 +38,8 @@ pub enum ServerMessage {
     ChatHistory { messages: Vec<serde_json::Value> },
     /// Veto state update.
     VetoStateUpdate { session: serde_json::Value },
+    /// Coin flip result.
+    CoinFlipResult { winner_registration_id: String },
     /// Veto action performed.
     VetoActionPerformed {
         session: serde_json::Value,

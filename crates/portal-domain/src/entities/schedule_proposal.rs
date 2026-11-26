@@ -97,12 +97,18 @@ pub struct RejectProposalCommand {
     pub reason: Option<String>,
 }
 
-/// Command to withdraw (cancel) a proposal you made yourself.
+/// Command to withdraw (cancel) a proposal your side made.
 #[derive(Debug, Clone)]
 pub struct CancelProposalCommand {
     pub proposal_id: ScheduleProposalId,
-    /// Must be the proposer — nobody else may withdraw a proposal.
+    /// The user withdrawing the proposal.
     pub cancelled_by_user_id: UserId,
+    /// The registrations in this match the caller may schedule for (captain,
+    /// owner or delegate), as resolved by the handler. The proposal may be
+    /// withdrawn by the user who made it, or by anyone who schedules for the
+    /// registration it was made on behalf of — a captain must be able to
+    /// pull a delegate's mistaken proposal.
+    pub acting_for_registrations: Vec<TournamentRegistrationId>,
     /// The match the caller addressed, used to reject a proposal ID that
     /// belongs to a different match.
     pub match_id: TournamentMatchId,

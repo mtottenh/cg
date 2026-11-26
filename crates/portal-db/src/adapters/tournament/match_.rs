@@ -282,6 +282,73 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
         Ok(rows.into_iter().map(TournamentMatch::from).collect())
     }
 
+    async fn schedule_context(
+        &self,
+        match_id: TournamentMatchId,
+        candidate: DateTime<Utc>,
+    ) -> Result<portal_domain::services::tournament::schedule_clash::ScheduleContext, DomainError>
+    {
+        use portal_domain::services::tournament::schedule_clash::{
+            ScheduleContext, ScheduleNeighbour, TEAM_CLASH_WINDOW_MINUTES,
+        };
+
+        let window = chrono::Duration::minutes(TEAM_CLASH_WINDOW_MINUTES);
+        let rows = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            SELECT other.* FROM tournament_matches other
+            JOIN tournament_matches this ON this.tournament_id = other.tournament_id
+            WHERE this.id = $1
+              AND other.id <> this.id
+              AND other.scheduled_at IS NOT NULL
+              AND other.scheduled_at > $2
+              AND other.scheduled_at < $3
+              AND other.status IN
+                  ('scheduled', 'checking_in', 'pick_ban', 'in_progress', 'awaiting_result')
+            ORDER BY other.scheduled_at
+            ",
+        )
+        .bind(match_id.as_uuid())
+        .bind(candidate - window)
+        .bind(candidate + window)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // One enabled server for the game, and the tournament plays on it.
+        let single: Option<(bool,)> = sqlx::query_as(
+            r"
+            SELECT COALESCE(t.settings -> 'game_server' ->> 'enabled', 'false') = 'true'
+                   AND (SELECT COUNT(*) FROM game_servers gs
+                        WHERE gs.game_id = t.game_id AND gs.enabled) = 1
+            FROM tournament_matches m
+            JOIN tournaments t ON t.id = m.tournament_id
+            WHERE m.id = $1
+            ",
+        )
+        .bind(match_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(ScheduleContext {
+            neighbours: rows
+                .into_iter()
+                .map(TournamentMatch::from)
+                .filter_map(|m| {
+                    Some(ScheduleNeighbour {
+                        match_id: m.id,
+                        participant1_registration_id: m.participant1_registration_id,
+                        participant2_registration_id: m.participant2_registration_id,
+                        participant1_name: m.participant1_name,
+                        participant2_name: m.participant2_name,
+                        scheduled_at: m.scheduled_at?,
+                    })
+                })
+                .collect(),
+            single_game_server: single.is_some_and(|(s,)| s),
+        })
+    }
+
     async fn list_checkin_expired(
         &self,
         now: DateTime<Utc>,
@@ -315,6 +382,27 @@ impl TournamentMatchRepository for PgTournamentMatchRepository {
             SELECT * FROM tournament_matches
             WHERE status = 'checking_in'
               AND check_in_deadline IS NULL
+            ORDER BY updated_at
+            LIMIT $1
+            ",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        Ok(rows.into_iter().map(TournamentMatch::from).collect())
+    }
+
+    async fn list_checking_in_without_veto(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError> {
+        let rows = sqlx::query_as::<_, TournamentMatchRow>(
+            r"
+            SELECT * FROM tournament_matches
+            WHERE status = 'checking_in'
+              AND veto_required = false
             ORDER BY updated_at
             LIMIT $1
             ",

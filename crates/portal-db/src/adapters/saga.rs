@@ -299,6 +299,21 @@ impl SagaExecutionRepository for PgSagaExecutionRepository {
         rows.into_iter().map(row_to_saga).collect()
     }
 
+    async fn count_for_match(
+        &self,
+        saga_type: &str,
+        match_id: portal_core::TournamentMatchId,
+    ) -> Result<i64, DomainError> {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM saga_executions WHERE saga_type = $1 AND match_id = $2",
+        )
+        .bind(saga_type)
+        .bind(match_id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to count sagas: {e}")))
+    }
+
     async fn find_pending(&self) -> Result<Vec<SagaExecution>, DomainError> {
         let rows = sqlx::query_as::<_, SagaExecutionRow>(
             r"SELECT * FROM saga_executions WHERE status = 'pending' ORDER BY created_at ASC",

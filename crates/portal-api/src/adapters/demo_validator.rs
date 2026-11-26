@@ -415,9 +415,9 @@ impl MatchDemoValidator for DemoValidatorAdapter {
                 let extracted_score = (metadata.team1_score, metadata.team2_score);
                 validation.extracted_score = Some(extracted_score);
 
-                if extracted_score == claimed_score {
+                if let Some(confidence) = demo_score_agreement(extracted_score, claimed_score) {
                     validation.is_valid = true;
-                    validation.confidence = 0.9;
+                    validation.confidence = confidence;
                 } else {
                     validation.add_error(format!(
                         "Score mismatch: demo shows {}-{} but claim says {}-{}",
@@ -535,9 +535,33 @@ fn unrecognized_from_players(
         .collect()
 }
 
+/// Whether a demo's map score agrees with the claimed one, and how surely.
+///
+/// The demo's team 1 is whoever MatchZy listed first, which need not be the
+/// match's participant 1, so the claimed score is accepted in either
+/// orientation. Comparing positionally only flagged correct results whose
+/// demo listed the teams the other way round as a score mismatch, which
+/// paused the completion and held up the standings until an admin approved.
+fn demo_score_agreement(demo: (i32, i32), claimed: (i32, i32)) -> Option<f32> {
+    if demo == claimed {
+        Some(0.9)
+    } else if (demo.1, demo.0) == claimed {
+        Some(0.8)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_demo_score_matches_in_either_team_order() {
+        assert_eq!(demo_score_agreement((13, 7), (13, 7)), Some(0.9));
+        assert_eq!(demo_score_agreement((7, 13), (13, 7)), Some(0.8));
+        assert_eq!(demo_score_agreement((13, 9), (13, 7)), None);
+    }
     use portal_core::{DemoId, DemoPlayerId, PlayerId};
     use portal_domain::entities::demo::DemoPlayerStats;
 

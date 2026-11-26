@@ -812,12 +812,24 @@ pub async fn restore_tournament(
     )))
 }
 
+/// Query for completing a tournament.
+#[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
+pub struct CompleteTournamentQuery {
+    /// Complete even though some matches have not been played.
+    #[serde(default)]
+    pub force: bool,
+}
+
 /// Complete a tournament.
+///
+/// Refused (400) while a match between two decided participants is
+/// unfinished, unless `?force=true`.
 #[utoipa::path(
     post,
     path = "/v1/tournaments/{tournament_id}/complete",
     params(
-        ("tournament_id" = String, Path, description = "Tournament ID")
+        ("tournament_id" = String, Path, description = "Tournament ID"),
+        CompleteTournamentQuery
     ),
     responses(
         (status = 200, description = "Tournament completed", body = DataResponse<TournamentResponse>),
@@ -835,6 +847,7 @@ pub async fn complete_tournament(
     perm_checker: PermissionChecker,
     headers: HeaderMap,
     Path(tournament_id): Path<TournamentId>,
+    axum::extract::Query(query): axum::extract::Query<CompleteTournamentQuery>,
 ) -> ApiResult<Json<DataResponse<TournamentResponse>>> {
     let request_id = get_request_id(&headers);
 
@@ -848,7 +861,7 @@ pub async fn complete_tournament(
 
     let tournament = state
         .tournament_service
-        .complete_tournament(tournament_id)
+        .complete_tournament(tournament_id, query.force)
         .await?;
 
     // Completion snapshots the tournament's active awards into permanent

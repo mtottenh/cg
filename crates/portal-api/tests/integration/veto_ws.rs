@@ -406,6 +406,39 @@ async fn test_ws_connect_and_auth_as_admin() {
     }
 }
 
+/// An organiser who also captains a team joins as that team's participant
+/// (presence, coin flip, team chat), not as an anonymous admin. The team is
+/// participant 2, so the participant-1 check — where they can act only as
+/// staff — must not settle the role.
+#[tokio::test]
+async fn test_ws_admin_who_captains_a_team_joins_as_participant() {
+    let mut app = TestApp::new().await;
+    let fixture = TwoTeamMatchFixture::with_veto(app.pool(), TEST_JWT_SECRET).await;
+    let captain = &fixture.team_b.captain;
+    sqlx::query(
+        "INSERT INTO user_roles (user_id, role_id) \
+         SELECT $1, id FROM roles WHERE name = 'super_admin' ON CONFLICT DO NOTHING",
+    )
+    .bind(captain.user_id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    let addr = app.start_server().await;
+    let mut ws = connect_veto_ws(addr, &fixture.match_id.to_string()).await;
+    match ws_authenticate(&mut ws, &captain.token).await {
+        ServerMessage::AuthSuccess {
+            role,
+            registration_id,
+            ..
+        } => {
+            assert_eq!(role, "participant");
+            assert_eq!(registration_id, Some(fixture.reg_b_id.to_string()));
+        }
+        other => panic!("Expected AuthSuccess, got: {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn test_ws_auth_invalid_token() {
     let mut app = TestApp::new().await;
@@ -1041,18 +1074,20 @@ async fn test_ws_spectator_cannot_send_team_chat() {
     let _ = ws_authenticate(&mut ws_spec, &setup.spectator_token).await;
     drain_initial_messages(&mut ws_spec).await;
 
-    // Spectator sends team chat — should silently fail (error is logged, not sent)
+    // Spectator sends team chat: refused, and told so (it used to vanish).
     ws_send_chat(&mut ws_spec, "team", "should fail").await;
 
-    // Verify no chat message is received back
     let msg = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
+        std::time::Duration::from_millis(2000),
         ws_next_message(&mut ws_spec),
     )
     .await;
-    // Timeout or no message is the expected behavior
-    if let Ok(Some(ServerMessage::Chat { .. })) = msg {
-        panic!("Spectator should NOT receive echo of team chat");
+    match msg {
+        Ok(Some(ServerMessage::Error { code, .. })) => assert_eq!(code, "chat_rejected"),
+        Ok(Some(ServerMessage::Chat { .. })) => {
+            panic!("Spectator should NOT receive echo of team chat")
+        }
+        other => panic!("expected a chat_rejected error frame, got {other:?}"),
     }
 }
 
@@ -1597,4 +1632,99 @@ async fn test_ws_overlapping_reconnect_keeps_the_team_present() {
         wait_for_presence(&mut ws_b, "Alpha", false).await,
         "once the surviving socket closes, the departure is announced"
     );
+}
+
+// ============================================================================
+// CHECK-IN HAND-OFF: sockets already in the lobby learn the veto has started
+// ============================================================================
+
+/// Both captains sit on the match page through check-in, so no socket joins
+/// after the session starts. The second check-in itself must announce the
+/// session and flip the coin — it used to do neither, and the first turn
+/// timed out into a random ban before either page showed a veto.
+#[tokio::test]
+async fn test_ws_second_check_in_announces_veto_and_flips_coin() {
+    let mut app = TestApp::new().await;
+    let fixture = TwoTeamMatchFixture::new(app.pool(), TEST_JWT_SECRET).await;
+    // The state the lifecycle pass leaves at window-open: checking_in,
+    // veto-gated, with a pre-created pending session.
+    VetoSessionBuilder::new()
+        .match_id_from_uuid(fixture.match_id)
+        .bo3()
+        .build_persisted(app.pool())
+        .await;
+    sqlx::query(
+        "UPDATE tournament_matches \
+         SET status = 'checking_in', veto_required = true, \
+             scheduled_at = NOW(), check_in_deadline = NOW() + INTERVAL '10 minutes' \
+         WHERE id = $1",
+    )
+    .bind(fixture.match_id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    let addr = app.start_server().await;
+    let match_id = fixture.match_id.to_string();
+    let (mut ws_a, mut ws_b) = connect_both_teams(
+        addr,
+        &match_id,
+        &fixture.team_a.captain.token,
+        &fixture.team_b.captain.token,
+    )
+    .await;
+
+    for (reg, token) in [
+        (fixture.reg_a_id, &fixture.team_a.captain.token),
+        (fixture.reg_b_id, &fixture.team_b.captain.token),
+    ] {
+        let response = app
+            .post_json_with_token(
+                &format!(
+                    "/v1/tournaments/{}/matches/{match_id}/check-in",
+                    fixture.tournament_id
+                ),
+                &serde_json::json!({ "registration_id": reg.to_string() }),
+                token,
+            )
+            .await;
+        response.assert_status(StatusCode::OK);
+    }
+
+    for (who, ws) in [("team A", &mut ws_a), ("team B", &mut ws_b)] {
+        let mut saw_flip = false;
+        let mut in_progress = false;
+        while let Some(msg) = next_within(ws, 3000).await {
+            match msg {
+                ServerMessage::CoinFlipResult { .. } => saw_flip = true,
+                ServerMessage::VetoStateUpdate { session } => {
+                    in_progress = session["status"] == "in_progress";
+                }
+                _ => {}
+            }
+            if saw_flip && in_progress {
+                break;
+            }
+        }
+        assert!(saw_flip, "{who} never saw the coin flip");
+        assert!(in_progress, "{who} never saw the session go in_progress");
+    }
+}
+
+/// Session responses carry the server's clock so countdowns don't depend on
+/// the viewer's.
+#[tokio::test]
+async fn test_veto_session_response_carries_server_time() {
+    let app = TestApp::new().await;
+    let fixture = TwoTeamMatchFixture::with_veto(app.pool(), TEST_JWT_SECRET).await;
+    let body: serde_json::Value = app
+        .get(&format!("/v1/matches/{}/veto", fixture.match_id))
+        .await
+        .json();
+    let server_time: chrono::DateTime<chrono::Utc> = body["data"]["session"]["server_time"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{body}"))
+        .parse()
+        .unwrap();
+    assert!((chrono::Utc::now() - server_time).num_seconds().abs() < 60);
 }

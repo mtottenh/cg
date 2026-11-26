@@ -506,3 +506,69 @@ async fn test_stale_pending_saga_does_not_block_new_completion() {
          pending saga row (p1={p1:?}, p2={p2:?})"
     );
 }
+
+/// Each re-drive runs a fresh saga row with its own retry budget, so a step
+/// that keeps failing used to add a row on every pass for ever. After a
+/// fixed number of attempts for the match the pass stops and raises a
+/// progression-stall review instead.
+#[tokio::test]
+async fn test_lifecycle_stops_redriving_after_repeated_attempts() {
+    use portal_api::background::run_lifecycle_pass;
+    use portal_api::state::AppState;
+
+    let app = TestApp::new().await;
+    let t = create_4player_tournament(&app, "saga-attempt-cap").await;
+
+    let claim_id = submit_claim(&app, &t.test_match_id, &t.dev_reg_id, t.dev_is_p1).await;
+    confirm_claim_as_user(&app, &t.test_match_id, &claim_id, t.opponent_user_id).await;
+
+    let tournament_uuid: Uuid = t.tournament_id.parse().unwrap();
+    let test_match_uuid: Uuid = t.test_match_id.parse().unwrap();
+
+    // The confirm's saga is left failed and retryable...
+    sqlx::query(
+        "UPDATE saga_executions SET status = 'failed', retry_count = 0, \
+         updated_at = NOW() - INTERVAL '1 hour' \
+         WHERE match_id = $1 AND saga_type = 'match_completion'",
+    )
+    .bind(test_match_uuid)
+    .execute(app.pool())
+    .await
+    .unwrap();
+    // ...behind four earlier attempts that already failed for good.
+    for _ in 0..4 {
+        sqlx::query(
+            "INSERT INTO saga_executions
+               (saga_type, saga_version, tournament_id, match_id, input_data,
+                status, step_history, retry_count, max_retries, created_at, updated_at)
+             VALUES ('match_completion', 2, $1, $2, '{}'::jsonb,
+                     'failed', '[]'::jsonb, 3, 3,
+                     NOW() - INTERVAL '2 hours', NOW() - INTERVAL '2 hours')",
+        )
+        .bind(tournament_uuid)
+        .bind(test_match_uuid)
+        .execute(app.pool())
+        .await
+        .unwrap();
+    }
+
+    let state = AppState::new(app.pool().clone(), TEST_JWT_SECRET).await;
+    let summary = run_lifecycle_pass(&state, &lifecycle_cfg(), false).await;
+    assert_eq!(summary.sagas_redriven, 0, "{summary:?}");
+
+    let (sagas,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM saga_executions WHERE match_id = $1 AND saga_type = 'match_completion'",
+    )
+    .bind(test_match_uuid)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(sagas, 5, "no new saga row");
+    let (reviews,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM result_reviews WHERE match_id = $1")
+            .bind(test_match_uuid)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(reviews, 1, "the give-up is raised for an admin");
+}

@@ -397,9 +397,22 @@ async fn test_complete_and_finalize_tournament() {
     let (tournament_id, _match_id, _reg1, _reg2) =
         create_tournament_with_matches(&app, "complete-finalize-test").await;
 
-    // Complete
+    // Its match has not been played: completing is refused...
     let response = app
         .post_auth(&format!("/v1/tournaments/{tournament_id}/complete"))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert!(
+        response.text().contains("still to be played"),
+        "{}",
+        response.text()
+    );
+
+    // ...unless forced.
+    let response = app
+        .post_auth(&format!(
+            "/v1/tournaments/{tournament_id}/complete?force=true"
+        ))
         .await;
     response.assert_status(StatusCode::OK);
     let body: serde_json::Value = response.json();

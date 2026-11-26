@@ -415,3 +415,48 @@ async fn test_update_tournament_registration_end_after_start() {
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
 }
+
+/// The scheduling mode is create-time state everywhere else, but an organiser
+/// has to be able to change who sets match times on a cup that is already
+/// running. It is the one field a started tournament still accepts, and only
+/// on its own.
+#[tokio::test]
+async fn test_update_tournament_scheduling_mode() {
+    let app = TestApp::new().await;
+
+    // Helper leaves the tournament in_progress, created `self_scheduled`.
+    let (tournament_id, _match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "update-sched-mode-test").await;
+    let url = format!("/v1/tournaments/{tournament_id}");
+
+    let response = app.get(&url).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["scheduling_mode"], "self_scheduled");
+
+    let response = app
+        .patch_json(&url, &json!({ "scheduling_mode": "live" }))
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["scheduling_mode"], "live");
+
+    let response = app
+        .patch_json(&url, &json!({ "scheduling_mode": "whenever" }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    // Bundling a frozen field with it is still refused, and changes nothing.
+    let response = app
+        .patch_json(
+            &url,
+            &json!({ "scheduling_mode": "self_scheduled", "name": "Too Late Rename" }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let response = app.get(&url).await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["scheduling_mode"], "live");
+}

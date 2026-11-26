@@ -23,10 +23,19 @@ const WARNING_THRESHOLDS: &[u32] = &[10, 5, 3, 2, 1];
 /// How often to check for timeout warnings (in milliseconds).
 const CHECK_INTERVAL_MS: u64 = 500;
 
+/// Run the timed-out turn sweep every this many warning checks (2 s), so a
+/// turn is enforced within a couple of seconds of its deadline rather than
+/// on the 30-second lifecycle tick.
+const ENFORCE_EVERY_CHECKS: u32 = 4;
+
 /// Tracks which warnings have been sent to avoid duplicates.
+///
+/// Keyed by turn as well as threshold: keyed by threshold alone, the 10 s
+/// and 5 s warnings went out on the first turn only, because the tracker was
+/// only cleared when a deadline was absent or already past.
 struct WarningTracker {
-    /// Set of (match_id, seconds_remaining) that have been sent.
-    sent_warnings: HashSet<(String, u32)>,
+    /// Set of (match_id, action_number, threshold) that have been sent.
+    sent_warnings: HashSet<(String, u32, u32)>,
 }
 
 impl WarningTracker {
@@ -37,8 +46,8 @@ impl WarningTracker {
     }
 
     /// Check if we should send a warning for this match at this threshold.
-    fn should_send(&mut self, match_id: &TournamentMatchId, seconds: u32) -> bool {
-        let key = (match_id.to_string(), seconds);
+    fn should_send(&mut self, match_id: &TournamentMatchId, action: u32, seconds: u32) -> bool {
+        let key = (match_id.to_string(), action, seconds);
         if self.sent_warnings.contains(&key) {
             false
         } else {
@@ -50,7 +59,7 @@ impl WarningTracker {
     /// Clear warnings for a match (e.g., when deadline changes).
     fn clear_match(&mut self, match_id: &TournamentMatchId) {
         let match_str = match_id.to_string();
-        self.sent_warnings.retain(|(m, _)| m != &match_str);
+        self.sent_warnings.retain(|(m, _, _)| m != &match_str);
     }
 }
 
@@ -73,12 +82,18 @@ pub fn spawn_timeout_warning_task(state: AppState, shutdown: Arc<Notify>) -> Joi
 async fn run_timeout_warning_loop(state: AppState, shutdown: Arc<Notify>) {
     let mut check_interval = interval(Duration::from_millis(CHECK_INTERVAL_MS));
     let mut tracker = WarningTracker::new();
+    let mut checks: u32 = 0;
 
     loop {
         tokio::select! {
             _ = check_interval.tick() => {
                 if let Err(e) = check_and_send_warnings(&state, &mut tracker).await {
                     error!(error = %e, "timeout warning task iteration failed");
+                }
+                checks = checks.wrapping_add(1);
+                if checks.is_multiple_of(ENFORCE_EVERY_CHECKS) {
+                    let mut summary = crate::background::LifecyclePassSummary::default();
+                    crate::background::process_veto_timeouts(&state, &mut summary).await;
                 }
             }
             () = shutdown.notified() => {
@@ -129,7 +144,9 @@ async fn check_and_send_warnings(
 
         // Check each threshold
         for &threshold in WARNING_THRESHOLDS {
-            if seconds_remaining <= threshold && tracker.should_send(&match_id, threshold) {
+            if seconds_remaining <= threshold
+                && tracker.should_send(&match_id, session.current_action_number, threshold)
+            {
                 // Get team info for the warning
                 let Some(current_team_reg_id) = session.current_team_turn else {
                     continue;
@@ -147,7 +164,7 @@ async fn check_and_send_warnings(
 
                     let () =
                         lobby.broadcast(LobbyBroadcast::TimeoutWarning(TimeoutWarningBroadcast {
-                            seconds_remaining: threshold,
+                            seconds_remaining,
                             current_team_registration_id: current_team_reg_id,
                         }));
                 }
@@ -164,4 +181,20 @@ async fn check_and_send_warnings(
 /// Get all active match IDs from the lobby manager.
 fn get_active_match_ids(manager: &Arc<VetoLobbyManager>) -> Vec<TournamentMatchId> {
     manager.active_match_ids()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_turn_gets_its_own_warnings() {
+        let mut tracker = WarningTracker::new();
+        let m = TournamentMatchId::new();
+        assert!(tracker.should_send(&m, 1, 10));
+        assert!(!tracker.should_send(&m, 1, 10), "once per turn");
+        assert!(tracker.should_send(&m, 2, 10), "the next turn warns again");
+        tracker.clear_match(&m);
+        assert!(tracker.should_send(&m, 2, 10));
+    }
 }

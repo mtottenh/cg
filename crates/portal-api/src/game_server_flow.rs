@@ -130,7 +130,24 @@ pub async fn on_veto_completed(state: &AppState, match_id: TournamentMatchId) {
             .get_tournament(match_.tournament_id)
             .await?;
         let settings = GameServerSettings::from_tournament_settings(&tournament.settings);
-        if !settings.enabled {
+        if !settings.enabled || !state.gameserver_enabled {
+            // No server will be provisioned, so no `going_live` event will
+            // ever move the match on: start it here. Without this a finished
+            // veto left the match in `pick_ban` for good, and results can
+            // only be reported from `in_progress`.
+            if match_.status == TournamentMatchStatus::PickBan {
+                state
+                    .match_lifecycle_service
+                    .transition(
+                        match_id,
+                        TournamentMatchStatus::InProgress,
+                        TransitionTrigger::System {
+                            job_name: "veto_completed".to_string(),
+                        },
+                        Some("Map veto completed; no game server for this tournament".to_string()),
+                    )
+                    .await?;
+            }
             return Ok::<Option<ServerReservation>, DomainError>(None);
         }
         let reservation = request_assignment(state, match_id).await?;
@@ -284,12 +301,50 @@ pub async fn try_allocate_and_load(
         )
         .await?;
 
-    let Some((reservation, server)) = allocated else {
+    let Some((mut reservation, server)) = allocated else {
         tracing::info!(reservation_id = %reservation.id, "no eligible server free; queued");
         return Ok(reservation);
     };
 
+    // A reservation that waited in the queue carries the config built when
+    // it queued; rosters and substitutions may have changed since. Rebuild
+    // it now, keeping the event token it was issued (the token itself is
+    // only stored inside the config).
+    if Utc::now() - reservation.created_at > Duration::minutes(QUEUED_CONFIG_REBUILD_AFTER_MINUTES)
+        && let Some(event_token) = reservation_event_token(&reservation)
+    {
+        match build_config(state, &match_, &reservation, &event_token).await {
+            Ok(config) => {
+                state
+                    .server_reservation_repo
+                    .store_config(reservation.id, &config)
+                    .await?;
+                reservation.match_config = Some(config);
+            }
+            Err(reason) => {
+                tracing::warn!(reservation_id = %reservation.id, %reason,
+                    "could not rebuild a queued config; loading the one built at queue time");
+            }
+        }
+    }
+
     send_load(state, reservation, &server).await
+}
+
+/// A queued reservation older than this has its config rebuilt when it is
+/// finally given a server.
+const QUEUED_CONFIG_REBUILD_AFTER_MINUTES: i64 = 1;
+
+/// The event-webhook token a reservation's stored config was built with.
+fn reservation_event_token(reservation: &ServerReservation) -> Option<String> {
+    reservation
+        .match_config
+        .as_ref()?
+        .get("cvars")?
+        .get("matchzy_remote_log_header_value")?
+        .as_str()?
+        .strip_prefix("Bearer ")
+        .map(str::to_string)
 }
 
 /// Mint a fresh config token, instruct the agent to load, advance to
@@ -659,11 +714,20 @@ async fn roster_for(
         }
     }
 
+    // The whitelist is the whole roster, bench included. One rostered
+    // player without a Steam link used to fail the reservation for
+    // everyone; leave that player off instead and only refuse when the team
+    // has nobody who could join at all.
     if !missing.is_empty() {
-        return Err(format!(
-            "players on \"{fallback_name}\" have no linked Steam ID: {}",
-            missing.join(", ")
-        ));
+        if players.is_empty() {
+            return Err(format!(
+                "players on \"{fallback_name}\" have no linked Steam ID: {}",
+                missing.join(", ")
+            ));
+        }
+        tracing::warn!(match_id = %match_id, team = %fallback_name,
+            missing = %missing.join(", "),
+            "roster members without a linked Steam ID left off the server whitelist");
     }
 
     Ok(MatchzyTeam {
@@ -1028,7 +1092,8 @@ async fn apply_series_end(
                 .unwrap_or(DEFAULT_AUTO_CONFIRM_MINUTES),
         );
 
-    let claim = state
+    let has_game_rows = !game_results.is_empty();
+    let mut claim = state
         .result_service
         .submit_server_claim(
             reservation.match_id,
@@ -1039,6 +1104,26 @@ async fn apply_series_end(
             auto_confirm_at,
         )
         .await;
+    // MatchZy does not retry webhooks: one lost `map_result` leaves the
+    // per-map rows out of step with the series score, and that used to
+    // discard the whole result. The series score is the part that decides
+    // the match, so report it without the per-map breakdown instead.
+    if has_game_rows && matches!(claim, Err(DomainError::InvalidMatchResult(_))) {
+        tracing::warn!(match_id = %reservation.match_id,
+            "per-map results do not match the series score {s1}-{s2}; \
+             submitting the series result without them");
+        claim = state
+            .result_service
+            .submit_server_claim(
+                reservation.match_id,
+                winner,
+                s1,
+                s2,
+                Vec::new(),
+                auto_confirm_at,
+            )
+            .await;
+    }
     match claim {
         Ok(claim) => {
             tracing::info!(match_id = %reservation.match_id, claim_id = %claim.id,
@@ -1110,7 +1195,7 @@ async fn broadcast_reservation(state: &AppState, reservation: &ServerReservation
     );
 }
 
-fn broadcast_assignment(
+pub(crate) fn broadcast_assignment(
     state: &AppState,
     match_id: TournamentMatchId,
     status: &str,
@@ -1204,6 +1289,9 @@ pub struct ReservationPassSummary {
     pub load_retried: u32,
     /// Stale ready/live reservations reconciled via `get5_status`.
     pub reconciled: u32,
+    /// Reservations released because their match ended without the server
+    /// reporting it (forfeit, no-show, cancel, manual result).
+    pub released_finished: u32,
     /// Errors (each logged; the pass continues).
     pub errors: u32,
 }
@@ -1220,6 +1308,41 @@ pub async fn run_reservation_pass(state: &AppState) -> ReservationPassSummary {
         return summary;
     }
     let now = Utc::now();
+
+    // 0. Reservations whose match is already over. Only `series_end`
+    //    released a server; a forfeit, a no-show, a cancel or a manually
+    //    settled result left the reservation live for good, and with one
+    //    server every later match queued behind it forever. Runs first so
+    //    the freed server can go to a queued match in this same pass. (A
+    //    series that ends normally is released by `series_end` while the
+    //    match is still in_progress, so it never shows up here.)
+    match state
+        .server_reservation_repo
+        .list_live_for_finished_matches(50)
+        .await
+    {
+        Ok(finished) => {
+            for reservation in finished {
+                match cancel_assignment(state, reservation.match_id, "match ended").await {
+                    Ok(()) => {
+                        summary.released_finished += 1;
+                        tracing::info!(match_id = %reservation.match_id,
+                            reservation_id = %reservation.id,
+                            "lifecycle: released the server of a finished match");
+                    }
+                    Err(e) => {
+                        tracing::warn!(reservation_id = %reservation.id, error = %e,
+                            "releasing a finished match's reservation failed");
+                        summary.errors += 1;
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "lifecycle: list_live_for_finished_matches failed");
+            summary.errors += 1;
+        }
+    }
 
     // 1. Queued reservations → allocate + load.
     match state.server_reservation_repo.list_pending(50).await {
@@ -1273,16 +1396,20 @@ pub async fn run_reservation_pass(state: &AppState) -> ReservationPassSummary {
                 let Some(server_id) = reservation.server_id else {
                     continue;
                 };
-                match state.game_server_registry.get(server_id).await {
-                    Ok(server) => match send_load_public(state, reservation, &server).await {
-                        Ok(_) => summary.load_retried += 1,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "load retry failed");
-                            summary.errors += 1;
-                        }
-                    },
+                let server = match state.game_server_registry.get(server_id).await {
+                    Ok(server) => server,
                     Err(e) => {
                         tracing::warn!(error = %e, "load retry: server lookup failed");
+                        summary.errors += 1;
+                        continue;
+                    }
+                };
+                match redrive_stuck_load(state, reservation, &server, now).await {
+                    Ok(StuckLoad::Adopted) => summary.reconciled += 1,
+                    Ok(StuckLoad::Retried) => summary.load_retried += 1,
+                    Ok(StuckLoad::GaveUp) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "load retry failed");
                         summary.errors += 1;
                     }
                 }
@@ -1412,6 +1539,73 @@ pub async fn run_reservation_pass(state: &AppState) -> ReservationPassSummary {
 }
 
 /// Re-drive `load_match` for a reservation that already holds a server.
+/// What the reservation pass did with a reservation stuck in `configuring`.
+enum StuckLoad {
+    /// The server already has the match loaded; its `series_start` was lost.
+    Adopted,
+    Retried,
+    GaveUp,
+}
+
+/// A reservation stuck in `configuring` (no `series_start` arrived).
+///
+/// Re-sending the load ends whatever the server has loaded, so it is never
+/// done once the server shows a match in progress: that is our match with a
+/// lost `series_start`, and it is adopted as `ready` instead. Otherwise the
+/// load is re-sent, at most [`MAX_LOAD_RETRIES`] times in all, after which
+/// the reservation fails with a reason an admin can act on (Reload or Clear
+/// in the match's Rescue tab) rather than resetting the server for ever.
+async fn redrive_stuck_load(
+    state: &AppState,
+    reservation: ServerReservation,
+    server: &GameServer,
+    now: chrono::DateTime<Utc>,
+) -> Result<StuckLoad, DomainError> {
+    let fresh_heartbeat = server.last_heartbeat_at.is_some_and(|at| {
+        now - at < Duration::seconds(portal_domain::services::game_server::HEARTBEAT_STALENESS_SECS)
+    });
+    let match_loaded = fresh_heartbeat
+        && server
+            .last_gamestate
+            .is_some_and(|g| g != portal_core::types::AgentGamestate::None);
+    if match_loaded {
+        state
+            .server_reservation_repo
+            .set_status(reservation.id, ReservationStatus::Ready)
+            .await?;
+        state
+            .game_server_registry
+            .set_server_status(server.id, portal_core::types::GameServerStatus::InMatch)
+            .await?;
+        tracing::info!(reservation_id = %reservation.id, server = %server.name,
+            "server shows the match loaded; treating the lost series_start as received");
+        broadcast_reservation_by_id(state, reservation.id).await;
+        return Ok(StuckLoad::Adopted);
+    }
+
+    if reservation.retry_count >= MAX_LOAD_RETRIES {
+        let reason = format!(
+            "the game server did not confirm loading the match after {MAX_LOAD_RETRIES} \
+             attempts; use Reload or Clear on the match"
+        );
+        state
+            .server_reservation_repo
+            .release(reservation.id, ReservationStatus::Failed, Some(&reason))
+            .await?;
+        broadcast_assignment(state, reservation.match_id, "failed", None, Some(&reason));
+        tracing::warn!(reservation_id = %reservation.id, "gave up re-driving a stuck load");
+        return Ok(StuckLoad::GaveUp);
+    }
+    let id = reservation.id;
+    let sent = send_load_public(state, reservation, server).await?;
+    // A failed send is counted by the load-failure path; a send the agent
+    // accepted that still produced no `series_start` is counted here.
+    if sent.id == id && sent.status == ReservationStatus::Configuring {
+        state.server_reservation_repo.increment_retry(id).await?;
+    }
+    Ok(StuckLoad::Retried)
+}
+
 async fn send_load_public(
     state: &AppState,
     reservation: ServerReservation,
@@ -1482,22 +1676,61 @@ async fn reconcile_stale(
         return Ok(true);
     }
 
+    // The server holds no series any more (it restarted, or the match was
+    // ended on it) and reported no result. Maps that finished before that
+    // keep their rows; say how far the series got so the admin can decide
+    // between reloading it and entering the result.
+    let reason = match series_so_far(state, reservation).await {
+        Some((played, p1, p2)) if played > 0 => format!(
+            "the game server stopped holding the series after {played} finished map(s) \
+             ({p1}-{p2} so far; those map results are kept) — reload the match to play it \
+             again, or enter the result"
+        ),
+        _ => "no events received and server is idle — needs admin review".to_string(),
+    };
     state
         .server_reservation_repo
-        .release(
-            reservation.id,
-            ReservationStatus::Failed,
-            Some("no events received and server is idle — needs admin review"),
-        )
+        .release(reservation.id, ReservationStatus::Failed, Some(&reason))
         .await?;
-    broadcast_assignment(
-        state,
-        reservation.match_id,
-        "failed",
-        None,
-        Some("server went silent; match result needs admin review"),
-    );
+    broadcast_assignment(state, reservation.match_id, "failed", None, Some(&reason));
     Ok(true)
+}
+
+/// Finished maps recorded for the match: (count, won by participant 1,
+/// won by participant 2).
+async fn series_so_far(
+    state: &AppState,
+    reservation: &ServerReservation,
+) -> Option<(usize, usize, usize)> {
+    let match_ = get_match(state, reservation.match_id).await.ok()?;
+    let games = state
+        .tournament_match_game_repo
+        .list_by_match(reservation.match_id)
+        .await
+        .ok()?;
+    Some(tally_finished_maps(
+        games.iter().map(|g| g.winner_registration_id),
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    ))
+}
+
+/// Count finished maps by their winners: (finished, won by participant 1,
+/// won by participant 2). Maps with no winner are not finished.
+fn tally_finished_maps(
+    winners: impl Iterator<Item = Option<portal_core::ids::TournamentRegistrationId>>,
+    participant1: Option<portal_core::ids::TournamentRegistrationId>,
+    participant2: Option<portal_core::ids::TournamentRegistrationId>,
+) -> (usize, usize, usize) {
+    let (mut p1, mut p2) = (0, 0);
+    for winner in winners.flatten() {
+        if Some(winner) == participant1 {
+            p1 += 1;
+        } else if Some(winner) == participant2 {
+            p2 += 1;
+        }
+    }
+    (p1 + p2, p1, p2)
 }
 
 // =============================================================================
@@ -1668,7 +1901,7 @@ pub async fn request_substitution(
 
 /// The players currently listed for a registration: roster (or solo) with
 /// applied substitutions swapped in (§6.8 consistency rule).
-async fn effective_player_ids(
+pub(crate) async fn effective_player_ids(
     state: &AppState,
     match_id: TournamentMatchId,
     registration_id: TournamentRegistrationId,
@@ -2054,4 +2287,27 @@ pub async fn substitution_options(
         });
     }
     Ok(sides)
+}
+
+#[cfg(test)]
+mod series_tally_tests {
+    use super::tally_finished_maps;
+    use portal_core::ids::TournamentRegistrationId;
+
+    #[test]
+    fn counts_only_finished_maps_by_winner() {
+        let (a, b) = (
+            TournamentRegistrationId::new(),
+            TournamentRegistrationId::new(),
+        );
+        let winners = vec![Some(a), Some(b), None, Some(a)];
+        assert_eq!(
+            tally_finished_maps(winners.into_iter(), Some(a), Some(b)),
+            (3, 2, 1)
+        );
+        assert_eq!(
+            tally_finished_maps(std::iter::empty(), Some(a), Some(b)),
+            (0, 0, 0)
+        );
+    }
 }

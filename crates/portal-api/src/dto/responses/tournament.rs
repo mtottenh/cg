@@ -583,8 +583,17 @@ pub struct TournamentMatchResponse {
     pub participant1_checked_in_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub participant2_checked_in_at: Option<DateTime<Utc>>,
+    /// When the open check-in window closes: a side not checked in by then
+    /// is forfeited as a no-show. Set once the window opens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_in_deadline: Option<DateTime<Utc>>,
     pub check_in_required: bool,
     pub veto_required: bool,
+    /// Set only in the reply to an admin setting the match time: why that
+    /// time collides with another match (a team playing twice within two
+    /// hours, or the one game server already taken). The time was applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule_warning: Option<String>,
 
     // Timestamps
     pub created_at: DateTime<Utc>,
@@ -624,8 +633,10 @@ impl From<TournamentMatch> for TournamentMatchResponse {
             vod_url: m.vod_url,
             participant1_checked_in_at: m.participant1_checked_in_at,
             participant2_checked_in_at: m.participant2_checked_in_at,
+            check_in_deadline: m.check_in_deadline,
             check_in_required: m.check_in_required,
             veto_required: m.veto_required,
+            schedule_warning: None,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }

@@ -2,6 +2,7 @@
 
 mod common;
 
+mod admin_rescue;
 mod archiving;
 mod auth;
 mod awards;

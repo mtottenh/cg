@@ -46,7 +46,9 @@ use portal_domain::repositories::tournament::{
     TournamentMapPoolRepository as _, TournamentMatchRepository as _,
     TournamentStageRepository as _,
 };
-use portal_domain::services::tournament::{MatchCompletionInput, SagaCoordinator};
+use portal_domain::services::tournament::{
+    MatchCompletionInput, MatchStatusTransitioner as _, SagaCoordinator,
+};
 use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
@@ -99,7 +101,7 @@ impl LifecycleConfig {
                 i64::try_from(env_u64("PORTAL_CHECKIN_LEAD_MINUTES", 15)).unwrap_or(15),
             ),
             check_in_grace: ChronoDuration::minutes(
-                i64::try_from(env_u64("PORTAL_CHECKIN_GRACE_MINUTES", 10)).unwrap_or(10),
+                i64::try_from(env_u64("PORTAL_CHECKIN_GRACE_MINUTES", 20)).unwrap_or(20),
             ),
             veto_coin_flip_grace: ChronoDuration::seconds(
                 i64::try_from(env_u64("PORTAL_VETO_COIN_FLIP_GRACE_SECS", 15)).unwrap_or(15),
@@ -333,17 +335,12 @@ pub async fn run_lifecycle_pass(
     //     stalled veto (PUGs especially: strangers, no captains to chase)
     //     advances with a random pick/ban instead of wedging forever.
     // ------------------------------------------------------------------
-    match state.veto_service.find_timed_out_sessions().await {
-        Ok(sessions) => {
-            for session in sessions {
-                process_veto_timeout(state, &session, &mut summary).await;
-            }
-        }
-        Err(e) => {
-            error!(error = %e, "lifecycle: timed-out veto scan failed");
-            summary.errors += 1;
-        }
-    }
+    process_veto_timeouts(state, &mut summary).await;
+
+    // ------------------------------------------------------------------
+    // 7a': veto setup that failed when the check-in window opened
+    // ------------------------------------------------------------------
+    repair_missing_veto_setup(state, cfg, &mut summary).await;
 
     // ------------------------------------------------------------------
     // 7b': veto sessions stalled on a step nobody will take (see fn doc)
@@ -416,14 +413,9 @@ async fn open_check_in_window(
     // `scheduled` match carrying an early deadline is harmless — both
     // sweeps key off `status`, and the value is re-stamped on the retry.
     //
-    // Deadline: grace period from whichever is later — the scheduled time
-    // or now (a match scheduled in the past still gets a full grace window).
-    let base = match_
-        .scheduled_at
-        .map_or_else(Utc::now, |s| s.max(Utc::now()));
     if let Err(e) = state
         .tournament_match_repo
-        .set_check_in_deadline(match_id, base + cfg.check_in_grace)
+        .set_check_in_deadline(match_id, check_in_deadline_for(cfg, match_.scheduled_at))
         .await
     {
         error!(%match_id, error = %e, "lifecycle: failed to set check-in deadline");
@@ -461,6 +453,20 @@ async fn open_check_in_window(
     }
 }
 
+/// When a check-in window opening now should close.
+///
+/// Normally the grace period after the scheduled time. A window never lasts
+/// less than a full lead plus grace from the moment it opens, though: a
+/// match given a time that is minutes away, or already past, would otherwise
+/// leave both teams a few minutes to notice before a no-show forfeit.
+pub(crate) fn check_in_deadline_for(
+    cfg: &LifecycleConfig,
+    scheduled_at: Option<chrono::DateTime<Utc>>,
+) -> chrono::DateTime<Utc> {
+    let full_window = Utc::now() + cfg.check_in_lead + cfg.check_in_grace;
+    scheduled_at.map_or(full_window, |s| (s + cfg.check_in_grace).max(full_window))
+}
+
 /// Stamp a check-in deadline on a match stranded in `checking_in` without
 /// one, so the no-show pass can pick it up again. Idempotent: once the
 /// deadline is set the match no longer matches the repair query.
@@ -471,13 +477,9 @@ async fn repair_check_in_deadline(
     summary: &mut LifecyclePassSummary,
 ) {
     let match_id = match_.id;
-    let base = match_
-        .scheduled_at
-        .map_or_else(Utc::now, |s| s.max(Utc::now()));
-
     match state
         .tournament_match_repo
-        .set_check_in_deadline(match_id, base + cfg.check_in_grace)
+        .set_check_in_deadline(match_id, check_in_deadline_for(cfg, match_.scheduled_at))
         .await
     {
         Ok(_) => {
@@ -505,7 +507,7 @@ async fn repair_check_in_deadline(
 /// The configured id gates creation, but standard `boN` ids are re-keyed to
 /// the *match's* best-of — with per-round formats a tournament-wide bo1
 /// default must not run a bo1 veto on the bo3 final.
-async fn ensure_veto_session(
+pub(crate) async fn ensure_veto_session(
     state: &AppState,
     match_: &TournamentMatch,
 ) -> Result<bool, DomainError> {
@@ -579,6 +581,72 @@ async fn ensure_veto_session(
     Ok(true)
 }
 
+/// Retry veto setup for matches in check-in that should be veto-gated.
+///
+/// `ensure_veto_session` ran once, when the window opened, and a failure was
+/// only logged: `veto_required` stayed false and, once both teams checked
+/// in, the match skipped the veto and went straight to `in_progress`. This
+/// re-tries it each pass. A session that exists while the flag is still
+/// false (the flag write failed after the session was created) gets the
+/// flag. Matches whose tournament has no veto are a cheap no-op.
+async fn repair_missing_veto_setup(
+    state: &AppState,
+    cfg: &LifecycleConfig,
+    summary: &mut LifecyclePassSummary,
+) {
+    let matches = match state
+        .tournament_match_repo
+        .list_checking_in_without_veto(cfg.batch_limit)
+        .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            error!(error = %e, "lifecycle: list_checking_in_without_veto failed");
+            summary.errors += 1;
+            return;
+        }
+    };
+    for match_ in matches {
+        if state
+            .veto_service
+            .get_session_state(match_.id)
+            .await
+            .is_ok()
+        {
+            match state
+                .tournament_match_repo
+                .set_veto_required(match_.id, true)
+                .await
+            {
+                Ok(_) => {
+                    summary.veto_sessions_created += 1;
+                    warn!(match_id = %match_.id,
+                        "lifecycle: veto session existed without the veto flag; flag set");
+                }
+                Err(e) => {
+                    error!(match_id = %match_.id, error = %e,
+                        "lifecycle: could not set the veto flag");
+                    summary.errors += 1;
+                }
+            }
+            continue;
+        }
+        match ensure_veto_session(state, &match_).await {
+            Ok(true) => {
+                summary.veto_sessions_created += 1;
+                warn!(match_id = %match_.id,
+                    "lifecycle: veto session set up on retry after the window opened");
+            }
+            Ok(false) => {}
+            Err(e) => {
+                error!(match_id = %match_.id, error = %e,
+                    "lifecycle: veto setup retry failed");
+                summary.errors += 1;
+            }
+        }
+    }
+}
+
 /// Veto sessions waiting on a step nobody will take.
 ///
 /// * A `pending` session whose match is already in `pick_ban` — the admin
@@ -612,10 +680,23 @@ async fn advance_stalled_veto_sessions(
                     continue;
                 }
                 match state.veto_service.start_session(session.id).await {
-                    Ok(_) => {
+                    Ok(started) => {
                         summary.veto_sessions_started += 1;
                         info!(match_id = %match_.id, session_id = %session.id,
                             "lifecycle: started veto session of a match already in pick_ban");
+                        // Sockets already in the lobby learn of the start
+                        // here; with both teams connected the coin is
+                        // flipped now rather than after the grace.
+                        if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_.id) {
+                            crate::handlers::veto_ws::broadcast_session_state(&lobby, started);
+                            crate::handlers::veto_ws::try_auto_coin_flip(
+                                &state.veto_service,
+                                &state.tournament_match_repo,
+                                match_.id,
+                                &lobby,
+                            )
+                            .await;
+                        }
                     }
                     Err(e) => {
                         error!(session_id = %session.id, error = %e, "lifecycle: veto start failed");
@@ -663,10 +744,17 @@ async fn advance_stalled_veto_sessions(
                     .record_coin_flip(session.id, winner, true)
                     .await
                 {
-                    Ok(_) => {
+                    Ok(updated) => {
                         summary.veto_coin_flips_auto += 1;
                         info!(match_id = %match_.id, session_id = %session.id,
                             "lifecycle: coin flipped after grace; veto in progress");
+                        // The first turn clock is now running: say so, or
+                        // it expires before any page shows whose turn it is.
+                        if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_.id) {
+                            crate::handlers::veto_ws::broadcast_coin_flip(
+                                &lobby, &match_, winner, updated,
+                            );
+                        }
                     }
                     Err(e) => {
                         error!(session_id = %session.id, error = %e, "lifecycle: auto coin flip failed");
@@ -872,6 +960,31 @@ async fn redrive_stuck_completion_sagas(
         }
 
         let match_id = input.match_id;
+
+        // Every re-drive runs a fresh saga row, with a fresh retry budget of
+        // its own, so a step that keeps failing used to grow a new row on
+        // every pass. Stop at a fixed number of attempts per match and hand
+        // it to an admin instead.
+        match coordinator
+            .count_for_match(MATCH_COMPLETION_SAGA, match_id)
+            .await
+        {
+            Ok(attempts) if attempts >= MAX_COMPLETION_ATTEMPTS => {
+                warn!(%saga_id, %match_id, attempts,
+                    "lifecycle: giving up on a completion saga that keeps failing");
+                raise_progression_stall(state, &input, saga_id).await;
+                if let Err(e) = coordinator.record_retry(&mut execution, true).await {
+                    error!(%saga_id, error = %e, "lifecycle: failed to retire saga");
+                    summary.errors += 1;
+                }
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(%saga_id, error = %e, "lifecycle: could not count saga attempts");
+            }
+        }
+
         let saga_result = state
             .match_completion_saga
             .execute_completion(input.clone())
@@ -910,6 +1023,10 @@ async fn redrive_stuck_completion_sagas(
         }
     }
 }
+
+/// Completion saga runs (the first plus re-drives) per match before the
+/// re-drive pass gives up and raises a progression-stall review.
+const MAX_COMPLETION_ATTEMPTS: i64 = 5;
 
 /// How many times [`settle_finished_stages`] tries a stage that stays open
 /// before leaving it alone until one of its matches changes.
@@ -1117,15 +1234,62 @@ async fn process_check_in_timeout(
     summary: &mut LifecyclePassSummary,
 ) {
     let match_id = match_.id;
+
+    // Decide on the row as it is now, not as the expiry scan saw it: a team
+    // that checks in between the scan and here must not be forfeited for a
+    // check-in it has made, and a match that has moved on is not ours.
+    let match_ = match state.tournament_match_repo.find_by_id(match_id).await {
+        Ok(Some(fresh)) => fresh,
+        Ok(None) => return,
+        Err(e) => {
+            error!(%match_id, error = %e, "lifecycle: check-in timeout re-read failed");
+            summary.errors += 1;
+            return;
+        }
+    };
+    if match_.status != TournamentMatchStatus::CheckingIn {
+        return;
+    }
     let p1_in = match_.participant1_checked_in_at.is_some();
     let p2_in = match_.participant2_checked_in_at.is_some();
 
+    let both_absent = !p1_in && !p2_in;
     let result = match (p1_in, p2_in) {
         (true, true) => {
             // Both checked in but the match is still in checking_in — the
-            // auto-advance handles this on check-in, so reaching here means
-            // something interrupted it. Log for visibility, don't punish.
-            warn!(%match_id, "lifecycle: both checked in but match still in checking_in");
+            // auto-advance on check-in was interrupted. Nobody has a
+            // check-in left to make, so finish the advance here; a pending
+            // veto session is then started by the stalled-session pass.
+            let next = if match_.veto_required {
+                TournamentMatchStatus::PickBan
+            } else {
+                TournamentMatchStatus::InProgress
+            };
+            match state
+                .match_lifecycle_service
+                .transition(
+                    match_id,
+                    next,
+                    TransitionTrigger::System {
+                        job_name: "both_checked_in_repair".to_string(),
+                    },
+                    Some("Both participants checked in".to_string()),
+                )
+                .await
+            {
+                Ok(_) => {
+                    warn!(%match_id, to = %next,
+                        "lifecycle: advanced a match left in checking_in with both sides in");
+                    if next == TournamentMatchStatus::InProgress {
+                        let _ = state.server_assignment_tx.send(match_id);
+                    }
+                }
+                Err(e) => {
+                    error!(%match_id, error = %e,
+                        "lifecycle: both checked in but the match could not be advanced");
+                    summary.errors += 1;
+                }
+            }
             return;
         }
         (false, false) => state
@@ -1163,6 +1327,34 @@ async fn process_check_in_timeout(
     match result {
         Ok(()) => {
             info!(%match_id, "lifecycle: check-in timeout processed");
+            // The forfeit service writes the status itself; record the step
+            // in the match's history like any other transition.
+            let (to, reason) = if both_absent {
+                (
+                    TournamentMatchStatus::Cancelled,
+                    "Neither team checked in before the deadline",
+                )
+            } else {
+                (
+                    TournamentMatchStatus::Forfeit,
+                    "A team did not check in before the deadline",
+                )
+            };
+            if let Err(e) = state
+                .match_lifecycle_service
+                .record_transition(
+                    match_id,
+                    TournamentMatchStatus::CheckingIn,
+                    to,
+                    TransitionTrigger::System {
+                        job_name: "check_in_timeout".to_string(),
+                    },
+                    Some(reason.to_string()),
+                )
+                .await
+            {
+                warn!(%match_id, error = %e, "lifecycle: could not log the no-show");
+            }
             // The no-show is a decided result (a double no-show a cancelled
             // match): settle it so the walkover winner advances / scores and
             // a group whose last match this was moves on to the playoffs.
@@ -1173,6 +1365,49 @@ async fn process_check_in_timeout(
             summary.errors += 1;
         }
     }
+}
+
+/// Give every check-in window that has already run out a fresh grace period.
+///
+/// Called once at process start. The first lifecycle pass runs immediately,
+/// and without this a deploy or crash that spanned a check-in deadline
+/// forfeited (or double-forfeited, which is permanent) teams that had no
+/// site to check in on. Returns how many deadlines were pushed back.
+pub async fn extend_check_in_deadlines_after_restart(
+    state: &AppState,
+    cfg: &LifecycleConfig,
+) -> u32 {
+    let now = Utc::now();
+    let expired = match state
+        .tournament_match_repo
+        .list_checkin_expired(now, cfg.batch_limit)
+        .await
+    {
+        Ok(expired) => expired,
+        Err(e) => {
+            error!(error = %e, "lifecycle: startup check-in deadline scan failed");
+            return 0;
+        }
+    };
+    let mut extended = 0;
+    for match_ in expired {
+        match state
+            .tournament_match_repo
+            .set_check_in_deadline(match_.id, now + cfg.check_in_grace)
+            .await
+        {
+            Ok(_) => {
+                extended += 1;
+                warn!(match_id = %match_.id,
+                    "lifecycle: check-in deadline passed while the API was down; extended");
+            }
+            Err(e) => {
+                error!(match_id = %match_.id, error = %e,
+                    "lifecycle: could not extend a check-in deadline at startup");
+            }
+        }
+    }
+    extended
 }
 
 /// Spawn the automation loop. Mirrors `spawn_timeout_warning_task`: interval
@@ -1187,6 +1422,10 @@ pub fn spawn_lifecycle_task(state: AppState, shutdown: Arc<Notify>) -> JoinHandl
         );
         let mut tick = interval(cfg.tick_interval);
         let mut tick_count: u32 = 0;
+        // Before the first pass: teams cannot check in while the API is
+        // down, so a deadline that ran out during the outage is not theirs
+        // to answer for.
+        extend_check_in_deadlines_after_restart(&state, &cfg).await;
         loop {
             tokio::select! {
                 _ = tick.tick() => {
@@ -1204,6 +1443,25 @@ pub fn spawn_lifecycle_task(state: AppState, shutdown: Arc<Notify>) -> JoinHandl
             }
         }
     })
+}
+
+/// Auto-act every veto turn whose deadline has passed.
+///
+/// Runs on the lifecycle tick and, so a 30-second turn does not last up to
+/// a minute, every couple of seconds from the veto warning task. The two
+/// may overlap: the session cursor guard lets only one auto-action land.
+pub async fn process_veto_timeouts(state: &AppState, summary: &mut LifecyclePassSummary) {
+    match state.veto_service.find_timed_out_sessions().await {
+        Ok(sessions) => {
+            for session in sessions {
+                process_veto_timeout(state, &session, summary).await;
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: timed-out veto scan failed");
+            summary.errors += 1;
+        }
+    }
 }
 
 /// Auto-act a timed-out veto turn and broadcast the result, mirroring the

@@ -213,6 +213,7 @@ pub struct UpdateTournament {
     pub rules_url: Option<String>,
     pub settings: Option<serde_json::Value>,
     pub withdrawal_policy: Option<WithdrawalPolicy>,
+    pub scheduling_mode: Option<SchedulingMode>,
 }
 
 /// Filters for listing tournaments.
@@ -816,6 +817,21 @@ pub trait TournamentMatchRepository: Send + Sync {
         limit: i64,
     ) -> Result<Vec<TournamentMatch>, DomainError>;
 
+    /// What surrounds a candidate time for a match: the unfinished matches
+    /// of its tournament that already have a time within the team-clash
+    /// window, and whether the tournament shares a single game server.
+    ///
+    /// The default (nothing around, no shared server) keeps test doubles
+    /// that do not model scheduling valid.
+    async fn schedule_context(
+        &self,
+        match_id: TournamentMatchId,
+        candidate: DateTime<Utc>,
+    ) -> Result<crate::services::tournament::schedule_clash::ScheduleContext, DomainError> {
+        let _ = (match_id, candidate);
+        Ok(crate::services::tournament::schedule_clash::ScheduleContext::default())
+    }
+
     /// Cross-tournament query: matches in `checking_in` status whose
     /// `check_in_deadline` has passed.
     ///
@@ -835,6 +851,14 @@ pub trait TournamentMatchRepository: Send + Sync {
     /// `list_checkin_expired` (the deadline is NULL), so without this query
     /// the match is stranded forever. Feeds the lifecycle repair pass.
     async fn list_checkin_missing_deadline(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<TournamentMatch>, DomainError>;
+
+    /// Matches in `checking_in` that are not veto-gated. Most simply have no
+    /// veto; the lifecycle pass re-tries veto setup for the rest, whose
+    /// one-shot setup when the window opened failed.
+    async fn list_checking_in_without_veto(
         &self,
         limit: i64,
     ) -> Result<Vec<TournamentMatch>, DomainError>;
@@ -1489,6 +1513,14 @@ pub struct UpdateVetoSession {
     pub action_deadline: Option<Option<DateTime<Utc>>>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+    /// Apply only while no coin-flip winner is recorded. Two racing flips
+    /// each picked (and broadcast) their own winner; now the second finds
+    /// nothing to update and gets [`DomainError::Conflict`].
+    pub only_if_no_coin_flip: bool,
+    /// Apply only while the session is still on this action number: a
+    /// player's action racing the timeout's auto-action for the same turn
+    /// used to write both outcomes from stale snapshots.
+    pub only_if_action_number: Option<u32>,
 }
 
 // =============================================================================
@@ -1668,6 +1700,17 @@ pub trait ResultClaimRepository: Send + Sync {
 
     /// Find claims ready for auto-confirmation.
     async fn find_ready_for_auto_confirm(&self) -> Result<Vec<ResultClaim>, DomainError>;
+
+    /// Bring a pending claim's auto-confirmation forward to `at`.
+    ///
+    /// Only moves it earlier, and only while the claim is still pending;
+    /// returns whether anything changed. The lifecycle pass then confirms
+    /// it through the normal path (completion saga included).
+    async fn bring_forward_auto_confirm(
+        &self,
+        id: ResultClaimId,
+        at: DateTime<Utc>,
+    ) -> Result<bool, DomainError>;
 }
 
 /// Data for creating a result claim.

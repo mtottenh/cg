@@ -37,6 +37,10 @@ pub struct ActionItemResponse {
 
     /// When the action became available (ISO 8601).
     pub created_at: String,
+
+    /// The match's agreed start time, if it has one (ISO 8601).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_at: Option<String>,
 }
 
 impl From<ActionItem> for ActionItemResponse {
@@ -50,6 +54,7 @@ impl From<ActionItem> for ActionItemResponse {
             match_label: item.match_label,
             deadline: item.deadline.map(|t| t.to_rfc3339()),
             created_at: item.created_at.to_rfc3339(),
+            scheduled_at: item.scheduled_at.map(|t| t.to_rfc3339()),
         }
     }
 }

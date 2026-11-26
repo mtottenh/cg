@@ -491,6 +491,28 @@ impl ResultClaimRepository for PgResultClaimRepository {
 
         rows.into_iter().map(row_to_domain).collect()
     }
+
+    async fn bring_forward_auto_confirm(
+        &self,
+        id: ResultClaimId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, DomainError> {
+        let result = sqlx::query(
+            r"
+            UPDATE result_claims
+            SET auto_confirm_at = $2, updated_at = NOW()
+            WHERE id = $1
+              AND status = 'pending'
+              AND (auto_confirm_at IS NULL OR auto_confirm_at > $2)
+            ",
+        )
+        .bind(id.as_uuid())
+        .bind(at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(format!("Failed to move auto-confirm: {e}")))?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 // =============================================================================

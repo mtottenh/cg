@@ -275,7 +275,7 @@ Every environment variable read anywhere in either repo (55 total). `prod_requir
 | `PORTAL_ARGON2_T_COST` | api/crates/portal-domain/src/auth.rs:42 | 2 | no | — |
 | `PORTAL_AUTH_RATE_BURST` | api/crates/portal-api/src/routes/auth.rs:45 | 20 | no | — |
 | `PORTAL_AUTH_RATE_PER_SECOND` | api/crates/portal-api/src/routes/auth.rs:49 | 5 | no | — |
-| `PORTAL_CHECKIN_GRACE_MINUTES` | api/crates/portal-api/src/background/mod.rs:82 | 10 | no | — |
+| `PORTAL_CHECKIN_GRACE_MINUTES` | api/crates/portal-api/src/background/mod.rs:82 | 20 | no | — |
 | `PORTAL_CHECKIN_LEAD_MINUTES` | api/crates/portal-api/src/background/mod.rs:79 | 15 | no | — |
 | `PORTAL_EVIDENCE_STALE_HOURS` | api/crates/portal-api/src/background/mod.rs:85 | 24 | no | — |
 | `PORTAL_LIFECYCLE_INTERVAL_SECS` | api/crates/portal-api/src/background/mod.rs:77 (env_u64 helper at :71) | 30 | no | — |

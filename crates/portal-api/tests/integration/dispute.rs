@@ -1264,4 +1264,114 @@ async fn test_rematch_clears_the_previous_result_from_the_match() {
         after["completed_at"].is_null(),
         "P-78: nor a completion time"
     );
+
+    // The replay starts from scratch: no leftover time, check-ins or veto
+    // from the series that was played (R-8).
+    let (scheduled_at, p1_in, sessions): (
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT m.scheduled_at, m.participant1_checked_in_at, \
+                (SELECT COUNT(*) FROM veto_sessions v WHERE v.match_id = m.id) \
+         FROM tournament_matches m WHERE m.id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert!(
+        scheduled_at.is_none() && p1_in.is_none(),
+        "{scheduled_at:?} {p1_in:?}"
+    );
+    assert_eq!(sessions, 0);
+}
+
+async fn match_is_flagged_disputed(app: &TestApp, match_id: &str) -> bool {
+    sqlx::query_scalar("SELECT disputed FROM tournament_matches WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(match_id).unwrap())
+        .fetch_one(app.pool())
+        .await
+        .unwrap()
+}
+
+/// Raising a dispute sets `tournament_matches.disputed`; nothing cleared it.
+/// A resolved match went on telling both teams it was "under dispute".
+#[tokio::test]
+async fn test_resolving_a_dispute_clears_the_disputed_flag() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, dispute_id, _winner_reg) =
+        raise_dispute_on_a_claim(&app, "flag-uphold").await;
+    assert!(match_is_flagged_disputed(&app, &match_id).await);
+
+    app.post_json(
+        &format!("/v1/admin/disputes/{dispute_id}/resolve/uphold"),
+        &json!({ "notes": "Server logs match the submitted score." }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    assert!(!match_is_flagged_disputed(&app, &match_id).await);
+
+    // The players read the ruling by its effect, not as "upheld".
+    let message: String = sqlx::query_scalar(
+        "SELECT message FROM dispute_messages WHERE dispute_id = $1::uuid \
+         AND NOT is_internal ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&dispute_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert!(
+        message.starts_with("Ruling: the reported result stands"),
+        "{message}"
+    );
+}
+
+/// The overturn form takes a hand-typed winner id. One that was not
+/// participant 1 used to be read as "participant 2 won", so a stranger's
+/// registration id became the winner; and a winner contradicting the score
+/// went through.
+#[tokio::test]
+async fn test_overturn_rejects_a_winner_outside_the_match_or_against_the_score() {
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, dispute_id, claimed_winner) =
+        raise_dispute_on_a_claim(&app, "overturn-winner").await;
+    let (p1, p2): (uuid::Uuid, uuid::Uuid) = sqlx::query_as(
+        "SELECT participant1_registration_id, participant2_registration_id \
+         FROM tournament_matches WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    let overturn = |winner: String, s1: i32, s2: i32| {
+        json!({
+            "new_winner_registration_id": winner,
+            "new_participant1_score": s1,
+            "new_participant2_score": s2,
+            "notes": "Demo review shows the other team took the series."
+        })
+    };
+    let url = format!("/v1/admin/disputes/{dispute_id}/resolve/overturn");
+
+    // Not a participant of this match.
+    app.post_json(&url, &overturn(uuid::Uuid::now_v7().to_string(), 0, 2))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    // A participant, but the score says the other side won.
+    app.post_json(&url, &overturn(p1.to_string(), 0, 2))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    assert!(match_is_flagged_disputed(&app, &match_id).await);
+
+    // The real overturn: participant 2 takes it 2-0.
+    assert_eq!(claimed_winner, p1.to_string(), "fixture claims for p1");
+    app.post_json(&url, &overturn(p2.to_string(), 0, 2))
+        .await
+        .assert_status(StatusCode::OK);
+    let m = match_row(&app, &match_id).await;
+    assert_eq!(m["status"], "completed");
+    assert_eq!(m["winner"].as_str(), Some(p2.to_string().as_str()));
+    assert!(!match_is_flagged_disputed(&app, &match_id).await);
 }

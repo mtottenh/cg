@@ -20,6 +20,17 @@ use crate::services::tournament::registration_actor::{RegistrationActor, find_ac
 /// Default time-to-live for schedule proposals (48 hours).
 const DEFAULT_PROPOSAL_TTL_HOURS: i64 = 48;
 
+/// How far behind the clock an admin-set time may be and still count as
+/// "now" rather than as a time in the past.
+const PAST_TOLERANCE_MINUTES: i64 = 5;
+
+/// Teams can move an agreed time themselves until this long before it.
+pub const RESCHEDULE_CUTOFF_MINUTES: i64 = 60;
+
+/// A time teams move a match to must be at least this far away, clear of
+/// the check-in window that opens before it.
+pub const RESCHEDULE_MIN_NOTICE_MINUTES: i64 = 30;
+
 /// Service for managing match scheduling through proposals.
 #[derive(Clone)]
 pub struct SchedulingService<SPR, TMR, TRR, LTMR>
@@ -87,6 +98,34 @@ where
         self
     }
 
+    /// Whether a match takes schedule proposals now.
+    ///
+    /// A match with no time does. So does a scheduled one whose time is more
+    /// than [`RESCHEDULE_CUTOFF_MINUTES`] away, so teams can move an agreed
+    /// time themselves instead of asking an admin; closer to the start the
+    /// check-in window is about to open and only an admin can move it.
+    fn check_takes_proposals(
+        tournament_match: &TournamentMatch,
+        now: DateTime<Utc>,
+    ) -> Result<(), DomainError> {
+        if tournament_match.status.can_schedule() {
+            return Ok(());
+        }
+        if tournament_match.status == TournamentMatchStatus::Scheduled {
+            return match tournament_match.scheduled_at {
+                Some(at) if at > now + Duration::minutes(RESCHEDULE_CUTOFF_MINUTES) => Ok(()),
+                _ => Err(DomainError::InvalidState(format!(
+                    "The match starts within {RESCHEDULE_CUTOFF_MINUTES} minutes; ask an admin \
+                     to change its time"
+                ))),
+            };
+        }
+        Err(DomainError::InvalidState(format!(
+            "Match {} cannot be scheduled in status {:?}",
+            tournament_match.id, tournament_match.status
+        )))
+    }
+
     /// Create a new schedule proposal.
     ///
     /// # Errors
@@ -108,12 +147,7 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        if !tournament_match.status.can_schedule() {
-            return Err(DomainError::InvalidState(format!(
-                "Match {} cannot be scheduled in status {:?}",
-                match_id, tournament_match.status
-            )));
-        }
+        Self::check_takes_proposals(&tournament_match, Utc::now())?;
 
         // Validate proposed times
         if proposed_times.is_empty() || proposed_times.len() > 5 {
@@ -168,7 +202,7 @@ where
         &self,
         command: AcceptProposalCommand,
     ) -> Result<(ScheduleProposal, TournamentMatch), DomainError> {
-        let mut proposal = self
+        let proposal = self
             .proposal_repo
             .find_by_id(command.proposal_id)
             .await?
@@ -195,6 +229,16 @@ where
             )));
         }
 
+        // A proposal stays open for its whole TTL, long after its earlier
+        // slots have gone by. Accepting one of those scheduled the match in
+        // the past: check-in opened at once and whoever was not online was
+        // forfeited as a no-show ten minutes later.
+        if command.selected_time <= Utc::now() {
+            return Err(DomainError::InvalidState(
+                "That time has already passed. Pick a later time or propose a new one.".to_string(),
+            ));
+        }
+
         // Validate responder is the opponent
         let tournament_match = self
             .match_repo
@@ -205,26 +249,51 @@ where
         self.validate_responder_is_opponent(command.accepted_by, &proposal, &tournament_match)
             .await?;
 
-        // Update proposal
-        proposal.status = ProposalStatus::Accepted;
-        proposal.selected_time = Some(command.selected_time);
-        proposal.responded_at = Some(Utc::now());
-        proposal.responded_by_user_id = Some(command.accepted_by.user_id);
+        // Only a match still waiting for a time, or a scheduled one far
+        // enough out to move, can take one. A proposal that outlived that
+        // (the match started, was forfeited...) must not rewind it.
+        Self::check_takes_proposals(&tournament_match, Utc::now())?;
+        let rescheduling = tournament_match.status == TournamentMatchStatus::Scheduled;
+        if rescheduling
+            && command.selected_time
+                <= Utc::now() + Duration::minutes(RESCHEDULE_MIN_NOTICE_MINUTES)
+        {
+            return Err(DomainError::InvalidState(format!(
+                "A new time must be at least {RESCHEDULE_MIN_NOTICE_MINUTES} minutes away"
+            )));
+        }
 
-        let updated_proposal = self.proposal_repo.update(&proposal).await?;
+        if let Some(clash) = self
+            .schedule_clash(&tournament_match, command.selected_time)
+            .await?
+        {
+            return Err(DomainError::InvalidState(clash));
+        }
 
-        // Update match: first set scheduled_at, then update status
-        let update = UpdateTournamentMatch {
-            scheduled_at: Some(command.selected_time),
-            ..Default::default()
-        };
-        self.match_repo.update(proposal.match_id, update).await?;
-
-        // Update status to Scheduled
+        // One transaction: the proposal is accepted (only if still pending
+        // — a second acceptor, a withdrawal or the expiry sweep may have got
+        // there first), every other pending proposal on the match is
+        // cancelled, and the match gets its time and `scheduled` status with
+        // a status-log row against the accepting user. A failure part-way
+        // leaves nothing behind.
+        let updated_proposal = self
+            .proposal_repo
+            .accept_and_schedule(
+                proposal.id,
+                command.selected_time,
+                command.accepted_by.user_id,
+                if rescheduling {
+                    &[TournamentMatchStatus::Scheduled]
+                } else {
+                    &[TournamentMatchStatus::Ready]
+                },
+            )
+            .await?;
         let updated_match = self
             .match_repo
-            .update_status(proposal.match_id, TournamentMatchStatus::Scheduled)
-            .await?;
+            .find_by_id(proposal.match_id)
+            .await?
+            .ok_or(DomainError::TournamentMatchNotFound(proposal.match_id))?;
 
         Ok((updated_proposal, updated_match))
     }
@@ -268,7 +337,7 @@ where
         self.proposal_repo.update(&proposal).await
     }
 
-    /// Withdraw a proposal you made yourself.
+    /// Withdraw a proposal your side made.
     ///
     /// Before this existed the only way out of a mistyped proposal was to
     /// wait out the 48h TTL or hope the opponent responded — `Cancelled`
@@ -279,7 +348,8 @@ where
     /// # Errors
     /// - `LookupFailed` if the proposal doesn't exist
     /// - `TournamentMatchNotFound` if the proposal belongs to another match
-    /// - `NotAuthorized` if the caller is not the proposer
+    /// - `NotAuthorized` if the caller is neither the proposer nor someone
+    ///   who schedules for the proposing registration
     /// - `InvalidState` if the proposal is no longer pending (already
     ///   accepted, rejected, counter-proposed, expired or cancelled).
     ///   A pending proposal past its expiry is still cancellable — the
@@ -301,12 +371,18 @@ where
             return Err(DomainError::TournamentMatchNotFound(command.match_id));
         }
 
-        // Only the proposer may withdraw. The opponent has accept /
-        // reject / counter; letting them cancel too would hand them a
-        // silent way to drop a proposal without a recorded response.
-        if proposal.proposed_by_user_id != command.cancelled_by_user_id {
+        // Only the proposing side may withdraw: the user who made the
+        // proposal, or anyone who schedules for that registration (its
+        // captain, owner or a delegate). The opponent has accept / reject /
+        // counter; letting them cancel too would hand them a silent way to
+        // drop a proposal without a recorded response.
+        let is_proposer = proposal.proposed_by_user_id == command.cancelled_by_user_id;
+        let acts_for_proposing_side = command
+            .acting_for_registrations
+            .contains(&proposal.proposed_by_registration_id);
+        if !is_proposer && !acts_for_proposing_side {
             return Err(DomainError::NotAuthorized(
-                "Only the proposer can withdraw this proposal".to_string(),
+                "Only the proposing team can withdraw this proposal".to_string(),
             ));
         }
 
@@ -331,7 +407,7 @@ where
         &self,
         command: CounterProposeCommand,
     ) -> Result<ScheduleProposal, DomainError> {
-        let mut original_proposal = self
+        let original_proposal = self
             .proposal_repo
             .find_by_id(command.original_proposal_id)
             .await?
@@ -377,25 +453,26 @@ where
         )
         .await?;
 
-        // Create counter-proposal
+        // Same rule as proposing and accepting.
+        Self::check_takes_proposals(&tournament_match, Utc::now())?;
+
+        // The original is marked answered and the counter inserted in one
+        // transaction; the counter cannot exist beside a still-pending
+        // original, and a response that lost a race gets a conflict.
         let new_proposal = self
             .proposal_repo
-            .create(CreateScheduleProposalCommand {
-                match_id: command.match_id,
-                proposed_by_registration_id: command.proposed_by_registration_id,
-                proposed_by_user_id: command.proposed_by.user_id,
-                proposed_times: command.proposed_times,
-                expires_at: command.expires_at,
-                notes: command.notes,
-            })
+            .create_counter(
+                original_proposal.id,
+                CreateScheduleProposalCommand {
+                    match_id: command.match_id,
+                    proposed_by_registration_id: command.proposed_by_registration_id,
+                    proposed_by_user_id: command.proposed_by.user_id,
+                    proposed_times: command.proposed_times,
+                    expires_at: command.expires_at,
+                    notes: command.notes,
+                },
+            )
             .await?;
-
-        // Mark original as counter-proposed
-        original_proposal.status = ProposalStatus::CounterProposed;
-        original_proposal.counter_proposal_id = Some(new_proposal.id);
-        original_proposal.responded_at = Some(Utc::now());
-        original_proposal.responded_by_user_id = Some(command.proposed_by.user_id);
-        self.proposal_repo.update(&original_proposal).await?;
 
         Ok(new_proposal)
     }
@@ -432,14 +509,33 @@ where
         scheduled_at: DateTime<Utc>,
         admin_id: UserId,
         notes: Option<String>,
+        allow_past: bool,
     ) -> Result<TournamentMatch, DomainError> {
+        // A time that has already gone by opens check-in at once. That is
+        // what "start it now" wants, so "now" (allowing for the request's
+        // travel time) is always accepted; anything older has to be asked
+        // for explicitly, because a mistyped date would otherwise put both
+        // teams on a no-show clock.
+        if !allow_past && scheduled_at < Utc::now() - Duration::minutes(PAST_TOLERANCE_MINUTES) {
+            return Err(DomainError::InvalidState(
+                "That time has already passed. Pick a future time, or confirm that the match \
+                 should be scheduled in the past (check-in opens immediately)."
+                    .to_string(),
+            ));
+        }
+
         let tournament_match = self
             .match_repo
             .find_by_id(match_id)
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        if !tournament_match.status.can_schedule() {
+        // An admin may also set the time on a match that is already
+        // `Scheduled`: that is a reschedule, and it is the only way to repair
+        // a match that reached `Scheduled` with no time at all, which the
+        // check-in sweep never picks up.
+        let already_scheduled = tournament_match.status == TournamentMatchStatus::Scheduled;
+        if !already_scheduled && !tournament_match.status.can_schedule() {
             return Err(DomainError::InvalidState(format!(
                 "Match {} cannot be scheduled in status {:?}",
                 match_id, tournament_match.status
@@ -462,7 +558,22 @@ where
             scheduled_at: Some(scheduled_at),
             ..Default::default()
         };
-        self.match_repo.update(match_id, update).await?;
+        let updated = self.match_repo.update(match_id, update).await?;
+
+        // Scheduled -> Scheduled is not a transition, so there is no
+        // `match_status_log` row to carry the admin and their reason; the
+        // server log is the only record of a reschedule.
+        if already_scheduled {
+            tracing::info!(
+                match_id = %match_id,
+                admin_id = %admin_id,
+                previous = ?tournament_match.scheduled_at,
+                scheduled_at = %scheduled_at,
+                notes = notes.as_deref().unwrap_or_default(),
+                "Admin changed the time of a scheduled match"
+            );
+            return Ok(updated);
+        }
 
         // Then update status — through the lifecycle service when it is wired,
         // so the transition is recorded with the acting admin and their reason.
@@ -496,11 +607,52 @@ where
 
         let mut results = Vec::new();
         for proposal in expired {
-            let updated = self.proposal_repo.mark_expired(proposal.id).await?;
-            results.push(updated);
+            // One proposal answered between the read and this write (or a
+            // transient error on it) must not stop the rest of the sweep.
+            match self.proposal_repo.mark_expired(proposal.id).await {
+                Ok(updated) => results.push(updated),
+                Err(DomainError::Conflict(_)) => {}
+                Err(e) => {
+                    tracing::warn!(proposal_id = %proposal.id, error = %e,
+                        "could not expire a schedule proposal; continuing the sweep");
+                }
+            }
         }
 
         Ok(results)
+    }
+
+    /// Why `candidate` collides with another match of the tournament, if it
+    /// does: either team already playing within two hours, or — when the
+    /// tournament shares one game server — any match within the hour.
+    pub async fn schedule_clash(
+        &self,
+        tournament_match: &TournamentMatch,
+        candidate: DateTime<Utc>,
+    ) -> Result<Option<String>, DomainError> {
+        let context = self
+            .match_repo
+            .schedule_context(tournament_match.id, candidate)
+            .await?;
+        Ok(super::schedule_clash::find_schedule_clash(
+            super::schedule_clash::ScheduleSubject {
+                match_id: tournament_match.id,
+                participants: [
+                    tournament_match.participant1_registration_id,
+                    tournament_match.participant2_registration_id,
+                ],
+            },
+            candidate,
+            &context,
+        ))
+    }
+
+    /// Get a proposal by id.
+    pub async fn get_proposal(
+        &self,
+        id: portal_core::ids::ScheduleProposalId,
+    ) -> Result<Option<ScheduleProposal>, DomainError> {
+        self.proposal_repo.find_by_id(id).await
     }
 
     /// Get active proposal for a match.

@@ -217,12 +217,21 @@ impl ServerReservation {
     pub const MAX_CONFIG_FETCHES: i32 = 5;
 
     /// Whether the config endpoint may still serve this reservation's config.
+    ///
+    /// An allocated `pending` reservation counts: the portal marks it
+    /// `configuring` only once the agent has answered the load command, and
+    /// MatchZy can fetch the config before that answer arrives. Refusing it
+    /// then cost a ~2 minute re-drive. The per-load token still gates it.
     #[must_use]
     pub fn config_fetchable(&self, now: DateTime<Utc>) -> bool {
-        matches!(
-            self.status,
-            ReservationStatus::Configuring | ReservationStatus::Ready
-        ) && self.config_token_expires_at > now
+        let allocated_pending =
+            self.status == ReservationStatus::Pending && self.server_id.is_some();
+        (allocated_pending
+            || matches!(
+                self.status,
+                ReservationStatus::Configuring | ReservationStatus::Ready
+            ))
+            && self.config_token_expires_at > now
             && self.config_fetch_count < Self::MAX_CONFIG_FETCHES
     }
 }

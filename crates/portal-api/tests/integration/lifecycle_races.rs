@@ -317,6 +317,96 @@ async fn test_record_coin_flip_is_idempotent_not_rerandomized() {
     );
 }
 
+/// The guards behind the race: a coin-flip write is refused once a winner is
+/// recorded, and an action's cursor advance is refused once the session has
+/// moved past the action it was computed from (a player's action racing the
+/// timeout's auto-action for the same turn).
+#[tokio::test]
+async fn test_veto_session_writes_refuse_a_moved_session() {
+    use portal_core::ids::{TournamentRegistrationId, VetoSessionId};
+    use portal_domain::repositories::tournament::{UpdateVetoSession, VetoSessionRepository};
+
+    let app = TestApp::new().await;
+    let (_tournament_id, match_id, reg1, reg2, _player2_token) =
+        crate::tournaments::create_tournament_with_matches_and_opponent(&app, "veto-guards").await;
+    app.post_json(
+        &format!("/v1/matches/{match_id}/veto"),
+        &json!({ "veto_format_id": "bo1_veto" }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+    app.post_auth(&format!("/v1/matches/{match_id}/veto/start"))
+        .await
+        .assert_status(StatusCode::OK);
+    app.post_json(
+        &format!("/v1/matches/{match_id}/veto/coin-flip"),
+        &json!({ "winner_registration_id": reg1, "winner_goes_first": true }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let session_uuid: Uuid =
+        sqlx::query_scalar("SELECT id FROM veto_sessions WHERE match_id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    let session_id = VetoSessionId::from_uuid(session_uuid);
+    let repo = portal_db::PgVetoSessionRepository::new(app.pool().clone());
+    let reg2: TournamentRegistrationId = reg2.parse().unwrap();
+
+    let second_flip = repo
+        .update(
+            session_id,
+            UpdateVetoSession {
+                coin_flip_winner_registration_id: Some(reg2),
+                only_if_no_coin_flip: true,
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(
+        matches!(second_flip, Err(portal_core::DomainError::Conflict(_))),
+        "{second_flip:?}"
+    );
+
+    // The session is on action 1; an advance computed from action 0 loses.
+    let stale_advance = repo
+        .update(
+            session_id,
+            UpdateVetoSession {
+                current_action_number: Some(1),
+                only_if_action_number: Some(0),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(
+        matches!(stale_advance, Err(portal_core::DomainError::Conflict(_))),
+        "{stale_advance:?}"
+    );
+    let current = repo
+        .update(
+            session_id,
+            UpdateVetoSession {
+                current_action_number: Some(1),
+                only_if_action_number: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(current.current_action_number, 1);
+    let winner: Option<Uuid> = sqlx::query_scalar(
+        "SELECT coin_flip_winner_registration_id FROM veto_sessions WHERE id = $1",
+    )
+    .bind(session_uuid)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(winner.map(|u| u.to_string()), Some(reg1));
+}
+
 // ===========================================================================
 // TEST 3 — create_ban read-guard + no-unique-constraint TOCTOU: two
 // concurrent platform-ban creations for the same user both pass the

@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::errors::DomainError;
-use portal_core::ids::{ScheduleProposalId, TournamentMatchId};
+use portal_core::ids::{ScheduleProposalId, TournamentMatchId, UserId};
+use portal_core::types::TournamentMatchStatus;
 
 use crate::entities::{CreateScheduleProposalCommand, ScheduleProposal};
 
@@ -34,8 +35,38 @@ pub trait ScheduleProposalRepository: Send + Sync + 'static {
         match_id: TournamentMatchId,
     ) -> Result<Option<ScheduleProposal>, DomainError>;
 
-    /// Update a schedule proposal.
+    /// Answer a pending proposal: write the given state over it.
+    ///
+    /// Only a row that is still `pending` is written. If someone else
+    /// answered it first (accepted, rejected, withdrew, or it expired) this
+    /// returns `Conflict` instead of overwriting their answer.
     async fn update(&self, proposal: &ScheduleProposal) -> Result<ScheduleProposal, DomainError>;
+
+    /// Accept a pending proposal and give its match the chosen time, as one
+    /// transaction: the proposal becomes `accepted`, any other pending
+    /// proposal on the match is cancelled, and the match gets
+    /// `scheduled_at` and status `scheduled` (with a status-log row when the
+    /// status changed).
+    ///
+    /// `Conflict` if the proposal is no longer pending or the match is not
+    /// in one of `allowed_from`; nothing is written in either case.
+    async fn accept_and_schedule(
+        &self,
+        proposal_id: ScheduleProposalId,
+        selected_time: DateTime<Utc>,
+        accepted_by: UserId,
+        allowed_from: &[TournamentMatchStatus],
+    ) -> Result<ScheduleProposal, DomainError>;
+
+    /// Replace a pending proposal with a counter-proposal, as one
+    /// transaction: the original becomes `counter_proposed` (only if still
+    /// pending, else `Conflict`), the counter is inserted, and the two are
+    /// linked.
+    async fn create_counter(
+        &self,
+        original_id: ScheduleProposalId,
+        command: CreateScheduleProposalCommand,
+    ) -> Result<ScheduleProposal, DomainError>;
 
     /// Find all proposals that have expired but are still pending.
     async fn find_expired(

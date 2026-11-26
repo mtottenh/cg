@@ -139,7 +139,13 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
             }
 
             // Auto coin flip if both teams present and session is in CoinFlip status
-            try_auto_coin_flip(&state, match_id, &lobby).await;
+            try_auto_coin_flip(
+                &state.veto_service,
+                &state.tournament_match_repo,
+                match_id,
+                &lobby,
+            )
+            .await;
         }
     } else if connection.is_spectator() {
         lobby.broadcast(LobbyBroadcast::SpectatorCountUpdate(
@@ -213,7 +219,28 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(%connection_id, lagged = n, "Broadcast receiver lagged");
+                        // Frames were dropped for this client: send the
+                        // whole veto state so it is not left showing a
+                        // board that has moved on.
+                        warn!(%connection_id, lagged = n, "Broadcast receiver lagged; resyncing");
+                        if let Ok(session_state) =
+                            state.veto_service.get_session_state(match_id).await
+                        {
+                            let resync = ServerMessage::VetoStateUpdate {
+                                session: crate::dto::responses::VetoSessionResponse::from(
+                                    session_state.session,
+                                ),
+                            };
+                            if sender
+                                .send(Message::Text(
+                                    serde_json::to_string(&resync).unwrap().into(),
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         break;
@@ -318,60 +345,49 @@ async fn authenticate_user(
         .map_err(|e| format!("Database error: {e}"))?
         .ok_or_else(|| format!("Match {match_id} not found"))?;
 
-    // Check if user can act for either participant
+    // A team role for either side wins; acting only as tournament staff for
+    // a side makes the user an admin connection. Checked across both sides
+    // before deciding, so an organiser who captains participant 2 is not
+    // classified as an admin by the participant-1 check (where they can
+    // only act as staff).
     let mut connection: Option<VetoConnection> = None;
-
-    // Check participant 1
-    if let Some(reg_id) = match_.participant1_registration_id
-        && let Ok(auth_role) = state
+    let mut acts_as_staff = false;
+    for (reg_id, name) in [
+        (
+            match_.participant1_registration_id,
+            match_.participant1_name.clone(),
+        ),
+        (
+            match_.participant2_registration_id,
+            match_.participant2_name.clone(),
+        ),
+    ] {
+        let Some(reg_id) = reg_id else { continue };
+        match state
             .veto_authorization_service
             .can_perform_veto_action(reg_id, user_id, player_id)
             .await
-    {
-        // Tournament admins get admin role, others get participant role
-        if matches!(auth_role, VetoAuthorizationRole::TournamentAdmin) {
-            connection = Some(VetoConnection::admin(
-                user_id,
-                player_id,
-                claims.username.clone(),
-            ));
-        } else {
-            let team_name = match_.participant1_name.clone().unwrap_or_default();
-            connection = Some(VetoConnection::participant(
-                user_id,
-                player_id,
-                claims.username.clone(),
-                reg_id,
-                team_name,
-            ));
+        {
+            Ok(VetoAuthorizationRole::TournamentAdmin) => acts_as_staff = true,
+            Ok(_) => {
+                connection = Some(VetoConnection::participant(
+                    user_id,
+                    player_id,
+                    claims.username.clone(),
+                    reg_id,
+                    name.unwrap_or_default(),
+                ));
+                break;
+            }
+            Err(_) => {}
         }
     }
-
-    // Check participant 2 (only if not already found as participant 1)
-    if connection.is_none()
-        && let Some(reg_id) = match_.participant2_registration_id
-        && let Ok(auth_role) = state
-            .veto_authorization_service
-            .can_perform_veto_action(reg_id, user_id, player_id)
-            .await
-    {
-        // Tournament admins get admin role, others get participant role
-        if matches!(auth_role, VetoAuthorizationRole::TournamentAdmin) {
-            connection = Some(VetoConnection::admin(
-                user_id,
-                player_id,
-                claims.username.clone(),
-            ));
-        } else {
-            let team_name = match_.participant2_name.clone().unwrap_or_default();
-            connection = Some(VetoConnection::participant(
-                user_id,
-                player_id,
-                claims.username.clone(),
-                reg_id,
-                team_name,
-            ));
-        }
+    if connection.is_none() && acts_as_staff {
+        connection = Some(VetoConnection::admin(
+            user_id,
+            player_id,
+            claims.username.clone(),
+        ));
     }
 
     // Check if user is a tournament admin (fallback for users not on any team)
@@ -470,7 +486,20 @@ async fn handle_client_message(
                 .await;
         }
         ClientMessage::Chat { chat_type, content } => {
-            handle_chat_message(connection, match_id, chat_type, content, state, lobby).await?;
+            // A refused message used to vanish with only a server-side
+            // warning; the sender now hears why.
+            if let Err(reason) =
+                handle_chat_message(connection, match_id, chat_type, content, state, lobby).await
+            {
+                let err = ServerMessage::Error {
+                    code: "chat_rejected".to_string(),
+                    message: reason.clone(),
+                };
+                let _ = sender
+                    .send(Message::Text(serde_json::to_string(&err).unwrap().into()))
+                    .await;
+                return Err(reason);
+            }
         }
         ClientMessage::VetoAction { action } => {
             handle_veto_action(connection, match_id, action, state, sender).await?;
@@ -711,8 +740,14 @@ async fn handle_veto_action(
 }
 
 /// Auto-perform coin flip when both participants are connected and session is in CoinFlip status.
-async fn try_auto_coin_flip(
-    state: &VetoWsState,
+///
+/// Runs when a participant socket joins, and again whenever a session
+/// *enters* `coin_flip` (both teams checked in, lifecycle start): with both
+/// captains already sitting on the page no join ever happens, and the flip
+/// used to wait for the lifecycle grace and then run unannounced.
+pub(crate) async fn try_auto_coin_flip(
+    veto_service: &crate::state::AppVetoService,
+    tournament_match_repo: &portal_db::adapters::PgTournamentMatchRepository,
     match_id: TournamentMatchId,
     lobby: &Arc<VetoLobby>,
 ) {
@@ -720,7 +755,7 @@ async fn try_auto_coin_flip(
     use rand::Rng;
 
     // Look up the match to get participant registration IDs
-    let Ok(Some(match_)) = state.tournament_match_repo.find_by_id(match_id).await else {
+    let Ok(Some(match_)) = tournament_match_repo.find_by_id(match_id).await else {
         return;
     };
 
@@ -740,7 +775,7 @@ async fn try_auto_coin_flip(
     }
 
     // Get veto session — must be in CoinFlip status
-    let Ok(session_state) = state.veto_service.get_session_state(match_id).await else {
+    let Ok(session_state) = veto_service.get_session_state(match_id).await else {
         return;
     };
 
@@ -756,8 +791,7 @@ async fn try_auto_coin_flip(
     };
 
     // Record coin flip (winner goes first by default)
-    let updated_session = match state
-        .veto_service
+    let updated_session = match veto_service
         .record_coin_flip(session_state.session.id, winner, true)
         .await
     {
@@ -768,37 +802,47 @@ async fn try_auto_coin_flip(
         }
     };
 
+    broadcast_coin_flip(lobby, &match_, winner, updated_session);
+
+    info!(%match_id, %winner, "Auto coin flip completed");
+}
+
+/// Tell a lobby the coin was flipped: the result card, then the session
+/// (now `in_progress`, with the first turn and its deadline).
+pub(crate) fn broadcast_coin_flip(
+    lobby: &VetoLobby,
+    match_: &portal_domain::entities::tournament::TournamentMatch,
+    winner: portal_core::TournamentRegistrationId,
+    updated_session: portal_domain::entities::VetoSession,
+) {
     let first_action = updated_session
         .first_action_registration_id
         .unwrap_or(winner);
-
-    let winner_name = if winner == p1_reg {
-        match_.participant1_name.clone().unwrap_or_default()
-    } else {
-        match_.participant2_name.clone().unwrap_or_default()
+    let name_of = |reg: portal_core::TournamentRegistrationId| {
+        if Some(reg) == match_.participant1_registration_id {
+            match_.participant1_name.clone().unwrap_or_default()
+        } else {
+            match_.participant2_name.clone().unwrap_or_default()
+        }
     };
 
-    let first_action_name = if first_action == p1_reg {
-        match_.participant1_name.unwrap_or_default()
-    } else {
-        match_.participant2_name.unwrap_or_default()
-    };
-
-    // Broadcast coin flip result
     lobby.broadcast(LobbyBroadcast::CoinFlipResult(CoinFlipResultBroadcast {
         winner_registration_id: winner,
-        winner_name,
+        winner_name: name_of(winner),
         first_action_registration_id: first_action,
-        first_action_name,
+        first_action_name: name_of(first_action),
     }));
+    broadcast_session_state(lobby, updated_session);
+}
 
-    // Broadcast updated session state
-    let session_response = crate::dto::responses::VetoSessionResponse::from(updated_session);
+/// Push the current session row to everyone in a lobby.
+pub(crate) fn broadcast_session_state(
+    lobby: &VetoLobby,
+    session: portal_domain::entities::VetoSession,
+) {
     lobby.broadcast(LobbyBroadcast::VetoStateUpdate(VetoStateBroadcast {
-        session: session_response,
+        session: crate::dto::responses::VetoSessionResponse::from(session),
     }));
-
-    info!(%match_id, %winner, "Auto coin flip completed");
 }
 
 /// Get chat history for a connection.

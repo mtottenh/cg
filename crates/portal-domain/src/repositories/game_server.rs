@@ -338,6 +338,14 @@ pub trait ServerReservationRepository: Send + Sync + 'static {
     /// Reservations still waiting for a server.
     async fn list_pending(&self, limit: i64) -> Result<Vec<ServerReservation>, DomainError>;
 
+    /// Live reservations (`pending`/`configuring`/`ready`/`live`) whose
+    /// match is already over — completed, forfeited or cancelled without
+    /// the server ever reporting a series end.
+    async fn list_live_for_finished_matches(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<ServerReservation>, DomainError>;
+
     /// `configuring` reservations not updated since `before` (load retry).
     async fn list_stuck_configuring(
         &self,

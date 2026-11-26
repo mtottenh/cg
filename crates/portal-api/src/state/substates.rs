@@ -470,6 +470,9 @@ pub struct TournamentState {
     pub eligibility_service: AppEligibilityService,
     /// Veto service (auto-bootstrapped on PickBan transition).
     pub veto_service: AppVetoService,
+    /// Veto lobby hub — the PickBan transition announces the started
+    /// session to sockets that are already connected.
+    pub veto_lobby_manager: Arc<VetoLobbyManager>,
     /// Registration-actor authorization (captain / owner / delegate /
     /// registered player). Despite the name it is not veto-specific:
     /// check-in endpoints use it to decide who may act for a
@@ -516,6 +519,7 @@ impl FromRef<AppState> for TournamentState {
             league_team_service: s.league_team_service.clone(),
             eligibility_service: s.eligibility_service.clone(),
             veto_service: s.veto_service.clone(),
+            veto_lobby_manager: Arc::clone(&s.veto_lobby_manager),
             veto_authorization_service: s.veto_authorization_service.clone(),
             tournament_match_repo: Arc::clone(&s.tournament_match_repo),
             tournament_map_pool_repo: Arc::clone(&s.tournament_map_pool_repo),

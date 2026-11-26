@@ -38,6 +38,18 @@ pub trait MatchStatusTransitioner: Send + Sync {
         triggered_by: TransitionTrigger,
         reason: Option<String>,
     ) -> Result<TournamentMatch, DomainError>;
+
+    /// Record a status change another write already made (a forfeit, a
+    /// confirmed result applied in one transaction), so the match's history
+    /// shows it like every other transition.
+    async fn record_transition(
+        &self,
+        match_id: TournamentMatchId,
+        from_status: TournamentMatchStatus,
+        to_status: TournamentMatchStatus,
+        triggered_by: TransitionTrigger,
+        reason: Option<String>,
+    ) -> Result<(), DomainError>;
 }
 
 #[async_trait]
@@ -56,6 +68,19 @@ where
     ) -> Result<TournamentMatch, DomainError> {
         self.transition(match_id, to_status, triggered_by, reason)
             .await
+    }
+
+    async fn record_transition(
+        &self,
+        match_id: TournamentMatchId,
+        from_status: TournamentMatchStatus,
+        to_status: TournamentMatchStatus,
+        triggered_by: TransitionTrigger,
+        reason: Option<String>,
+    ) -> Result<(), DomainError> {
+        self.log_transition(match_id, from_status, to_status, &triggered_by, reason)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -277,23 +302,32 @@ where
         } else {
             current.participant2_checked_in_at.is_some()
         };
-        if already_checked_in {
-            return Ok(current);
-        }
+        let updated = if already_checked_in {
+            // Normally a no-op. But if both sides are in and the match is
+            // still `checking_in`, the advance below was interrupted after
+            // the check-in was stored (a failed status write): fall through
+            // and finish it, or the match waits on a check-in that nobody
+            // has left to make.
+            if !(current.both_checked_in() && current.status == TournamentMatchStatus::CheckingIn) {
+                return Ok(current);
+            }
+            current
+        } else {
+            // Persist check-in
+            let updated = self
+                .match_repo
+                .check_in_participant(match_id, slot, checked_in_by)
+                .await?;
 
-        // Persist check-in
-        let updated = self
-            .match_repo
-            .check_in_participant(match_id, slot, checked_in_by)
-            .await?;
-
-        info!(
-            match_id = %match_id,
-            registration_id = %registration_id,
-            checked_in_by = %checked_in_by,
-            participant = if is_participant1 { "1" } else { "2" },
-            "Participant checked in for match"
-        );
+            info!(
+                match_id = %match_id,
+                registration_id = %registration_id,
+                checked_in_by = %checked_in_by,
+                participant = if is_participant1 { "1" } else { "2" },
+                "Participant checked in for match"
+            );
+            updated
+        };
 
         // If both participants have now checked in, auto-advance
         if updated.both_checked_in() {
@@ -377,6 +411,16 @@ where
                 "Cannot transition match from {} to {} (even with admin override)",
                 match_.status, to_status
             )));
+        }
+
+        // `Scheduled` with no time is a dead end: the check-in sweep only
+        // opens windows for matches that have one. Setting the time is what
+        // schedules a match, so send the admin there.
+        if to_status == TournamentMatchStatus::Scheduled && match_.scheduled_at.is_none() {
+            return Err(DomainError::InvalidState(
+                "Cannot mark the match as scheduled without a time; set the match time instead"
+                    .to_string(),
+            ));
         }
 
         self.transition(

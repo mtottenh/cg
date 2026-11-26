@@ -105,18 +105,26 @@ pub(crate) async fn seed_allocated_reservation(
     (reservation, event_token)
 }
 
-/// Drive the match to `pick_ban` via admin transitions (the state veto
-/// completion would leave it in).
+/// Drive the match to `pick_ban` (the state veto completion would leave it
+/// in): an admin schedule, then an admin transition. The time is far enough
+/// out that nothing opens a check-in window in between.
 async fn match_to_pick_ban(app: &TestApp, tournament_id: &str, match_id: &str) {
-    for to in ["scheduled", "pick_ban"] {
-        let response = app
-            .post_json(
-                &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
-                &json!({ "to_status": to, "override_reason": "test setup" }),
-            )
-            .await;
-        response.assert_status(StatusCode::OK);
-    }
+    let scheduled_at = chrono::Utc::now() + chrono::Duration::days(7);
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &json!({ "scheduled_at": scheduled_at.to_rfc3339(), "notes": "test setup" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
+            &json!({ "to_status": "pick_ban", "override_reason": "test setup" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
 }
 
 fn event_headers(token: &str) -> (&'static str, String) {
@@ -452,6 +460,16 @@ async fn test_event_pipeline_full_series() {
     assert_eq!(body["data"]["claimed_participant1_score"], 2);
     assert_eq!(body["data"]["claimed_participant2_score"], 0);
     assert!(body["data"]["submitted_by_registration_id"].is_null());
+
+    // The server's claim moves the match to `awaiting_result`, like a
+    // captain's would, so both teams are asked to confirm or dispute.
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tournament_matches WHERE id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "awaiting_result");
 
     // Late events after completion are acknowledged and ignored.
     assert_eq!(
@@ -900,4 +918,435 @@ async fn test_workshop_maps_emit_matchzy_tokens_in_config() {
         .unwrap()
         .expect("game row 1 materialized");
     assert_eq!(game1.map_id.as_deref(), Some("de_cache_ws"));
+}
+
+/// A tournament that has not opted in to game servers gets no `going_live`
+/// event, so veto completion itself must start the match — otherwise it sits
+/// in `pick_ban` and nobody can report a result.
+#[tokio::test]
+async fn test_veto_completion_starts_match_without_game_server() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "veto-no-server").await;
+    match_to_pick_ban(&app, &tournament_id, &match_id).await;
+
+    portal_api::game_server_flow::on_veto_completed(&state, match_id.parse().unwrap()).await;
+
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tournament_matches WHERE id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "in_progress");
+
+    // No reservation was created for a tournament that is not opted in.
+    let reservations: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM server_reservations WHERE match_id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(reservations, 0);
+}
+
+/// Only `series_end` used to release a server. A match that ends any other
+/// way (forfeit, no-show, cancel) kept its reservation live, and with one
+/// server every later match queued behind it forever.
+#[tokio::test]
+async fn test_pass_releases_server_of_a_forfeited_match() {
+    let app = TestApp::new().await;
+    let mut state = state_for(&app).await;
+    state.gameserver_enabled = true;
+    let (tournament_id, match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "forfeit-release").await;
+    let game_id = get_game_id_str(&app).await;
+    let server_id = seed_available_server(&state, &game_id, "Forfeit box").await;
+    match_to_pick_ban(&app, &tournament_id, &match_id).await;
+    let (reservation, _token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+
+    // A live match keeps its server: the pass must not touch it.
+    portal_api::game_server_flow::run_reservation_pass(&state).await;
+    assert!(
+        state
+            .server_reservation_repo
+            .find_live_by_match(match_id.parse().unwrap())
+            .await
+            .unwrap()
+            .is_some(),
+        "a match still being played must keep its reservation"
+    );
+
+    sqlx::query("UPDATE tournament_matches SET status = 'forfeit' WHERE id = $1::uuid")
+        .bind(&match_id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    let summary = portal_api::game_server_flow::run_reservation_pass(&state).await;
+    assert_eq!(summary.released_finished, 1);
+
+    let after = state
+        .server_reservation_repo
+        .find_by_id(reservation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.status, ReservationStatus::Cancelled);
+    let server_status: String = sqlx::query_scalar("SELECT status FROM game_servers WHERE id = $1")
+        .bind(server_id.as_uuid())
+        .fetch_one(app.pool())
+        .await
+        .unwrap();
+    assert_eq!(server_status, "available");
+}
+
+/// Play a match up to `in_progress` on a seeded server; returns the
+/// reservation's MatchZy id and event token, and participant 1's registration.
+async fn live_series(
+    app: &TestApp,
+    state: &AppState,
+    slug: &str,
+) -> (String, String, i64, String, String) {
+    let (tournament_id, match_id, _reg1, _reg2) = create_tournament_with_matches(app, slug).await;
+    let game_id = get_game_id_str(app).await;
+    seed_available_server(state, &game_id, "Reconcile box").await;
+    match_to_pick_ban(app, &tournament_id, &match_id).await;
+    let (reservation, token) =
+        seed_allocated_reservation(state, &match_id, &tournament_id, &game_id).await;
+    let mid = reservation.matchzy_id;
+    for event in ["series_start", "going_live"] {
+        assert_eq!(
+            post_event(
+                app,
+                &token,
+                &json!({"event": event, "matchid": mid, "map_number": 0})
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+    let body: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}"
+        ))
+        .await
+        .json();
+    let p1 = body["data"]["participant1_registration_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (tournament_id, match_id, mid, token, p1)
+}
+
+async fn team_reports(app: &TestApp, match_id: &str, winner: &str, s1: i32, s2: i32) -> String {
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": winner,
+                "participant1_score": s1,
+                "participant2_score": s2,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn series_end(app: &TestApp, token: &str, mid: i64, s1: i64, s2: i64) {
+    assert_eq!(
+        post_event(
+            app,
+            token,
+            &json!({
+                "event": "series_end", "matchid": mid,
+                "winner": {"side": "2", "team": if s1 > s2 { "team1" } else { "team2" }},
+                "team1_series_score": s1, "team2_series_score": s2,
+                "time_until_restore": 10,
+            })
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
+/// The game server agreeing with a team's report confirms it: the server is
+/// the second witness the opponent would otherwise have had to be.
+#[tokio::test]
+async fn test_server_result_confirms_an_agreeing_team_report() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (_t, match_id, mid, token, p1) = live_series(&app, &state, "reconcile-agree").await;
+
+    let claim_id = team_reports(&app, &match_id, &p1, 2, 0).await;
+    series_end(&app, &token, mid, 2, 0).await;
+
+    // No second claim; the team's is due now and the next pass confirms it.
+    let claims: Vec<(String, String)> =
+        sqlx::query_as("SELECT id::text, source FROM result_claims WHERE match_id = $1::uuid")
+            .bind(&match_id)
+            .fetch_all(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(claims, vec![(claim_id.clone(), "participant".to_string())]);
+
+    portal_api::background::run_lifecycle_pass(
+        &state,
+        &portal_api::background::LifecycleConfig::from_env(),
+        false,
+    )
+    .await;
+    let (claim_status, match_status): (String, String) = sqlx::query_as(
+        "SELECT c.status, m.status FROM result_claims c \
+         JOIN tournament_matches m ON m.id = c.match_id WHERE c.id = $1::uuid",
+    )
+    .bind(&claim_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        (claim_status.as_str(), match_status.as_str()),
+        ("confirmed", "completed")
+    );
+}
+
+/// A game server result that disagrees with a team's report replaces it, so
+/// the wrong report cannot confirm unchecked; both scores are on record.
+#[tokio::test]
+async fn test_server_result_replaces_a_disagreeing_team_report() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (_t, match_id, mid, token, p1) = live_series(&app, &state, "reconcile-disagree").await;
+
+    let team_claim = team_reports(&app, &match_id, &p1, 2, 0).await;
+    series_end(&app, &token, mid, 2, 1).await;
+
+    let (status,): (String,) =
+        sqlx::query_as("SELECT status FROM result_claims WHERE id = $1::uuid")
+            .bind(&team_claim)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "superseded");
+
+    let body: serde_json::Value = app
+        .get_auth(&format!("/v1/matches/{match_id}/result"))
+        .await
+        .json();
+    assert_eq!(body["data"]["source"], "server");
+    assert_eq!(body["data"]["status"], "pending");
+    assert_eq!(body["data"]["claimed_participant1_score"], 2);
+    assert_eq!(body["data"]["claimed_participant2_score"], 1);
+    let notes = body["data"]["submitter_notes"].as_str().unwrap_or_default();
+    assert!(notes.contains("report of 2-0"), "{notes}");
+}
+
+/// A series that ends while the match never left pick/ban (its going_live
+/// event was lost) still records the result instead of dropping it.
+#[tokio::test]
+async fn test_server_result_after_a_lost_going_live_is_recorded() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "reconcile-no-live").await;
+    let game_id = get_game_id_str(&app).await;
+    seed_available_server(&state, &game_id, "Lost live box").await;
+    match_to_pick_ban(&app, &tournament_id, &match_id).await;
+    let (reservation, token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+
+    series_end(&app, &token, reservation.matchzy_id, 0, 2).await;
+
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tournament_matches WHERE id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "awaiting_result");
+    let body: serde_json::Value = app
+        .get_auth(&format!("/v1/matches/{match_id}/result"))
+        .await
+        .json();
+    assert_eq!(body["data"]["source"], "server");
+}
+
+/// A series result the match could not take is shown to admins instead of
+/// vanishing into the log.
+#[tokio::test]
+async fn test_a_dropped_server_result_shows_in_diagnostics() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, mid, token, _p1) =
+        live_series(&app, &state, "reconcile-dropped").await;
+    sqlx::query("UPDATE tournament_matches SET status = 'cancelled' WHERE id = $1::uuid")
+        .bind(&match_id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    series_end(&app, &token, mid, 2, 1).await;
+
+    let body: serde_json::Value = app
+        .get_auth(&format!(
+            "/v1/admin/tournaments/{tournament_id}/matches/{match_id}/diagnostics"
+        ))
+        .await
+        .json();
+    let problems = body["data"]["problems"].as_array().unwrap();
+    let dropped = problems
+        .iter()
+        .find(|p| p["code"] == "server_result_dropped")
+        .unwrap_or_else(|| panic!("{body}"));
+    assert_eq!(dropped["suggested_action"], "set_result");
+    assert!(dropped["message"].as_str().unwrap().contains("2-1"));
+}
+
+/// MatchZy may fetch the config before the agent has answered the load
+/// command (the reservation is still `pending` on its server); that fetch
+/// must be served, not refused until a re-drive two minutes later.
+#[tokio::test]
+async fn test_config_is_served_before_the_load_is_acknowledged() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _r1, _r2) =
+        create_tournament_with_matches(&app, "config-race").await;
+    let game_id = get_game_id_str(&app).await;
+    seed_available_server(&state, &game_id, "Race box").await;
+    let (reservation, _token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+    assert_eq!(reservation.status, ReservationStatus::Pending);
+    state
+        .server_reservation_repo
+        .store_config(reservation.id, &json!({"matchid": reservation.matchzy_id}))
+        .await
+        .unwrap();
+
+    let response = app
+        .get_with_bearer(
+            &format!("/v1/gameserver/match-config/{}", reservation.matchzy_id),
+            "cgm_test_config_token",
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+}
+
+/// A reservation stuck in `configuring` whose server already shows the match
+/// loaded is adopted (its series_start was lost) rather than reloaded, which
+/// would reset a warmup; one whose server shows nothing is re-driven only a
+/// bounded number of times, then failed with a reason.
+#[tokio::test]
+async fn test_stuck_load_is_adopted_or_given_up_not_reloaded_for_ever() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _r1, _r2) =
+        create_tournament_with_matches(&app, "stuck-load").await;
+    let game_id = get_game_id_str(&app).await;
+    let server_id = seed_available_server(&state, &game_id, "Stuck box").await;
+    let (reservation, _token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+    let stale = |id: ServerReservationId| {
+        sqlx::query(
+            "UPDATE server_reservations SET status = 'configuring', \
+             updated_at = NOW() - INTERVAL '10 minutes' WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .execute(app.pool())
+    };
+
+    // The server reports warmup with our match: adopted as ready.
+    stale(reservation.id).await.unwrap();
+    sqlx::query(
+        "UPDATE game_servers SET last_gamestate = 'warmup', last_heartbeat_at = NOW() \
+         WHERE id = $1",
+    )
+    .bind(server_id.as_uuid())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    portal_api::game_server_flow::run_reservation_pass(&state).await;
+    let r = state
+        .server_reservation_repo
+        .find_by_id(reservation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.status, ReservationStatus::Ready);
+
+    // The server shows nothing loaded and the retries are used up: failed,
+    // with a reason, instead of another reload.
+    sqlx::query(
+        "UPDATE game_servers SET last_gamestate = 'none', last_heartbeat_at = NOW() \
+         WHERE id = $1",
+    )
+    .bind(server_id.as_uuid())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    stale(reservation.id).await.unwrap();
+    sqlx::query("UPDATE server_reservations SET retry_count = 3 WHERE id = $1")
+        .bind(reservation.id.as_uuid())
+        .execute(app.pool())
+        .await
+        .unwrap();
+    portal_api::game_server_flow::run_reservation_pass(&state).await;
+    let r = state
+        .server_reservation_repo
+        .find_by_id(reservation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.status, ReservationStatus::Failed);
+    assert!(
+        r.failure_reason
+            .as_deref()
+            .is_some_and(|f| f.contains("did not confirm loading")),
+        "{:?}",
+        r.failure_reason
+    );
+}
+
+/// An idle heartbeat from a server that still holds one of our reservations
+/// must not make it available for allocation again.
+#[tokio::test]
+async fn test_idle_heartbeat_keeps_a_reserved_server_busy() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let game_id = get_game_id_str(&app).await;
+    let server_id = seed_available_server(&state, &game_id, "Idle box").await;
+    let heartbeat = || HeartbeatUpdate {
+        agent_version: "0.3.0".into(),
+        rcon_ok: true,
+        gamestate: Some(AgentGamestate::None),
+        reported_matchzy_id: None,
+        last_map: None,
+        last_player_count: Some(0),
+        status_output: None,
+    };
+    let server = state
+        .game_server_registry
+        .record_heartbeat(server_id, heartbeat(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        server.status,
+        portal_core::types::GameServerStatus::Reserved
+    );
+    let server = state
+        .game_server_registry
+        .record_heartbeat(server_id, heartbeat(), false)
+        .await
+        .unwrap();
+    assert_eq!(
+        server.status,
+        portal_core::types::GameServerStatus::Available
+    );
 }

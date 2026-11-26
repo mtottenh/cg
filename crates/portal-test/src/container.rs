@@ -24,11 +24,14 @@ static SHARED_CONTAINER: OnceCell<Arc<SharedPostgresContainer>> = OnceCell::cons
 static CONTAINER_ID: OnceLock<String> = OnceLock::new();
 
 /// Cleanup function called by the C runtime on normal process exit.
-/// Removes the Docker container to prevent orphaned containers.
+/// Removes the Docker container to prevent orphaned containers, together
+/// with its anonymous data volume (`-v`). Without that every test run left
+/// its whole Postgres data directory behind as an unused volume — about a
+/// gigabyte per run — until the disk filled.
 extern "C" fn cleanup_container() {
     if let Some(id) = CONTAINER_ID.get() {
         let _ = std::process::Command::new("docker")
-            .args(["rm", "-f", id])
+            .args(["rm", "-f", "-v", id])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();

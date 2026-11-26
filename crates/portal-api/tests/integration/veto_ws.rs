@@ -1074,18 +1074,20 @@ async fn test_ws_spectator_cannot_send_team_chat() {
     let _ = ws_authenticate(&mut ws_spec, &setup.spectator_token).await;
     drain_initial_messages(&mut ws_spec).await;
 
-    // Spectator sends team chat — should silently fail (error is logged, not sent)
+    // Spectator sends team chat: refused, and told so (it used to vanish).
     ws_send_chat(&mut ws_spec, "team", "should fail").await;
 
-    // Verify no chat message is received back
     let msg = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
+        std::time::Duration::from_millis(2000),
         ws_next_message(&mut ws_spec),
     )
     .await;
-    // Timeout or no message is the expected behavior
-    if let Ok(Some(ServerMessage::Chat { .. })) = msg {
-        panic!("Spectator should NOT receive echo of team chat");
+    match msg {
+        Ok(Some(ServerMessage::Error { code, .. })) => assert_eq!(code, "chat_rejected"),
+        Ok(Some(ServerMessage::Chat { .. })) => {
+            panic!("Spectator should NOT receive echo of team chat")
+        }
+        other => panic!("expected a chat_rejected error frame, got {other:?}"),
     }
 }
 

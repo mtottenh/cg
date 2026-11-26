@@ -219,7 +219,28 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(%connection_id, lagged = n, "Broadcast receiver lagged");
+                        // Frames were dropped for this client: send the
+                        // whole veto state so it is not left showing a
+                        // board that has moved on.
+                        warn!(%connection_id, lagged = n, "Broadcast receiver lagged; resyncing");
+                        if let Ok(session_state) =
+                            state.veto_service.get_session_state(match_id).await
+                        {
+                            let resync = ServerMessage::VetoStateUpdate {
+                                session: crate::dto::responses::VetoSessionResponse::from(
+                                    session_state.session,
+                                ),
+                            };
+                            if sender
+                                .send(Message::Text(
+                                    serde_json::to_string(&resync).unwrap().into(),
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         break;
@@ -465,7 +486,20 @@ async fn handle_client_message(
                 .await;
         }
         ClientMessage::Chat { chat_type, content } => {
-            handle_chat_message(connection, match_id, chat_type, content, state, lobby).await?;
+            // A refused message used to vanish with only a server-side
+            // warning; the sender now hears why.
+            if let Err(reason) =
+                handle_chat_message(connection, match_id, chat_type, content, state, lobby).await
+            {
+                let err = ServerMessage::Error {
+                    code: "chat_rejected".to_string(),
+                    message: reason.clone(),
+                };
+                let _ = sender
+                    .send(Message::Text(serde_json::to_string(&err).unwrap().into()))
+                    .await;
+                return Err(reason);
+            }
         }
         ClientMessage::VetoAction { action } => {
             handle_veto_action(connection, match_id, action, state, sender).await?;

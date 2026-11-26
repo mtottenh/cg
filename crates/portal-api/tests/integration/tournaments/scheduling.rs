@@ -1540,3 +1540,101 @@ async fn test_the_only_game_server_cannot_be_double_booked() {
         .assert_status(StatusCode::OK);
     assert_eq!(match_status(&app, &match_id).await, "scheduled");
 }
+
+/// Teams can move an agreed time themselves while it is more than an hour
+/// away; closer than that only an admin can.
+#[tokio::test]
+async fn test_teams_can_move_an_agreed_time_until_an_hour_before() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "re-agree").await;
+    // Agree a time (24 h out), then propose and agree a different one.
+    let proposal = propose_two_slots(&app, &tournament_id, &match_id).await;
+    let slot = active_first_slot(&app, &tournament_id, &match_id).await;
+    accept_as(
+        &app,
+        &tournament_id,
+        &match_id,
+        &proposal,
+        &slot,
+        &player2_token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    assert_eq!(match_status(&app, &match_id).await, "scheduled");
+
+    let proposal = propose_two_slots(&app, &tournament_id, &match_id).await;
+    let new_slot = active_first_slot(&app, &tournament_id, &match_id).await;
+    accept_as(
+        &app,
+        &tournament_id,
+        &match_id,
+        &proposal,
+        &new_slot,
+        &player2_token,
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    let at: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT scheduled_at FROM tournament_matches WHERE id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        at,
+        new_slot.parse::<chrono::DateTime<chrono::Utc>>().unwrap()
+    );
+    assert_eq!(match_status(&app, &match_id).await, "scheduled");
+
+    // Within the hour, the time is fixed for the teams.
+    sqlx::query(
+        "UPDATE tournament_matches SET scheduled_at = NOW() + INTERVAL '45 minutes' \
+         WHERE id = $1::uuid",
+    )
+    .bind(&match_id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/propose"),
+            &json!({ "proposed_times": [(chrono::Utc::now() + chrono::Duration::days(2)).to_rfc3339()] }),
+        )
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert!(
+        response.text().contains("ask an admin"),
+        "{}",
+        response.text()
+    );
+}
+
+async fn active_first_slot(app: &TestApp, tournament_id: &str, match_id: &str) -> String {
+    let body: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
+        ))
+        .await
+        .json();
+    body["data"]["proposed_times"][0]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn accept_as(
+    app: &TestApp,
+    tournament_id: &str,
+    match_id: &str,
+    proposal_id: &str,
+    slot: &str,
+    token: &str,
+) -> crate::common::TestResponse {
+    app.post_json_with_token(
+        &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept"),
+        &json!({ "proposal_id": proposal_id, "selected_time": slot }),
+        token,
+    )
+    .await
+}

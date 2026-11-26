@@ -24,6 +24,13 @@ const DEFAULT_PROPOSAL_TTL_HOURS: i64 = 48;
 /// "now" rather than as a time in the past.
 const PAST_TOLERANCE_MINUTES: i64 = 5;
 
+/// Teams can move an agreed time themselves until this long before it.
+pub const RESCHEDULE_CUTOFF_MINUTES: i64 = 60;
+
+/// A time teams move a match to must be at least this far away, clear of
+/// the check-in window that opens before it.
+pub const RESCHEDULE_MIN_NOTICE_MINUTES: i64 = 30;
+
 /// Service for managing match scheduling through proposals.
 #[derive(Clone)]
 pub struct SchedulingService<SPR, TMR, TRR, LTMR>
@@ -98,6 +105,34 @@ where
     /// - `NotAuthorized` if user is not part of the match
     /// - `InvalidState` if match cannot be scheduled
     /// - `InvalidState` if proposed times are invalid
+    /// Whether a match takes schedule proposals now.
+    ///
+    /// A match with no time does. So does a scheduled one whose time is more
+    /// than [`RESCHEDULE_CUTOFF_MINUTES`] away, so teams can move an agreed
+    /// time themselves instead of asking an admin; closer to the start the
+    /// check-in window is about to open and only an admin can move it.
+    fn check_takes_proposals(
+        tournament_match: &TournamentMatch,
+        now: DateTime<Utc>,
+    ) -> Result<(), DomainError> {
+        if tournament_match.status.can_schedule() {
+            return Ok(());
+        }
+        if tournament_match.status == TournamentMatchStatus::Scheduled {
+            return match tournament_match.scheduled_at {
+                Some(at) if at > now + Duration::minutes(RESCHEDULE_CUTOFF_MINUTES) => Ok(()),
+                _ => Err(DomainError::InvalidState(format!(
+                    "The match starts within {RESCHEDULE_CUTOFF_MINUTES} minutes; ask an admin \
+                     to change its time"
+                ))),
+            };
+        }
+        Err(DomainError::InvalidState(format!(
+            "Match {} cannot be scheduled in status {:?}",
+            tournament_match.id, tournament_match.status
+        )))
+    }
+
     pub async fn propose_schedule(
         &self,
         match_id: TournamentMatchId,
@@ -112,12 +147,7 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        if !tournament_match.status.can_schedule() {
-            return Err(DomainError::InvalidState(format!(
-                "Match {} cannot be scheduled in status {:?}",
-                match_id, tournament_match.status
-            )));
-        }
+        Self::check_takes_proposals(&tournament_match, Utc::now())?;
 
         // Validate proposed times
         if proposed_times.is_empty() || proposed_times.len() > 5 {
@@ -219,13 +249,17 @@ where
         self.validate_responder_is_opponent(command.accepted_by, &proposal, &tournament_match)
             .await?;
 
-        // Only a match still waiting for a time can take one. A proposal
-        // that outlived that (the match was scheduled another way, started,
-        // forfeited...) must not rewind it to `scheduled`.
-        if !tournament_match.status.can_schedule() {
+        // Only a match still waiting for a time, or a scheduled one far
+        // enough out to move, can take one. A proposal that outlived that
+        // (the match started, was forfeited...) must not rewind it.
+        Self::check_takes_proposals(&tournament_match, Utc::now())?;
+        let rescheduling = tournament_match.status == TournamentMatchStatus::Scheduled;
+        if rescheduling
+            && command.selected_time
+                <= Utc::now() + Duration::minutes(RESCHEDULE_MIN_NOTICE_MINUTES)
+        {
             return Err(DomainError::InvalidState(format!(
-                "Match {} cannot be scheduled in status {:?}",
-                proposal.match_id, tournament_match.status
+                "A new time must be at least {RESCHEDULE_MIN_NOTICE_MINUTES} minutes away"
             )));
         }
 
@@ -248,7 +282,11 @@ where
                 proposal.id,
                 command.selected_time,
                 command.accepted_by.user_id,
-                &[TournamentMatchStatus::Ready],
+                if rescheduling {
+                    &[TournamentMatchStatus::Scheduled]
+                } else {
+                    &[TournamentMatchStatus::Ready]
+                },
             )
             .await?;
         let updated_match = self
@@ -415,14 +453,8 @@ where
         )
         .await?;
 
-        // Same rule as proposing and accepting: only a match still waiting
-        // for a time takes proposals.
-        if !tournament_match.status.can_schedule() {
-            return Err(DomainError::InvalidState(format!(
-                "Match {} cannot be scheduled in status {:?}",
-                command.match_id, tournament_match.status
-            )));
-        }
+        // Same rule as proposing and accepting.
+        Self::check_takes_proposals(&tournament_match, Utc::now())?;
 
         // The original is marked answered and the counter inserted in one
         // transaction; the counter cannot exist beside a still-pending

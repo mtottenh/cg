@@ -23,8 +23,8 @@ pub use lobby::{ConnectionId, VetoLobby};
 pub use lobby_manager::{Joined, VetoLobbyManager};
 pub use messages::{
     ChatBroadcast, ClientChatType, ClientMessage, ClientVetoAction, CoinFlipResultBroadcast,
-    LiveScoreBroadcast, LobbyBroadcast, ParticipantConnectionBroadcast, ServerAssignmentBroadcast,
-    ServerConnectInfo, ServerMessage, TimeoutWarningBroadcast, VetoActionBroadcast,
-    VetoCompleteBroadcast, VetoStateBroadcast,
+    GotvInfo, LiveScoreBroadcast, LobbyBroadcast, ParticipantConnectionBroadcast,
+    ServerAssignmentBroadcast, ServerConnectInfo, ServerMessage, TimeoutWarningBroadcast,
+    VetoActionBroadcast, VetoCompleteBroadcast, VetoStateBroadcast,
 };
 pub use timeout_task::spawn_timeout_warning_task;

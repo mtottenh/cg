@@ -60,7 +60,12 @@ pub struct MatchServerResponse {
     /// `sv_password` — participants and admins only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect_password: Option<String>,
-    /// GOTV details — visible to everyone once the match is live.
+    /// GOTV details — visible to every authenticated user once the match is
+    /// live (participants and admins from `ready`). `gotv_host` is the
+    /// address spectators connect to; it is deliberately separate from
+    /// `ip_address`, which stays participant-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gotv_host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gotv_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -235,6 +240,14 @@ pub async fn get_match_server(
             .then(|| server.as_ref().map(|s| s.port))
             .flatten(),
         connect_password: connect_visible.then(|| reservation.connect_password.clone()),
+        gotv_host: gotv_visible
+            .then(|| {
+                server
+                    .as_ref()
+                    .filter(|s| s.gotv_port.is_some())
+                    .map(|s| s.ip_address.to_string())
+            })
+            .flatten(),
         gotv_port: gotv_visible
             .then(|| server.as_ref().and_then(|s| s.gotv_port))
             .flatten(),
@@ -286,6 +299,7 @@ async fn admin_reservation_summary(
         ip_address: None,
         port: None,
         connect_password: None,
+        gotv_host: None,
         gotv_port: None,
         gotv_password: None,
         is_participant: true,

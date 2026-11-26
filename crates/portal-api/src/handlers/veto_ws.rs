@@ -18,13 +18,14 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use portal_core::TournamentMatchId;
+use portal_core::types::ReservationStatus;
 use portal_domain::validate_token;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use crate::state::VetoWsState;
-use crate::websocket::messages::{LobbyParticipantPayload, LobbyStatePayload};
+use crate::websocket::messages::{LobbyParticipantPayload, LobbyStatePayload, ServerConnectInfo};
 use crate::websocket::{
     ChatBroadcast, ClientChatType, ClientMessage, ClientVetoAction, CoinFlipResultBroadcast,
     ConnectionId, Joined, LobbyBroadcast, ParticipantConnectionBroadcast, ServerMessage,
@@ -963,16 +964,25 @@ fn filter_broadcast_for_connection(
         }
         LobbyBroadcast::ServerAssignmentUpdate(update) => {
             // §9 / M1: connect details (sv_password) are participant-only.
-            // Spectators get the bare status; the REST endpoint applies the
-            // same gating for cold loads.
-            let connect = if connection.is_spectator() {
-                None
+            // Spectators get the status plus, once the match is live, the
+            // GOTV details — the same gating the REST endpoint applies for
+            // cold loads.
+            let (connect, gotv) = if connection.is_spectator() {
+                let live = update.status == ReservationStatus::Live.to_string();
+                let gotv = if live {
+                    update.connect.as_ref().and_then(ServerConnectInfo::gotv)
+                } else {
+                    None
+                };
+                (None, gotv)
             } else {
-                update.connect.clone()
+                let gotv = update.connect.as_ref().and_then(ServerConnectInfo::gotv);
+                (update.connect.clone(), gotv)
             };
             Some(ServerMessage::ServerAssignmentUpdate {
                 status: update.status.clone(),
                 connect,
+                gotv,
                 reason: update.reason.clone(),
             })
         }

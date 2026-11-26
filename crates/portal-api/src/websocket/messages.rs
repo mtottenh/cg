@@ -151,8 +151,12 @@ pub enum ServerMessage {
     ServerAssignmentUpdate {
         /// Reservation status.
         status: String,
-        /// Connect info for ready/live states.
+        /// Connect info for ready/live states — participants and admins only.
         connect: Option<ServerConnectInfo>,
+        /// GOTV (spectator) details: every connection once the match is
+        /// live, participants and admins from `ready`. Mirrors the REST
+        /// `gotv_*` fields.
+        gotv: Option<GotvInfo>,
         /// Failure reason, when terminal.
         reason: Option<String>,
     },
@@ -359,15 +363,38 @@ pub struct ServerConnectInfo {
     pub gotv_password: Option<String>,
 }
 
+/// GOTV details for watching a ready/live match (spectator-facing).
+#[derive(Debug, Clone, Serialize)]
+pub struct GotvInfo {
+    /// Address to connect to for GOTV.
+    pub host: String,
+    /// GOTV port.
+    pub port: u16,
+    /// GOTV password (`tv_password`).
+    pub password: Option<String>,
+}
+
+impl ServerConnectInfo {
+    /// The GOTV slice of these connect details, when GOTV is enabled.
+    #[must_use]
+    pub fn gotv(&self) -> Option<GotvInfo> {
+        self.gotv_port.map(|port| GotvInfo {
+            host: self.ip_address.clone(),
+            port,
+            password: self.gotv_password.clone(),
+        })
+    }
+}
+
 /// Server assignment status broadcast payload.
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerAssignmentBroadcast {
     /// Reservation status (`pending`/`configuring`/`ready`/`live`/…).
     pub status: String,
-    /// Connect info — present for `ready`/`live` only. Note: broadcast to
-    /// the whole lobby; the veto lobby is already participant+spectator
-    /// scoped and the password also guards the server itself. The REST
-    /// endpoint applies stricter participant gating for cold loads.
+    /// Connect info — present for `ready`/`live` only. Broadcast to the
+    /// whole lobby; the per-connection fan-out in `veto_ws` strips it for
+    /// spectators, who receive only the GOTV slice once the match is live
+    /// (same gating as the REST endpoint).
     pub connect: Option<ServerConnectInfo>,
     /// Failure/cancellation reason, when terminal.
     pub reason: Option<String>,

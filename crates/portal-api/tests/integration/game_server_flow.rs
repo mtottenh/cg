@@ -453,6 +453,16 @@ async fn test_event_pipeline_full_series() {
     assert_eq!(body["data"]["claimed_participant2_score"], 0);
     assert!(body["data"]["submitted_by_registration_id"].is_null());
 
+    // The server's claim moves the match to `awaiting_result`, like a
+    // captain's would, so both teams are asked to confirm or dispute.
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tournament_matches WHERE id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "awaiting_result");
+
     // Late events after completion are acknowledged and ignored.
     assert_eq!(
         post_event(

@@ -398,7 +398,8 @@ where
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        self.claim_repo
+        let claim = self
+            .claim_repo
             .create_and_supersede_pending(CreateResultClaim {
                 match_id,
                 submitted_by_registration_id: None,
@@ -413,7 +414,31 @@ where
                 demo_link_ids: Vec::new(),
                 notes: Some("Automatically reported by the game server".to_string()),
             })
-            .await
+            .await?;
+
+        // Same move as a participant claim (see `submit_claim`): the match
+        // goes to `awaiting_result` so the header stops saying "live" and
+        // both teams get the confirm/dispute action item. The claim is
+        // already stored, so a failed transition is logged, not returned —
+        // the claim still confirms from `in_progress`.
+        if match_.status == portal_core::types::TournamentMatchStatus::InProgress
+            && let Some(transitioner) = &self.match_transitioner
+            && let Err(e) = transitioner
+                .transition_status(
+                    match_id,
+                    portal_core::types::TournamentMatchStatus::AwaitingResult,
+                    TransitionTrigger::System {
+                        job_name: "server_result_reported".to_string(),
+                    },
+                    Some("Game server reported the result; awaiting confirmation".to_string()),
+                )
+                .await
+        {
+            warn!(match_id = %match_id, error = %e,
+                "server claim stored but match not moved to awaiting_result");
+        }
+
+        Ok(claim)
     }
 
     /// Confirm a result claim (by opponent).

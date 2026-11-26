@@ -1045,7 +1045,8 @@ async fn apply_series_end(
                 .unwrap_or(DEFAULT_AUTO_CONFIRM_MINUTES),
         );
 
-    let claim = state
+    let has_game_rows = !game_results.is_empty();
+    let mut claim = state
         .result_service
         .submit_server_claim(
             reservation.match_id,
@@ -1056,6 +1057,26 @@ async fn apply_series_end(
             auto_confirm_at,
         )
         .await;
+    // MatchZy does not retry webhooks: one lost `map_result` leaves the
+    // per-map rows out of step with the series score, and that used to
+    // discard the whole result. The series score is the part that decides
+    // the match, so report it without the per-map breakdown instead.
+    if has_game_rows && matches!(claim, Err(DomainError::InvalidMatchResult(_))) {
+        tracing::warn!(match_id = %reservation.match_id,
+            "per-map results do not match the series score {s1}-{s2}; \
+             submitting the series result without them");
+        claim = state
+            .result_service
+            .submit_server_claim(
+                reservation.match_id,
+                winner,
+                s1,
+                s2,
+                Vec::new(),
+                auto_confirm_at,
+            )
+            .await;
+    }
     match claim {
         Ok(claim) => {
             tracing::info!(match_id = %reservation.match_id, claim_id = %claim.id,

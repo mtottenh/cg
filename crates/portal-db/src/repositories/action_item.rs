@@ -193,7 +193,9 @@ impl ActionItemRepository {
             JOIN result_claims rc
                 ON rc.match_id = mm.id
                 AND rc.status = 'pending'
-                AND rc.submitted_by_registration_id != mm.my_registration_id
+                -- IS DISTINCT FROM: a server-reported claim has no submitter
+                -- (NULL), and `!=` silently dropped it for both teams.
+                AND rc.submitted_by_registration_id IS DISTINCT FROM mm.my_registration_id
             WHERE mm.status = 'awaiting_result'
 
             UNION ALL

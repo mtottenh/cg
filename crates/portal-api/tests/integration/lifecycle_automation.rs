@@ -517,3 +517,105 @@ async fn test_pass_leaves_unexpired_claims_pending() {
         "claim inside its window must stay pending"
     );
 }
+
+/// Open the check-in window, then push its deadline into the past.
+async fn open_window_then_expire(
+    app: &TestApp,
+    state: &AppState,
+    slug: &str,
+) -> (String, String, String) {
+    let (tournament_id, match_id, reg1, _reg2) = create_tournament_with_matches(app, slug).await;
+    schedule_at(app, &tournament_id, &match_id, 5).await;
+    run_lifecycle_pass(state, &test_config(), false).await;
+    assert_eq!(
+        get_match_status(app, &tournament_id, &match_id).await,
+        "checking_in"
+    );
+    sqlx::query(
+        "UPDATE tournament_matches SET check_in_deadline = NOW() - INTERVAL '1 minute' WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    (tournament_id, match_id, reg1)
+}
+
+/// A deploy or crash that spans a check-in deadline must not forfeit teams
+/// that had no site to check in on: at startup, windows that have already
+/// run out get a fresh grace period before the first pass.
+#[tokio::test]
+async fn test_startup_extends_check_in_deadlines_that_passed_while_down() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _reg1) =
+        open_window_then_expire(&app, &state, "lc-restart-grace").await;
+
+    let extended =
+        portal_api::background::extend_check_in_deadlines_after_restart(&state, &test_config())
+            .await;
+    assert_eq!(extended, 1);
+
+    let summary = run_lifecycle_pass(&state, &test_config(), false).await;
+    assert_eq!(summary.errors, 0, "pass should not error: {summary:?}");
+    assert_eq!(summary.double_forfeits, 0);
+    assert_eq!(summary.no_shows_forfeited, 0);
+    assert_eq!(
+        get_match_status(&app, &tournament_id, &match_id).await,
+        "checking_in"
+    );
+}
+
+async fn mark_both_checked_in(app: &TestApp, match_id: &str) {
+    sqlx::query(
+        "UPDATE tournament_matches \
+         SET participant1_checked_in_at = NOW(), participant2_checked_in_at = NOW() \
+         WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(match_id).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+}
+
+/// Both sides checked in but the advance never landed: the pass used to log
+/// a warning every tick forever. It now finishes the advance — and never
+/// forfeits anyone.
+#[tokio::test]
+async fn test_pass_advances_a_match_stuck_in_checking_in_with_both_sides_in() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _reg1) =
+        open_window_then_expire(&app, &state, "lc-both-in-pass").await;
+    mark_both_checked_in(&app, &match_id).await;
+
+    let summary = run_lifecycle_pass(&state, &test_config(), false).await;
+    assert_eq!(summary.errors, 0, "pass should not error: {summary:?}");
+    assert_eq!(summary.double_forfeits, 0);
+    assert_eq!(summary.no_shows_forfeited, 0);
+    assert_eq!(
+        get_match_status(&app, &tournament_id, &match_id).await,
+        "in_progress"
+    );
+}
+
+/// Same stuck state, repaired by a captain pressing Check In again: it used
+/// to return "already checked in" without advancing.
+#[tokio::test]
+async fn test_repeat_check_in_advances_a_match_with_both_sides_in() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, reg1) =
+        open_window_then_expire(&app, &state, "lc-both-in-retry").await;
+    mark_both_checked_in(&app, &match_id).await;
+
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/check-in"),
+            &json!({ "registration_id": reg1 }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["data"]["status"], "in_progress");
+}

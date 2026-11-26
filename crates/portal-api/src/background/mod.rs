@@ -1137,15 +1137,61 @@ async fn process_check_in_timeout(
     summary: &mut LifecyclePassSummary,
 ) {
     let match_id = match_.id;
+
+    // Decide on the row as it is now, not as the expiry scan saw it: a team
+    // that checks in between the scan and here must not be forfeited for a
+    // check-in it has made, and a match that has moved on is not ours.
+    let match_ = match state.tournament_match_repo.find_by_id(match_id).await {
+        Ok(Some(fresh)) => fresh,
+        Ok(None) => return,
+        Err(e) => {
+            error!(%match_id, error = %e, "lifecycle: check-in timeout re-read failed");
+            summary.errors += 1;
+            return;
+        }
+    };
+    if match_.status != TournamentMatchStatus::CheckingIn {
+        return;
+    }
     let p1_in = match_.participant1_checked_in_at.is_some();
     let p2_in = match_.participant2_checked_in_at.is_some();
 
     let result = match (p1_in, p2_in) {
         (true, true) => {
             // Both checked in but the match is still in checking_in — the
-            // auto-advance handles this on check-in, so reaching here means
-            // something interrupted it. Log for visibility, don't punish.
-            warn!(%match_id, "lifecycle: both checked in but match still in checking_in");
+            // auto-advance on check-in was interrupted. Nobody has a
+            // check-in left to make, so finish the advance here; a pending
+            // veto session is then started by the stalled-session pass.
+            let next = if match_.veto_required {
+                TournamentMatchStatus::PickBan
+            } else {
+                TournamentMatchStatus::InProgress
+            };
+            match state
+                .match_lifecycle_service
+                .transition(
+                    match_id,
+                    next,
+                    TransitionTrigger::System {
+                        job_name: "both_checked_in_repair".to_string(),
+                    },
+                    Some("Both participants checked in".to_string()),
+                )
+                .await
+            {
+                Ok(_) => {
+                    warn!(%match_id, to = %next,
+                        "lifecycle: advanced a match left in checking_in with both sides in");
+                    if next == TournamentMatchStatus::InProgress {
+                        let _ = state.server_assignment_tx.send(match_id);
+                    }
+                }
+                Err(e) => {
+                    error!(%match_id, error = %e,
+                        "lifecycle: both checked in but the match could not be advanced");
+                    summary.errors += 1;
+                }
+            }
             return;
         }
         (false, false) => state
@@ -1195,6 +1241,49 @@ async fn process_check_in_timeout(
     }
 }
 
+/// Give every check-in window that has already run out a fresh grace period.
+///
+/// Called once at process start. The first lifecycle pass runs immediately,
+/// and without this a deploy or crash that spanned a check-in deadline
+/// forfeited (or double-forfeited, which is permanent) teams that had no
+/// site to check in on. Returns how many deadlines were pushed back.
+pub async fn extend_check_in_deadlines_after_restart(
+    state: &AppState,
+    cfg: &LifecycleConfig,
+) -> u32 {
+    let now = Utc::now();
+    let expired = match state
+        .tournament_match_repo
+        .list_checkin_expired(now, cfg.batch_limit)
+        .await
+    {
+        Ok(expired) => expired,
+        Err(e) => {
+            error!(error = %e, "lifecycle: startup check-in deadline scan failed");
+            return 0;
+        }
+    };
+    let mut extended = 0;
+    for match_ in expired {
+        match state
+            .tournament_match_repo
+            .set_check_in_deadline(match_.id, now + cfg.check_in_grace)
+            .await
+        {
+            Ok(_) => {
+                extended += 1;
+                warn!(match_id = %match_.id,
+                    "lifecycle: check-in deadline passed while the API was down; extended");
+            }
+            Err(e) => {
+                error!(match_id = %match_.id, error = %e,
+                    "lifecycle: could not extend a check-in deadline at startup");
+            }
+        }
+    }
+    extended
+}
+
 /// Spawn the automation loop. Mirrors `spawn_timeout_warning_task`: interval
 /// ticks do the work, `shutdown.notified()` ends the loop, per-tick errors
 /// are logged and swallowed so the loop survives.
@@ -1207,6 +1296,10 @@ pub fn spawn_lifecycle_task(state: AppState, shutdown: Arc<Notify>) -> JoinHandl
         );
         let mut tick = interval(cfg.tick_interval);
         let mut tick_count: u32 = 0;
+        // Before the first pass: teams cannot check in while the API is
+        // down, so a deadline that ran out during the outage is not theirs
+        // to answer for.
+        extend_check_in_deadlines_after_restart(&state, &cfg).await;
         loop {
             tokio::select! {
                 _ = tick.tick() => {

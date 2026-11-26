@@ -99,7 +99,7 @@ impl LifecycleConfig {
                 i64::try_from(env_u64("PORTAL_CHECKIN_LEAD_MINUTES", 15)).unwrap_or(15),
             ),
             check_in_grace: ChronoDuration::minutes(
-                i64::try_from(env_u64("PORTAL_CHECKIN_GRACE_MINUTES", 10)).unwrap_or(10),
+                i64::try_from(env_u64("PORTAL_CHECKIN_GRACE_MINUTES", 20)).unwrap_or(20),
             ),
             veto_coin_flip_grace: ChronoDuration::seconds(
                 i64::try_from(env_u64("PORTAL_VETO_COIN_FLIP_GRACE_SECS", 15)).unwrap_or(15),
@@ -505,7 +505,7 @@ async fn repair_check_in_deadline(
 /// The configured id gates creation, but standard `boN` ids are re-keyed to
 /// the *match's* best-of — with per-round formats a tournament-wide bo1
 /// default must not run a bo1 veto on the bo3 final.
-async fn ensure_veto_session(
+pub(crate) async fn ensure_veto_session(
     state: &AppState,
     match_: &TournamentMatch,
 ) -> Result<bool, DomainError> {

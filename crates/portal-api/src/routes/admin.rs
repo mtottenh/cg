@@ -66,6 +66,27 @@ pub fn routes() -> Router<AppState> {
             "/tournaments/{tournament_id}/matches/{match_id}/schedule",
             post(tournaments::admin_schedule_match),
         )
+        // Match rescue: get a stuck match moving again from the admin UI.
+        .route(
+            "/tournaments/{tournament_id}/matches/{match_id}/reset",
+            post(tournaments::admin_reset_match),
+        )
+        .route(
+            "/tournaments/{tournament_id}/matches/{match_id}/check-in-window",
+            post(tournaments::admin_set_check_in_window),
+        )
+        .route(
+            "/tournaments/{tournament_id}/matches/{match_id}/veto/reset",
+            post(tournaments::admin_reset_veto),
+        )
+        .route(
+            "/tournaments/{tournament_id}/matches/{match_id}/completion/retry",
+            post(tournaments::admin_retry_completion),
+        )
+        .route(
+            "/tournaments/{tournament_id}/matches/{match_id}/diagnostics",
+            get(tournaments::admin_match_diagnostics),
+        )
         // Swiss next round generation
         .route(
             "/tournaments/{tournament_id}/generate-next-round",

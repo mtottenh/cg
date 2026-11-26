@@ -13,6 +13,7 @@
 //! - `PgTournamentStandingsRepository`: Round robin/swiss standings
 //! - `PgTournamentMapPoolRepository`: Map pool configuration
 //! - `PgMatchStatusLogRepository`: Match status transition logs
+//! - `PgMatchRescueRepository`: Admin rescue writes (reset, check-in window, veto restart)
 //! - `PgVetoSessionRepository`: Map veto sessions
 //! - `PgVetoActionRepository`: Individual veto actions
 //! - `PgResultClaimRepository`: Match result claims
@@ -24,6 +25,7 @@ mod map_pool;
 mod match_;
 mod match_completion_tx;
 mod match_game;
+mod match_rescue;
 mod match_status_log;
 mod registration;
 mod result_claim;
@@ -41,6 +43,7 @@ pub use match_completion_tx::{
     MatchCompletionTxInput, MatchCompletionTxOutput, complete_match_in_transaction,
 };
 pub use match_game::PgTournamentMatchGameRepository;
+pub use match_rescue::PgMatchRescueRepository;
 pub use match_status_log::PgMatchStatusLogRepository;
 pub use registration::PgTournamentRegistrationRepository;
 pub use result_claim::PgResultClaimRepository;

@@ -1110,7 +1110,7 @@ async fn broadcast_reservation(state: &AppState, reservation: &ServerReservation
     );
 }
 
-fn broadcast_assignment(
+pub(crate) fn broadcast_assignment(
     state: &AppState,
     match_id: TournamentMatchId,
     status: &str,
@@ -1668,7 +1668,7 @@ pub async fn request_substitution(
 
 /// The players currently listed for a registration: roster (or solo) with
 /// applied substitutions swapped in (§6.8 consistency rule).
-async fn effective_player_ids(
+pub(crate) async fn effective_player_ids(
     state: &AppState,
     match_id: TournamentMatchId,
     registration_id: TournamentRegistrationId,

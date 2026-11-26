@@ -268,7 +268,7 @@ where
         self.proposal_repo.update(&proposal).await
     }
 
-    /// Withdraw a proposal you made yourself.
+    /// Withdraw a proposal your side made.
     ///
     /// Before this existed the only way out of a mistyped proposal was to
     /// wait out the 48h TTL or hope the opponent responded — `Cancelled`
@@ -279,7 +279,8 @@ where
     /// # Errors
     /// - `LookupFailed` if the proposal doesn't exist
     /// - `TournamentMatchNotFound` if the proposal belongs to another match
-    /// - `NotAuthorized` if the caller is not the proposer
+    /// - `NotAuthorized` if the caller is neither the proposer nor someone
+    ///   who schedules for the proposing registration
     /// - `InvalidState` if the proposal is no longer pending (already
     ///   accepted, rejected, counter-proposed, expired or cancelled).
     ///   A pending proposal past its expiry is still cancellable — the
@@ -301,12 +302,18 @@ where
             return Err(DomainError::TournamentMatchNotFound(command.match_id));
         }
 
-        // Only the proposer may withdraw. The opponent has accept /
-        // reject / counter; letting them cancel too would hand them a
-        // silent way to drop a proposal without a recorded response.
-        if proposal.proposed_by_user_id != command.cancelled_by_user_id {
+        // Only the proposing side may withdraw: the user who made the
+        // proposal, or anyone who schedules for that registration (its
+        // captain, owner or a delegate). The opponent has accept / reject /
+        // counter; letting them cancel too would hand them a silent way to
+        // drop a proposal without a recorded response.
+        let is_proposer = proposal.proposed_by_user_id == command.cancelled_by_user_id;
+        let acts_for_proposing_side = command
+            .acting_for_registrations
+            .contains(&proposal.proposed_by_registration_id);
+        if !is_proposer && !acts_for_proposing_side {
             return Err(DomainError::NotAuthorized(
-                "Only the proposer can withdraw this proposal".to_string(),
+                "Only the proposing team can withdraw this proposal".to_string(),
             ));
         }
 

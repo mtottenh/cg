@@ -276,9 +276,12 @@ impl UpdateTournamentCommand {
     /// Whether this update touches nothing that is frozen once a tournament
     /// has started.
     ///
-    /// The scheduling mode is the one field an organiser may still change on
-    /// a running tournament: it decides who sets match times from here on and
-    /// rewrites nothing about matches already played.
+    /// Two fields stay editable on a running tournament, because they only
+    /// steer how the remaining matches are run and rewrite nothing about
+    /// matches already played: the scheduling mode (who sets match times
+    /// from here on) and `settings` (side selection, the game-server opt-in
+    /// and its tunables — an organiser has to be able to switch the server
+    /// integration on, or lengthen the auto-confirm window, mid-cup).
     ///
     /// The destructuring is exhaustive on purpose, so a new field has to be
     /// classified here before the struct compiles.
@@ -305,7 +308,7 @@ impl UpdateTournamentCommand {
             default_map_veto_format,
             prize_pool,
             rules_url,
-            settings,
+            settings: _,
             withdrawal_policy,
             scheduling_mode: _,
         } = self;
@@ -329,7 +332,6 @@ impl UpdateTournamentCommand {
             && default_map_veto_format.is_none()
             && prize_pool.is_none()
             && rules_url.is_none()
-            && settings.is_none()
             && withdrawal_policy.is_none()
     }
 }

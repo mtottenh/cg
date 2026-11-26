@@ -92,6 +92,26 @@ impl TestApp {
         }
     }
 
+    /// Like [`TestApp::new_with_agent_dev_auth`], with the game-server
+    /// integration switched on (`PORTAL_GAMESERVER_ENABLED`), so a test can
+    /// take a match through server assignment against a
+    /// [`agent::FakeAgent`].
+    pub async fn new_with_gameserver() -> Self {
+        Self::init_tracing();
+
+        let db = TestDb::new().await;
+        let mut state = AppState::new(db.pool.clone(), "test-jwt-secret").await;
+        state.agent_insecure_dev_auth = true;
+        state.gameserver_enabled = true;
+        let app = Self::with_connect_info(create_app(state));
+
+        Self {
+            app,
+            db,
+            server_addr: None,
+        }
+    }
+
     /// Like [`TestApp::new_with_agent_dev_auth`], and also hands back the
     /// application's own state — the one whose agent manager holds the
     /// [`agent::FakeAgent`] connections — so a test can drive a lifecycle

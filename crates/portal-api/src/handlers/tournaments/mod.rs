@@ -7,6 +7,7 @@
 //!
 //! | sub-module        | responsibility                                          |
 //! |-------------------|---------------------------------------------------------|
+//! | `admin_rescue`    | admin reset / check-in window / veto restart / diagnose |
 //! | `lifecycle`       | tournament CRUD + state machine transitions             |
 //! | `stages`          | stage configuration                                     |
 //! | `registration`    | register / check-in / withdraw / approve / disqualify   |
@@ -21,6 +22,7 @@
 //! `pub use` glob re-exports that keep the existing `tournaments::*`
 //! paths — referenced by `openapi.rs` and `routes/*` — valid.
 
+pub mod admin_rescue;
 pub mod brackets;
 pub mod lifecycle;
 pub mod lineup;
@@ -36,6 +38,7 @@ pub mod stages;
 // `routes/*` modules already use — *and* so the `__path_<handler>`
 // types that utoipa's `#[utoipa::path(...)]` macro generates sit at
 // that same module path (utoipa's `paths(...)` resolves against it).
+pub use admin_rescue::*;
 pub use brackets::*;
 pub use lifecycle::*;
 pub use lineup::*;

@@ -3,6 +3,7 @@
 //! Design: docs/matchzy-integration.md §6.2 (route surface), §7.2 (panel
 //! states the GET feeds).
 
+use crate::admin_rescue::{self, RosterCheckResponse, ServerClearResponse};
 use crate::dto::common::DataResponse;
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker};
@@ -14,6 +15,7 @@ use axum::http::{HeaderMap, StatusCode};
 use portal_core::ids::TournamentMatchId;
 use portal_core::permissions;
 use portal_core::types::ReservationStatus;
+use portal_domain::repositories::match_rescue::RescueAudit;
 use portal_domain::repositories::pug::AdhocTeamRepository as _;
 use portal_domain::repositories::{
     LeagueTeamMemberRepository, ServerEventRepository, ServerReservationRepository,
@@ -68,6 +70,12 @@ pub struct MatchServerResponse {
     /// 1-based place in the server queue, when `pending` (§6.6).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_position: Option<i64>,
+    /// The server holding the reservation — admins only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    /// Failed load attempts so far — admins only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_count: Option<i32>,
     /// Latest live score, when the match is live.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_score: Option<LiveScoreResponse>,
@@ -235,9 +243,57 @@ pub async fn get_match_server(
             .flatten(),
         is_participant: participant,
         queue_position,
+        server_id: is_admin
+            .then(|| reservation.server_id.map(|id| id.to_string()))
+            .flatten(),
+        retry_count: is_admin.then_some(reservation.retry_count),
         live_score,
     };
     Ok(Json(DataResponse::new(response, request_id)))
+}
+
+/// The admin view of a reservation that was just created or re-created:
+/// status, failure reason and the server it landed on. Connect details are
+/// left to `GET /v1/matches/{match_id}/server`, which applies the visibility
+/// rules once the server reports ready.
+async fn admin_reservation_summary(
+    state: &AppState,
+    reservation: portal_domain::entities::ServerReservation,
+) -> MatchServerResponse {
+    let server_name = match reservation.server_id {
+        Some(id) => state
+            .game_server_registry
+            .get(id)
+            .await
+            .ok()
+            .map(|s| s.name),
+        None => None,
+    };
+    let queue_position = if reservation.status == ReservationStatus::Pending {
+        state
+            .server_reservation_repo
+            .count_pending_before(reservation.created_at)
+            .await
+            .ok()
+            .map(|ahead| ahead + 1)
+    } else {
+        None
+    };
+    MatchServerResponse {
+        status: reservation.status,
+        failure_reason: reservation.failure_reason,
+        server_name,
+        ip_address: None,
+        port: None,
+        connect_password: None,
+        gotv_port: None,
+        gotv_password: None,
+        is_participant: true,
+        queue_position,
+        server_id: reservation.server_id.map(|id| id.to_string()),
+        retry_count: Some(reservation.retry_count),
+        live_score: None,
+    }
 }
 
 /// Manually assign a server to a match (admin).
@@ -272,36 +328,32 @@ pub async fn assign_match_server(
         .await
         .map_err(ApiError::from)?;
 
+    let response = admin_reservation_summary(&state, reservation).await;
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(
-            MatchServerResponse {
-                status: reservation.status,
-                failure_reason: reservation.failure_reason,
-                server_name: None,
-                ip_address: None,
-                port: None,
-                connect_password: None,
-                gotv_port: None,
-                gotv_password: None,
-                is_participant: true,
-                queue_position: None,
-                live_score: None,
-            },
-            request_id,
-        )),
+        Json(DataResponse::new(response, request_id)),
     ))
 }
 
-/// Cancel a match's server reservation (admin).
+/// Clear a match off its game server (admin).
+///
+/// Ends the match loaded on the server — which drops MatchZy's player
+/// whitelist, so anyone can connect again — and releases the match's live
+/// reservation if it has one. Also works when the reservation has already
+/// failed or been cancelled but the config is still loaded, as long as the
+/// server has not moved on to another match.
+///
+/// `server_cleared` is false, with `detail` saying why, when the server's
+/// agent could not be reached or refused the command; the reservation is
+/// released either way.
 #[utoipa::path(
     delete,
     path = "/v1/matches/{match_id}/server",
     params(("match_id" = String, Path, description = "Match ID")),
     responses(
-        (status = 204, description = "Reservation cancelled"),
-        (status = 400, description = "No live reservation", body = ApiError),
+        (status = 200, description = "What was released and cleared", body = DataResponse<ServerClearResponse>),
         (status = 403, description = "Missing admin.servers.manage", body = ApiError),
+        (status = 404, description = "Match not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
     tag = "match_lifecycle"
@@ -310,19 +362,115 @@ pub async fn cancel_match_server(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     perm_checker: PermissionChecker,
+    headers: HeaderMap,
     Path(match_id): Path<String>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<DataResponse<ServerClearResponse>>> {
     perm_checker
         .require_permission(&auth, permissions::admin::SERVERS_MANAGE)
         .await?;
+    let request_id = get_request_id(&headers);
     let match_id: TournamentMatchId = match_id
         .parse()
         .map_err(|_| ApiError::bad_request("invalid match id"))?;
 
-    game_server_flow::cancel_assignment(&state, match_id, "cancelled by admin")
-        .await
-        .map_err(ApiError::from)?;
-    Ok(StatusCode::NO_CONTENT)
+    tracing::info!(admin = %auth.username, %match_id, "admin clearing match from its game server");
+    let outcome = admin_rescue::clear_server(&state, match_id, "cancelled by admin").await?;
+    Ok(Json(DataResponse::new(outcome, request_id)))
+}
+
+/// Body of a server config reload.
+#[derive(Debug, serde::Deserialize, ToSchema)]
+pub struct ReloadMatchServerRequest {
+    /// Why the config is being reloaded. Recorded on the match's status log.
+    pub reason: String,
+}
+
+/// Rebuild the match config and reload it on a server (admin).
+///
+/// For a match whose loaded config is wrong — a roster changed, a Steam ID
+/// was linked after the fact, the load failed. Checks that a config can be
+/// built from the rosters as they stand now (400 with the reason if not,
+/// before anything is torn down), then clears the server, drops the old
+/// reservation and creates and allocates a new one.
+#[utoipa::path(
+    post,
+    path = "/v1/matches/{match_id}/server/reload",
+    params(("match_id" = String, Path, description = "Match ID")),
+    request_body = ReloadMatchServerRequest,
+    responses(
+        (status = 200, description = "New reservation created/queued", body = DataResponse<MatchServerResponse>),
+        (status = 400, description = "The config cannot be built, or the match needs no server", body = ApiError),
+        (status = 403, description = "Missing admin.servers.manage", body = ApiError),
+        (status = 404, description = "Match not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "match_lifecycle"
+)]
+pub async fn reload_match_server(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(match_id): Path<String>,
+    Json(body): Json<ReloadMatchServerRequest>,
+) -> ApiResult<Json<DataResponse<MatchServerResponse>>> {
+    perm_checker
+        .require_permission(&auth, permissions::admin::SERVERS_MANAGE)
+        .await?;
+    let request_id = get_request_id(&headers);
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("invalid match id"))?;
+    let reason = body.reason.trim();
+    if reason.is_empty() || reason.chars().count() > 256 {
+        return Err(ApiError::bad_request(
+            "A reason of at most 256 characters is required",
+        ));
+    }
+    let audit = RescueAudit {
+        admin_id: auth.user_id,
+        reason: reason.to_string(),
+    };
+
+    let reservation = admin_rescue::reload_server(&state, match_id, &audit).await?;
+    let response = admin_reservation_summary(&state, reservation).await;
+    Ok(Json(DataResponse::new(response, request_id)))
+}
+
+/// Check whether a server config can be built for a match (admin, read-only).
+///
+/// Lists, per team, the players the config would whitelist — roster plus
+/// applied substitutions — and flags anyone without a usable Steam ID, a
+/// team too short to ready up, and an unfinished veto.
+#[utoipa::path(
+    get,
+    path = "/v1/matches/{match_id}/server/roster-check",
+    params(("match_id" = String, Path, description = "Match ID")),
+    responses(
+        (status = 200, description = "Roster check", body = DataResponse<RosterCheckResponse>),
+        (status = 403, description = "Missing admin.servers.manage", body = ApiError),
+        (status = 404, description = "Match not found", body = ApiError),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "match_lifecycle"
+)]
+pub async fn match_server_roster_check(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    perm_checker: PermissionChecker,
+    headers: HeaderMap,
+    Path(match_id): Path<String>,
+) -> ApiResult<Json<DataResponse<RosterCheckResponse>>> {
+    perm_checker
+        .require_permission(&auth, permissions::admin::SERVERS_MANAGE)
+        .await?;
+    let request_id = get_request_id(&headers);
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("invalid match id"))?;
+
+    let check = admin_rescue::roster_check(&state, match_id).await?;
+    Ok(Json(DataResponse::new(check, request_id)))
 }
 
 /// Request body for a backup restore.

@@ -362,34 +362,35 @@ pub async fn counter_propose(
 
     scheduling_registrations(&state, &auth, match_id).await?;
 
-    // Get the original proposal to find the user's registration
+    // The proposal being countered is the one named in the request, not
+    // "whichever is newest on the match".
     let original_proposal = state
         .scheduling_service
-        .get_active_proposal(match_id)
+        .get_proposal(original_proposal_id)
         .await?
-        .ok_or_else(|| ApiError::not_found("No active proposal found"))?;
+        .filter(|p| p.match_id == match_id)
+        .ok_or_else(|| ApiError::not_found("Proposal not found on this match"))?;
 
-    // The counter-proposer must be the opponent, find their registration
-    // For now, we'll need to look up the registration from the match
     let tournament_match = state
         .scheduling_service
         .get_match(match_id)
         .await?
         .ok_or_else(|| ApiError::not_found("Match not found"))?;
 
-    // Determine which registration belongs to the counter-proposer
-    let registration_id = if original_proposal.proposed_by_registration_id
-        == tournament_match
-            .participant1_registration_id
-            .unwrap_or_default()
-    {
-        tournament_match
-            .participant2_registration_id
-            .ok_or_else(|| ApiError::bad_request("Opponent not assigned to match"))?
-    } else {
-        tournament_match
-            .participant1_registration_id
-            .ok_or_else(|| ApiError::bad_request("Opponent not assigned to match"))?
+    // The counter comes from the other side of the match.
+    let proposer = original_proposal.proposed_by_registration_id;
+    let registration_id = match (
+        tournament_match.participant1_registration_id,
+        tournament_match.participant2_registration_id,
+    ) {
+        (Some(p1), Some(p2)) if p1 == proposer => p2,
+        (Some(p1), Some(p2)) if p2 == proposer => p1,
+        (Some(_), Some(_)) => {
+            return Err(ApiError::bad_request(
+                "The proposal was not made by a participant of this match",
+            ));
+        }
+        _ => return Err(ApiError::bad_request("Opponent not assigned to match")),
     };
 
     let command = CounterProposeCommand {

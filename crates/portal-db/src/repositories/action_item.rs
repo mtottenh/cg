@@ -24,6 +24,8 @@ pub struct ActionItem {
     pub deadline: Option<DateTime<Utc>>,
     /// When the action became available.
     pub created_at: DateTime<Utc>,
+    /// The match's agreed start time, if it has one.
+    pub scheduled_at: Option<DateTime<Utc>>,
 }
 
 /// Repository for fetching captain action items.
@@ -47,11 +49,34 @@ impl ActionItemRepository {
         let rows = sqlx::query_as::<_, ActionItem>(
             r"
             WITH my_registrations AS (
-                SELECT DISTINCT tr.id AS reg_id, tr.tournament_id
+                -- `can_act`: the player may schedule, check in and veto for
+                -- the registration — the registered player, or the team's
+                -- captain, owner or an active delegate. Other roster members
+                -- see the match but are not asked to do what they cannot.
+                SELECT DISTINCT ON (tr.id)
+                    tr.id AS reg_id,
+                    tr.tournament_id,
+                    (
+                        tr.player_id = $1
+                        OR ltm.role = 'captain'
+                        OR EXISTS (
+                            SELECT 1 FROM league_team_seasons lts
+                            JOIN league_teams lt ON lt.id = lts.team_id
+                            WHERE lts.id = tr.team_season_id AND lt.owner_player_id = $1
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM veto_delegates vd
+                            WHERE vd.team_season_id = tr.team_season_id
+                              AND vd.player_id = $1
+                              AND vd.revoked_at IS NULL
+                              AND (vd.tournament_id IS NULL OR vd.tournament_id = tr.tournament_id)
+                        )
+                    ) AS can_act
                 FROM tournament_registrations tr
                 LEFT JOIN league_team_members ltm
                     ON tr.team_season_id = ltm.team_season_id
                     AND ltm.player_id = $1
+                    AND ltm.left_at IS NULL
                 WHERE tr.player_id = $1 OR ltm.player_id IS NOT NULL
             ),
             my_matches AS (
@@ -65,6 +90,7 @@ impl ActionItemRepository {
                     tm.participant2_name,
                     tm.updated_at,
                     mr.reg_id AS my_registration_id,
+                    mr.can_act,
                     tm.participant1_registration_id,
                     tm.participant2_registration_id,
                     tm.participant1_checked_in_at,
@@ -78,7 +104,8 @@ impl ActionItemRepository {
                     OR tm.participant2_registration_id = mr.reg_id
                 JOIN tournaments t ON tm.tournament_id = t.id
                 WHERE tm.status IN ('ready', 'scheduled', 'checking_in', 'pick_ban', 'in_progress', 'awaiting_result')
-            )
+            ),
+            items AS (
             -- 1. Propose schedule (match ready, self-scheduled, no pending proposal from user)
             SELECT
                 'schedule_match'::text AS action_type,
@@ -91,6 +118,7 @@ impl ActionItemRepository {
                 mm.updated_at AS created_at
             FROM my_matches mm
             WHERE mm.status = 'ready'
+              AND mm.can_act
               AND mm.scheduling_mode = 'self_scheduled'
               AND NOT EXISTS (
                   SELECT 1 FROM schedule_proposals sp
@@ -116,10 +144,13 @@ impl ActionItemRepository {
                 AND sp.status = 'pending'
                 AND sp.proposed_by_registration_id != mm.my_registration_id
             WHERE mm.status = 'ready'
+              AND mm.can_act
 
             UNION ALL
 
-            -- 2. Check-in required
+            -- 2. Check-in required: only while the window is open (the item
+            --    carries its deadline), and only for whoever can check in.
+            --    A match that merely has a time agreed is not an action yet.
             SELECT
                 'check_in'::text,
                 mm.id,
@@ -130,7 +161,8 @@ impl ActionItemRepository {
                 mm.check_in_deadline,
                 mm.updated_at
             FROM my_matches mm
-            WHERE mm.status IN ('scheduled', 'checking_in')
+            WHERE mm.status = 'checking_in'
+              AND mm.can_act
               AND NOT (
                 (mm.participant1_registration_id = mm.my_registration_id AND mm.participant1_checked_in_at IS NOT NULL)
                 OR
@@ -157,6 +189,7 @@ impl ActionItemRepository {
                 AND vs.status = 'in_progress'
                 AND vs.current_team_turn = mm.my_registration_id
             WHERE mm.status = 'pick_ban'
+              AND mm.can_act
 
             UNION ALL
 
@@ -214,8 +247,11 @@ impl ActionItemRepository {
             JOIN result_reviews rr
                 ON rr.match_id = mm.id
                 AND rr.status = 'pending_acknowledgment'
-
-            ORDER BY deadline ASC NULLS LAST, created_at ASC
+            )
+            SELECT items.*, tm.scheduled_at
+            FROM items
+            JOIN tournament_matches tm ON tm.id = items.match_id
+            ORDER BY items.deadline ASC NULLS LAST, items.created_at ASC
             ",
         )
         .bind(player_id)

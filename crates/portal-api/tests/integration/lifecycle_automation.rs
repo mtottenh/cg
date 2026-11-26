@@ -701,3 +701,45 @@ async fn test_a_match_scheduled_in_the_past_gets_a_full_check_in_window() {
         "expected about {full} left, got {left}"
     );
 }
+
+/// "Check in" is only asked of someone while they can do it: the item
+/// appears when the window opens, carrying the deadline and the match time,
+/// not from the moment a time is agreed.
+#[tokio::test]
+async fn test_check_in_action_item_appears_only_while_the_window_is_open() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _, _) =
+        create_tournament_with_matches(&app, "lc-checkin-item").await;
+
+    let check_in_items = || async {
+        let body: serde_json::Value = app.get_auth("/v1/users/me/action-items").await.json();
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["action_type"] == "check_in" && i["match_id"] == match_id.as_str())
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    // A day out: scheduled, nothing to do yet.
+    schedule_at(&app, &tournament_id, &match_id, 24 * 60).await;
+    run_lifecycle_pass(&state, &test_config(), false).await;
+    assert!(check_in_items().await.is_empty());
+
+    // Inside the lead: the window opens and the item appears.
+    sqlx::query(
+        "UPDATE tournament_matches SET scheduled_at = NOW() + INTERVAL '5 minutes' \
+         WHERE id = $1::uuid",
+    )
+    .bind(&match_id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+    run_lifecycle_pass(&state, &test_config(), false).await;
+    let items = check_in_items().await;
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(items[0]["deadline"].is_string(), "{items:?}");
+    assert!(items[0]["scheduled_at"].is_string(), "{items:?}");
+}

@@ -22,6 +22,7 @@ pub mod league_team;
 pub mod match_lifecycle;
 pub mod match_lineup;
 pub mod match_rescue;
+pub mod notification;
 pub mod permission;
 pub mod player_game_profile;
 pub mod player_match_history;
@@ -88,6 +89,7 @@ pub use league_team::{
 };
 pub use match_lifecycle::{CreateMatchStatusLog, MatchStatusLogRepository};
 pub use match_lineup::{MatchLineupRepository, MaterializeDemoLineup};
+pub use notification::NotificationRepository;
 pub use permission::PermissionRepository;
 pub use player_game_profile::PlayerGameProfileRepository;
 pub use player_match_history::{CreatePlayerMatchHistory, PlayerMatchHistoryRepository};

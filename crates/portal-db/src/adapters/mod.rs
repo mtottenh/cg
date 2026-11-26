@@ -20,6 +20,7 @@ mod game_server_update;
 mod league;
 mod league_team;
 mod match_lineup;
+mod notification;
 mod permission;
 mod player_game_profile;
 mod player_match_history;
@@ -63,6 +64,7 @@ pub use league_team::{
     PgLeagueTeamSeasonRepository,
 };
 pub use match_lineup::PgMatchLineupRepository;
+pub use notification::PgNotificationRepository;
 pub use permission::PgPermissionRepository;
 pub use player_game_profile::PgPlayerGameProfileRepository;
 pub use player_match_history::PgPlayerMatchHistoryRepository;

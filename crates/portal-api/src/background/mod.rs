@@ -46,6 +46,7 @@ use portal_domain::repositories::tournament::{
     TournamentMapPoolRepository as _, TournamentMatchRepository as _,
     TournamentStageRepository as _,
 };
+use portal_domain::services::NotificationEvent;
 use portal_domain::services::tournament::{
     MatchCompletionInput, MatchStatusTransitioner as _, SagaCoordinator,
 };
@@ -256,6 +257,16 @@ pub async fn run_lifecycle_pass(
     match state.scheduling_service.expire_proposals().await {
         Ok(expired) => {
             summary.proposals_expired = u32::try_from(expired.len()).unwrap_or(u32::MAX);
+            for proposal in &expired {
+                state
+                    .notifier
+                    .emit(NotificationEvent::ProposalExpired {
+                        match_id: proposal.match_id,
+                        proposal_id: proposal.id,
+                        proposed_by: proposal.proposed_by_registration_id,
+                    })
+                    .await;
+            }
         }
         Err(e) => {
             error!(error = %e, "lifecycle: expire_proposals failed");
@@ -277,6 +288,15 @@ pub async fn run_lifecycle_pass(
     // 5b: settle stages whose results are all in but were never settled
     // ------------------------------------------------------------------
     settle_finished_stages(state, cfg, now, &mut summary).await;
+
+    // ------------------------------------------------------------------
+    // 5c: notifications — remind sides that have not checked in, and drop
+    // old notifications (hourly; the pass runs every 30 s)
+    // ------------------------------------------------------------------
+    state.notifier.remind_check_ins().await;
+    if notification_sweep_due(now) {
+        state.notifier.sweep().await;
+    }
 
     // ------------------------------------------------------------------
     // 6: evidence hygiene (slower cadence)
@@ -413,9 +433,10 @@ async fn open_check_in_window(
     // `scheduled` match carrying an early deadline is harmless — both
     // sweeps key off `status`, and the value is re-stamped on the retry.
     //
+    let deadline = check_in_deadline_for(cfg, match_.scheduled_at);
     if let Err(e) = state
         .tournament_match_repo
-        .set_check_in_deadline(match_id, check_in_deadline_for(cfg, match_.scheduled_at))
+        .set_check_in_deadline(match_id, deadline)
         .await
     {
         error!(%match_id, error = %e, "lifecycle: failed to set check-in deadline");
@@ -442,6 +463,10 @@ async fn open_check_in_window(
 
     summary.check_in_windows_opened += 1;
     info!(%match_id, "lifecycle: check-in window opened");
+    state
+        .notifier
+        .emit(NotificationEvent::CheckinOpen { match_id, deadline })
+        .await;
 
     match ensure_veto_session(state, match_).await {
         Ok(true) => summary.veto_sessions_created += 1,
@@ -689,13 +714,22 @@ async fn advance_stalled_veto_sessions(
                         // flipped now rather than after the grace.
                         if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_.id) {
                             crate::handlers::veto_ws::broadcast_session_state(&lobby, started);
-                            crate::handlers::veto_ws::try_auto_coin_flip(
+                            if let Some(session_id) = crate::handlers::veto_ws::try_auto_coin_flip(
                                 &state.veto_service,
                                 &state.tournament_match_repo,
                                 match_.id,
                                 &lobby,
                             )
-                            .await;
+                            .await
+                            {
+                                state
+                                    .notifier
+                                    .emit(NotificationEvent::VetoStarted {
+                                        match_id: match_.id,
+                                        session_id,
+                                    })
+                                    .await;
+                            }
                         }
                     }
                     Err(e) => {
@@ -748,6 +782,13 @@ async fn advance_stalled_veto_sessions(
                         summary.veto_coin_flips_auto += 1;
                         info!(match_id = %match_.id, session_id = %session.id,
                             "lifecycle: coin flipped after grace; veto in progress");
+                        state
+                            .notifier
+                            .emit(NotificationEvent::VetoStarted {
+                                match_id: match_.id,
+                                session_id: session.id,
+                            })
+                            .await;
                         // The first turn clock is now running: say so, or
                         // it expires before any page shows whose turn it is.
                         if let Some(lobby) = state.veto_lobby_manager.get_lobby(&match_.id) {
@@ -768,6 +809,20 @@ async fn advance_stalled_veto_sessions(
             summary.errors += 1;
         }
     }
+}
+
+/// Whether an hour has passed since the last notification retention sweep
+/// (always true for the first pass after start).
+fn notification_sweep_due(now: chrono::DateTime<Utc>) -> bool {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST: AtomicI64 = AtomicI64::new(i64::MIN);
+    let now_s = now.timestamp();
+    let last = LAST.load(Ordering::Relaxed);
+    if last != i64::MIN && now_s - last < 3600 {
+        return false;
+    }
+    LAST.compare_exchange(last, now_s, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
 }
 
 /// Auto-confirm every pending result claim whose `auto_confirm_at`
@@ -1223,6 +1278,12 @@ async fn run_completion_saga_for_claim(
             result_claim_id: Some(claim.id),
         })
         .await;
+    state
+        .notifier
+        .emit(NotificationEvent::ResultFinal {
+            match_id: claim.match_id,
+        })
+        .await;
     crate::observability::record_saga("match-completion", &saga_result);
     saga_result.map(|_| ())
 }
@@ -1359,6 +1420,10 @@ async fn process_check_in_timeout(
             // match): settle it so the walkover winner advances / scores and
             // a group whose last match this was moves on to the playoffs.
             crate::result_settlement::settle(&state.match_completion_saga, match_id).await;
+            state
+                .notifier
+                .emit(NotificationEvent::ResultFinal { match_id })
+                .await;
         }
         Err(e) => {
             error!(%match_id, error = %e, "lifecycle: check-in timeout processing failed");

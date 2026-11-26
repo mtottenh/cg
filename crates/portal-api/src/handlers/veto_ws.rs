@@ -139,13 +139,22 @@ async fn handle_socket(socket: WebSocket, match_id: TournamentMatchId, state: Ve
             }
 
             // Auto coin flip if both teams present and session is in CoinFlip status
-            try_auto_coin_flip(
+            if let Some(session_id) = try_auto_coin_flip(
                 &state.veto_service,
                 &state.tournament_match_repo,
                 match_id,
                 &lobby,
             )
-            .await;
+            .await
+            {
+                state
+                    .notifier
+                    .emit(portal_domain::services::NotificationEvent::VetoStarted {
+                        match_id,
+                        session_id,
+                    })
+                    .await;
+            }
         }
     } else if connection.is_spectator() {
         lobby.broadcast(LobbyBroadcast::SpectatorCountUpdate(
@@ -750,20 +759,20 @@ pub(crate) async fn try_auto_coin_flip(
     tournament_match_repo: &portal_db::adapters::PgTournamentMatchRepository,
     match_id: TournamentMatchId,
     lobby: &Arc<VetoLobby>,
-) {
+) -> Option<portal_core::VetoSessionId> {
     use portal_domain::repositories::TournamentMatchRepository;
     use rand::Rng;
 
     // Look up the match to get participant registration IDs
     let Ok(Some(match_)) = tournament_match_repo.find_by_id(match_id).await else {
-        return;
+        return None;
     };
 
     let (Some(p1_reg), Some(p2_reg)) = (
         match_.participant1_registration_id,
         match_.participant2_registration_id,
     ) else {
-        return;
+        return None;
     };
 
     // Verify both DISTINCT participants are connected (not same user in two tabs)
@@ -771,16 +780,16 @@ pub(crate) async fn try_auto_coin_flip(
     let p1_str = p1_reg.to_string();
     let p2_str = p2_reg.to_string();
     if !connected.contains(&p1_str) || !connected.contains(&p2_str) {
-        return;
+        return None;
     }
 
     // Get veto session — must be in CoinFlip status
     let Ok(session_state) = veto_service.get_session_state(match_id).await else {
-        return;
+        return None;
     };
 
     if session_state.session.status != portal_domain::entities::VetoStatus::CoinFlip {
-        return;
+        return None;
     }
 
     // Randomly pick winner
@@ -798,13 +807,15 @@ pub(crate) async fn try_auto_coin_flip(
         Ok(s) => s,
         Err(e) => {
             warn!(%match_id, error = %e, "Auto coin flip failed");
-            return;
+            return None;
         }
     };
 
+    let session_id = updated_session.id;
     broadcast_coin_flip(lobby, &match_, winner, updated_session);
 
     info!(%match_id, %winner, "Auto coin flip completed");
+    Some(session_id)
 }
 
 /// Tell a lobby the coin was flipped: the result card, then the session

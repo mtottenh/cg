@@ -384,11 +384,20 @@ async fn announce_veto_started(state: &TournamentState, match_id: portal_core::T
     if let Ok(started) = state.veto_service.get_session_state(match_id).await {
         crate::handlers::veto_ws::broadcast_session_state(&lobby, started.session);
     }
-    crate::handlers::veto_ws::try_auto_coin_flip(
+    if let Some(session_id) = crate::handlers::veto_ws::try_auto_coin_flip(
         &state.veto_service,
         &state.tournament_match_repo,
         match_id,
         &lobby,
     )
-    .await;
+    .await
+    {
+        state
+            .notifier
+            .emit(portal_domain::services::NotificationEvent::VetoStarted {
+                match_id,
+                session_id,
+            })
+            .await;
+    }
 }

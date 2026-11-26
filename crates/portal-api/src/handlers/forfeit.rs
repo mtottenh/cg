@@ -13,6 +13,7 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use portal_core::{TournamentId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::entities::forfeit::{ForfeitResult, ForfeitTrigger, ForfeitType};
+use portal_domain::services::NotificationEvent;
 use portal_domain::services::tournament::RegistrationActor;
 
 /// Extract request ID from headers.
@@ -27,6 +28,7 @@ fn get_request_id(headers: &HeaderMap) -> &str {
 /// advancement) through the completion saga, flagging the ones that settled.
 pub(crate) async fn settle_forfeits(
     saga: &crate::state::AppMatchCompletionSaga,
+    notifier: &crate::notifications::Notifier,
     results: &mut [ForfeitResult],
 ) {
     for result in results {
@@ -37,6 +39,11 @@ pub(crate) async fn settle_forfeits(
         {
             result.progression_triggered = true;
         }
+        notifier
+            .emit(NotificationEvent::ResultFinal {
+                match_id: result.match_id,
+            })
+            .await;
     }
 }
 
@@ -116,7 +123,7 @@ pub async fn withdraw_from_tournament(
             policy,
         )
         .await?;
-    settle_forfeits(&state.match_completion_saga, &mut results).await;
+    settle_forfeits(&state.match_completion_saga, &state.notifier, &mut results).await;
 
     let response = WithdrawalResponse {
         registration_id: registration_id.to_string(),
@@ -197,7 +204,7 @@ pub async fn admin_forfeit_match(
         )
         .await?;
     let mut results = [result];
-    settle_forfeits(&state.match_completion_saga, &mut results).await;
+    settle_forfeits(&state.match_completion_saga, &state.notifier, &mut results).await;
     let [result] = results;
 
     Ok(Json(DataResponse::new(
@@ -253,7 +260,7 @@ pub async fn admin_disqualify(
             auth.user_id,
         )
         .await?;
-    settle_forfeits(&state.match_completion_saga, &mut results).await;
+    settle_forfeits(&state.match_completion_saga, &state.notifier, &mut results).await;
 
     let response = DisqualificationResponse {
         registration_id: registration_id.to_string(),

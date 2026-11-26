@@ -1202,22 +1202,22 @@ async fn rescue_endpoints_refuse_a_non_admin() {
 // Scheduling policy
 // =============================================================================
 
-struct TeamFixture {
-    tournament_id: Uuid,
-    match_id: Uuid,
-    league_id: Uuid,
-    team_b_id: Uuid,
-    team_b_season_id: Uuid,
-    b_member_player_id: Uuid,
-    a_captain_token: String,
-    a_cocaptain_token: String,
-    a_member_token: String,
-    b_captain_token: String,
-    b_member_token: String,
+pub(crate) struct TeamFixture {
+    pub(crate) tournament_id: Uuid,
+    pub(crate) match_id: Uuid,
+    pub(crate) league_id: Uuid,
+    pub(crate) team_b_id: Uuid,
+    pub(crate) team_b_season_id: Uuid,
+    pub(crate) b_member_player_id: Uuid,
+    pub(crate) a_captain_token: String,
+    pub(crate) a_cocaptain_token: String,
+    pub(crate) a_member_token: String,
+    pub(crate) b_captain_token: String,
+    pub(crate) b_member_token: String,
 }
 
 /// Two rostered teams facing each other in a `ready` match.
-async fn team_match(app: &TestApp) -> TeamFixture {
+pub(crate) async fn team_match(app: &TestApp) -> TeamFixture {
     let short = Uuid::new_v4().simple().to_string()[..8].to_string();
     let user = async |name: &str| {
         UserBuilder::new()

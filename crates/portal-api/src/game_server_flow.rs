@@ -7,6 +7,7 @@
 //! spans domain services, the plugin config builder, and the agent
 //! WebSocket channel.
 
+use portal_domain::services::NotificationEvent;
 use std::collections::BTreeMap;
 
 use chrono::{Duration, Utc};
@@ -266,6 +267,15 @@ pub async fn request_assignment(
 
     let reservation = try_allocate_and_load(state, reservation).await?;
     broadcast_reservation(state, &reservation).await;
+    if reservation.status == ReservationStatus::Pending && reservation.server_id.is_none() {
+        state
+            .notifier
+            .emit(NotificationEvent::ServerQueued {
+                match_id,
+                reservation_id: reservation.id.as_uuid(),
+            })
+            .await;
+    }
     Ok(reservation)
 }
 
@@ -1019,6 +1029,13 @@ async fn process_event(
                     .await?;
             }
             broadcast_reservation_by_id(state, reservation.id).await;
+            state
+                .notifier
+                .emit(NotificationEvent::ServerReady {
+                    match_id: reservation.match_id,
+                    reservation_id: reservation.id.as_uuid(),
+                })
+                .await;
         }
         "going_live" => {
             state
@@ -1246,6 +1263,14 @@ async fn apply_series_end(
         Ok(claim) => {
             tracing::info!(match_id = %reservation.match_id, claim_id = %claim.id,
                 "server result claim submitted ({s1}-{s2})");
+            state
+                .notifier
+                .emit(NotificationEvent::ResultToConfirm {
+                    match_id: reservation.match_id,
+                    claim_id: claim.id,
+                    reported_by: None,
+                })
+                .await;
         }
         Err(e) => {
             // A participant claim already pending/confirmed: first claim
@@ -1556,6 +1581,15 @@ pub async fn run_reservation_pass(state: &AppState) -> ReservationPassSummary {
                     Ok(r) if r.status == ReservationStatus::Configuring => {
                         summary.allocated += 1;
                         broadcast_reservation(state, &r).await;
+                        if !had_server {
+                            state
+                                .notifier
+                                .emit(NotificationEvent::ServerAssignedFromQueue {
+                                    match_id: r.match_id,
+                                    reservation_id: r.id.as_uuid(),
+                                })
+                                .await;
+                        }
                     }
                     Ok(_) => {}
                     Err(e) => {
@@ -1766,6 +1800,13 @@ async fn redrive_stuck_load(
         tracing::info!(reservation_id = %reservation.id, server = %server.name,
             "server shows the match loaded; treating the lost series_start as received");
         broadcast_reservation_by_id(state, reservation.id).await;
+        state
+            .notifier
+            .emit(NotificationEvent::ServerReady {
+                match_id: reservation.match_id,
+                reservation_id: reservation.id.as_uuid(),
+            })
+            .await;
         return Ok(StuckLoad::Adopted);
     }
 

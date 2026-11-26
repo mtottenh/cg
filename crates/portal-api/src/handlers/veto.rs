@@ -301,6 +301,14 @@ pub async fn record_coin_flip(
         }));
     }
 
+    state
+        .notifier
+        .emit(portal_domain::services::NotificationEvent::VetoStarted {
+            match_id,
+            session_id: updated.id,
+        })
+        .await;
+
     Ok(Json(DataResponse::new(
         VetoSessionResponse::from(updated),
         request_id,

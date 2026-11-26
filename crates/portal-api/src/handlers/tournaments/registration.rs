@@ -970,7 +970,12 @@ pub async fn disqualify(
             },
         )
         .await?;
-    crate::handlers::forfeit::settle_forfeits(&state.match_completion_saga, &mut forfeits).await;
+    crate::handlers::forfeit::settle_forfeits(
+        &state.match_completion_saga,
+        &state.notifier,
+        &mut forfeits,
+    )
+    .await;
 
     Ok(Json(DataResponse::new(
         TournamentRegistrationResponse::from(registration),

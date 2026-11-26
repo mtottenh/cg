@@ -392,6 +392,8 @@ pub struct AppState {
     pub stats_repo: StatsRepository,
     /// Action item repository for captain pending actions.
     pub action_item_repo: ActionItemRepository,
+    /// Player notifications (in-app, plus the tournament's Discord channel).
+    pub notifier: crate::notifications::Notifier,
     /// Storage backend for file uploads.
     pub storage: Arc<dyn StorageBackend>,
     /// Plugin manager for game-specific logic.
@@ -534,6 +536,9 @@ impl AppState {
 
         // Create action item repository
         let action_item_repo = ActionItemRepository::new(db_pool.clone());
+        let notifier = crate::notifications::Notifier::from_env(Arc::new(
+            portal_db::PgNotificationRepository::new(db_pool.clone()),
+        ));
 
         // Create storage backend
         // Save paths before consuming storage_config
@@ -1117,6 +1122,7 @@ impl AppState {
             game_repo,
             stats_repo,
             action_item_repo,
+            notifier,
             storage,
             plugin_manager,
             match_completion_saga,

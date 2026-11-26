@@ -14,6 +14,7 @@ pub mod games;
 pub mod internal;
 pub mod league_teams;
 pub mod leagues;
+pub mod notifications;
 pub mod player_game_profiles;
 pub mod players;
 pub mod progression;

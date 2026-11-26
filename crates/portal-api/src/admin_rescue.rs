@@ -196,6 +196,11 @@ pub async fn reset_match(
         "admin reset match to ready"
     );
 
+    state
+        .notifier
+        .emit(portal_domain::services::NotificationEvent::MatchReset { match_id })
+        .await;
+
     Ok(summary.match_)
 }
 
@@ -259,6 +264,11 @@ pub async fn set_check_in_window(
     {
         tracing::warn!(%match_id, error = %e, "rescue: veto session setup failed after opening check-in");
     }
+
+    state
+        .notifier
+        .emit(portal_domain::services::NotificationEvent::CheckinOpen { match_id, deadline })
+        .await;
 
     load_match(state, match_id).await
 }

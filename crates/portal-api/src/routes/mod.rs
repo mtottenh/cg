@@ -11,6 +11,7 @@ pub mod internal;
 pub mod league_teams;
 pub mod leagues;
 pub mod matches;
+pub mod notifications;
 pub mod players;
 pub mod pugs;
 pub mod tournaments;
@@ -30,6 +31,7 @@ pub fn api_routes() -> Router<AppState> {
         .nest("/gameserver", game_servers::agent_routes())
         .nest("/matches", game_servers::match_server_routes())
         .nest("/users", users::routes())
+        .nest("/me", notifications::routes())
         .nest("/players", players::routes())
         .nest("/games", games::routes())
         .nest("/leagues", leagues::routes())

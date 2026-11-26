@@ -26,6 +26,7 @@ mod lifecycle_races;
 mod match_completion_saga;
 mod match_participants;
 mod my_matches;
+mod notifications;
 mod partial_write_recovery;
 mod player_game_profiles;
 mod players;

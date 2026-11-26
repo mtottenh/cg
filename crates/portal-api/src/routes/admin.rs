@@ -4,8 +4,8 @@ use axum::Router;
 use axum::routing::{delete, get, patch, post};
 
 use crate::handlers::{
-    admin, bans, demos, dispute, forfeit, leagues, progression, result_reviews, results, roles,
-    tournaments, uploads,
+    admin, bans, demos, dispute, forfeit, leagues, notifications, progression, result_reviews,
+    results, roles, tournaments, uploads,
 };
 use crate::state::AppState;
 
@@ -70,6 +70,15 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/tournaments/{tournament_id}/matches/{match_id}/reset",
             post(tournaments::admin_reset_match),
+        )
+        .route(
+            "/tournaments/{tournament_id}/notification-settings",
+            get(notifications::get_notification_settings)
+                .put(notifications::update_notification_settings),
+        )
+        .route(
+            "/tournaments/{tournament_id}/notification-settings/test",
+            post(notifications::test_notification_settings),
         )
         .route(
             "/tournaments/{tournament_id}/matches/{match_id}/check-in-window",

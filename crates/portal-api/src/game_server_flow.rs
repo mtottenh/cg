@@ -301,12 +301,50 @@ pub async fn try_allocate_and_load(
         )
         .await?;
 
-    let Some((reservation, server)) = allocated else {
+    let Some((mut reservation, server)) = allocated else {
         tracing::info!(reservation_id = %reservation.id, "no eligible server free; queued");
         return Ok(reservation);
     };
 
+    // A reservation that waited in the queue carries the config built when
+    // it queued; rosters and substitutions may have changed since. Rebuild
+    // it now, keeping the event token it was issued (the token itself is
+    // only stored inside the config).
+    if Utc::now() - reservation.created_at > Duration::minutes(QUEUED_CONFIG_REBUILD_AFTER_MINUTES)
+        && let Some(event_token) = reservation_event_token(&reservation)
+    {
+        match build_config(state, &match_, &reservation, &event_token).await {
+            Ok(config) => {
+                state
+                    .server_reservation_repo
+                    .store_config(reservation.id, &config)
+                    .await?;
+                reservation.match_config = Some(config);
+            }
+            Err(reason) => {
+                tracing::warn!(reservation_id = %reservation.id, %reason,
+                    "could not rebuild a queued config; loading the one built at queue time");
+            }
+        }
+    }
+
     send_load(state, reservation, &server).await
+}
+
+/// A queued reservation older than this has its config rebuilt when it is
+/// finally given a server.
+const QUEUED_CONFIG_REBUILD_AFTER_MINUTES: i64 = 1;
+
+/// The event-webhook token a reservation's stored config was built with.
+fn reservation_event_token(reservation: &ServerReservation) -> Option<String> {
+    reservation
+        .match_config
+        .as_ref()?
+        .get("cvars")?
+        .get("matchzy_remote_log_header_value")?
+        .as_str()?
+        .strip_prefix("Bearer ")
+        .map(str::to_string)
 }
 
 /// Mint a fresh config token, instruct the agent to load, advance to
@@ -1358,16 +1396,20 @@ pub async fn run_reservation_pass(state: &AppState) -> ReservationPassSummary {
                 let Some(server_id) = reservation.server_id else {
                     continue;
                 };
-                match state.game_server_registry.get(server_id).await {
-                    Ok(server) => match send_load_public(state, reservation, &server).await {
-                        Ok(_) => summary.load_retried += 1,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "load retry failed");
-                            summary.errors += 1;
-                        }
-                    },
+                let server = match state.game_server_registry.get(server_id).await {
+                    Ok(server) => server,
                     Err(e) => {
                         tracing::warn!(error = %e, "load retry: server lookup failed");
+                        summary.errors += 1;
+                        continue;
+                    }
+                };
+                match redrive_stuck_load(state, reservation, &server, now).await {
+                    Ok(StuckLoad::Adopted) => summary.reconciled += 1,
+                    Ok(StuckLoad::Retried) => summary.load_retried += 1,
+                    Ok(StuckLoad::GaveUp) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "load retry failed");
                         summary.errors += 1;
                     }
                 }
@@ -1497,6 +1539,73 @@ pub async fn run_reservation_pass(state: &AppState) -> ReservationPassSummary {
 }
 
 /// Re-drive `load_match` for a reservation that already holds a server.
+/// What the reservation pass did with a reservation stuck in `configuring`.
+enum StuckLoad {
+    /// The server already has the match loaded; its `series_start` was lost.
+    Adopted,
+    Retried,
+    GaveUp,
+}
+
+/// A reservation stuck in `configuring` (no `series_start` arrived).
+///
+/// Re-sending the load ends whatever the server has loaded, so it is never
+/// done once the server shows a match in progress: that is our match with a
+/// lost `series_start`, and it is adopted as `ready` instead. Otherwise the
+/// load is re-sent, at most [`MAX_LOAD_RETRIES`] times in all, after which
+/// the reservation fails with a reason an admin can act on (Reload or Clear
+/// in the match's Rescue tab) rather than resetting the server for ever.
+async fn redrive_stuck_load(
+    state: &AppState,
+    reservation: ServerReservation,
+    server: &GameServer,
+    now: chrono::DateTime<Utc>,
+) -> Result<StuckLoad, DomainError> {
+    let fresh_heartbeat = server.last_heartbeat_at.is_some_and(|at| {
+        now - at < Duration::seconds(portal_domain::services::game_server::HEARTBEAT_STALENESS_SECS)
+    });
+    let match_loaded = fresh_heartbeat
+        && server
+            .last_gamestate
+            .is_some_and(|g| g != portal_core::types::AgentGamestate::None);
+    if match_loaded {
+        state
+            .server_reservation_repo
+            .set_status(reservation.id, ReservationStatus::Ready)
+            .await?;
+        state
+            .game_server_registry
+            .set_server_status(server.id, portal_core::types::GameServerStatus::InMatch)
+            .await?;
+        tracing::info!(reservation_id = %reservation.id, server = %server.name,
+            "server shows the match loaded; treating the lost series_start as received");
+        broadcast_reservation_by_id(state, reservation.id).await;
+        return Ok(StuckLoad::Adopted);
+    }
+
+    if reservation.retry_count >= MAX_LOAD_RETRIES {
+        let reason = format!(
+            "the game server did not confirm loading the match after {MAX_LOAD_RETRIES} \
+             attempts; use Reload or Clear on the match"
+        );
+        state
+            .server_reservation_repo
+            .release(reservation.id, ReservationStatus::Failed, Some(&reason))
+            .await?;
+        broadcast_assignment(state, reservation.match_id, "failed", None, Some(&reason));
+        tracing::warn!(reservation_id = %reservation.id, "gave up re-driving a stuck load");
+        return Ok(StuckLoad::GaveUp);
+    }
+    let id = reservation.id;
+    let sent = send_load_public(state, reservation, server).await?;
+    // A failed send is counted by the load-failure path; a send the agent
+    // accepted that still produced no `series_start` is counted here.
+    if sent.id == id && sent.status == ReservationStatus::Configuring {
+        state.server_reservation_repo.increment_retry(id).await?;
+    }
+    Ok(StuckLoad::Retried)
+}
+
 async fn send_load_public(
     state: &AppState,
     reservation: ServerReservation,

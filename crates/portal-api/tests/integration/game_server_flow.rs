@@ -1209,3 +1209,144 @@ async fn test_a_dropped_server_result_shows_in_diagnostics() {
     assert_eq!(dropped["suggested_action"], "set_result");
     assert!(dropped["message"].as_str().unwrap().contains("2-1"));
 }
+
+/// MatchZy may fetch the config before the agent has answered the load
+/// command (the reservation is still `pending` on its server); that fetch
+/// must be served, not refused until a re-drive two minutes later.
+#[tokio::test]
+async fn test_config_is_served_before_the_load_is_acknowledged() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _r1, _r2) =
+        create_tournament_with_matches(&app, "config-race").await;
+    let game_id = get_game_id_str(&app).await;
+    seed_available_server(&state, &game_id, "Race box").await;
+    let (reservation, _token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+    assert_eq!(reservation.status, ReservationStatus::Pending);
+    state
+        .server_reservation_repo
+        .store_config(reservation.id, &json!({"matchid": reservation.matchzy_id}))
+        .await
+        .unwrap();
+
+    let response = app
+        .get_with_bearer(
+            &format!("/v1/gameserver/match-config/{}", reservation.matchzy_id),
+            "cgm_test_config_token",
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+}
+
+/// A reservation stuck in `configuring` whose server already shows the match
+/// loaded is adopted (its series_start was lost) rather than reloaded, which
+/// would reset a warmup; one whose server shows nothing is re-driven only a
+/// bounded number of times, then failed with a reason.
+#[tokio::test]
+async fn test_stuck_load_is_adopted_or_given_up_not_reloaded_for_ever() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _r1, _r2) =
+        create_tournament_with_matches(&app, "stuck-load").await;
+    let game_id = get_game_id_str(&app).await;
+    let server_id = seed_available_server(&state, &game_id, "Stuck box").await;
+    let (reservation, _token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+    let stale = |id: ServerReservationId| {
+        sqlx::query(
+            "UPDATE server_reservations SET status = 'configuring', \
+             updated_at = NOW() - INTERVAL '10 minutes' WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .execute(app.pool())
+    };
+
+    // The server reports warmup with our match: adopted as ready.
+    stale(reservation.id).await.unwrap();
+    sqlx::query(
+        "UPDATE game_servers SET last_gamestate = 'warmup', last_heartbeat_at = NOW() \
+         WHERE id = $1",
+    )
+    .bind(server_id.as_uuid())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    portal_api::game_server_flow::run_reservation_pass(&state).await;
+    let r = state
+        .server_reservation_repo
+        .find_by_id(reservation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.status, ReservationStatus::Ready);
+
+    // The server shows nothing loaded and the retries are used up: failed,
+    // with a reason, instead of another reload.
+    sqlx::query(
+        "UPDATE game_servers SET last_gamestate = 'none', last_heartbeat_at = NOW() \
+         WHERE id = $1",
+    )
+    .bind(server_id.as_uuid())
+    .execute(app.pool())
+    .await
+    .unwrap();
+    stale(reservation.id).await.unwrap();
+    sqlx::query("UPDATE server_reservations SET retry_count = 3 WHERE id = $1")
+        .bind(reservation.id.as_uuid())
+        .execute(app.pool())
+        .await
+        .unwrap();
+    portal_api::game_server_flow::run_reservation_pass(&state).await;
+    let r = state
+        .server_reservation_repo
+        .find_by_id(reservation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.status, ReservationStatus::Failed);
+    assert!(
+        r.failure_reason
+            .as_deref()
+            .is_some_and(|f| f.contains("did not confirm loading")),
+        "{:?}",
+        r.failure_reason
+    );
+}
+
+/// An idle heartbeat from a server that still holds one of our reservations
+/// must not make it available for allocation again.
+#[tokio::test]
+async fn test_idle_heartbeat_keeps_a_reserved_server_busy() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let game_id = get_game_id_str(&app).await;
+    let server_id = seed_available_server(&state, &game_id, "Idle box").await;
+    let heartbeat = || HeartbeatUpdate {
+        agent_version: "0.3.0".into(),
+        rcon_ok: true,
+        gamestate: Some(AgentGamestate::None),
+        reported_matchzy_id: None,
+        last_map: None,
+        last_player_count: Some(0),
+        status_output: None,
+    };
+    let server = state
+        .game_server_registry
+        .record_heartbeat(server_id, heartbeat(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        server.status,
+        portal_core::types::GameServerStatus::Reserved
+    );
+    let server = state
+        .game_server_registry
+        .record_heartbeat(server_id, heartbeat(), false)
+        .await
+        .unwrap();
+    assert_eq!(
+        server.status,
+        portal_core::types::GameServerStatus::Available
+    );
+}

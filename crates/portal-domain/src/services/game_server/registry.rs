@@ -303,6 +303,15 @@ where
                     }
                     other => other,
                 },
+                // Idle but still holding one of our reservations (queued for
+                // a load, or mid-load): it is not free. Marking it available
+                // here let the allocator try to hand it out again.
+                Some(gs) if gs.is_idle() && has_live_reservation => match server.status {
+                    GameServerStatus::Reserved
+                    | GameServerStatus::Configuring
+                    | GameServerStatus::InMatch => server.status,
+                    _ => GameServerStatus::Reserved,
+                },
                 Some(gs) if gs.is_idle() => GameServerStatus::Available,
                 // A match is loaded. Ours → the reservation pipeline owns the
                 // reserved/configuring/in_match distinction; don't fight it.

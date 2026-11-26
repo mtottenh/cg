@@ -293,7 +293,7 @@ where
         // Set deadline for first action
         let deadline = Utc::now() + Duration::seconds(i64::from(session.timeout_seconds));
 
-        let session = self
+        let session = match self
             .session_repo
             .update(
                 session_id,
@@ -305,10 +305,21 @@ where
                     status: Some(VetoStatus::InProgress),
                     action_deadline: Some(Some(deadline)),
                     started_at: Some(Utc::now()),
+                    only_if_no_coin_flip: true,
                     ..Default::default()
                 },
             )
-            .await?;
+            .await
+        {
+            Ok(session) => session,
+            // Another flip won the race: report its outcome, not ours, so
+            // every caller broadcasts the same winner.
+            Err(DomainError::Conflict(_)) => {
+                info!(session_id = %session_id, "Coin flip raced; returning the recorded result");
+                return self.get_session(session_id).await;
+            }
+            Err(e) => return Err(e),
+        };
 
         info!(
             session_id = %session_id,
@@ -895,6 +906,7 @@ where
             } else {
                 None
             },
+            only_if_action_number: Some(session.current_action_number),
             ..Default::default()
         };
 

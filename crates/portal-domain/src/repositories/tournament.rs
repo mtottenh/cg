@@ -1505,6 +1505,14 @@ pub struct UpdateVetoSession {
     pub action_deadline: Option<Option<DateTime<Utc>>>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+    /// Apply only while no coin-flip winner is recorded. Two racing flips
+    /// each picked (and broadcast) their own winner; now the second finds
+    /// nothing to update and gets [`DomainError::Conflict`].
+    pub only_if_no_coin_flip: bool,
+    /// Apply only while the session is still on this action number: a
+    /// player's action racing the timeout's auto-action for the same turn
+    /// used to write both outcomes from stale snapshots.
+    pub only_if_action_number: Option<u32>,
 }
 
 // =============================================================================

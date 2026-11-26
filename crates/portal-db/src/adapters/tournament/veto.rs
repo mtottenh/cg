@@ -139,8 +139,16 @@ impl VetoSessionRepository for PgVetoSessionRepository {
             set_clauses.push(format!("completed_at = ${param_index}"));
         }
 
+        let mut guards = String::new();
+        if update.only_if_no_coin_flip {
+            guards.push_str(" AND coin_flip_winner_registration_id IS NULL");
+        }
+        if let Some(expected) = update.only_if_action_number {
+            // A number, not user input: safe to inline.
+            guards.push_str(&format!(" AND current_action_number = {expected}"));
+        }
         let query = format!(
-            "UPDATE veto_sessions SET {} WHERE id = $1 RETURNING *",
+            "UPDATE veto_sessions SET {} WHERE id = $1{guards} RETURNING *",
             set_clauses.join(", ")
         );
 
@@ -178,9 +186,14 @@ impl VetoSessionRepository for PgVetoSessionRepository {
         }
 
         let row = query_builder
-            .fetch_one(&self.pool)
+            .fetch_optional(&self.pool)
             .await
-            .map_err(|e| DomainError::Internal(format!("Failed to update veto session: {e}")))?;
+            .map_err(|e| DomainError::Internal(format!("Failed to update veto session: {e}")))?
+            .ok_or_else(|| {
+                DomainError::Conflict(
+                    "the veto moved on before this change could be applied".to_string(),
+                )
+            })?;
 
         session_row_to_domain(row)
     }

@@ -333,17 +333,7 @@ pub async fn run_lifecycle_pass(
     //     stalled veto (PUGs especially: strangers, no captains to chase)
     //     advances with a random pick/ban instead of wedging forever.
     // ------------------------------------------------------------------
-    match state.veto_service.find_timed_out_sessions().await {
-        Ok(sessions) => {
-            for session in sessions {
-                process_veto_timeout(state, &session, &mut summary).await;
-            }
-        }
-        Err(e) => {
-            error!(error = %e, "lifecycle: timed-out veto scan failed");
-            summary.errors += 1;
-        }
-    }
+    process_veto_timeouts(state, &mut summary).await;
 
     // ------------------------------------------------------------------
     // 7b': veto sessions stalled on a step nobody will take (see fn doc)
@@ -1322,6 +1312,25 @@ pub fn spawn_lifecycle_task(state: AppState, shutdown: Arc<Notify>) -> JoinHandl
             }
         }
     })
+}
+
+/// Auto-act every veto turn whose deadline has passed.
+///
+/// Runs on the lifecycle tick and, so a 30-second turn does not last up to
+/// a minute, every couple of seconds from the veto warning task. The two
+/// may overlap: the session cursor guard lets only one auto-action land.
+pub async fn process_veto_timeouts(state: &AppState, summary: &mut LifecyclePassSummary) {
+    match state.veto_service.find_timed_out_sessions().await {
+        Ok(sessions) => {
+            for session in sessions {
+                process_veto_timeout(state, &session, summary).await;
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "lifecycle: timed-out veto scan failed");
+            summary.errors += 1;
+        }
+    }
 }
 
 /// Auto-act a timed-out veto turn and broadcast the result, mirroring the

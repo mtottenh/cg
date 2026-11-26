@@ -54,6 +54,9 @@ pub struct VetoSessionResponse {
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
     pub updated_at: DateTime<Utc>,
+    /// The server's clock when this response was built, so clients can count
+    /// down to `action_deadline` without trusting their own clock.
+    pub server_time: DateTime<Utc>,
 }
 
 impl From<VetoSession> for VetoSessionResponse {
@@ -79,6 +82,7 @@ impl From<VetoSession> for VetoSessionResponse {
             completed_at: s.completed_at,
             created_at: s.created_at,
             updated_at: s.updated_at,
+            server_time: Utc::now(),
         }
     }
 }

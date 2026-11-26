@@ -349,8 +349,20 @@ where
     ///
     /// No submitting participant: `source = "server"`, both captains may
     /// confirm or dispute, and the existing overdue sweep auto-confirms at
-    /// `auto_confirm_at`. Refused when a participant claim is already
-    /// pending or resolved — first claim wins; conflicts land in review.
+    /// `auto_confirm_at`.
+    ///
+    /// When a team has already reported (its claim is pending):
+    /// - the same winner and series score: the team's claim stands and is
+    ///   confirmed on the next lifecycle pass — the server is the second
+    ///   witness the opponent would otherwise have had to be;
+    /// - a different result: the server's report replaces the team's, with
+    ///   both scores in its notes, so either team can dispute it before it
+    ///   confirms. The server result used to be dropped with only a log
+    ///   line, leaving the team's report to confirm unchecked.
+    ///
+    /// A match still in `scheduled`/`checking_in`/`pick_ban` when the series
+    /// ends (its `going_live` event was lost) is moved to `in_progress`
+    /// first: the series was evidently played.
     pub async fn submit_server_claim(
         &self,
         match_id: TournamentMatchId,
@@ -360,20 +372,70 @@ where
         game_results: Vec<GameResultInput>,
         auto_confirm_at: chrono::DateTime<Utc>,
     ) -> Result<ResultClaim, DomainError> {
-        let match_ = self.get_match(match_id).await?;
+        use portal_core::types::TournamentMatchStatus as S;
+
+        let mut match_ = self.get_match(match_id).await?;
+        if matches!(match_.status, S::Scheduled | S::CheckingIn | S::PickBan)
+            && let Some(transitioner) = &self.match_transitioner
+        {
+            match_ = transitioner
+                .transition_status(
+                    match_id,
+                    S::InProgress,
+                    TransitionTrigger::System {
+                        job_name: "server_result_reported".to_string(),
+                    },
+                    Some("Game server reported a finished series".to_string()),
+                )
+                .await?;
+        }
         if !match_.can_submit_result() {
             return Err(DomainError::InvalidState(format!(
                 "Cannot submit result for match in {} status",
                 match_.status
             )));
         }
+        let mut notes = "Automatically reported by the game server".to_string();
         if let Some(existing) = self.claim_repo.find_current_by_match(match_id).await?
             && existing.is_pending()
         {
-            return Err(DomainError::Conflict(format!(
-                "a result claim ({}) is already pending for this match",
-                existing.id
-            )));
+            if existing.source == "server" {
+                return Err(DomainError::Conflict(format!(
+                    "a game-server result claim ({}) is already pending for this match",
+                    existing.id
+                )));
+            }
+            let agrees = existing.claimed_winner_registration_id == claimed_winner
+                && existing.claimed_participant1_score == participant1_score
+                && existing.claimed_participant2_score == participant2_score;
+            if agrees {
+                self.claim_repo
+                    .bring_forward_auto_confirm(existing.id, Utc::now())
+                    .await?;
+                info!(match_id = %match_id, claim_id = %existing.id,
+                    "game server agrees with the reported result; confirming it");
+                return Ok(existing);
+            }
+            let reporter = existing
+                .submitted_by_registration_id
+                .and_then(|r| {
+                    if Some(r) == match_.participant1_registration_id {
+                        match_.participant1_name.clone()
+                    } else if Some(r) == match_.participant2_registration_id {
+                        match_.participant2_name.clone()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "a team".to_string());
+            notes = format!(
+                "Automatically reported by the game server ({participant1_score}-{participant2_score}). \
+                 It replaces {reporter}'s report of {}-{}; either team can dispute it before it \
+                 confirms if the server is wrong.",
+                existing.claimed_participant1_score, existing.claimed_participant2_score
+            );
+            warn!(match_id = %match_id, claim_id = %existing.id,
+                "game server result disagrees with the reported result; the server's replaces it");
         }
 
         self.validate_claim(
@@ -412,7 +474,7 @@ where
                 auto_confirm_at,
                 evidence_ids: Vec::new(),
                 demo_link_ids: Vec::new(),
-                notes: Some("Automatically reported by the game server".to_string()),
+                notes: Some(notes),
             })
             .await?;
 

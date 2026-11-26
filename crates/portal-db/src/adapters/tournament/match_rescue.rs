@@ -16,7 +16,7 @@ use portal_core::{
 use portal_domain::entities::tournament::TournamentMatch;
 use portal_domain::repositories::match_rescue::{
     ActiveForfeitInfo, CompletionSagaInfo, MatchRescueRepository, MatchRescueSnapshot,
-    MatchResetSummary, PendingClaimInfo, PendingProposalInfo, RescueAudit,
+    MatchResetSummary, PendingClaimInfo, PendingProposalInfo, RescueAudit, ServerSeriesResultInfo,
 };
 
 /// `PostgreSQL` implementation of `MatchRescueRepository`.
@@ -502,12 +502,38 @@ impl MatchRescueRepository for PgMatchRescueRepository {
             updated_at: row.get("updated_at"),
         });
 
+        let server_series_result = sqlx::query(
+            r"
+            SELECT COALESCE((e.payload ->> 'team1_series_score')::int, 0) AS p1,
+                   COALESCE((e.payload ->> 'team2_series_score')::int, 0) AS p2,
+                   e.received_at,
+                   EXISTS (SELECT 1 FROM result_claims c
+                           WHERE c.match_id = $1 AND c.source = 'server') AS recorded
+            FROM server_events e
+            JOIN server_reservations r ON r.id = e.reservation_id
+            WHERE r.match_id = $1 AND e.event_type = 'series_end'
+            ORDER BY e.received_at DESC
+            LIMIT 1
+            ",
+        )
+        .bind(match_uuid)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .map(|row| ServerSeriesResultInfo {
+            participant1_score: row.get("p1"),
+            participant2_score: row.get("p2"),
+            recorded_as_claim: row.get("recorded"),
+            received_at: row.get("received_at"),
+        });
+
         Ok(MatchRescueSnapshot {
             active_forfeit,
             pending_proposal,
             pending_claim,
             open_dispute_id: open_dispute_id.map(DisputeId::from_uuid),
             saga,
+            server_series_result,
         })
     }
 }

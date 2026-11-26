@@ -1684,6 +1684,17 @@ pub trait ResultClaimRepository: Send + Sync {
 
     /// Find claims ready for auto-confirmation.
     async fn find_ready_for_auto_confirm(&self) -> Result<Vec<ResultClaim>, DomainError>;
+
+    /// Bring a pending claim's auto-confirmation forward to `at`.
+    ///
+    /// Only moves it earlier, and only while the claim is still pending;
+    /// returns whether anything changed. The lifecycle pass then confirms
+    /// it through the normal path (completion saga included).
+    async fn bring_forward_auto_confirm(
+        &self,
+        id: ResultClaimId,
+        at: DateTime<Utc>,
+    ) -> Result<bool, DomainError>;
 }
 
 /// Data for creating a result claim.

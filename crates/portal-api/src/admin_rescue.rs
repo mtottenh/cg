@@ -1156,6 +1156,28 @@ pub async fn diagnostics(
         ));
     }
 
+    // The game server reported the series but no claim came of it (the
+    // match was in a status that takes no result, or the claim was
+    // refused), and the match does not already carry that score.
+    if let Some(server) = &snapshot.server_series_result
+        && !server.recorded_as_claim
+        && !(match_.status.is_decided()
+            && match_.participant1_score == server.participant1_score
+            && match_.participant2_score == server.participant2_score)
+    {
+        problems.push(problem(
+            "server_result_dropped",
+            "set_result",
+            format!(
+                "The game server reported the series as {}-{} at {} UTC, but it was not \
+                 recorded as a result. Enter it on the Results tab, or have a captain report it.",
+                server.participant1_score,
+                server.participant2_score,
+                server.received_at.format("%H:%M")
+            ),
+        ));
+    }
+
     if match_.disputed && snapshot.open_dispute_id.is_none() && match_.status != S::Disputed {
         problems.push(problem(
             "disputed_flag_stale",

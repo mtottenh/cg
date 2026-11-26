@@ -1002,3 +1002,210 @@ async fn test_pass_releases_server_of_a_forfeited_match() {
         .unwrap();
     assert_eq!(server_status, "available");
 }
+
+/// Play a match up to `in_progress` on a seeded server; returns the
+/// reservation's MatchZy id and event token, and participant 1's registration.
+async fn live_series(
+    app: &TestApp,
+    state: &AppState,
+    slug: &str,
+) -> (String, String, i64, String, String) {
+    let (tournament_id, match_id, _reg1, _reg2) = create_tournament_with_matches(app, slug).await;
+    let game_id = get_game_id_str(app).await;
+    seed_available_server(state, &game_id, "Reconcile box").await;
+    match_to_pick_ban(app, &tournament_id, &match_id).await;
+    let (reservation, token) =
+        seed_allocated_reservation(state, &match_id, &tournament_id, &game_id).await;
+    let mid = reservation.matchzy_id;
+    for event in ["series_start", "going_live"] {
+        assert_eq!(
+            post_event(
+                app,
+                &token,
+                &json!({"event": event, "matchid": mid, "map_number": 0})
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+    let body: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}"
+        ))
+        .await
+        .json();
+    let p1 = body["data"]["participant1_registration_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (tournament_id, match_id, mid, token, p1)
+}
+
+async fn team_reports(app: &TestApp, match_id: &str, winner: &str, s1: i32, s2: i32) -> String {
+    let response = app
+        .post_json(
+            &format!("/v1/matches/{match_id}/result"),
+            &json!({
+                "claimed_winner_registration_id": winner,
+                "participant1_score": s1,
+                "participant2_score": s2,
+                "game_results": [],
+                "evidence_ids": []
+            }),
+        )
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    response.json::<serde_json::Value>()["data"]["claim"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn series_end(app: &TestApp, token: &str, mid: i64, s1: i64, s2: i64) {
+    assert_eq!(
+        post_event(
+            app,
+            token,
+            &json!({
+                "event": "series_end", "matchid": mid,
+                "winner": {"side": "2", "team": if s1 > s2 { "team1" } else { "team2" }},
+                "team1_series_score": s1, "team2_series_score": s2,
+                "time_until_restore": 10,
+            })
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
+/// The game server agreeing with a team's report confirms it: the server is
+/// the second witness the opponent would otherwise have had to be.
+#[tokio::test]
+async fn test_server_result_confirms_an_agreeing_team_report() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (_t, match_id, mid, token, p1) = live_series(&app, &state, "reconcile-agree").await;
+
+    let claim_id = team_reports(&app, &match_id, &p1, 2, 0).await;
+    series_end(&app, &token, mid, 2, 0).await;
+
+    // No second claim; the team's is due now and the next pass confirms it.
+    let claims: Vec<(String, String)> =
+        sqlx::query_as("SELECT id::text, source FROM result_claims WHERE match_id = $1::uuid")
+            .bind(&match_id)
+            .fetch_all(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(claims, vec![(claim_id.clone(), "participant".to_string())]);
+
+    portal_api::background::run_lifecycle_pass(
+        &state,
+        &portal_api::background::LifecycleConfig::from_env(),
+        false,
+    )
+    .await;
+    let (claim_status, match_status): (String, String) = sqlx::query_as(
+        "SELECT c.status, m.status FROM result_claims c \
+         JOIN tournament_matches m ON m.id = c.match_id WHERE c.id = $1::uuid",
+    )
+    .bind(&claim_id)
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        (claim_status.as_str(), match_status.as_str()),
+        ("confirmed", "completed")
+    );
+}
+
+/// A game server result that disagrees with a team's report replaces it, so
+/// the wrong report cannot confirm unchecked; both scores are on record.
+#[tokio::test]
+async fn test_server_result_replaces_a_disagreeing_team_report() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (_t, match_id, mid, token, p1) = live_series(&app, &state, "reconcile-disagree").await;
+
+    let team_claim = team_reports(&app, &match_id, &p1, 2, 0).await;
+    series_end(&app, &token, mid, 2, 1).await;
+
+    let (status,): (String,) =
+        sqlx::query_as("SELECT status FROM result_claims WHERE id = $1::uuid")
+            .bind(&team_claim)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "superseded");
+
+    let body: serde_json::Value = app
+        .get_auth(&format!("/v1/matches/{match_id}/result"))
+        .await
+        .json();
+    assert_eq!(body["data"]["source"], "server");
+    assert_eq!(body["data"]["status"], "pending");
+    assert_eq!(body["data"]["claimed_participant1_score"], 2);
+    assert_eq!(body["data"]["claimed_participant2_score"], 1);
+    let notes = body["data"]["submitter_notes"].as_str().unwrap_or_default();
+    assert!(notes.contains("report of 2-0"), "{notes}");
+}
+
+/// A series that ends while the match never left pick/ban (its going_live
+/// event was lost) still records the result instead of dropping it.
+#[tokio::test]
+async fn test_server_result_after_a_lost_going_live_is_recorded() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _reg1, _reg2) =
+        create_tournament_with_matches(&app, "reconcile-no-live").await;
+    let game_id = get_game_id_str(&app).await;
+    seed_available_server(&state, &game_id, "Lost live box").await;
+    match_to_pick_ban(&app, &tournament_id, &match_id).await;
+    let (reservation, token) =
+        seed_allocated_reservation(&state, &match_id, &tournament_id, &game_id).await;
+
+    series_end(&app, &token, reservation.matchzy_id, 0, 2).await;
+
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tournament_matches WHERE id = $1::uuid")
+            .bind(&match_id)
+            .fetch_one(app.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "awaiting_result");
+    let body: serde_json::Value = app
+        .get_auth(&format!("/v1/matches/{match_id}/result"))
+        .await
+        .json();
+    assert_eq!(body["data"]["source"], "server");
+}
+
+/// A series result the match could not take is shown to admins instead of
+/// vanishing into the log.
+#[tokio::test]
+async fn test_a_dropped_server_result_shows_in_diagnostics() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, mid, token, _p1) =
+        live_series(&app, &state, "reconcile-dropped").await;
+    sqlx::query("UPDATE tournament_matches SET status = 'cancelled' WHERE id = $1::uuid")
+        .bind(&match_id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+
+    series_end(&app, &token, mid, 2, 1).await;
+
+    let body: serde_json::Value = app
+        .get_auth(&format!(
+            "/v1/admin/tournaments/{tournament_id}/matches/{match_id}/diagnostics"
+        ))
+        .await
+        .json();
+    let problems = body["data"]["problems"].as_array().unwrap();
+    let dropped = problems
+        .iter()
+        .find(|p| p["code"] == "server_result_dropped")
+        .unwrap_or_else(|| panic!("{body}"));
+    assert_eq!(dropped["suggested_action"], "set_result");
+    assert!(dropped["message"].as_str().unwrap().contains("2-1"));
+}

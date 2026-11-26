@@ -82,6 +82,17 @@ pub struct CompletionSagaInfo {
     pub updated_at: DateTime<Utc>,
 }
 
+/// The newest series result the game server reported for a match.
+#[derive(Debug, Clone)]
+pub struct ServerSeriesResultInfo {
+    /// Maps won by participant 1 and participant 2, as MatchZy reported them.
+    pub participant1_score: i32,
+    pub participant2_score: i32,
+    /// Whether a result claim sourced from the server exists for the match.
+    pub recorded_as_claim: bool,
+    pub received_at: DateTime<Utc>,
+}
+
 /// Everything about a match's side tables an admin needs to see to decide
 /// what is wrong with it. Read in one go so the picture is consistent.
 #[derive(Debug, Clone, Default)]
@@ -91,6 +102,7 @@ pub struct MatchRescueSnapshot {
     pub pending_claim: Option<PendingClaimInfo>,
     pub open_dispute_id: Option<DisputeId>,
     pub saga: Option<CompletionSagaInfo>,
+    pub server_series_result: Option<ServerSeriesResultInfo>,
 }
 
 /// Admin rescue writes on a match and the reads that support them.

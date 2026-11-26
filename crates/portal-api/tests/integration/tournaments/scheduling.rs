@@ -1460,3 +1460,83 @@ async fn test_admin_schedule_in_the_past_must_be_confirmed() {
     .assert_status(StatusCode::OK);
     assert_eq!(match_status(&app, &match_id).await, "scheduled");
 }
+
+/// With one game server and the tournament on it, two matches between
+/// different teams cannot be agreed within the hour; without the opt-in
+/// they can.
+#[tokio::test]
+async fn test_the_only_game_server_cannot_be_double_booked() {
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, _, _, player2_token) =
+        create_tournament_with_matches_and_opponent(&app, "server-booked").await;
+    let proposal_id = propose_two_slots(&app, &tournament_id, &match_id).await;
+    let active: serde_json::Value = app
+        .get(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/active"
+        ))
+        .await
+        .json();
+    let slot = active["data"]["proposed_times"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let at: chrono::DateTime<chrono::Utc> = slot.parse().unwrap();
+
+    // Another pairing plays 30 minutes after the slot.
+    sqlx::query(
+        "INSERT INTO tournament_matches \
+         SELECT (jsonb_populate_record(m, jsonb_build_object( \
+             'id', gen_random_uuid(), 'match_number', 98, 'bracket_position', 'X98', \
+             'participant1_registration_id', NULL, 'participant2_registration_id', NULL, \
+             'status', 'scheduled', 'scheduled_at', $2::timestamptz))).* \
+         FROM tournament_matches m WHERE m.id = $1::uuid",
+    )
+    .bind(&match_id)
+    .bind(at + chrono::Duration::minutes(30))
+    .execute(app.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO game_servers (id, name, game_id, ip_address, port, region) \
+         SELECT gen_random_uuid(), 'only-server', t.game_id, '127.0.0.1', 27015, 'eu' \
+         FROM tournaments t WHERE t.id = $1::uuid",
+    )
+    .bind(&tournament_id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    let accept_url = format!("/v1/tournaments/{tournament_id}/matches/{match_id}/schedule/accept");
+    let accept_body = json!({ "proposal_id": proposal_id, "selected_time": slot });
+
+    // On the portal's one server, the other pairing takes the hour.
+    sqlx::query(
+        "UPDATE tournaments SET settings = settings || '{\"game_server\":{\"enabled\":true}}' \
+         WHERE id = $1::uuid",
+    )
+    .bind(&tournament_id)
+    .execute(app.pool())
+    .await
+    .unwrap();
+    let response = app
+        .post_json_with_token(&accept_url, &accept_body, &player2_token)
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert!(
+        response.text().contains("game server is booked"),
+        "{}",
+        response.text()
+    );
+    assert_eq!(match_status(&app, &match_id).await, "ready");
+
+    // Off the portal's server, the same time is fine.
+    sqlx::query("UPDATE tournaments SET settings = settings - 'game_server' WHERE id = $1::uuid")
+        .bind(&tournament_id)
+        .execute(app.pool())
+        .await
+        .unwrap();
+    app.post_json_with_token(&accept_url, &accept_body, &player2_token)
+        .await
+        .assert_status(StatusCode::OK);
+    assert_eq!(match_status(&app, &match_id).await, "scheduled");
+}

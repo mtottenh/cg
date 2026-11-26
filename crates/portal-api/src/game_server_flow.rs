@@ -676,11 +676,20 @@ async fn roster_for(
         }
     }
 
+    // The whitelist is the whole roster, bench included. One rostered
+    // player without a Steam link used to fail the reservation for
+    // everyone; leave that player off instead and only refuse when the team
+    // has nobody who could join at all.
     if !missing.is_empty() {
-        return Err(format!(
-            "players on \"{fallback_name}\" have no linked Steam ID: {}",
-            missing.join(", ")
-        ));
+        if players.is_empty() {
+            return Err(format!(
+                "players on \"{fallback_name}\" have no linked Steam ID: {}",
+                missing.join(", ")
+            ));
+        }
+        tracing::warn!(match_id = %match_id, team = %fallback_name,
+            missing = %missing.join(", "),
+            "roster members without a linked Steam ID left off the server whitelist");
     }
 
     Ok(MatchzyTeam {

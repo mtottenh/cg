@@ -269,6 +269,71 @@ pub struct UpdateTournamentCommand {
     pub rules_url: Option<String>,
     pub settings: Option<serde_json::Value>,
     pub withdrawal_policy: Option<WithdrawalPolicy>,
+    pub scheduling_mode: Option<SchedulingMode>,
+}
+
+impl UpdateTournamentCommand {
+    /// Whether this update touches nothing that is frozen once a tournament
+    /// has started.
+    ///
+    /// Two fields stay editable on a running tournament, because they only
+    /// steer how the remaining matches are run and rewrite nothing about
+    /// matches already played: the scheduling mode (who sets match times
+    /// from here on) and `settings` (side selection, the game-server opt-in
+    /// and its tunables — an organiser has to be able to switch the server
+    /// integration on, or lengthen the auto-confirm window, mid-cup).
+    ///
+    /// The destructuring is exhaustive on purpose, so a new field has to be
+    /// classified here before the struct compiles.
+    #[must_use]
+    pub const fn is_allowed_after_start(&self) -> bool {
+        let Self {
+            name,
+            slug,
+            description,
+            logo_url,
+            banner_url,
+            format_settings,
+            min_participants,
+            max_participants,
+            registration_start,
+            registration_end,
+            check_in_required,
+            check_in_start,
+            check_in_end,
+            starts_at,
+            ends_at,
+            timezone_hint,
+            default_match_format,
+            default_map_veto_format,
+            prize_pool,
+            rules_url,
+            settings: _,
+            withdrawal_policy,
+            scheduling_mode: _,
+        } = self;
+        name.is_none()
+            && slug.is_none()
+            && description.is_none()
+            && logo_url.is_none()
+            && banner_url.is_none()
+            && format_settings.is_none()
+            && min_participants.is_none()
+            && max_participants.is_none()
+            && registration_start.is_none()
+            && registration_end.is_none()
+            && check_in_required.is_none()
+            && check_in_start.is_none()
+            && check_in_end.is_none()
+            && starts_at.is_none()
+            && ends_at.is_none()
+            && timezone_hint.is_none()
+            && default_match_format.is_none()
+            && default_map_veto_format.is_none()
+            && prize_pool.is_none()
+            && rules_url.is_none()
+            && withdrawal_policy.is_none()
+    }
 }
 
 // =============================================================================

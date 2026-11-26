@@ -139,7 +139,8 @@ impl TournamentRepository for PgTournamentRepository {
                 rules_url = COALESCE($19, rules_url),
                 settings = COALESCE($20, settings),
                 withdrawal_policy = COALESCE($21, withdrawal_policy),
-                updated_at = $22
+                scheduling_mode = COALESCE($22, scheduling_mode),
+                updated_at = $23
             WHERE id = $1
             RETURNING *
             ",
@@ -165,6 +166,7 @@ impl TournamentRepository for PgTournamentRepository {
         .bind(&update.rules_url)
         .bind(&update.settings)
         .bind(update.withdrawal_policy.map(|p| p.to_string()))
+        .bind(update.scheduling_mode.map(|m| m.to_string()))
         .bind(now)
         .fetch_one(&self.pool)
         .await

@@ -146,6 +146,14 @@ pub fn match_server_routes() -> Router<AppState> {
             post(match_server::assign_match_server),
         )
         .route(
+            "/{match_id}/server/reload",
+            post(match_server::reload_match_server),
+        )
+        .route(
+            "/{match_id}/server/roster-check",
+            get(match_server::match_server_roster_check),
+        )
+        .route(
             "/{match_id}/server/restore",
             post(match_server::restore_match_server),
         )

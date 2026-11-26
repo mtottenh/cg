@@ -388,6 +388,16 @@ where
             )));
         }
 
+        // `Scheduled` with no time is a dead end: the check-in sweep only
+        // opens windows for matches that have one. Setting the time is what
+        // schedules a match, so send the admin there.
+        if to_status == TournamentMatchStatus::Scheduled && match_.scheduled_at.is_none() {
+            return Err(DomainError::InvalidState(
+                "Cannot mark the match as scheduled without a time; set the match time instead"
+                    .to_string(),
+            ));
+        }
+
         self.transition(
             match_id,
             to_status,

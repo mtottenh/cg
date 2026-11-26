@@ -234,8 +234,9 @@ where
     ) -> Result<Tournament, DomainError> {
         let tournament = self.get_tournament(id).await?;
 
-        // Check if tournament can be updated
-        if tournament.has_started() {
+        // A started tournament is frozen, except for the fields that only
+        // steer how the remaining matches are run.
+        if tournament.has_started() && !cmd.is_allowed_after_start() {
             return Err(DomainError::TournamentAlreadyStarted);
         }
 
@@ -304,6 +305,7 @@ where
                         )
                     }),
                     withdrawal_policy: cmd.withdrawal_policy,
+                    scheduling_mode: cmd.scheduling_mode,
                 },
             )
             .await

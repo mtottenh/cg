@@ -105,18 +105,26 @@ pub(crate) async fn seed_allocated_reservation(
     (reservation, event_token)
 }
 
-/// Drive the match to `pick_ban` via admin transitions (the state veto
-/// completion would leave it in).
+/// Drive the match to `pick_ban` (the state veto completion would leave it
+/// in): an admin schedule, then an admin transition. The time is far enough
+/// out that nothing opens a check-in window in between.
 async fn match_to_pick_ban(app: &TestApp, tournament_id: &str, match_id: &str) {
-    for to in ["scheduled", "pick_ban"] {
-        let response = app
-            .post_json(
-                &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
-                &json!({ "to_status": to, "override_reason": "test setup" }),
-            )
-            .await;
-        response.assert_status(StatusCode::OK);
-    }
+    let scheduled_at = chrono::Utc::now() + chrono::Duration::days(7);
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/schedule"),
+            &json!({ "scheduled_at": scheduled_at.to_rfc3339(), "notes": "test setup" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let response = app
+        .post_json(
+            &format!("/v1/admin/tournaments/{tournament_id}/matches/{match_id}/transition"),
+            &json!({ "to_status": "pick_ban", "override_reason": "test setup" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
 }
 
 fn event_headers(token: &str) -> (&'static str, String) {

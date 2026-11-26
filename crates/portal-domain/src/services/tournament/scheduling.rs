@@ -319,7 +319,7 @@ where
         self.proposal_repo.update(&proposal).await
     }
 
-    /// Withdraw a proposal you made yourself.
+    /// Withdraw a proposal your side made.
     ///
     /// Before this existed the only way out of a mistyped proposal was to
     /// wait out the 48h TTL or hope the opponent responded — `Cancelled`
@@ -330,7 +330,8 @@ where
     /// # Errors
     /// - `LookupFailed` if the proposal doesn't exist
     /// - `TournamentMatchNotFound` if the proposal belongs to another match
-    /// - `NotAuthorized` if the caller is not the proposer
+    /// - `NotAuthorized` if the caller is neither the proposer nor someone
+    ///   who schedules for the proposing registration
     /// - `InvalidState` if the proposal is no longer pending (already
     ///   accepted, rejected, counter-proposed, expired or cancelled).
     ///   A pending proposal past its expiry is still cancellable — the
@@ -352,12 +353,18 @@ where
             return Err(DomainError::TournamentMatchNotFound(command.match_id));
         }
 
-        // Only the proposer may withdraw. The opponent has accept /
-        // reject / counter; letting them cancel too would hand them a
-        // silent way to drop a proposal without a recorded response.
-        if proposal.proposed_by_user_id != command.cancelled_by_user_id {
+        // Only the proposing side may withdraw: the user who made the
+        // proposal, or anyone who schedules for that registration (its
+        // captain, owner or a delegate). The opponent has accept / reject /
+        // counter; letting them cancel too would hand them a silent way to
+        // drop a proposal without a recorded response.
+        let is_proposer = proposal.proposed_by_user_id == command.cancelled_by_user_id;
+        let acts_for_proposing_side = command
+            .acting_for_registrations
+            .contains(&proposal.proposed_by_registration_id);
+        if !is_proposer && !acts_for_proposing_side {
             return Err(DomainError::NotAuthorized(
-                "Only the proposer can withdraw this proposal".to_string(),
+                "Only the proposing team can withdraw this proposal".to_string(),
             ));
         }
 
@@ -490,7 +497,12 @@ where
             .await?
             .ok_or(DomainError::TournamentMatchNotFound(match_id))?;
 
-        if !tournament_match.status.can_schedule() {
+        // An admin may also set the time on a match that is already
+        // `Scheduled`: that is a reschedule, and it is the only way to repair
+        // a match that reached `Scheduled` with no time at all, which the
+        // check-in sweep never picks up.
+        let already_scheduled = tournament_match.status == TournamentMatchStatus::Scheduled;
+        if !already_scheduled && !tournament_match.status.can_schedule() {
             return Err(DomainError::InvalidState(format!(
                 "Match {} cannot be scheduled in status {:?}",
                 match_id, tournament_match.status
@@ -513,7 +525,22 @@ where
             scheduled_at: Some(scheduled_at),
             ..Default::default()
         };
-        self.match_repo.update(match_id, update).await?;
+        let updated = self.match_repo.update(match_id, update).await?;
+
+        // Scheduled -> Scheduled is not a transition, so there is no
+        // `match_status_log` row to carry the admin and their reason; the
+        // server log is the only record of a reschedule.
+        if already_scheduled {
+            tracing::info!(
+                match_id = %match_id,
+                admin_id = %admin_id,
+                previous = ?tournament_match.scheduled_at,
+                scheduled_at = %scheduled_at,
+                notes = notes.as_deref().unwrap_or_default(),
+                "Admin changed the time of a scheduled match"
+            );
+            return Ok(updated);
+        }
 
         // Then update status — through the lifecycle service when it is wired,
         // so the transition is recorded with the acting admin and their reason.

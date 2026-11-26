@@ -26,11 +26,84 @@ use crate::state::TournamentState;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use portal_core::{ScheduleProposalId, TournamentId, TournamentMatchId};
+use portal_core::{ScheduleProposalId, TournamentId, TournamentMatchId, TournamentRegistrationId};
 use portal_domain::entities::schedule_proposal::{
     AcceptProposalCommand, CancelProposalCommand, CounterProposeCommand, RejectProposalCommand,
 };
 use portal_domain::services::tournament::RegistrationActor;
+
+/// The registrations in a match the caller may *schedule* for.
+///
+/// Agreeing a time commits the whole team to turning up, and missing the
+/// check-in window forfeits the match — so scheduling is bound to the same
+/// people who can check the team in: its captain, its owner, or a roster
+/// member the captain delegated to (and, for an individual registration,
+/// the player). Any roster member used to be able to propose and accept,
+/// which let a member agree a time the captain could not make. The rule is
+/// the one veto and check-in already use
+/// (`VetoAuthorizationService::can_act_for_registration`), so a delegate
+/// granted for one is a delegate for all three.
+///
+/// `403` when the caller schedules for neither side.
+async fn scheduling_registrations(
+    state: &TournamentState,
+    auth: &AuthenticatedUser,
+    match_id: TournamentMatchId,
+) -> Result<Vec<TournamentRegistrationId>, ApiError> {
+    let tournament_match = state
+        .scheduling_service
+        .get_match(match_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Match not found"))?;
+
+    let mut acting_for = Vec::with_capacity(2);
+    for registration_id in [
+        tournament_match.participant1_registration_id,
+        tournament_match.participant2_registration_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if state
+            .veto_authorization_service
+            .can_act_for_registration(registration_id, auth.user_id, auth.player_id)
+            .await
+            .is_ok()
+        {
+            acting_for.push(registration_id);
+        }
+    }
+
+    if acting_for.is_empty() {
+        return Err(ApiError::forbidden(
+            "Only the team captain or a delegate can schedule matches",
+        ));
+    }
+    Ok(acting_for)
+}
+
+/// Require that `proposal_id` belongs to the match addressed in the path.
+///
+/// Accept and reject carry only a proposal id in the body; the scheduling
+/// authorization above is resolved from the path's match. Without this the
+/// two could be about different matches.
+async fn require_proposal_on_match(
+    state: &TournamentState,
+    match_id: TournamentMatchId,
+    proposal_id: ScheduleProposalId,
+) -> Result<(), ApiError> {
+    let on_match = state
+        .scheduling_service
+        .get_proposal_history(match_id)
+        .await?
+        .iter()
+        .any(|p| p.id == proposal_id);
+    if on_match {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("Proposal not found on this match"))
+    }
+}
 
 /// Propose schedule times for a match.
 #[utoipa::path(
@@ -45,6 +118,7 @@ use portal_domain::services::tournament::RegistrationActor;
         (status = 201, description = "Schedule proposal created", body = DataResponse<ScheduleProposalResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Only the team captain, owner or a delegate can schedule", body = ApiError),
         (status = 404, description = "Match not found", body = ApiError),
         (status = 409, description = "Pending proposal already exists", body = ApiError),
     ),
@@ -63,6 +137,8 @@ pub async fn propose_schedule(
     let match_id: TournamentMatchId = match_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
+
+    scheduling_registrations(&state, &auth, match_id).await?;
 
     let proposal = state
         .scheduling_service
@@ -96,6 +172,7 @@ pub async fn propose_schedule(
         (status = 200, description = "Proposal accepted, match scheduled", body = DataResponse<TournamentMatchResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Only the team captain, owner or a delegate can schedule", body = ApiError),
         (status = 404, description = "Proposal not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -105,15 +182,22 @@ pub async fn accept_schedule_proposal(
     State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path((_tournament_id, _match_id)): Path<(String, String)>,
+    Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<AcceptScheduleProposalRequest>,
 ) -> ApiResult<Json<DataResponse<TournamentMatchResponse>>> {
     let request_id = get_request_id(&headers);
+
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let proposal_id: ScheduleProposalId = req
         .proposal_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid proposal ID format"))?;
+
+    scheduling_registrations(&state, &auth, match_id).await?;
+    require_proposal_on_match(&state, match_id, proposal_id).await?;
 
     let command = AcceptProposalCommand {
         proposal_id,
@@ -142,6 +226,7 @@ pub async fn accept_schedule_proposal(
         (status = 200, description = "Proposal rejected", body = DataResponse<ScheduleProposalResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Only the team captain, owner or a delegate can schedule", body = ApiError),
         (status = 404, description = "Proposal not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -151,15 +236,22 @@ pub async fn reject_schedule_proposal(
     State(state): State<TournamentState>,
     auth: AuthenticatedUser,
     headers: HeaderMap,
-    Path((_tournament_id, _match_id)): Path<(String, String)>,
+    Path((_tournament_id, match_id)): Path<(String, String)>,
     ValidatedJson(req): ValidatedJson<RejectScheduleProposalRequest>,
 ) -> ApiResult<Json<DataResponse<ScheduleProposalResponse>>> {
     let request_id = get_request_id(&headers);
+
+    let match_id: TournamentMatchId = match_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let proposal_id: ScheduleProposalId = req
         .proposal_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid proposal ID format"))?;
+
+    scheduling_registrations(&state, &auth, match_id).await?;
+    require_proposal_on_match(&state, match_id, proposal_id).await?;
 
     let command = RejectProposalCommand {
         proposal_id,
@@ -188,7 +280,7 @@ pub async fn reject_schedule_proposal(
         (status = 200, description = "Proposal withdrawn", body = DataResponse<ScheduleProposalResponse>),
         (status = 400, description = "Proposal is no longer pending", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 403, description = "Only the proposer may withdraw", body = ApiError),
+        (status = 403, description = "Only the proposing team's captain, owner or delegate (or the proposer) may withdraw", body = ApiError),
         (status = 404, description = "Proposal not found on this match", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -212,12 +304,14 @@ pub async fn cancel_schedule_proposal(
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid proposal ID format"))?;
 
-    // Authorization lives in the service, matching accept/reject: the
-    // binding that matters is "is this your own pending proposal", which
-    // needs the proposal row. `NotAuthorized` maps to 403.
+    // Who may schedule for a side is resolved here; whether this proposal
+    // belongs to that side needs the proposal row, so the service decides.
+    // `NotAuthorized` maps to 403.
+    let acting_for_registrations = scheduling_registrations(&state, &auth, match_id).await?;
     let command = CancelProposalCommand {
         proposal_id,
         cancelled_by_user_id: auth.user_id,
+        acting_for_registrations,
         match_id,
     };
 
@@ -242,6 +336,7 @@ pub async fn cancel_schedule_proposal(
         (status = 201, description = "Counter-proposal created", body = DataResponse<ScheduleProposalResponse>),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
+        (status = 403, description = "Only the team captain, owner or a delegate can schedule", body = ApiError),
         (status = 404, description = "Original proposal not found", body = ApiError),
     ),
     security(("bearer_auth" = [])),
@@ -264,6 +359,8 @@ pub async fn counter_propose(
         .original_proposal_id
         .parse()
         .map_err(|_| ApiError::bad_request("Invalid proposal ID format"))?;
+
+    scheduling_registrations(&state, &auth, match_id).await?;
 
     // Get the original proposal to find the user's registration
     let original_proposal = state

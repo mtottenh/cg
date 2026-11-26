@@ -75,9 +75,9 @@ pub use saga::{PgProgressionLogRepository, PgSagaExecutionRepository};
 pub use steam_tracking::PgSteamTrackingRepository;
 pub use system_settings::PgSystemSettingsRepository;
 pub use tournament::{
-    MatchCompletionTxInput, MatchCompletionTxOutput, PgMatchStatusLogRepository,
-    PgResultClaimRepository, PgScheduleProposalRepository, PgTournamentBracketRepository,
-    PgTournamentInvitationRepository, PgTournamentMapPoolRepository,
+    MatchCompletionTxInput, MatchCompletionTxOutput, PgMatchRescueRepository,
+    PgMatchStatusLogRepository, PgResultClaimRepository, PgScheduleProposalRepository,
+    PgTournamentBracketRepository, PgTournamentInvitationRepository, PgTournamentMapPoolRepository,
     PgTournamentMatchGameRepository, PgTournamentMatchRepository,
     PgTournamentRegistrationRepository, PgTournamentRepository, PgTournamentStageRepository,
     PgTournamentStandingsRepository, PgVetoActionRepository, PgVetoSessionRepository,

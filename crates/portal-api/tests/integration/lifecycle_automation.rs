@@ -619,3 +619,44 @@ async fn test_repeat_check_in_advances_a_match_with_both_sides_in() {
     let body: serde_json::Value = response.json();
     assert_eq!(body["data"]["status"], "in_progress");
 }
+
+/// A match that is `scheduled` with no time is invisible to the check-in
+/// sweep. Matches reached that state through the old bare admin transition;
+/// an admin setting the time must bring them back into the automation.
+#[tokio::test]
+async fn test_admin_can_set_a_time_on_a_scheduled_match_that_has_none() {
+    let app = TestApp::new().await;
+    let state = state_for(&app).await;
+    let (tournament_id, match_id, _, _) =
+        create_tournament_with_matches(&app, "lifecycle-stranded-test").await;
+
+    sqlx::query(
+        "UPDATE tournament_matches SET status = 'scheduled', scheduled_at = NULL WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&match_id).unwrap())
+    .execute(app.pool())
+    .await
+    .unwrap();
+
+    // Nothing to key off: the pass leaves the match where it is.
+    let summary = run_lifecycle_pass(&state, &test_config(), false).await;
+    assert_eq!(summary.errors, 0, "pass should not error: {summary:?}");
+    assert_eq!(
+        get_match_status(&app, &tournament_id, &match_id).await,
+        "scheduled"
+    );
+
+    // 5 minutes out is inside the 15-minute lead window.
+    schedule_at(&app, &tournament_id, &match_id, 5).await;
+    assert_eq!(
+        get_match_status(&app, &tournament_id, &match_id).await,
+        "scheduled"
+    );
+
+    let summary = run_lifecycle_pass(&state, &test_config(), false).await;
+    assert_eq!(summary.errors, 0, "pass should not error: {summary:?}");
+    assert_eq!(
+        get_match_status(&app, &tournament_id, &match_id).await,
+        "checking_in"
+    );
+}

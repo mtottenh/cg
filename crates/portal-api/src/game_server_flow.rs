@@ -590,6 +590,37 @@ pub async fn build_config(
         Some(veto) => derive_map_sides(&maplist, &veto.actions, reg1),
         None => vec!["knife".to_string(); maplist.len()],
     };
+
+    // A series that already has finished maps (the server restarted, or
+    // the match was cleared and reloaded) resumes at the first unfinished
+    // map instead of replaying from map 1. MatchZy has no way to start a
+    // series at a score, so a resumed series is played one map per config;
+    // the portal keeps the series score from the recorded map results and
+    // loads the next map until one side has won (see `apply_series_end`).
+    let finished: Vec<(i32, Option<bool>)> = state
+        .tournament_match_game_repo
+        .list_by_match(match_.id)
+        .await
+        .map_err(|e| format!("map results unavailable: {e}"))?
+        .iter()
+        .filter_map(|g| {
+            g.winner_registration_id.map(|w| {
+                (
+                    g.game_number,
+                    Some(Some(w) == match_.participant1_registration_id),
+                )
+            })
+        })
+        .collect();
+    let resume_at = resume_point(
+        maplist.len(),
+        &finished,
+        match_.match_format.wins_required(),
+    )?;
+    let (config_maps, config_sides) = match resume_at {
+        Some(index) => (vec![maplist[index].clone()], vec![map_sides[index].clone()]),
+        None => (maplist.clone(), map_sides.clone()),
+    };
     // §6.3/§12-Q3: team size comes from the admin-editable game config —
     // roster size must not widen the server (an 8-man roster is still 5v5).
     let game_row = state
@@ -620,8 +651,8 @@ pub async fn build_config(
             crate::handlers::games::load_available_maps(game, &plugin)
         })
         .unwrap_or_default();
-    let mut map_refs = Vec::with_capacity(maplist.len());
-    for map_id in &maplist {
+    let mut map_refs = Vec::with_capacity(config_maps.len());
+    for map_id in &config_maps {
         let map_ref = match catalog.iter().find(|m| &m.id == map_id) {
             Some(m) => MatchzyMapRef {
                 portal_id: m.id.clone(),
@@ -647,7 +678,7 @@ pub async fn build_config(
     let input = MatchzyConfigInput {
         matchzy_id: reservation.matchzy_id,
         maplist: matchzy_maplist,
-        map_sides,
+        map_sides: config_sides,
         team1,
         team2,
         players_per_team,
@@ -673,7 +704,81 @@ pub async fn build_config(
     // Materialize the per-map game rows the event pipeline will fill in.
     ensure_match_games(state, match_, &maplist, veto_state.as_ref()).await;
 
-    Ok(build_matchzy_config(&input))
+    let mut config = build_matchzy_config(&input);
+    if let (Some(index), Some(object)) = (resume_at, config.as_object_mut()) {
+        // Portal-only: which game of the series this one-map config plays.
+        // Stripped before the config is served to MatchZy.
+        object.insert(
+            RESUME_KEY.to_string(),
+            serde_json::json!({ "game_number": index + 1 }),
+        );
+    }
+    Ok(config)
+}
+
+/// Key in a stored match config marking a resumed series (portal-only).
+pub const RESUME_KEY: &str = "portal_resume";
+
+/// Where a series with finished maps picks up: the 0-based index of the
+/// first unfinished map, `None` when nothing has been played yet (the
+/// normal, whole-series config), or an error when the series is already
+/// decided and must not be loaded again.
+///
+/// `finished` holds `(game_number, won_by_participant1)` for maps with a
+/// recorded winner; `won_by_participant1` is `None` for a winner that is
+/// neither participant (ignored).
+fn resume_point(
+    map_count: usize,
+    finished: &[(i32, Option<bool>)],
+    wins_required: i32,
+) -> Result<Option<usize>, String> {
+    let in_series = |n: i32| usize::try_from(n).is_ok_and(|n| (1..=map_count).contains(&n));
+    let counted: Vec<&(i32, Option<bool>)> =
+        finished.iter().filter(|(n, _)| in_series(*n)).collect();
+    if counted.is_empty() {
+        return Ok(None);
+    }
+    let p1 =
+        i32::try_from(counted.iter().filter(|(_, w)| *w == Some(true)).count()).unwrap_or(i32::MAX);
+    let p2 = i32::try_from(counted.iter().filter(|(_, w)| *w == Some(false)).count())
+        .unwrap_or(i32::MAX);
+    if p1 >= wins_required || p2 >= wins_required {
+        return Err(format!(
+            "the series is already decided ({p1}-{p2}); enter the result instead of loading it \
+             on the server again"
+        ));
+    }
+    (0..map_count)
+        .find(|i| {
+            let game_number = i32::try_from(i + 1).unwrap_or(i32::MAX);
+            !counted.iter().any(|(n, _)| *n == game_number)
+        })
+        .map(Some)
+        .ok_or_else(|| "every map of the series already has a result".to_string())
+}
+
+/// The game of the series a reservation's events belong to.
+///
+/// MatchZy numbers maps from 0 within the config it was given. A whole-
+/// series config plays game `map_number + 1`; a resumed one-map config
+/// plays the game recorded under [`RESUME_KEY`].
+fn game_number_for(reservation: &ServerReservation, map_number: Option<i32>) -> i32 {
+    let map_number = map_number.unwrap_or(0);
+    match resumed_game_number(reservation) {
+        Some(first) => first + map_number,
+        None => map_number + 1,
+    }
+}
+
+/// For a resumed series, the game its config plays.
+fn resumed_game_number(reservation: &ServerReservation) -> Option<i32> {
+    reservation
+        .match_config
+        .as_ref()?
+        .get(RESUME_KEY)?
+        .get("game_number")?
+        .as_i64()
+        .and_then(|n| i32::try_from(n).ok())
 }
 
 /// Resolve a registration's EFFECTIVE lineup to `(steamid64, name)` pairs:
@@ -936,10 +1041,13 @@ async fn process_event(
                 tracing::debug!(match_id = %reservation.match_id, error = %e,
                     "going_live transition skipped");
             }
-            if let Some(game_number) = event.map_number.map(|n| n + 1)
+            if let Some(map_number) = event.map_number
                 && let Ok(Some(game)) = state
                     .tournament_match_game_repo
-                    .find_by_number(reservation.match_id, game_number)
+                    .find_by_number(
+                        reservation.match_id,
+                        game_number_for(reservation, Some(map_number)),
+                    )
                     .await
             {
                 let _ = state.tournament_match_game_repo.start(game.id).await;
@@ -1006,7 +1114,7 @@ async fn apply_map_result(
             "match has no participants".into(),
         ));
     };
-    let game_number = event.map_number.map_or(1, |n| n + 1);
+    let game_number = game_number_for(reservation, event.map_number);
     if let Some(game) = state
         .tournament_match_game_repo
         .find_by_number(reservation.match_id, game_number)
@@ -1034,7 +1142,17 @@ async fn apply_series_end(
             .and_then(|s| i32::try_from(s).ok())
             .unwrap_or(0)
     };
-    let (s1, s2) = (series("team1_series_score"), series("team2_series_score"));
+    let (s1, s2) = match resumed_game_number(reservation) {
+        // A resumed series plays one map per config: the event's series
+        // score is that map's, the match's is the portal's tally.
+        Some(game_number) => {
+            match resumed_map_finished(state, reservation, &match_, game_number).await? {
+                Some(score) => score,
+                None => return Ok(()),
+            }
+        }
+        None => (series("team1_series_score"), series("team2_series_score")),
+    };
 
     if s1 == s2 {
         // clinch_series is always set; a tie is a protocol violation.
@@ -1144,6 +1262,74 @@ async fn apply_series_end(
     crate::pug_flow::on_series_end(state, reservation.match_id, s1, s2).await;
     broadcast_assignment(state, reservation.match_id, "completed", None, None);
     Ok(())
+}
+
+/// One map of a resumed series has ended. Returns the series score when the
+/// series is now decided (the caller submits the result as usual); otherwise
+/// settles this reservation itself — loading the next map, or failing with a
+/// reason when this map's result never arrived — and returns `None`.
+async fn resumed_map_finished(
+    state: &AppState,
+    reservation: &ServerReservation,
+    match_: &TournamentMatch,
+    game_number: i32,
+) -> Result<Option<(i32, i32)>, DomainError> {
+    let games = state
+        .tournament_match_game_repo
+        .list_by_match(reservation.match_id)
+        .await?;
+    let recorded = games
+        .iter()
+        .any(|g| g.game_number == game_number && g.winner_registration_id.is_some());
+    if !recorded {
+        let reason = format!(
+            "the result of map {game_number} was not received from the game server — enter \
+             the result, or reload the match to replay map {game_number}"
+        );
+        state
+            .server_reservation_repo
+            .release(reservation.id, ReservationStatus::Failed, Some(&reason))
+            .await?;
+        broadcast_assignment(state, reservation.match_id, "failed", None, Some(&reason));
+        return Ok(None);
+    }
+
+    let (_, p1, p2) = tally_finished_maps(
+        games.iter().map(|g| g.winner_registration_id),
+        match_.participant1_registration_id,
+        match_.participant2_registration_id,
+    );
+    let (p1, p2) = (
+        i32::try_from(p1).unwrap_or(i32::MAX),
+        i32::try_from(p2).unwrap_or(i32::MAX),
+    );
+    let wins_required = match_.match_format.wins_required();
+    if p1 >= wins_required || p2 >= wins_required {
+        return Ok(Some((p1, p2)));
+    }
+
+    // Not decided: this config's work is done, the next map gets its own.
+    let note = format!("map {game_number} finished ({p1}-{p2}); loading the next map");
+    state
+        .server_reservation_repo
+        .release(reservation.id, ReservationStatus::Completed, Some(&note))
+        .await?;
+    tracing::info!(match_id = %reservation.match_id, game_number, p1, p2,
+        "resumed series continues on the next map");
+    // Boxed: this runs inside event processing, and the allocation future
+    // would otherwise be inlined into every caller's.
+    if let Err(e) = request_assignment_boxed(state, reservation.match_id).await {
+        tracing::warn!(match_id = %reservation.match_id, error = %e,
+            "could not load the next map of a resumed series");
+        broadcast_assignment(
+            state,
+            reservation.match_id,
+            "failed",
+            None,
+            Some(&format!("{note}, but it could not be loaded: {e}")),
+        );
+    }
+    Ok(None)
 }
 
 // =============================================================================
@@ -1683,8 +1869,9 @@ async fn reconcile_stale(
     let reason = match series_so_far(state, reservation).await {
         Some((played, p1, p2)) if played > 0 => format!(
             "the game server stopped holding the series after {played} finished map(s) \
-             ({p1}-{p2} so far; those map results are kept) — reload the match to play it \
-             again, or enter the result"
+             ({p1}-{p2} so far; those map results are kept) — reload the match to resume it \
+             at map {next}, or enter the result",
+            next = played + 1
         ),
         _ => "no events received and server is idle — needs admin review".to_string(),
     };
@@ -2309,5 +2496,86 @@ mod series_tally_tests {
             tally_finished_maps(std::iter::empty(), Some(a), Some(b)),
             (0, 0, 0)
         );
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::{RESUME_KEY, game_number_for, resume_point};
+
+    #[test]
+    fn nothing_played_loads_the_whole_series() {
+        assert_eq!(resume_point(3, &[], 2), Ok(None));
+    }
+
+    #[test]
+    fn a_series_resumes_at_the_first_unfinished_map() {
+        // bo3 at 1-0: map 2 next.
+        assert_eq!(resume_point(3, &[(1, Some(true))], 2), Ok(Some(1)));
+        // bo3 at 1-1: the decider.
+        assert_eq!(
+            resume_point(3, &[(1, Some(true)), (2, Some(false))], 2),
+            Ok(Some(2))
+        );
+        // bo5 at 2-1.
+        assert_eq!(
+            resume_point(5, &[(1, Some(true)), (2, Some(false)), (3, Some(true))], 3),
+            Ok(Some(3))
+        );
+    }
+
+    #[test]
+    fn a_decided_series_is_not_loaded_again() {
+        let err = resume_point(3, &[(1, Some(false)), (2, Some(false))], 2).unwrap_err();
+        assert!(err.contains("already decided (0-2)"), "{err}");
+        assert!(resume_point(1, &[(1, Some(true))], 1).is_err());
+    }
+
+    #[test]
+    fn results_outside_the_map_list_are_ignored() {
+        assert_eq!(resume_point(3, &[(7, Some(true))], 2), Ok(None));
+    }
+
+    fn reservation_with(config: Option<serde_json::Value>) -> super::ServerReservation {
+        let now = chrono::Utc::now();
+        super::ServerReservation {
+            id: portal_core::ids::ServerReservationId::new(),
+            server_id: None,
+            match_id: portal_core::ids::TournamentMatchId::new(),
+            matchzy_id: 1,
+            status: portal_core::types::ReservationStatus::Live,
+            kind: portal_core::types::ReservationKind::Match,
+            connect_password: String::new(),
+            gotv_password: None,
+            config_token_hash: String::new(),
+            event_token_hash: String::new(),
+            config_token_expires_at: now,
+            match_config: config,
+            config_fetched_at: None,
+            config_fetch_count: 0,
+            went_live_at: None,
+            completed_at: None,
+            failure_reason: None,
+            retry_count: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn event_map_numbers_map_to_games() {
+        // Whole series: MatchZy's 0-based map number is the game index.
+        let whole = reservation_with(Some(serde_json::json!({ "num_maps": 3 })));
+        assert_eq!(game_number_for(&whole, Some(0)), 1);
+        assert_eq!(game_number_for(&whole, Some(2)), 3);
+        assert_eq!(game_number_for(&whole, None), 1);
+        // Resumed at game 2: the one-map config's map 0 is game 2.
+        let resumed = reservation_with(Some(serde_json::json!({
+            "num_maps": 1, RESUME_KEY: { "game_number": 2 }
+        })));
+        assert_eq!(game_number_for(&resumed, Some(0)), 2);
+        assert_eq!(game_number_for(&resumed, None), 2);
+        // No stored config at all.
+        assert_eq!(game_number_for(&reservation_with(None), Some(1)), 2);
     }
 }

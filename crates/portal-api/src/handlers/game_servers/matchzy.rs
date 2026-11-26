@@ -73,10 +73,14 @@ pub async fn get_match_config(
             "config token expired or reservation is not loading",
         ));
     }
-    let config = reservation
+    let mut config = reservation
         .match_config
         .clone()
         .ok_or_else(|| ApiError::internal("reservation has no stored config"))?;
+    // Portal-only bookkeeping stays in the portal.
+    if let Some(object) = config.as_object_mut() {
+        object.remove(crate::game_server_flow::RESUME_KEY);
+    }
 
     state
         .server_reservation_repo

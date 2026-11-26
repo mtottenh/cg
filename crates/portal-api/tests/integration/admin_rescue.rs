@@ -1508,3 +1508,266 @@ async fn settings_can_be_patched_on_a_started_tournament() {
     .await
     .assert_status(StatusCode::BAD_REQUEST);
 }
+
+// =============================================================================
+// Resuming a series after the game server lost it
+// =============================================================================
+
+/// The MatchZy id and event-webhook token a stored config was built with.
+fn config_identity(config: &Value) -> (i64, String) {
+    let matchzy_id = config["matchid"].as_i64().expect("config has a matchid");
+    let token = config["cvars"]["matchzy_remote_log_header_value"]
+        .as_str()
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .expect("config carries the event token")
+        .to_string();
+    (matchzy_id, token)
+}
+
+async fn server_event(app: &TestApp, token: &str, payload: Value) {
+    let response = app
+        .post_json_with_header(
+            "/v1/gameserver/events",
+            &payload,
+            "authorization",
+            &format!("Bearer {token}"),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+}
+
+/// Play map `map_number` of the config identified by `(mid, token)` to a
+/// 13-x finish for `team1_wins`' side.
+async fn play_map(
+    app: &TestApp,
+    (matchzy_id, token): &(i64, String),
+    map_number: i64,
+    team1_wins: bool,
+) {
+    server_event(
+        app,
+        token,
+        json!({"event": "going_live", "matchid": matchzy_id, "map_number": map_number}),
+    )
+    .await;
+    let (s1, s2) = if team1_wins { (13, 8) } else { (9, 13) };
+    server_event(
+        app,
+        token,
+        json!({
+            "event": "map_result", "matchid": matchzy_id, "map_number": map_number,
+            "team1": {"score": s1}, "team2": {"score": s2},
+        }),
+    )
+    .await;
+}
+
+async fn series_end_event(app: &TestApp, (matchzy_id, token): &(i64, String), s1: i64, s2: i64) {
+    server_event(
+        app,
+        token,
+        json!({
+            "event": "series_end", "matchid": matchzy_id,
+            "team1_series_score": s1, "team2_series_score": s2, "time_until_restore": 10,
+        }),
+    )
+    .await;
+}
+
+async fn reload(app: &TestApp, match_id: &str) {
+    app.post_json(
+        &format!("/v1/matches/{match_id}/server/reload"),
+        &json!({ "reason": "the game server restarted mid-series" }),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+}
+
+/// (participant 1 score, participant 2 score) of the server's result claim.
+async fn server_claim_score(app: &TestApp, match_id: &str) -> Option<(i32, i32)> {
+    sqlx::query_as(
+        "SELECT claimed_participant1_score, claimed_participant2_score FROM result_claims \
+         WHERE match_id = $1 AND source = 'server' ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(uuid_of(match_id))
+    .fetch_optional(app.pool())
+    .await
+    .unwrap()
+}
+
+/// Winners of the match's games in order, `true` for participant 1.
+async fn game_winners(app: &TestApp, match_id: &str, reg1: &str) -> Vec<(i32, Option<bool>)> {
+    let rows: Vec<(i32, Option<Uuid>)> = sqlx::query_as(
+        "SELECT game_number, winner_registration_id FROM tournament_match_games \
+         WHERE match_id = $1 ORDER BY game_number",
+    )
+    .bind(uuid_of(match_id))
+    .fetch_all(app.pool())
+    .await
+    .unwrap();
+    rows.into_iter()
+        .map(|(n, w)| (n, w.map(|w| w == uuid_of(reg1))))
+        .collect()
+}
+
+/// A bo3 on the server that has finished map 1 (participant 1 won it) and
+/// then lost the series; returns the match, participant 1, the agent and
+/// the original map list.
+async fn bo3_interrupted_after_map_one(
+    app: &mut TestApp,
+    slug: &str,
+) -> (String, String, FakeAgent, Vec<Value>) {
+    let (tid, mid, reg1, reg2) = create_tournament_with_matches(app, slug).await;
+    schedule_in(app, &tid, &mid, 600).await;
+    transition(app, &tid, &mid, "in_progress").await;
+    set_steam_id(app, &reg1, Some("76561198000000011")).await;
+    set_steam_id(app, &reg2, Some("76561198000000012")).await;
+    let server_id = create_server(app, &format!("{slug}-box")).await;
+    let agent = connect_idle_agent(app, &server_id).await;
+    // Seeding decides which registration is participant 1 (team1).
+    let reg1 = str_of(
+        &get_match(app, &tid, &mid).await,
+        "participant1_registration_id",
+    );
+
+    // A series that has not started loads whole, exactly as before.
+    reload(app, &mid).await;
+    let config = latest_config(app, &mid).await;
+    assert_eq!(config["num_maps"], 3, "{config}");
+    assert!(config.get("portal_resume").is_none(), "{config}");
+    let maps = config["maplist"].as_array().unwrap().clone();
+    let first = config_identity(&config);
+    server_event(
+        app,
+        &first.1,
+        json!({"event": "series_start", "matchid": first.0}),
+    )
+    .await;
+    play_map(app, &first, 0, true).await;
+    assert_eq!(
+        game_winners(app, &mid, &reg1).await,
+        vec![(1, Some(true)), (2, None), (3, None)]
+    );
+
+    // The server restarts; the admin reloads the match.
+    reload(app, &mid).await;
+    let config = latest_config(app, &mid).await;
+    assert_eq!(config["num_maps"], 1, "{config}");
+    assert_eq!(config["maplist"], json!([maps[1]]), "{config}");
+    assert_eq!(config["portal_resume"]["game_number"], 2, "{config}");
+    (mid, reg1, agent, maps)
+}
+
+/// Interrupted at 1-0 and resumed, the leader wins map 2: the series is
+/// over at 2-0 with both maps recorded, and nothing more is loaded.
+#[tokio::test]
+async fn a_resumed_series_finishes_when_the_leader_wins_the_next_map() {
+    let mut app = TestApp::new_with_gameserver().await;
+    let (mid, reg1, agent, _maps) = bo3_interrupted_after_map_one(&mut app, "resume-2-0").await;
+    let loads = agent.commands("load_match").len();
+
+    let resumed = config_identity(&latest_config(&app, &mid).await);
+    server_event(
+        &app,
+        &resumed.1,
+        json!({"event": "series_start", "matchid": resumed.0}),
+    )
+    .await;
+    play_map(&app, &resumed, 0, true).await;
+    // MatchZy's own score for this one-map series is 1-0.
+    series_end_event(&app, &resumed, 1, 0).await;
+
+    assert_eq!(server_claim_score(&app, &mid).await, Some((2, 0)));
+    assert_eq!(
+        game_winners(&app, &mid, &reg1).await,
+        vec![(1, Some(true)), (2, Some(true)), (3, None)]
+    );
+    assert_eq!(
+        agent.commands("load_match").len(),
+        loads,
+        "no further map loaded"
+    );
+}
+
+/// Interrupted at 1-0 and resumed, the trailer wins map 2: the decider is
+/// loaded on its own, and when it is won the series result is 2-1 with all
+/// three maps recorded.
+#[tokio::test]
+async fn a_resumed_series_loads_the_decider_after_a_split() {
+    let mut app = TestApp::new_with_gameserver().await;
+    let (mid, reg1, agent, maps) = bo3_interrupted_after_map_one(&mut app, "resume-2-1").await;
+    let loads = agent.commands("load_match").len();
+
+    let resumed = config_identity(&latest_config(&app, &mid).await);
+    server_event(
+        &app,
+        &resumed.1,
+        json!({"event": "series_start", "matchid": resumed.0}),
+    )
+    .await;
+    play_map(&app, &resumed, 0, false).await;
+    series_end_event(&app, &resumed, 0, 1).await;
+
+    assert_eq!(
+        server_claim_score(&app, &mid).await,
+        None,
+        "1-1 is not a result"
+    );
+    assert_eq!(
+        agent.commands("load_match").len(),
+        loads + 1,
+        "the decider was loaded"
+    );
+    let decider = latest_config(&app, &mid).await;
+    assert_eq!(decider["maplist"], json!([maps[2]]), "{decider}");
+    assert_eq!(decider["portal_resume"]["game_number"], 3, "{decider}");
+
+    let decider = config_identity(&decider);
+    assert_ne!(decider.0, resumed.0, "each map is its own MatchZy match");
+    server_event(
+        &app,
+        &decider.1,
+        json!({"event": "series_start", "matchid": decider.0}),
+    )
+    .await;
+    play_map(&app, &decider, 0, true).await;
+    series_end_event(&app, &decider, 1, 0).await;
+
+    assert_eq!(server_claim_score(&app, &mid).await, Some((2, 1)));
+    assert_eq!(
+        game_winners(&app, &mid, &reg1).await,
+        vec![(1, Some(true)), (2, Some(false)), (3, Some(true))]
+    );
+}
+
+/// A resumed map whose result never arrived is not guessed: the
+/// reservation fails with a reason that names the map.
+#[tokio::test]
+async fn a_resumed_map_without_a_result_asks_for_one() {
+    let mut app = TestApp::new_with_gameserver().await;
+    let (mid, _reg1, _agent, _maps) = bo3_interrupted_after_map_one(&mut app, "resume-lost").await;
+    let resumed = config_identity(&latest_config(&app, &mid).await);
+    server_event(
+        &app,
+        &resumed.1,
+        json!({"event": "series_start", "matchid": resumed.0}),
+    )
+    .await;
+    series_end_event(&app, &resumed, 1, 0).await;
+
+    assert_eq!(server_claim_score(&app, &mid).await, None);
+    let (status, reason): (String, Option<String>) = sqlx::query_as(
+        "SELECT status, failure_reason FROM server_reservations WHERE match_id = $1 \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(uuid_of(&mid))
+    .fetch_one(app.pool())
+    .await
+    .unwrap();
+    assert_eq!(status, "failed");
+    assert!(
+        reason
+            .unwrap_or_default()
+            .contains("map 2 was not received")
+    );
+}

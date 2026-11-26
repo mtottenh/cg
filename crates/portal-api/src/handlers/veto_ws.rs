@@ -324,60 +324,49 @@ async fn authenticate_user(
         .map_err(|e| format!("Database error: {e}"))?
         .ok_or_else(|| format!("Match {match_id} not found"))?;
 
-    // Check if user can act for either participant
+    // A team role for either side wins; acting only as tournament staff for
+    // a side makes the user an admin connection. Checked across both sides
+    // before deciding, so an organiser who captains participant 2 is not
+    // classified as an admin by the participant-1 check (where they can
+    // only act as staff).
     let mut connection: Option<VetoConnection> = None;
-
-    // Check participant 1
-    if let Some(reg_id) = match_.participant1_registration_id
-        && let Ok(auth_role) = state
+    let mut acts_as_staff = false;
+    for (reg_id, name) in [
+        (
+            match_.participant1_registration_id,
+            match_.participant1_name.clone(),
+        ),
+        (
+            match_.participant2_registration_id,
+            match_.participant2_name.clone(),
+        ),
+    ] {
+        let Some(reg_id) = reg_id else { continue };
+        match state
             .veto_authorization_service
             .can_perform_veto_action(reg_id, user_id, player_id)
             .await
-    {
-        // Tournament admins get admin role, others get participant role
-        if matches!(auth_role, VetoAuthorizationRole::TournamentAdmin) {
-            connection = Some(VetoConnection::admin(
-                user_id,
-                player_id,
-                claims.username.clone(),
-            ));
-        } else {
-            let team_name = match_.participant1_name.clone().unwrap_or_default();
-            connection = Some(VetoConnection::participant(
-                user_id,
-                player_id,
-                claims.username.clone(),
-                reg_id,
-                team_name,
-            ));
+        {
+            Ok(VetoAuthorizationRole::TournamentAdmin) => acts_as_staff = true,
+            Ok(_) => {
+                connection = Some(VetoConnection::participant(
+                    user_id,
+                    player_id,
+                    claims.username.clone(),
+                    reg_id,
+                    name.unwrap_or_default(),
+                ));
+                break;
+            }
+            Err(_) => {}
         }
     }
-
-    // Check participant 2 (only if not already found as participant 1)
-    if connection.is_none()
-        && let Some(reg_id) = match_.participant2_registration_id
-        && let Ok(auth_role) = state
-            .veto_authorization_service
-            .can_perform_veto_action(reg_id, user_id, player_id)
-            .await
-    {
-        // Tournament admins get admin role, others get participant role
-        if matches!(auth_role, VetoAuthorizationRole::TournamentAdmin) {
-            connection = Some(VetoConnection::admin(
-                user_id,
-                player_id,
-                claims.username.clone(),
-            ));
-        } else {
-            let team_name = match_.participant2_name.clone().unwrap_or_default();
-            connection = Some(VetoConnection::participant(
-                user_id,
-                player_id,
-                claims.username.clone(),
-                reg_id,
-                team_name,
-            ));
-        }
+    if connection.is_none() && acts_as_staff {
+        connection = Some(VetoConnection::admin(
+            user_id,
+            player_id,
+            claims.username.clone(),
+        ));
     }
 
     // Check if user is a tournament admin (fallback for users not on any team)

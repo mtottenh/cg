@@ -156,10 +156,6 @@ where
         // member.
         if let Some(adhoc_uuid) = registration.adhoc_team_id {
             let adhoc_team_id = AdhocTeamId::from_uuid(adhoc_uuid);
-            if self.is_tournament_admin(user_id).await? {
-                debug!("User authorized as tournament admin (ad-hoc registration)");
-                return Ok(VetoAuthorizationRole::TournamentAdmin);
-            }
             if let Some(adhoc_repo) = &self.adhoc_repo
                 && adhoc_repo.is_member(adhoc_team_id, player_id).await?
             {
@@ -169,6 +165,10 @@ where
                 }
                 debug!("User authorized as ad-hoc team member");
                 return Ok(VetoAuthorizationRole::Player);
+            }
+            if self.is_tournament_admin(user_id).await? {
+                debug!("User authorized as tournament admin (ad-hoc registration)");
+                return Ok(VetoAuthorizationRole::TournamentAdmin);
             }
             return Err(DomainError::NotAuthorized(
                 "Only members of the ad-hoc team can act for this registration".to_string(),
@@ -180,45 +180,49 @@ where
         // was a hard error, which made veto unusable in individual
         // tournaments.
         let Some(team_season_id) = registration.team_season_id else {
-            if self.is_tournament_admin(user_id).await? {
-                debug!("User authorized as tournament admin (individual registration)");
-                return Ok(VetoAuthorizationRole::TournamentAdmin);
-            }
             if registration.player_id == Some(player_id) {
                 debug!("User authorized as the registered player");
                 return Ok(VetoAuthorizationRole::Player);
+            }
+            if self.is_tournament_admin(user_id).await? {
+                debug!("User authorized as tournament admin (individual registration)");
+                return Ok(VetoAuthorizationRole::TournamentAdmin);
             }
             return Err(DomainError::NotAuthorized(
                 "Only the registered player can act for an individual registration".to_string(),
             ));
         };
 
-        // Check authorization in order of precedence
-        // 1. Tournament admin (can always act)
-        if self.is_tournament_admin(user_id).await? {
-            debug!("User authorized as tournament admin");
-            return Ok(VetoAuthorizationRole::TournamentAdmin);
-        }
-
-        // 2. Team captain
+        // Check authorization in order of precedence. A team role comes
+        // before tournament staff: an organiser who also captains a team
+        // must join the lobby as that team's participant (presence, coin
+        // flip, team chat), not as an anonymous admin. Admins who are not
+        // on the team are still authorized, last.
+        // 1. Team captain
         if self.is_captain(team_season_id, player_id).await? {
             debug!("User authorized as team captain");
             return Ok(VetoAuthorizationRole::Captain);
         }
 
-        // 3. Team owner
+        // 2. Team owner
         if self.is_owner(team_season_id, player_id).await? {
             debug!("User authorized as team owner");
             return Ok(VetoAuthorizationRole::Owner);
         }
 
-        // 4. Active delegate
+        // 3. Active delegate
         if self
             .is_delegate(team_season_id, player_id, Some(registration.tournament_id))
             .await?
         {
             debug!("User authorized as delegate");
             return Ok(VetoAuthorizationRole::Delegate);
+        }
+
+        // 4. Tournament admin (can always act)
+        if self.is_tournament_admin(user_id).await? {
+            debug!("User authorized as tournament admin");
+            return Ok(VetoAuthorizationRole::TournamentAdmin);
         }
 
         Err(DomainError::NotAuthorized(

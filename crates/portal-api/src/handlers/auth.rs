@@ -311,25 +311,15 @@ pub async fn refresh(
         return Err(DomainError::RefreshTokenExpired.into());
     }
 
-    // Race-safe rotation. try_revoke returns false if another concurrent
-    // refresh already consumed this token; that racer gets the new session
-    // and we fail. Preserves one-use semantics even under overlap.
-    let revoked = state.refresh_token_repo.try_revoke(stored.id).await?;
-    if !revoked {
-        tracing::warn!(
-            user_id = %stored.user_id,
-            token_id = %stored.id,
-            "refresh token rotation race — another request already consumed this token"
-        );
-        return Err(ApiError::refresh_superseded());
-    }
-
     // Look up user to get current info for the new JWT
     let user = state.user_service.get_user(stored.user_id.into()).await?;
 
     // Account-status gate: a banned/suspended user must not be able to
     // keep a session alive by rotating refresh tokens. Kill the whole
     // chain so residual access is capped at the access-token lifetime.
+    // Checked before rotating, so the presented token is revoked with the
+    // rest of the chain (a later replay of it is a replay, not a racing
+    // tab).
     if user.status != UserStatus::Active {
         if let Err(e) = state
             .refresh_token_repo
@@ -343,6 +333,19 @@ pub async fn refresh(
             );
         }
         return Err(DomainError::Forbidden(format!("account is {}", user.status)).into());
+    }
+
+    // Race-safe rotation. try_revoke returns false if another concurrent
+    // refresh already consumed this token; that racer gets the new session
+    // and we fail. Preserves one-use semantics even under overlap.
+    let revoked = state.refresh_token_repo.try_revoke(stored.id).await?;
+    if !revoked {
+        tracing::warn!(
+            user_id = %stored.user_id,
+            token_id = %stored.id,
+            "refresh token rotation race — another request already consumed this token"
+        );
+        return Err(ApiError::refresh_superseded());
     }
 
     // Look up player for the user

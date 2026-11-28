@@ -17,6 +17,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{Duration, Utc};
 use portal_core::DomainError;
 use portal_db::NewUserRole;
+use portal_domain::entities::refresh_token::RefreshTokenRevokeReason;
 use portal_domain::entities::user::UserStatus;
 use portal_domain::repositories::refresh_token::RefreshTokenRepository;
 use portal_domain::services::{LoginCommand, RegisterUserCommand};
@@ -234,6 +235,7 @@ pub async fn login(
         (status = 200, description = "Token refreshed successfully", body = DataResponse<LoginResponse>),
         (status = 401, description = "Invalid or expired refresh token", body = ApiError),
         (status = 403, description = "Account is not active (banned/suspended)", body = ApiError),
+        (status = 409, description = "The token was rotated moments ago by another request sharing the session (problem type `refresh-superseded`); retry with the current session cookie", body = ApiError),
     ),
     tag = "auth"
 )]
@@ -269,6 +271,19 @@ pub async fn refresh(
     // We can't tell (a) from (b), and (b) is the serious case — revoke every
     // active token for the user so the attacker's stolen token chain dies
     // and the user is forced to reauthenticate.
+    // Exception: a token rotated within the last minute. Two tabs sharing the
+    // session cookie refresh with it at the same moment; the loser presents
+    // the token the winner has just rotated. That is not theft, and
+    // treating it as theft signed the user out everywhere. Tell the loser to
+    // retry (the cookie it now holds is current) and leave the session alone.
+    if stored.rotated_within_grace(Utc::now()) {
+        tracing::info!(
+            user_id = %stored.user_id,
+            token_id = %stored.id,
+            "refresh token presented just after another request rotated it"
+        );
+        return Err(ApiError::refresh_superseded());
+    }
     if stored.revoked_at.is_some() {
         tracing::warn!(
             user_id = %stored.user_id,
@@ -289,7 +304,10 @@ pub async fn refresh(
     // Validate expiry
     if stored.is_expired() {
         // Revoke the expired token for hygiene
-        let _ = state.refresh_token_repo.revoke(stored.id).await;
+        let _ = state
+            .refresh_token_repo
+            .revoke(stored.id, RefreshTokenRevokeReason::Expired)
+            .await;
         return Err(DomainError::RefreshTokenExpired.into());
     }
 
@@ -303,7 +321,7 @@ pub async fn refresh(
             token_id = %stored.id,
             "refresh token rotation race — another request already consumed this token"
         );
-        return Err(DomainError::RefreshTokenRevoked.into());
+        return Err(ApiError::refresh_superseded());
     }
 
     // Look up user to get current info for the new JWT
@@ -410,7 +428,10 @@ pub async fn logout(
     if let Some(stored) = state.refresh_token_repo.find_by_hash(&token_hash).await?
         && stored.revoked_at.is_none()
     {
-        state.refresh_token_repo.revoke(stored.id).await?;
+        state
+            .refresh_token_repo
+            .revoke(stored.id, RefreshTokenRevokeReason::Logout)
+            .await?;
         tracing::info!(user_id = %stored.user_id, "refresh token revoked via logout");
     }
 

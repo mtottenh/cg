@@ -1,6 +1,6 @@
 //! Refresh token repository trait.
 
-use crate::entities::refresh_token::RefreshToken;
+use crate::entities::refresh_token::{RefreshToken, RefreshTokenRevokeReason};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::DomainError;
@@ -31,8 +31,9 @@ pub trait RefreshTokenRepository: Send + Sync {
     /// token. Callers should respond by revoking every token for that user.
     async fn find_by_hash(&self, token_hash: &str) -> Result<Option<RefreshToken>, DomainError>;
 
-    /// Revoke a specific refresh token by ID. Idempotent.
-    async fn revoke(&self, id: Uuid) -> Result<(), DomainError>;
+    /// Revoke a specific refresh token by ID, recording why. Idempotent: a
+    /// token already revoked keeps its original time and reason.
+    async fn revoke(&self, id: Uuid, reason: RefreshTokenRevokeReason) -> Result<(), DomainError>;
 
     /// Atomically revoke a token **only if it is currently active**.
     ///
@@ -40,6 +41,7 @@ pub trait RefreshTokenRepository: Send + Sync {
     /// was already revoked (or didn't exist). Used to make the
     /// find-check-revoke sequence in the refresh handler race-safe: two
     /// concurrent refreshes with the same token will see at most one `true`.
+    /// This is rotation: the token is recorded as revoked for that reason.
     async fn try_revoke(&self, id: Uuid) -> Result<bool, DomainError>;
 
     /// Revoke all refresh tokens for a user (e.g., on password change, on

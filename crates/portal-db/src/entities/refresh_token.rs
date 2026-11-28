@@ -13,4 +13,5 @@ pub struct RefreshTokenRow {
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_reason: Option<String>,
 }

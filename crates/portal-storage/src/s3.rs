@@ -287,6 +287,35 @@ pub struct ObjectPage {
     pub next_continuation_token: Option<String>,
 }
 
+/// A `Content-Disposition` value that saves a download as `file_name`.
+///
+/// The name is reduced to a safe ASCII subset (letters, digits, `.`, `-`,
+/// `_`; anything else becomes `_`) so it can be quoted without escaping and
+/// cannot inject header syntax. Falls back to `download` when nothing usable
+/// is left, and is capped at 200 characters.
+#[must_use]
+pub fn attachment_content_disposition(file_name: &str) -> String {
+    let base = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let mut safe: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(200)
+        .collect();
+    let trimmed = safe.trim_matches(|c| c == '.' || c == '_');
+    if trimmed.is_empty() {
+        safe = "download".to_string();
+    } else if trimmed.len() != safe.len() {
+        safe = trimmed.to_string();
+    }
+    format!("attachment; filename=\"{safe}\"")
+}
+
 /// Trait for S3 operations needed by the evidence system.
 #[async_trait]
 pub trait S3EvidenceClient: Send + Sync + 'static {
@@ -306,6 +335,24 @@ pub trait S3EvidenceClient: Send + Sync + 'static {
         key: &str,
         ttl: Duration,
     ) -> Result<String, StorageError>;
+
+    /// Generate a presigned GET URL that makes the browser save the object
+    /// as `file_name` rather than open it.
+    ///
+    /// Browsers ignore an `<a download>` attribute on a cross-origin link, so
+    /// the presign itself carries `response-content-disposition: attachment`
+    /// (and a binary content type), which S3-compatible stores echo back.
+    /// Defaults to a plain presigned GET for backends that cannot do that.
+    async fn presign_get_attachment(
+        &self,
+        bucket: &str,
+        key: &str,
+        ttl: Duration,
+        file_name: &str,
+    ) -> Result<String, StorageError> {
+        let _ = file_name;
+        self.presign_get(bucket, key, ttl).await
+    }
 
     /// Get object metadata without downloading.
     async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectMetadata, StorageError>;
@@ -385,6 +432,34 @@ impl S3EvidenceClient for S3Storage {
             .get_object()
             .bucket(bucket)
             .key(key)
+            .presigned(presign_config)
+            .await
+            .map_err(|e| StorageError::S3 {
+                message: format!("Failed to presign GET: {e}"),
+            })?;
+
+        Ok(presigned.uri().to_string())
+    }
+
+    #[instrument(skip(self))]
+    async fn presign_get_attachment(
+        &self,
+        bucket: &str,
+        key: &str,
+        ttl: Duration,
+        file_name: &str,
+    ) -> Result<String, StorageError> {
+        let presign_config = PresigningConfig::expires_in(ttl).map_err(|e| StorageError::S3 {
+            message: format!("Failed to create presigning config: {e}"),
+        })?;
+
+        let presigned = self
+            .client
+            .get_object()
+            .bucket(bucket)
+            .key(key)
+            .response_content_disposition(attachment_content_disposition(file_name))
+            .response_content_type("application/octet-stream")
             .presigned(presign_config)
             .await
             .map_err(|e| StorageError::S3 {
@@ -593,5 +668,82 @@ impl S3Storage {
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::{S3EvidenceClient, S3Storage, attachment_content_disposition};
+    use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
+    use std::time::Duration;
+
+    #[test]
+    fn keeps_a_plain_demo_name() {
+        assert_eq!(
+            attachment_content_disposition("2026-11-26_20-25-32_2_de_inferno_A_vs_B.dem"),
+            "attachment; filename=\"2026-11-26_20-25-32_2_de_inferno_A_vs_B.dem\""
+        );
+    }
+
+    #[test]
+    fn strips_paths_quotes_and_non_ascii() {
+        assert_eq!(
+            attachment_content_disposition("matchzy/2/x\"; evil=1 ümlaut.dem"),
+            "attachment; filename=\"x___evil_1__mlaut.dem\""
+        );
+    }
+
+    #[test]
+    fn falls_back_when_nothing_usable_is_left() {
+        assert_eq!(
+            attachment_content_disposition("..."),
+            "attachment; filename=\"download\""
+        );
+        assert_eq!(
+            attachment_content_disposition(""),
+            "attachment; filename=\"download\""
+        );
+    }
+
+    #[tokio::test]
+    async fn presigned_download_forces_an_attachment() {
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::new("gb-lon-1"))
+            .endpoint_url("https://gb-lon-1.linodeobjects.com")
+            .credentials_provider(Credentials::new("AKIDTEST", "secret", None, None, "test"))
+            .build();
+        let storage = S3Storage::from_client(
+            aws_sdk_s3::Client::from_conf(config),
+            "portal-demos",
+            "https://example.invalid",
+        );
+
+        let url = storage
+            .presign_get_attachment(
+                "portal-demos",
+                "matchzy/2/game.dem",
+                Duration::from_secs(900),
+                "game.dem",
+            )
+            .await
+            .unwrap();
+        assert!(url.contains("response-content-disposition="), "{url}");
+        assert!(url.contains("filename%3D%22game.dem%22"), "{url}");
+        assert!(
+            url.contains("response-content-type=application%2Foctet-stream"),
+            "{url}"
+        );
+
+        // A plain presign is unchanged.
+        let plain = storage
+            .presign_get(
+                "portal-demos",
+                "matchzy/2/game.dem",
+                Duration::from_secs(900),
+            )
+            .await
+            .unwrap();
+        assert!(!plain.contains("response-content-disposition"), "{plain}");
     }
 }

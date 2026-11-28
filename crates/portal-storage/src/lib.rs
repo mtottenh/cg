@@ -45,6 +45,7 @@ pub use local::LocalStorage;
 #[cfg(feature = "s3")]
 pub use s3::{
     ObjectInfo, ObjectMetadata, ObjectPage, S3Config, S3Credentials, S3EvidenceClient, S3Storage,
+    attachment_content_disposition,
 };
 
 use async_trait::async_trait;

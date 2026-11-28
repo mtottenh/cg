@@ -563,7 +563,12 @@ pub async fn get_demo_download(
     ensure_bucket_allowed(&state, &demo.s3_bucket)?;
     let download_url = state
         .object_storage
-        .presign_get(&demo.s3_bucket, &demo.s3_key, DEMO_DOWNLOAD_TTL)
+        .presign_get_attachment(
+            &demo.s3_bucket,
+            &demo.s3_key,
+            DEMO_DOWNLOAD_TTL,
+            &demo.file_name,
+        )
         .await
         .map_err(|e| ApiError::internal(format!("presigning demo download failed: {e}")))?;
 

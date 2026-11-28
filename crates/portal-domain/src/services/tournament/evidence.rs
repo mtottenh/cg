@@ -89,6 +89,20 @@ pub trait EvidenceS3Client: Send + Sync + 'static {
         ttl: Duration,
     ) -> Result<String, DomainError>;
 
+    /// Generate a presigned GET URL that makes the browser save the object as
+    /// `file_name` (a forced download). Defaults to [`Self::presign_get`] for
+    /// backends that cannot override the response headers.
+    async fn presign_get_attachment(
+        &self,
+        bucket: &str,
+        key: &str,
+        ttl: Duration,
+        file_name: &str,
+    ) -> Result<String, DomainError> {
+        let _ = file_name;
+        self.presign_get(bucket, key, ttl).await
+    }
+
     /// Check if an object exists.
     async fn object_exists(&self, bucket: &str, key: &str) -> Result<bool, DomainError>;
 

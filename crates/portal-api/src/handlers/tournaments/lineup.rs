@@ -91,7 +91,7 @@ pub async fn declare_lineup(
 /// A failed lookup degrades to "Unknown player" rows rather than failing the
 /// request: the lineup itself is still correct without the names.
 async fn lineup_player_names(state: &TournamentState, mut ids: Vec<PlayerId>) -> LineupPlayerNames {
-    ids.sort_unstable_by_key(|id| id.as_uuid());
+    ids.sort_unstable_by_key(PlayerId::as_uuid);
     ids.dedup();
     if ids.is_empty() {
         return LineupPlayerNames::new();

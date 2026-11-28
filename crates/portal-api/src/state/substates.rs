@@ -504,6 +504,8 @@ pub struct TournamentState {
     pub match_completion_saga: super::AppMatchCompletionSaga,
     /// Player notifications.
     pub notifier: crate::notifications::Notifier,
+    /// Player lookups (lineup responses carry each player's display name).
+    pub player_service: AppPlayerService,
 }
 
 impl FromRef<AppState> for TournamentState {
@@ -533,6 +535,7 @@ impl FromRef<AppState> for TournamentState {
             forfeit_service: s.forfeit_service.clone(),
             match_completion_saga: s.match_completion_saga.clone(),
             notifier: s.notifier.clone(),
+            player_service: s.player_service.clone(),
         }
     }
 }

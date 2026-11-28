@@ -623,6 +623,9 @@ async fn test_refresh_token_reuse_rejected() {
     let body: serde_json::Value = response.json();
     let new_refresh = body["data"]["refresh_token"].as_str().unwrap().to_string();
 
+    // A minute later the rotated token is a replay, not a racing tab.
+    age_rotations_past_grace(&app).await;
+
     // Replaying the rotated (revoked) token is rejected
     let response = app
         .post_json_no_auth(
@@ -638,6 +641,143 @@ async fn test_refresh_token_reuse_rejected() {
         .post_json_no_auth("/v1/auth/refresh", &json!({ "refresh_token": new_refresh }))
         .await;
     response.assert_status(StatusCode::UNAUTHORIZED);
+}
+
+/// Move every rotation more than a minute into the past, so a rotated token
+/// presented now reads as a replay rather than as a racing tab.
+async fn age_rotations_past_grace(app: &TestApp) {
+    sqlx::query(
+        "UPDATE refresh_tokens SET revoked_at = revoked_at - INTERVAL '2 minutes' \
+         WHERE revoked_reason = 'rotated'",
+    )
+    .execute(app.pool())
+    .await
+    .unwrap();
+}
+
+/// Sign in again as an existing user: a second, independent session.
+async fn login_refresh_token(app: &TestApp, username: &str) -> String {
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/login",
+            &json!({ "username_or_email": username, "password": "SecurePass123!" }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    body["data"]["refresh_token"].as_str().unwrap().to_string()
+}
+
+async fn refresh_with(app: &TestApp, token: &str) -> (StatusCode, serde_json::Value) {
+    let response = app
+        .post_json_no_auth("/v1/auth/refresh", &json!({ "refresh_token": token }))
+        .await;
+    let body = serde_json::from_str(&response.text()).unwrap_or(serde_json::Value::Null);
+    (response.status, body)
+}
+
+/// Two tabs share the session cookie and refresh with it at the same moment.
+/// The one that loses presents a token rotated a moment ago: it gets a 409 to
+/// retry with, and nobody is signed out.
+#[tokio::test]
+async fn test_refresh_just_after_rotation_is_superseded_not_revoked() {
+    let app = TestApp::new().await;
+    let (_access, first) = register_and_get_tokens(&app, "twotabsuser").await;
+    let other_session = login_refresh_token(&app, "twotabsuser").await;
+
+    let (status, body) = refresh_with(&app, &first).await;
+    assert_eq!(status, StatusCode::OK);
+    let rotated = body["data"]["refresh_token"].as_str().unwrap().to_string();
+
+    let (status, body) = refresh_with(&app, &first).await;
+    assert_eq!(status, StatusCode::CONFLICT, "got {body}");
+    assert!(
+        body["type"]
+            .as_str()
+            .unwrap()
+            .ends_with("/refresh-superseded"),
+        "problem type: {}",
+        body["type"]
+    );
+    assert_eq!(
+        body["detail"],
+        "Refresh token was already used by another tab; retry with the current session"
+    );
+
+    // Nothing was revoked: the rotated token and the other session still work.
+    let (status, _) = refresh_with(&app, &rotated).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = refresh_with(&app, &other_session).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// Both tabs refresh at literally the same time: exactly one rotates the
+/// token, the other is told to retry, and neither signs the user out.
+#[tokio::test]
+async fn test_concurrent_refreshes_one_wins_one_superseded() {
+    let app = TestApp::new().await;
+    let (_access, token) = register_and_get_tokens(&app, "racetabsuser").await;
+    let other_session = login_refresh_token(&app, "racetabsuser").await;
+
+    let ((a, _), (b, _)) = tokio::join!(refresh_with(&app, &token), refresh_with(&app, &token));
+    let mut statuses = [a, b];
+    statuses.sort_by_key(StatusCode::as_u16);
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
+
+    let (status, _) = refresh_with(&app, &other_session).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the race must not revoke other sessions"
+    );
+}
+
+/// A token presented after it was signed out with is still treated as a
+/// replay: every session of the user is revoked.
+#[tokio::test]
+async fn test_replay_of_logged_out_token_revokes_all() {
+    let app = TestApp::new().await;
+    let (_access, logged_out) = register_and_get_tokens(&app, "logoutreplayuser").await;
+    let other_session = login_refresh_token(&app, "logoutreplayuser").await;
+
+    let response = app
+        .post_json_no_auth(
+            "/v1/auth/logout",
+            &json!({ "refresh_token": logged_out.as_str() }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let (status, _) = refresh_with(&app, &logged_out).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = refresh_with(&app, &other_session).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "replay must revoke every session"
+    );
+}
+
+/// A rotated token presented after the grace window is a replay again: 401,
+/// and every session of the user is revoked.
+#[tokio::test]
+async fn test_rotated_token_replayed_after_grace_revokes_all() {
+    let app = TestApp::new().await;
+    let (_access, first) = register_and_get_tokens(&app, "latereplayuser").await;
+    let other_session = login_refresh_token(&app, "latereplayuser").await;
+
+    let (status, _) = refresh_with(&app, &first).await;
+    assert_eq!(status, StatusCode::OK);
+    age_rotations_past_grace(&app).await;
+
+    let (status, _) = refresh_with(&app, &first).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = refresh_with(&app, &other_session).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "replay must revoke every session"
+    );
 }
 
 // ===========================================

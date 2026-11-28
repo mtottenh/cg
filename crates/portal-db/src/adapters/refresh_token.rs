@@ -5,7 +5,7 @@ use crate::entities::RefreshTokenRow;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use portal_core::DomainError;
-use portal_domain::entities::refresh_token::RefreshToken;
+use portal_domain::entities::refresh_token::{RefreshToken, RefreshTokenRevokeReason};
 use portal_domain::repositories::refresh_token::RefreshTokenRepository;
 use uuid::Uuid;
 
@@ -22,6 +22,10 @@ impl From<RefreshTokenRow> for RefreshToken {
             expires_at: row.expires_at,
             created_at: row.created_at,
             revoked_at: row.revoked_at,
+            revoked_reason: row
+                .revoked_reason
+                .as_deref()
+                .and_then(RefreshTokenRevokeReason::parse),
         }
     }
 }
@@ -96,19 +100,25 @@ impl RefreshTokenRepository for PgRefreshTokenRepository {
         Ok(row.map(RefreshToken::from))
     }
 
-    async fn revoke(&self, id: Uuid) -> Result<(), DomainError> {
-        sqlx::query("UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DomainError::Internal(e.to_string()))?;
+    async fn revoke(&self, id: Uuid, reason: RefreshTokenRevokeReason) -> Result<(), DomainError> {
+        // Idempotent; a token already revoked keeps its original reason.
+        sqlx::query(
+            "UPDATE refresh_tokens SET revoked_at = NOW(), revoked_reason = $2 \
+             WHERE id = $1 AND revoked_at IS NULL",
+        )
+        .bind(id)
+        .bind(reason.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         Ok(())
     }
 
     async fn try_revoke(&self, id: Uuid) -> Result<bool, DomainError> {
         let result = sqlx::query(
-            "UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL",
+            "UPDATE refresh_tokens SET revoked_at = NOW(), revoked_reason = 'rotated' \
+             WHERE id = $1 AND revoked_at IS NULL",
         )
         .bind(id)
         .execute(&self.pool)
@@ -120,7 +130,8 @@ impl RefreshTokenRepository for PgRefreshTokenRepository {
 
     async fn revoke_all_for_user(&self, user_id: Uuid) -> Result<(), DomainError> {
         sqlx::query(
-            "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
+            "UPDATE refresh_tokens SET revoked_at = NOW(), revoked_reason = 'revoke_all' \
+             WHERE user_id = $1 AND revoked_at IS NULL",
         )
         .bind(user_id)
         .execute(&self.pool)

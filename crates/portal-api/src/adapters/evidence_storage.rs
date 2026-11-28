@@ -253,6 +253,22 @@ impl EvidenceS3Client for S3EvidenceStorageAdapter {
         .map_err(|e| DomainError::Internal(format!("S3 presign_get failed: {e}")))
     }
 
+    async fn presign_get_attachment(
+        &self,
+        bucket: &str,
+        key: &str,
+        ttl: Duration,
+        file_name: &str,
+    ) -> Result<String, DomainError> {
+        crate::observability::track_s3(
+            "evidence",
+            "presign-get",
+            self.s3.presign_get_attachment(bucket, key, ttl, file_name),
+        )
+        .await
+        .map_err(|e| DomainError::Internal(format!("S3 presign_get failed: {e}")))
+    }
+
     async fn list_objects_page(
         &self,
         bucket: &str,
@@ -335,6 +351,23 @@ impl EvidenceS3Client for EvidenceStorageBackend {
         match self {
             Self::Local(local) => local.presign_get(bucket, key, ttl).await,
             Self::S3(s3) => s3.presign_get(bucket, key, ttl).await,
+        }
+    }
+
+    async fn presign_get_attachment(
+        &self,
+        bucket: &str,
+        key: &str,
+        ttl: Duration,
+        file_name: &str,
+    ) -> Result<String, DomainError> {
+        match self {
+            Self::Local(local) => {
+                local
+                    .presign_get_attachment(bucket, key, ttl, file_name)
+                    .await
+            }
+            Self::S3(s3) => s3.presign_get_attachment(bucket, key, ttl, file_name).await,
         }
     }
 
@@ -427,6 +460,18 @@ impl EvidenceS3Client for BucketRoutedObjectStorage {
         ttl: Duration,
     ) -> Result<String, DomainError> {
         self.client(bucket).presign_get(bucket, key, ttl).await
+    }
+
+    async fn presign_get_attachment(
+        &self,
+        bucket: &str,
+        key: &str,
+        ttl: Duration,
+        file_name: &str,
+    ) -> Result<String, DomainError> {
+        self.client(bucket)
+            .presign_get_attachment(bucket, key, ttl, file_name)
+            .await
     }
 
     async fn list_objects_page(

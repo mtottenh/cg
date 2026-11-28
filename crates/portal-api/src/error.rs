@@ -94,6 +94,17 @@ impl ApiError {
         Self::new(StatusCode::CONFLICT, "Conflict", detail)
     }
 
+    /// A refresh token that another request (another tab sharing the session
+    /// cookie) rotated moments ago. Problem type `…/problems/refresh-superseded`.
+    /// The session is fine: the client should retry with its current cookie.
+    pub fn refresh_superseded() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "Refresh Superseded",
+            "Refresh token was already used by another tab; retry with the current session",
+        )
+    }
+
     /// Create an internal server error.
     pub fn internal(detail: impl Into<String>) -> Self {
         Self::new(

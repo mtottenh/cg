@@ -8,7 +8,7 @@
 use super::{get_request_id, require_registration_actor};
 use crate::dto::common::DataResponse;
 use crate::dto::requests::DeclareLineupRequest;
-use crate::dto::responses::MatchLineupResponse;
+use crate::dto::responses::{LineupPlayerIdentity, LineupPlayerNames, MatchLineupResponse};
 use crate::error::{ApiError, ApiResult};
 use crate::extractors::{AuthenticatedUser, PermissionChecker, ValidatedJson};
 use crate::state::TournamentState;
@@ -78,10 +78,42 @@ pub async fn declare_lineup(
         .await?;
 
     // The declarer always sees their own lineup in full.
+    let ids: Vec<PlayerId> = lineup.players.iter().map(|p| p.player_id).collect();
+    let names = lineup_player_names(&state, ids).await;
     Ok(Json(DataResponse::new(
-        MatchLineupResponse::from_visible(lineup),
+        MatchLineupResponse::from_visible(lineup, &names),
         request_id,
     )))
+}
+
+/// Display names for the players of one or more lineups, in one lookup.
+///
+/// A failed lookup degrades to "Unknown player" rows rather than failing the
+/// request: the lineup itself is still correct without the names.
+async fn lineup_player_names(state: &TournamentState, mut ids: Vec<PlayerId>) -> LineupPlayerNames {
+    ids.sort_unstable_by_key(|id| id.as_uuid());
+    ids.dedup();
+    if ids.is_empty() {
+        return LineupPlayerNames::new();
+    }
+    match state.player_service.get_players_by_ids(&ids).await {
+        Ok(players) => players
+            .into_iter()
+            .map(|p| {
+                (
+                    p.id,
+                    LineupPlayerIdentity {
+                        display_name: p.display_name,
+                        avatar_url: p.avatar_url,
+                    },
+                )
+            })
+            .collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not look up lineup player names");
+            LineupPlayerNames::new()
+        }
+    }
 }
 
 /// List the lineups for a match.
@@ -119,6 +151,11 @@ pub async fn get_match_lineups(
         .map_err(|_| ApiError::bad_request("Invalid match ID format"))?;
 
     let lineups = state.lineup_service.list_for_match(match_id).await?;
+    let ids: Vec<PlayerId> = lineups
+        .iter()
+        .flat_map(|wp| wp.players.iter().map(|p| p.player_id))
+        .collect();
+    let names = lineup_player_names(&state, ids).await;
 
     let mut out = Vec::with_capacity(lineups.len());
     for wp in lineups {
@@ -130,7 +167,7 @@ pub async fn get_match_lineups(
                 .await
                 .is_ok();
         out.push(MatchLineupResponse::from_with_visibility(
-            wp.lineup, wp.players, visible,
+            wp.lineup, wp.players, visible, &names,
         ));
     }
 

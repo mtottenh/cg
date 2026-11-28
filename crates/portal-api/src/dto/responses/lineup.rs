@@ -1,12 +1,29 @@
 //! Match lineup response DTOs.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
+use portal_core::PlayerId;
 use portal_core::types::{LineupSource, LineupStatus, ParticipationStatus};
 use portal_domain::entities::match_lineup::{
     MatchLineup, MatchLineupPlayer, MatchLineupWithPlayers,
 };
 use serde::Serialize;
 use utoipa::ToSchema;
+
+/// Shown when a lineup row's player has no profile name to show.
+pub const UNKNOWN_PLAYER_NAME: &str = "Unknown player";
+
+/// How a lineup names a player: their display name, and avatar if any.
+#[derive(Debug, Clone)]
+pub struct LineupPlayerIdentity {
+    /// Never empty.
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+}
+
+/// Player identities for lineup responses, keyed by player.
+pub type LineupPlayerNames = HashMap<PlayerId, LineupPlayerIdentity>;
 
 /// A single player row in a lineup.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -15,6 +32,11 @@ pub struct MatchLineupPlayerResponse {
     pub id: String,
     /// Player ID.
     pub player_id: String,
+    /// The player's display name ("Unknown player" when they have none).
+    pub display_name: String,
+    /// The player's avatar, when they have one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     /// Where this row came from (declared/demo/evidence/admin).
     pub source: LineupSource,
     /// Per-map game number (demo rows); null for match-level declared rows.
@@ -28,11 +50,22 @@ pub struct MatchLineupPlayerResponse {
     pub participation_status: ParticipationStatus,
 }
 
-impl From<MatchLineupPlayer> for MatchLineupPlayerResponse {
-    fn from(p: MatchLineupPlayer) -> Self {
+impl MatchLineupPlayerResponse {
+    /// Build a row, naming the player from `names` (falls back to
+    /// [`UNKNOWN_PLAYER_NAME`] when the player is missing or unnamed).
+    #[must_use]
+    pub fn named(p: MatchLineupPlayer, names: &LineupPlayerNames) -> Self {
+        let identity = names.get(&p.player_id);
+        let display_name = identity
+            .map(|i| i.display_name.trim())
+            .filter(|n| !n.is_empty())
+            .unwrap_or(UNKNOWN_PLAYER_NAME)
+            .to_string();
         Self {
             id: p.id.to_string(),
             player_id: p.player_id.to_string(),
+            display_name,
+            avatar_url: identity.and_then(|i| i.avatar_url.clone()),
             source: p.source,
             game_number: p.game_number,
             is_substitute: p.is_substitute,
@@ -84,6 +117,7 @@ impl MatchLineupResponse {
         lineup: MatchLineup,
         players: Vec<MatchLineupPlayer>,
         visible: bool,
+        names: &LineupPlayerNames,
     ) -> Self {
         Self {
             id: lineup.id.to_string(),
@@ -97,7 +131,10 @@ impl MatchLineupResponse {
             notes: lineup.notes,
             players_visible: visible,
             players: if visible {
-                players.into_iter().map(Into::into).collect()
+                players
+                    .into_iter()
+                    .map(|p| MatchLineupPlayerResponse::named(p, names))
+                    .collect()
             } else {
                 Vec::new()
             },
@@ -106,7 +143,7 @@ impl MatchLineupResponse {
 
     /// Build a fully-visible response (caller owns the lineup or it is locked).
     #[must_use]
-    pub fn from_visible(wp: MatchLineupWithPlayers) -> Self {
-        Self::from_with_visibility(wp.lineup, wp.players, true)
+    pub fn from_visible(wp: MatchLineupWithPlayers, names: &LineupPlayerNames) -> Self {
+        Self::from_with_visibility(wp.lineup, wp.players, true, names)
     }
 }

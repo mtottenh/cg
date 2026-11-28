@@ -1104,3 +1104,85 @@ async fn test_demo_lineup_outranks_a_stale_declared_lineup() {
          diluted the demo source, which is worse than the bug this fixes"
     );
 }
+
+/// The display name each player has on their profile.
+async fn display_name_of(app: &TestApp, player_id: &str) -> String {
+    sqlx::query_scalar("SELECT display_name FROM players WHERE id = $1::uuid")
+        .bind(player_id)
+        .fetch_one(app.pool())
+        .await
+        .unwrap()
+}
+
+/// Lineup rows name their players, so the match page can show names rather
+/// than ids — for declared rows and for rows taken from a demo.
+#[tokio::test]
+async fn test_lineup_rows_carry_player_names() {
+    use std::sync::Arc;
+
+    let app = TestApp::new().await;
+    let (tournament_id, match_id, reg1, reg2) =
+        create_tournament_with_matches(&app, "lineup-names").await;
+    schedule(&app, &tournament_id, &match_id).await;
+
+    // A declared lineup: the declarer's response names the player.
+    let response = app
+        .post_json(
+            &format!("/v1/tournaments/{tournament_id}/matches/{match_id}/lineup"),
+            &json!({ "registration_id": reg1, "player_ids": [DEV_PLAYER_ID], "submit": true }),
+        )
+        .await;
+    response.assert_status(StatusCode::OK);
+    let body: serde_json::Value = response.json();
+    let dev_name = display_name_of(&app, DEV_PLAYER_ID).await;
+    assert!(!dev_name.is_empty());
+    assert_eq!(body["data"]["players"][0]["display_name"], dev_name);
+
+    // A demo-sourced lineup for the other side, read back through the list.
+    let (_u, demo_player) = create_test_player(&app, "named_demo_player").await;
+    let pool = app.pool().clone();
+    let service = portal_domain::services::tournament::LineupService::new(
+        Arc::new(portal_db::PgMatchLineupRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentMatchRepository::new(pool.clone())),
+        Arc::new(portal_db::PgTournamentRegistrationRepository::new(
+            pool.clone(),
+        )),
+        Arc::new(portal_db::PgLeagueTeamMemberRepository::new(pool.clone())),
+    );
+    service
+        .materialize_demo_lineup(
+            match_id.parse().unwrap(),
+            reg2.parse().unwrap(),
+            Some(1),
+            vec![demo_player.to_string().parse().unwrap()],
+        )
+        .await
+        .expect("materialize demo lineup");
+
+    let body: serde_json::Value = app
+        .get_auth(&format!(
+            "/v1/tournaments/{tournament_id}/matches/{match_id}/lineups"
+        ))
+        .await
+        .json();
+    let lineups = body["data"].as_array().unwrap();
+
+    let declared = lineups
+        .iter()
+        .find(|l| l["registration_id"] == reg1)
+        .unwrap();
+    assert_eq!(declared["players"][0]["display_name"], dev_name);
+
+    let demo = lineups
+        .iter()
+        .find(|l| l["registration_id"] == reg2)
+        .unwrap();
+    let row = &demo["players"][0];
+    assert_eq!(row["source"], "demo");
+    assert_eq!(
+        row["display_name"],
+        display_name_of(&app, &demo_player.to_string()).await
+    );
+    // No avatar set: the field is omitted rather than null.
+    assert!(row.get("avatar_url").is_none());
+}

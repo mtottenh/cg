@@ -76,7 +76,10 @@ pub use league_team::{
     LeagueTeamSummaryResponse, LeagueTeamWithSeasonResponse, MovedTeamResponse,
     PlayerLeagueTeamMembershipResponse, TeamSeasonStatsResponse, WithdrawnEntryResponse,
 };
-pub use lineup::{MatchLineupPlayerResponse, MatchLineupResponse};
+pub use lineup::{
+    LineupPlayerIdentity, LineupPlayerNames, MatchLineupPlayerResponse, MatchLineupResponse,
+    UNKNOWN_PLAYER_NAME,
+};
 pub use pipeline::{
     DemoExtractionQueueResponse, DemoUploadAttemptListResponse, DemoUploadAttemptResponse,
     DiscoveredMatchAdminResponse, DiscoveredMatchQueueResponse, MissingDemoResponse,
